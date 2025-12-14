@@ -7,10 +7,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
-
-from kafka.errors import KafkaError
+from confluent_kafka import KafkaError, Producer
 
 
 def get_random_device():
@@ -36,6 +33,14 @@ def generate_message(user_id: int, schema_version: int) -> dict:
     return message
 
 
+def delivery_report(err, msg):
+    """Callback for delivery reports."""
+    if err is not None:
+        print(f"Delivery failed: {err}", file=sys.stderr)
+    else:
+        print(f"Delivered to {msg.topic()} [{msg.partition()}]")
+
+
 def main():
     """Main function to parse arguments and produce messages."""
     parser = argparse.ArgumentParser(
@@ -48,31 +53,29 @@ def main():
         default=1,
         help="Number of messages to produce (default: 1).",
     )
-    # Add the new schema_version argument
     parser.add_argument(
         "--schema_version",
         type=int,
         default=1,
-        choices=[1, 2],  # Optional: restrict choices
+        choices=[1, 2],
         help="Schema version of the message to produce (1 or 2, default: 1).",
     )
     args = parser.parse_args()
 
     # Kafka configuration
     kafka_topic = "user_events"
-    kafka_bootstrap_servers = ["localhost:19092"]
+    kafka_bootstrap_servers = "localhost:19092"
 
     try:
         # Create a Kafka producer
-        producer = KafkaProducer(
-            bootstrap_servers=kafka_bootstrap_servers,
-            # Serialize message values to JSON bytes
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            # Add this line for stronger delivery guarantees
-            acks="all",
-            # Optional: Add a small retry backoff
-            retry_backoff_ms=100,
-        )
+        conf = {
+            "bootstrap.servers": kafka_bootstrap_servers,
+            "client.id": "event-producer",
+            "acks": "all",
+            "retries": 3,
+            "retry.backoff.ms": 100,
+        }
+        producer = Producer(conf)
 
         print(f"Connecting to Kafka at {kafka_bootstrap_servers}...")
         print(
@@ -85,9 +88,14 @@ def main():
             print(f"-> Sending: {message}")
 
             # Send the message to the topic
-            producer.send(kafka_topic, value=message)
+            producer.produce(
+                kafka_topic,
+                value=json.dumps(message).encode("utf-8"),
+                callback=delivery_report,
+            )
+            producer.poll(0)  # Trigger delivery reports
 
-            # Optional: add a small delay between messages to see them arrive one by one
+            # Optional: add a small delay between messages
             time.sleep(0.5)
 
         print("\nAll messages sent. Flushing producer...")
