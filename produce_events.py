@@ -96,7 +96,7 @@ def main():
             producer.poll(0)  # Trigger delivery reports
 
             # Optional: add a small delay between messages
-            time.sleep(0.5)
+            time.sleep(0.1)
 
         print("\nAll messages sent. Flushing producer...")
         # Ensure all buffered messages are sent before exiting

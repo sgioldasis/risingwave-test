@@ -190,9 +190,8 @@ docker exec -i redpanda rpk topic produce user_events
 Type the following JSON message, press Enter, and then press Ctrl+D to send it.
 
 ```json
-{"user_id": 101, "event_type": "login", "event_timestamp": "2023-10-27T10:00:00Z"}
-{"user_id": 102, "event_type": "login", "event_timestamp": "2023-10-27T10:00:00Z", "device_type": "browser"}
-{"user_id": 102, "event_type": "login", "event_timestamp": "2023-10-27T10:00:00Z", "device_type": "browser"}
+{"user_id": 101, "event_type": "savas", "event_timestamp": "2023-10-27T10:00:00.000"}
+{"user_id": 102, "event_type": "savas2", "event_timestamp": "2023-10-27T10:00:01.000", "device_type": "browser"}
 ```
 
 ### 3.2. Query the Final Iceberg Table
