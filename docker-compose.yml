@@ -446,35 +446,75 @@ services:
       iceberg_net:
 
   # Redpanda Service - Kafka Compatible
+  # redpanda:
+  #   image: redpandadata/redpanda:v25.1.2
+  #   command:
+  #     - redpanda
+  #     - start
+  #     - "--kafka-addr=0.0.0.0:9092"
+  #     - "--advertise-kafka-addr=redpanda:9092"  # Keep internal hostname but use correct port
+  #     - "--pandaproxy-addr=0.0.0.0:8082"        # Use 8082 (dev default) instead of 8081
+  #     - "--advertise-pandaproxy-addr=redpanda:8082"  # Keep internal hostname
+  #     - "--schema-registry-addr=0.0.0.0:8081"   # Schema Registry on 8081 (default)
+  #     - "--rpc-addr=0.0.0.0:33146"
+  #     - "--advertise-rpc-addr=redpanda:33146"   # Keep internal hostname
+  #     - "--mode=dev-container"
+  #     - "--overprovisioned"
+  #     - "--smp=1"
+  #     - "--memory=1G"
+  #     - "--reserve-memory=0M"
+  #     - "--check=false"
+  #   expose:
+  #     - "9092"    # Kafka API
+  #     - "8081"    # Schema Registry
+  #     - "8082"    # HTTP Proxy (Pandaproxy)
+  #     - "33146"   # RPC API
+  #   ports:
+  #     - "9092:9092"      # Map external 9092 to internal 9092
+  #     - "8081:8081"      # Schema Registry
+  #     - "8082:8082"      # HTTP Proxy (Pandaproxy)
+  #     - "33146:33146"
+  #     - "9644:9644"      # Schema Registry
+  #   volumes:
+  #     - "redpanda-data:/var/lib/redpanda/data"
+  #   environment:
+  #     - REDPANDA_DEV_MODE=true
+  #     - REDPANDA_ENABLE_KAFKA_API=true
+  #     - REDPANDA_ENABLE_SCHEMA_REGISTRY=true
+  #   container_name: redpanda
+  #   healthcheck:
+  #     test: [ "CMD", "curl", "-f", "http://localhost:9644/v1/status" ]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 15s
+  #   restart: always
+  #   networks:
+  #     iceberg_net:
   redpanda:
     image: redpandadata/redpanda:v25.1.2
     command:
       - redpanda
       - start
-      - "--kafka-addr=0.0.0.0:9092"
-      - "--advertise-kafka-addr=redpanda:9092"  # Keep internal hostname but use correct port
-      - "--pandaproxy-addr=0.0.0.0:8082"        # Use 8082 (dev default) instead of 8081
-      - "--advertise-pandaproxy-addr=redpanda:8082"  # Keep internal hostname
-      - "--schema-registry-addr=0.0.0.0:8081"   # Schema Registry on 8081 (default)
-      - "--rpc-addr=0.0.0.0:33146"
-      - "--advertise-rpc-addr=redpanda:33146"   # Keep internal hostname
+      - "--kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092"
+      - "--advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092"
+      - "--pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082"
+      - "--advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082"
+      - "--schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081"
+      - "--rpc-addr=redpanda:33146"
+      - "--advertise-rpc-addr=redpanda:33146"
       - "--mode=dev-container"
       - "--overprovisioned"
       - "--smp=1"
       - "--memory=1G"
       - "--reserve-memory=0M"
       - "--check=false"
-    expose:
-      - "9092"    # Kafka API
-      - "8081"    # Schema Registry
-      - "8082"    # HTTP Proxy (Pandaproxy)
-      - "33146"   # RPC API
     ports:
-      - "9092:9092"      # Map external 9092 to internal 9092
-      - "8081:8081"      # Schema Registry
-      - "8082:8082"      # HTTP Proxy (Pandaproxy)
-      - "33146:33146"
-      - "9644:9644"      # Schema Registry
+      - "19092:19092"  # External Kafka API (use this from Devbox/host)
+      - "9092:9092"    # Internal Kafka API (for container-to-container)
+      - "8081:8081"    # Schema Registry
+      - "8082:8082"    # HTTP Proxy
+      - "9644:9644"    # Admin API
     volumes:
       - "redpanda-data:/var/lib/redpanda/data"
     environment:

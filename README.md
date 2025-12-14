@@ -217,13 +217,15 @@ Since your syslog data is stored in an Iceberg table managed by Lakekeeper and M
 
 ## Using DuckDB with REST Catalog
 
-First, install DuckDB with Iceberg support:
+In order to use DuckDB with REST Catalog from your local machine, you first need to add minio-0 to your /etc/hosts file:
 
 ```bash
-# Install DuckDB with Iceberg extension
-pip install duckdb duckdb-engine
+# Add minio-0 to your /etc/hosts file:
+echo "127.0.0.1 minio-0" | sudo tee -a /etc/hosts
+```
 
-# Or use the pre-built binary
+Now start duckdb
+```bash
 duckdb
 ```
 
@@ -231,27 +233,34 @@ Then connect to your Iceberg data:
 
 ```sql
 
--- Install needed dependencies
+-- Install extensions
 INSTALL aws;
 INSTALL httpfs;
+INSTALL avro;
 INSTALL iceberg;
 
--- Configure s3
-SET s3_endpoint = 'http://minio-0:9301';
+-- **** LOAD them (this is mandatory!) ****
+LOAD aws;
+LOAD httpfs;
+LOAD avro;
+LOAD iceberg;
+
+-- Configure S3
+SET s3_endpoint = 'http://localhost:9301';
 SET s3_access_key_id = 'hummockadmin';
 SET s3_secret_access_key = 'hummockadmin';
 SET s3_url_style = 'path';
 SET s3_use_ssl = false;
 
--- Attach catalog
+-- Attach catalog (remove trailing space!)
 ATTACH 'risingwave-warehouse' AS lakekeeper_catalog (
-    TYPE ICEBERG,
-    ENDPOINT 'http://127.0.0.1:8181/catalog/',
-    AUTHORIZATION_TYPE 'none'
+      TYPE ICEBERG,
+      ENDPOINT 'http://127.0.0.1:8181/catalog',
+      AUTHORIZATION_TYPE 'none'
 );
 
--- Query
-SELECT * FROM lakekeeper_catalog.public.user_events order by user_id;
+-- Now query
+SELECT * FROM lakekeeper_catalog.public.user_events ORDER BY user_id;
 
 SELECT * FROM lakekeeper_catalog.public.user_event_counts order by user_id;
 

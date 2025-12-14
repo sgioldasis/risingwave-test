@@ -1,0 +1,45 @@
+{
+  "env": {
+    "UV_PYTHON": "$PWD/.venv/bin/python",
+    "PGHOST": "localhost"
+  },
+  "packages": [
+    "python@3.13",
+    "uv@latest",
+    "duckdb@latest",
+    "postgresql@latest",
+    "sqlcmd@latest",
+    "bat@latest",
+    "sqlfluff@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      "unset DEBUGINFOD_URLS",
+      
+      "# Create and activate uv venv",
+      "if [ ! -d .venv ]; then echo '📦 Creating virtual environment...' && uv venv; fi",
+      "source .venv/bin/activate",
+      
+      "# Install dependencies",
+      "if [ -f requirements.txt ]; then uv pip install -r requirements.txt && echo '📚 Dependencies installed'; fi",
+      
+      "# --- Podman-machine (macOS only) ---",
+      "if [ \"$(uname)\" = Darwin ]; then",
+      "  podman machine list --format json | jq -r '.[].Running' | grep -q true || podman machine start > /dev/null 2>&1",
+      "fi",
+      
+      "# --- PostgreSQL (one-time init + background start) ---",
+      "mkdir -p .devbox/var/log",
+      "if [ ! -d .devbox/var/lib/postgres/base ]; then initdb -D .devbox/var/lib/postgres; fi",
+      "pg_ctl status -D .devbox/var/lib/postgres > /dev/null 2>&1 || pg_ctl -D .devbox/var/lib/postgres -l .devbox/var/log/postgres.log -o '-c unix_socket_directories=/tmp' -w start > /dev/null 2>&1 &",
+      
+      "# Install dbt Fusion",
+      "if ! command -v dbtf &> /dev/null; then",
+      "  curl -fsSL https://public.cdn.getdbt.com/fs/install/install.sh  | sh -s -- --update > /dev/null 2>&1 && echo '✓ dbt Fusion installed' || echo '⚠ dbt Fusion install failed'",
+      "fi",
+      
+      "# Show activation status",
+      "# echo \"✅ Devbox ready (Python: $(which python))\""
+    ]
+  }
+}
