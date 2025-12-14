@@ -4,7 +4,7 @@ This guide provides a complete, step-by-step process to build a real-time data p
 
 ## Prerequisites
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/): Docker Compose is included with Docker Desktop for Windows and macOS. Ensure Docker Desktop is running if you're using it.
-- [PostgreSQL interactive terminal (psql)](https://www.postgresql.org/download/): This will allow you to connect to RisingWave for stream management and queries.
+- [Devbox](https://www.jetify.com/devbox): Install via curl -fsSL https://get.jetify.com/devbox
 
 ## How to run the demo
 Before you begin, ensure your docker-compose.yml stack is up and running with all services (RisingWave, Lakekeeper, MinIO, Redpanda) healthy.
