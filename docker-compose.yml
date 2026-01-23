@@ -535,7 +535,7 @@ services:
   redpanda-console:
     image: redpandadata/console:latest
     ports:
-      - "8080:8080"  # Access at http://localhost:8080
+      - "9090:8080"  # Access at http://localhost:9090
     environment:
       - KAFKA_BROKERS=redpanda:9092
       - KAFKA_SCHEMAREGISTRY_ENABLED=true

@@ -18,7 +18,7 @@ The **Compose** file starts:
 * **Lakekeeper** at [`127.0.0.1:8181`](http://127.0.0.1:8181) and provisions the Lakekeeper warehouse
 * **RisingWave** at [`127.0.0.1:5691`](http://127.0.0.1:5691) (4566 for psql)
 * **MinIO (S3-compatible)** at [`127.0.0.1:9301`](http://127.0.0.1:9301) with Username/Password hummockadmin
-* **Redpanda** at [`127.0.0.1:8080`](http://127.0.0.1:8080)
+* **Redpanda** at [`127.0.0.1:9090`](http://127.0.0.1:9090)
 
 
 ## Step 1: Prepare the Environment
