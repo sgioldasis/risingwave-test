@@ -76,25 +76,25 @@ def create_funnel_chart(df):
         )
     )
 
-    # Add custom annotations for conversion rates on the far left side
+    # Add custom annotations for conversion rates positioned closer to funnel
     fig.add_annotation(
-        x=-20,
+        x=-5,
         y=1,
         text=f"Cart Rate: {cart_rate:.1f}%",
         showarrow=False,
-        font=dict(size=11, color="#333"),
-        bgcolor="rgba(255,255,255,0.95)",
+        font=dict(size=10, color="#333"),
+        bgcolor="rgba(255,255,255,0.9)",
         bordercolor="#ddd",
         borderwidth=1,
     )
 
     fig.add_annotation(
-        x=-20,
+        x=-5,
         y=2,
         text=f"Buy Rate: {buy_rate:.1f}%",
         showarrow=False,
-        font=dict(size=11, color="#333"),
-        bgcolor="rgba(255,255,255,0.95)",
+        font=dict(size=10, color="#333"),
+        bgcolor="rgba(255,255,255,0.9)",
         bordercolor="#ddd",
         borderwidth=1,
     )
@@ -103,12 +103,14 @@ def create_funnel_chart(df):
         title="Conversion Funnel",
         title_x=0.5,
         font=dict(size=14, family="Arial, sans-serif"),
-        height=400,
+        height=500,
         showlegend=False,
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=150, r=50, t=120, b=50),  # Reduced left margin to center funnel
+        margin=dict(
+            l=80, r=80, t=120, b=50
+        ),  # Increased width, reduced left margin, increased right margin
         paper_bgcolor="rgba(0,0,0,0)",
     )
 
@@ -377,9 +379,9 @@ app.layout = dbc.Container(
                         # Charts
                         dbc.Row(
                             [
-                                dbc.Col(dcc.Graph(id="funnel-chart"), width=12, lg=4),
+                                dbc.Col(dcc.Graph(id="funnel-chart"), width=12, lg=6),
                                 dbc.Col(
-                                    dcc.Graph(id="timeseries-chart"), width=12, lg=8
+                                    dcc.Graph(id="timeseries-chart"), width=12, lg=6
                                 ),
                             ],
                             className="mb-4",
