@@ -41,10 +41,10 @@ dbt/                              # dbt project folder
 
 ### Complete Setup Sequence
 
-From the `dbt` folder, run the following commands in order:
+From `dbt` folder, run the following commands in order:
 
 ```bash
-# 1. Start all infrastructure services
+# 1. Start all infrastructure services (includes uv sync for dependencies)
 ./1_up.sh
 
 # 2. Create required Kafka topics
@@ -53,7 +53,7 @@ From the `dbt` folder, run the following commands in order:
 # 3. Run dbt models to create sources and materialized views
 ./3_run_dbt.sh
 
-# 4. Start the dashboard for real-time monitoring
+# 4. Start dashboard for real-time monitoring
 ./4_run_dashboard.sh
 
 # 5. When finished, stop all services and clean up volumes
@@ -76,6 +76,9 @@ This will start:
 
 #### 2. Install Dependencies
 
+Dependencies are now automatically installed when running `./1_up.sh` (which includes `uv sync`). 
+
+If you need to install/update dependencies manually:
 ```bash
 uv sync
 ```

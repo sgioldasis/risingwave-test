@@ -22,5 +22,10 @@ docker compose up -d
 cd "$ORIGINAL_DIR"
 
 echo ""
+echo "Installing Python dependencies with uv..."
+uv sync
+
+echo ""
 echo "✅ Docker Compose services started successfully!"
+echo "✅ Python dependencies installed with uv sync"
 echo "You can now run your dbt models and applications."
