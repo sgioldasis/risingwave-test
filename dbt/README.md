@@ -30,13 +30,35 @@ dbt/                              # dbt project folder
    dbtf system uninstall
    ```
 
-## Setup Instructions
+## Quick Start
 
-### 1. Start Infrastructure
+### Complete Setup Sequence
 
-From the main project folder (`risingwave-test`):
+From the `dbt` folder, run the following commands in order:
+
 ```bash
-docker compose up -d
+# 1. Start all infrastructure services
+./up.sh
+
+# 2. Create required Kafka topics
+./create_topics.sh
+
+# 3. Run dbt models to create sources and materialized views
+./run_dbt.sh
+
+# 4. Start the dashboard for real-time monitoring
+./run_dashboard.sh
+
+# 5. When finished, stop all services and clean up volumes
+./down.sh
+```
+
+### Individual Steps
+
+#### 1. Start Infrastructure
+
+```bash
+./up.sh
 ```
 
 This will start:
@@ -45,36 +67,42 @@ This will start:
 - Redpanda Console (port 8080)
 - Supporting services (PostgreSQL, MinIO, LakeKeeper)
 
-### 2. Install Dependencies
+#### 2. Install Dependencies
 
-From inside the `dbt` folder:
 ```bash
-cd dbt
 uv sync
 ```
 
-### 3. Generate Sample Data
+#### 3. Create Kafka Topics
 
-Start the data producer to simulate real-time e-commerce events:
 ```bash
-python producer.py
+./create_topics.sh
 ```
 
-This script generates:
-- Page view events
-- Cart events  
-- Purchase events
+Creates the required Kafka topics:
+- `page_views`: User page view events
+- `cart_events`: Cart add/remove events  
+- `purchases`: Purchase completion events
 
-### 4. Create dbt Sources
+#### 4. Create dbt Sources
 
-Open a second window. Run the dbt models to create Kafka sources and the funnel view:
 ```bash
-dbt run --profiles-dir .
+./run_dbt.sh
 ```
 
-### 5. View Real-Time Results
+This runs the dbt models to create Kafka sources and the funnel view.
 
-Monitor the conversion funnel in real-time:
+#### 5. Start Dashboard
+
+```bash
+./run_dashboard.sh
+```
+
+Launches a web-based dashboard at http://localhost:8050 to monitor real-time conversion metrics.
+
+#### 6. Monitor Real-Time Results
+
+You can also monitor the conversion funnel directly:
 ```bash
 watch "psql -h localhost -p 4566 -d dev -U root -c 'SELECT * FROM funnel ORDER BY window_start DESC LIMIT 5;'"
 ```
@@ -90,9 +118,19 @@ The `funnel` materialized view provides real-time metrics:
 - **view_to_cart_rate**: Conversion rate from viewing to cart
 - **cart_to_buy_rate**: Conversion rate from cart to purchase
 
+## Available Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `./up.sh` | Start all Docker Compose services |
+| `./create_topics.sh` | Create required Kafka topics |
+| `./run_dbt.sh` | Run dbt models (equivalent to `dbt run --profiles-dir .`) |
+| `./run_dashboard.sh` | Start the real-time dashboard |
+| `./down.sh` | Stop all services and clean up volumes |
+
 ## Kafka Topics
 
-The system creates three Kafka topics:
+The system uses three Kafka topics:
 - `page_views`: User page view events
 - `cart_events`: Cart add/remove events
 - `purchases`: Purchase completion events
@@ -129,7 +167,18 @@ Access the RisingWave UI at: http://localhost:5691 (if available)
 
 ## Stopping the Project
 
-To stop all services:
+To stop all services and clean up volumes:
 ```bash
-docker compose down
+./down.sh
 ```
+
+## Individual Components
+
+### Prerequisites
+
+1. **Development Environment**: Run `devbox shell` from main project folder (`risingwave-test`)
+
+2. **DBT Fusion**: If you have dbt-fusion installed, first uninstall it:
+   ```bash
+   dbtf system uninstall
+   ```
