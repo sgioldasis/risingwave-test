@@ -18,15 +18,15 @@ dbt/                              # dbt project folder
 ├── uv.lock                     # Dependency lock file
 ├── producer.py                   # Data generation script
 ├── dashboard.py                  # Real-time dashboard
-├── up.sh                        # Start infrastructure services
-├── down.sh                      # Stop services and cleanup
-├── create_topics.sh             # Create Kafka topics
-├── run_dbt.sh                   # Run dbt models
-├── run_dashboard.sh             # Start dashboard
+├── 1_up.sh                      # Start infrastructure services
+├── 5_down.sh                    # Stop services and cleanup
+├── 2_create_topics.sh           # Create Kafka topics
+├── 3_run_dbt.sh                 # Run dbt models
+├── 4_run_dashboard.sh           # Start dashboard
 └── README.md                    # This file
 ```
 
-*Note: `logs/` and `target/` directories are generated during runtime and are automatically cleaned up by `down.sh`*
+*Note: `logs/` and `target/` directories are generated during runtime and are automatically cleaned up by `5_down.sh`*
 
 ## Prerequisites
 
@@ -45,19 +45,19 @@ From the `dbt` folder, run the following commands in order:
 
 ```bash
 # 1. Start all infrastructure services
-./up.sh
+./1_up.sh
 
 # 2. Create required Kafka topics
-./create_topics.sh
+./2_create_topics.sh
 
 # 3. Run dbt models to create sources and materialized views
-./run_dbt.sh
+./3_run_dbt.sh
 
 # 4. Start the dashboard for real-time monitoring
-./run_dashboard.sh
+./4_run_dashboard.sh
 
 # 5. When finished, stop all services and clean up volumes
-./down.sh
+./5_down.sh
 ```
 
 ### Individual Steps
@@ -65,7 +65,7 @@ From the `dbt` folder, run the following commands in order:
 #### 1. Start Infrastructure
 
 ```bash
-./up.sh
+./1_up.sh
 ```
 
 This will start:
@@ -83,7 +83,7 @@ uv sync
 #### 3. Create Kafka Topics
 
 ```bash
-./create_topics.sh
+./2_create_topics.sh
 ```
 
 Creates the required Kafka topics:
@@ -94,7 +94,7 @@ Creates the required Kafka topics:
 #### 4. Create dbt Sources
 
 ```bash
-./run_dbt.sh
+./3_run_dbt.sh
 ```
 
 This runs the dbt models to create Kafka sources and the funnel view.
@@ -102,10 +102,12 @@ This runs the dbt models to create Kafka sources and the funnel view.
 #### 5. Start Dashboard
 
 ```bash
-./run_dashboard.sh
+./4_run_dashboard.sh
 ```
 
-Launches a web-based dashboard at http://localhost:8050 to monitor real-time conversion metrics.
+Launches a web-based dashboard at http://localhost:8050 to monitor real-time conversion metrics. 
+
+**Note**: The dashboard includes producer controls in the right panel. Use the "Start Producer" button to begin data generation and "Stop Producer" to pause it. The producer no longer auto-starts to prevent unexpected data generation.
 
 #### 6. Monitor Real-Time Results
 
@@ -113,6 +115,14 @@ You can also monitor the conversion funnel directly:
 ```bash
 watch "psql -h localhost -p 4566 -d dev -U root -c 'SELECT * FROM funnel ORDER BY window_start DESC LIMIT 5;'"
 ```
+
+#### 7. Generate Test Data (Optional)
+
+To generate test data, either:
+- Use the dashboard's producer controls (recommended)
+- Run standalone producer: `python producer.py`
+
+**Note**: The producer will generate events every second and send them to Kafka topics. Stop it when you want to see static conversion metrics.
 
 ## Understanding the Funnel
 
@@ -129,11 +139,11 @@ The `funnel` materialized view provides real-time metrics:
 
 | Script | Purpose |
 |--------|---------|
-| `./up.sh` | Start all Docker Compose services |
-| `./create_topics.sh` | Create required Kafka topics |
-| `./run_dbt.sh` | Run dbt models (equivalent to `dbt run --profiles-dir .`) |
-| `./run_dashboard.sh` | Start the real-time dashboard |
-| `./down.sh` | Stop all services and clean up volumes |
+| `./1_up.sh` | Start all Docker Compose services |
+| `./2_create_topics.sh` | Create required Kafka topics |
+| `./3_run_dbt.sh` | Run dbt models (equivalent to `dbt run --profiles-dir .`) |
+| `./4_run_dashboard.sh` | Start the real-time dashboard |
+| `./5_down.sh` | Stop all services and clean up volumes |
 
 ## Kafka Topics
 
@@ -164,6 +174,20 @@ If dbt fails with Kafka connection errors, ensure:
 1. All containers are running: `docker ps`
 2. The source models use `redpanda:9092` instead of `localhost:9092`
 
+### Producer Auto-Start Issues
+
+**Fixed**: Previously, counts would keep increasing even after stopping the producer because the dashboard would auto-start a new producer process. This has been resolved:
+- Producer now requires manual start via dashboard controls
+- Sources use `scan.startup.mode = 'latest'` to prevent reprocessing historical data
+- Counts will only increase when producer is manually started
+
+### Data Still Increasing After Stopping Producer?
+
+If you notice counts continue rising after stopping the producer:
+1. Check dashboard: Verify producer indicator shows "Stopped"
+2. Restart dashboard: `./4_run_dashboard.sh` to apply the fixed configuration
+3. Verify no other producer processes: `ps aux | grep producer`
+
 ### Redpanda Console
 
 Access the Kafka management UI at: http://localhost:8080
@@ -176,7 +200,7 @@ Access the RisingWave UI at: http://localhost:5691 (if available)
 
 To stop all services and clean up volumes:
 ```bash
-./down.sh
+./5_down.sh
 ```
 
 ## Individual Components

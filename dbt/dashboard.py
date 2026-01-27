@@ -9,10 +9,10 @@ from sqlalchemy import create_engine
 
 
 # Producer state management
-producer_running = True  # Start producer automatically
+producer_running = False  # Start producer manually
 producer_process = None
 producer_output = [
-    f"[{datetime.now().strftime('%H:%M:%S')}] Dashboard initialized - producer will start automatically"
+    f"[{datetime.now().strftime('%H:%M:%S')}] Dashboard initialized - producer must be started manually"
 ]
 
 
@@ -692,21 +692,14 @@ app.index_string = """
 
 
 def start_producer_on_init():
-    """Start the producer when the app initializes"""
+    """Start producer when app initializes - now disabled"""
     global producer_running, producer_output
-    if producer_running:
-        producer_output.append(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Auto-starting producer..."
-        )
-        import threading
-
-        producer_thread = threading.Thread(target=run_producer)
-        producer_thread.daemon = True
-        producer_thread.start()
+    # Producer auto-start disabled - must be started manually via dashboard
+    pass
 
 
-# Start producer automatically when app initializes
-start_producer_on_init()
+# Producer auto-start is disabled - must be started manually via dashboard
+# start_producer_on_init()
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
