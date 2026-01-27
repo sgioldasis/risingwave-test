@@ -32,15 +32,7 @@ dbt/                              # dbt project folder
 
 ## Setup Instructions
 
-### 1. Install Dependencies
-
-From inside the `dbt` folder:
-```bash
-cd dbt
-uv sync
-```
-
-### 2. Start Infrastructure
+### 1. Start Infrastructure
 
 From the main project folder (`risingwave-test`):
 ```bash
@@ -53,15 +45,15 @@ This will start:
 - Redpanda Console (port 8080)
 - Supporting services (PostgreSQL, MinIO, LakeKeeper)
 
-### 3. Create dbt Sources
+### 2. Install Dependencies
 
-Run the dbt models to create Kafka sources and the funnel view:
+From inside the `dbt` folder:
 ```bash
 cd dbt
-dbt run --profiles-dir .
+uv sync
 ```
 
-### 4. Generate Sample Data
+### 3. Generate Sample Data
 
 Start the data producer to simulate real-time e-commerce events:
 ```bash
@@ -72,6 +64,13 @@ This script generates:
 - Page view events
 - Cart events  
 - Purchase events
+
+### 4. Create dbt Sources
+
+Open a second window. Run the dbt models to create Kafka sources and the funnel view:
+```bash
+dbt run --profiles-dir .
+```
 
 ### 5. View Real-Time Results
 

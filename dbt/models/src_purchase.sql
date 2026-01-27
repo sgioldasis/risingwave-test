@@ -7,6 +7,6 @@ CREATE SOURCE {{ this }} (
 ) WITH (
     connector = 'kafka',
     topic = 'purchases',
-    properties.bootstrap.server = 'redpanda:9092,
+    properties.bootstrap.server = 'redpanda:9092',
     scan.startup.mode = 'earliest'
 ) FORMAT PLAIN ENCODE JSON
