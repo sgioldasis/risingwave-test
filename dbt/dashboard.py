@@ -56,7 +56,11 @@ def create_funnel_chart(df):
 
     # Funnel data - stages with proper order (Viewers at top)
     stages = ["Viewers", "Carters", "Purchasers"]
-    values = [latest["viewers"], latest["carters"], latest["purchasers"]]
+    values = [
+        float(latest["viewers"]),
+        float(latest["carters"]),
+        float(latest["purchasers"]),
+    ]
 
     # Calculate conversion rates
     cart_rate = (values[1] / values[0]) * 100 if values[0] > 0 else 0
@@ -65,8 +69,9 @@ def create_funnel_chart(df):
     fig = go.Figure(
         go.Funnel(
             y=stages,
-            x=values,
+            x=values,  # Use full values - text positioning controls display
             textinfo="value+percent initial",
+            textposition="auto",  # Let Plotly automatically position text optimally
             marker=dict(
                 color=["#636EFA", "#00CC96", "#FF6692"],
                 line=dict(width=2, color="white"),
@@ -76,25 +81,30 @@ def create_funnel_chart(df):
         )
     )
 
-    # Add custom annotations for conversion rates positioned closer to funnel
+    # Add custom annotations for conversion rates - positioned further to the left
+    max_val = max(values) if values else 1
+    annotation_x = (
+        max_val * -0.35
+    )  # Position annotation further to the left of the bars
+
     fig.add_annotation(
-        x=-5,
+        x=annotation_x,
         y=1,
         text=f"Cart Rate: {cart_rate:.1f}%",
         showarrow=False,
         font=dict(size=10, color="#333"),
-        bgcolor="rgba(255,255,255,0.9)",
+        bgcolor="rgba(255,255,255,0.95)",
         bordercolor="#ddd",
         borderwidth=1,
     )
 
     fig.add_annotation(
-        x=-5,
+        x=annotation_x,
         y=2,
         text=f"Buy Rate: {buy_rate:.1f}%",
         showarrow=False,
         font=dict(size=10, color="#333"),
-        bgcolor="rgba(255,255,255,0.9)",
+        bgcolor="rgba(255,255,255,0.95)",
         bordercolor="#ddd",
         borderwidth=1,
     )
@@ -109,8 +119,8 @@ def create_funnel_chart(df):
         yaxis=dict(visible=False),
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(
-            l=80, r=80, t=120, b=50
-        ),  # Increased width, reduced left margin, increased right margin
+            l=0, r=0, t=120, b=150
+        ),  # Zero left/right margins to use full width
         paper_bgcolor="rgba(0,0,0,0)",
     )
 
@@ -161,8 +171,8 @@ def create_timeseries_chart(df):
         xaxis_title="Time",
         yaxis_title="Count",
         hovermode="x unified",
-        height=400,
-        legend=dict(x=0.02, y=0.98),
+        height=400,  # Set to 400
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
     return fig
@@ -205,7 +215,7 @@ def create_conversion_rates_chart(df):
         hovermode="x unified",
         height=400,
         yaxis=dict(tickformat=".1%"),
-        legend=dict(x=0.02, y=0.98),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
     return fig
@@ -266,16 +276,18 @@ def create_kpi_cards(df):
         dbc.Card(
             dbc.CardBody(
                 [
-                    html.H4(f"{int(latest['purchasers']):,}", className="card-title"),
-                    html.P("Purchasers", className="card-text"),
+                    html.H4(
+                        f"{int(latest['purchasers']):,}",
+                        className="card-title text-white",
+                    ),
+                    html.P("Purchasers", className="card-text text-white"),
                     html.Small(
                         f"{purchasers_change:+.1f}%",
-                        className=f"text-{'success' if purchasers_change >= 0 else 'danger'}",
+                        className=f"text-{'light' if purchasers_change >= 0 else 'dark'}",
                     ),
                 ]
             ),
             color="success",
-            inverse=True,
         ),
         dbc.Card(
             dbc.CardBody(
@@ -297,17 +309,17 @@ def create_kpi_cards(df):
             dbc.CardBody(
                 [
                     html.H4(
-                        f"{latest['cart_to_buy_rate']:.1%}", className="card-title"
+                        f"{latest['cart_to_buy_rate']:.1%}",
+                        className="card-title text-white",
                     ),
-                    html.P("Cart→Buy Rate", className="card-text"),
+                    html.P("Cart→Buy Rate", className="card-text text-white"),
                     html.Small(
                         f"{buy_rate_change:+.1f}%",
-                        className=f"text-{'success' if buy_rate_change >= 0 else 'danger'}",
+                        className=f"text-{'light' if buy_rate_change >= 0 else 'dark'}",
                     ),
                 ]
             ),
             color="danger",
-            inverse=True,
         ),
     ]
 
@@ -379,9 +391,9 @@ app.layout = dbc.Container(
                         # Charts
                         dbc.Row(
                             [
-                                dbc.Col(dcc.Graph(id="funnel-chart"), width=12, lg=6),
+                                dbc.Col(dcc.Graph(id="funnel-chart"), width=12, lg=4),
                                 dbc.Col(
-                                    dcc.Graph(id="timeseries-chart"), width=12, lg=6
+                                    dcc.Graph(id="timeseries-chart"), width=12, lg=8
                                 ),
                             ],
                             className="mb-4",
