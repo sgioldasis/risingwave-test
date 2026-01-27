@@ -11,15 +11,22 @@ dbt/                              # dbt project folder
 │   ├── src_page.sql            # Page views source
 │   ├── src_purchase.sql        # Purchase events source
 │   └── funnel.sql              # Conversion funnel materialized view
+├── .python-version              # Python version specification
 ├── profiles.yml                  # dbt profile configuration
 ├── dbt_project.yml               # dbt project configuration
-├── producer.py                   # Data generation script
-├── main.py                       # Main script
 ├── pyproject.toml               # Python dependencies
 ├── uv.lock                     # Dependency lock file
-├── .python-version              # Python version specification
-└── README.md                   # This file
+├── producer.py                   # Data generation script
+├── dashboard.py                  # Real-time dashboard
+├── up.sh                        # Start infrastructure services
+├── down.sh                      # Stop services and cleanup
+├── create_topics.sh             # Create Kafka topics
+├── run_dbt.sh                   # Run dbt models
+├── run_dashboard.sh             # Start dashboard
+└── README.md                    # This file
 ```
+
+*Note: `logs/` and `target/` directories are generated during runtime and are automatically cleaned up by `down.sh`*
 
 ## Prerequisites
 
