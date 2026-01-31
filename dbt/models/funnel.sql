@@ -22,6 +22,7 @@ WITH stats AS (
 
 SELECT
     window_start,
+    window_end,
     viewers,
     carters,
     purchasers,

@@ -6,7 +6,28 @@ profile: 'funnel_profile'
 
 model-paths: ["models"]
 target-path: "target"
+macro-paths: ["macros"]
 
 models:
   realtime_funnel:
     +materialized: materialized_view
+    iceberg:
+      +schema: public
+    sinks:
+      +schema: public
+
+vars:
+  # Iceberg configuration
+  iceberg_catalog_uri: 'http://lakekeeper:8181/catalog/'
+  iceberg_warehouse: 'risingwave-warehouse'
+  iceberg_namespace: 'analytics'
+  s3_endpoint: 'http://minio-0:9301'
+  s3_access_key: 'hummockadmin'
+  s3_secret_key: 'hummockadmin'
+  s3_region: 'us-east-1'
+
+# Model execution order:
+# 1. src_*.sql (sources) - Kafka sources
+# 2. funnel.sql (materialized_view) - Funnel aggregation
+# 3. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
+# 4. funnel_to_iceberg_sink.sql (sink) - Sink to Iceberg

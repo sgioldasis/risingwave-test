@@ -22,7 +22,7 @@ max_inflight_time_travel_query = 1000
 periodic_compaction_interval_sec = 60
 vacuum_interval_sec = 30
 vacuum_spin_interval_ms = 100
-hummock_version_checkpoint_interval_sec = 30
+hummock_version_checkpoint_interval_sec = 2
 enable_hummock_data_archive = false
 hummock_time_travel_snapshot_interval = 100
 min_delta_log_num_for_hummock_version_checkpoint = 10
@@ -359,7 +359,7 @@ retryable_service_error_codes = ["SlowDown", "TooManyRequests"]
 use_opendal = true
 
 [system]
-barrier_interval_ms = 1000
+barrier_interval_ms = 250
 checkpoint_frequency = 1
 sstable_size_mb = 256
 parallel_compact_size_mb = 512

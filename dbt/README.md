@@ -10,7 +10,15 @@ dbt/                              # dbt project folder
 │   ├── src_cart.sql            # Cart events source
 │   ├── src_page.sql            # Page views source
 │   ├── src_purchase.sql        # Purchase events source
+│   ├── iceberg_page_views.sql  # Iceberg table for page views
+│   ├── iceberg_cart_events.sql # Iceberg table for cart events
+│   ├── iceberg_purchases.sql   # Iceberg table for purchases
 │   └── funnel.sql              # Conversion funnel materialized view
+├── macros/                       # dbt macros
+│   ├── create_iceberg_connection.sql
+│   └── materializations/
+│       ├── iceberg_table.sql
+│       └── sink.sql
 ├── .python-version              # Python version specification
 ├── profiles.yml                  # dbt profile configuration
 ├── dbt_project.yml               # dbt project configuration
@@ -18,15 +26,17 @@ dbt/                              # dbt project folder
 ├── uv.lock                     # Dependency lock file
 ├── producer.py                   # Data generation script
 ├── dashboard.py                  # Real-time dashboard
+├── query_raw_iceberg.py        # Query Iceberg tables via DuckDB
 ├── 1_up.sh                      # Start infrastructure services
-├── 5_down.sh                    # Stop services and cleanup
 ├── 2_create_topics.sh           # Create Kafka topics
 ├── 3_run_dbt.sh                 # Run dbt models
 ├── 4_run_dashboard.sh           # Start dashboard
+├── 5_query_iceberg.sh           # Query Iceberg tables via DuckDB
+├── 6_down.sh                    # Stop services and cleanup
 └── README.md                    # This file
 ```
 
-*Note: `logs/` and `target/` directories are generated during runtime and are automatically cleaned up by `5_down.sh`*
+*Note: `logs/` and `target/` directories are generated during runtime and are automatically cleaned up by `6_down.sh`*
 
 ## Prerequisites
 
@@ -50,14 +60,17 @@ From `dbt` folder, run the following commands in order:
 # 2. Create required Kafka topics
 ./2_create_topics.sh
 
-# 3. Run dbt models to create sources and materialized views
+# 3. Run dbt models to create sources, materialized views, and Iceberg tables
 ./3_run_dbt.sh
 
 # 4. Start dashboard for real-time monitoring
 ./4_run_dashboard.sh
 
-# 5. When finished, stop all services and clean up volumes
-./5_down.sh
+# 5. Query Iceberg tables via DuckDB (optional)
+./5_query_iceberg.sh
+
+# 6. When finished, stop all services and clean up volumes
+./6_down.sh
 ```
 
 ### Individual Steps
@@ -144,9 +157,30 @@ The `funnel` materialized view provides real-time metrics:
 |--------|---------|
 | `./1_up.sh` | Start all Docker Compose services |
 | `./2_create_topics.sh` | Create required Kafka topics |
-| `./3_run_dbt.sh` | Run dbt models (equivalent to `dbt run --profiles-dir .`) |
+| `./3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
 | `./4_run_dashboard.sh` | Start the real-time dashboard |
-| `./5_down.sh` | Stop all services and clean up volumes |
+| `./5_query_iceberg.sh` | Query Iceberg tables via DuckDB |
+| `./6_down.sh` | Stop all services and clean up volumes |
+
+## Iceberg Integration
+
+The project persists raw events to Apache Iceberg tables for persistent storage and analysis:
+
+### Iceberg Tables
+- `iceberg_page_views`: Raw page view events
+- `iceberg_cart_events`: Raw cart add/remove events
+- `iceberg_purchases`: Raw purchase events
+
+### Querying Iceberg Data
+Use the DuckDB query script to analyze data from Iceberg:
+
+```bash
+./5_query_iceberg.sh              # Show funnel analytics
+./5_query_iceberg.sh --debug      # Show debug info with raw counts
+./5_query_iceberg.sh --live       # Live monitoring mode (refreshes every 5 sec)
+```
+
+The query computes the same funnel metrics (viewers, carters, purchasers) from raw Iceberg events using DuckDB.
 
 ## Kafka Topics
 
@@ -163,11 +197,15 @@ Producer Python Script
 Kafka (Redpanda)
     ↓ (Streaming)
 RisingWave
-    ↓ (SQL)
-dbt Models
-    ↓
-Real-time Conversion Funnel
+    ├──→ (SQL) dbt Models → Real-time Conversion Funnel (Dashboard)
+    └──→ (Sink) Iceberg Tables (Persistent Storage)
+                                              ↓
+                                       DuckDB Queries
 ```
+
+Data flows from the producer through Kafka to RisingWave, where it's processed in two ways:
+1. **Real-time funnel** via dbt models displayed on the dashboard
+2. **Persistent storage** via Iceberg sinks for analysis with DuckDB
 
 ## Troubleshooting
 
@@ -203,7 +241,7 @@ Access the RisingWave UI at: http://localhost:5691 (if available)
 
 To stop all services and clean up volumes:
 ```bash
-./5_down.sh
+./6_down.sh
 ```
 
 ## Individual Components

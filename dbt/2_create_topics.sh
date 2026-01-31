@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to create Redpanda topics using rpk
+# Script to create Redpanda topics and Lakekeeper namespace
 # This script should be run from the parent directory where docker-compose.yml is located
 
 set -e
@@ -8,6 +8,8 @@ set -e
 # Configuration
 REDPANDA_CONTAINER="redpanda"
 TOPICS=("page_views" "cart_events" "purchases")
+LAKEKEEPER_URL="http://localhost:8181"
+NAMESPACE="analytics"
 
 echo "=== Redpanda Topic Creator ==="
 echo "Creating topics using rpk in Redpanda container..."
@@ -44,6 +46,61 @@ verify_topics() {
     docker-compose exec -T "$REDPANDA_CONTAINER" rpk topic list
 }
 
+# Function to create Lakekeeper namespace
+create_lakekeeper_namespace() {
+    echo ""
+    echo "=== Lakekeeper Namespace Setup ==="
+    
+    # Wait for Lakekeeper to be ready
+    echo "Waiting for Lakekeeper to be ready..."
+    local attempts=0
+    while [ $attempts -lt 30 ]; do
+        if curl -s "$LAKEKEEPER_URL/management/v1/warehouse" > /dev/null 2>&1; then
+            break
+        fi
+        attempts=$((attempts + 1))
+        sleep 2
+    done
+    
+    if [ $attempts -eq 30 ]; then
+        echo "⚠️  Lakekeeper is not responding. Skipping namespace creation."
+        echo "   You may need to create the namespace manually later."
+        return 0
+    fi
+    
+    echo "Lakekeeper is ready. Creating namespace..."
+    
+    # Get Warehouse ID
+    local warehouse_id
+    warehouse_id=$(curl -s "$LAKEKEEPER_URL/management/v1/warehouse" | grep -o '"warehouse-id":"[^"]*"' | cut -d'"' -f4)
+    
+    if [ -z "$warehouse_id" ]; then
+        echo "⚠️  Could not retrieve Warehouse ID. Skipping namespace creation."
+        return 0
+    fi
+    
+    echo "Using Warehouse ID: $warehouse_id"
+    
+    # Create namespace
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"namespace\": [\"$NAMESPACE\"]}" \
+        "$LAKEKEEPER_URL/catalog/v1/$warehouse_id/namespaces")
+    
+    case "$http_code" in
+        200|201)
+            echo "✅ Namespace '$NAMESPACE' created successfully"
+            ;;
+        409)
+            echo "✅ Namespace '$NAMESPACE' already exists"
+            ;;
+        *)
+            echo "⚠️  Failed to create namespace (HTTP $http_code)"
+            ;;
+    esac
+}
+
 # Main execution
 main() {
     # Check if docker-compose is available
@@ -69,8 +126,12 @@ main() {
     echo "=== Verification ==="
     verify_topics
     
+    # Create Lakekeeper namespace for Iceberg tables
     echo ""
-    echo "✅ Topic creation completed successfully!"
+    create_lakekeeper_namespace
+    
+    echo ""
+    echo "✅ Topic and namespace creation completed successfully!"
     echo "You can now run your producer and dashboard."
 }
 
