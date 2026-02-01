@@ -161,6 +161,54 @@
         }
       }
     },
+    "ngrok@latest": {
+      "last_modified": "2026-01-23T17:20:52Z",
+      "resolved": "github:NixOS/nixpkgs/a1bab9e494f5f4939442a57a58d0449a109593fe#ngrok",
+      "source": "devbox-search",
+      "version": "3.31.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/raysg8wjkdsbrmwxc71qd602b6fl1f31-ngrok-3.31.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/raysg8wjkdsbrmwxc71qd602b6fl1f31-ngrok-3.31.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/rwk1b8hpzn5njk76i16bgsgcv26l74mj-ngrok-3.31.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/rwk1b8hpzn5njk76i16bgsgcv26l74mj-ngrok-3.31.0"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/ll573myragw5ps0s17awp482p1n81pkb-ngrok-3.31.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/ll573myragw5ps0s17awp482p1n81pkb-ngrok-3.31.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/g9lmb1dpzzrrdi20palzi1f70fkrcprn-ngrok-3.31.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/g9lmb1dpzzrrdi20palzi1f70fkrcprn-ngrok-3.31.0"
+        }
+      }
+    },
     "postgresql@latest": {
       "last_modified": "2025-12-05T15:03:55Z",
       "plugin_version": "0.0.2",

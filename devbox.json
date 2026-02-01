@@ -11,7 +11,8 @@
     "sqlcmd@latest",
     "bat@latest",
     "sqlfluff@latest",
-    "watch@latest"
+    "watch@latest",
+    "ngrok@latest"
   ],
   "shell": {
     "init_hook": [
