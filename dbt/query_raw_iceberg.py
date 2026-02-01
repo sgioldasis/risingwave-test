@@ -121,13 +121,23 @@ def debug_raw_counts(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def query_latest_minute(conn: duckdb.DuckDBPyConnection) -> None:
-    """Show events in the current (incomplete) minute for real-time monitoring."""
-    print_section_header("⏱️  Current Minute (Real-time)")
+    """Show events in the latest minute that has data in Iceberg."""
+    print_section_header("⏱️  Latest Available Minute (from Iceberg)")
     
     try:
-        result = conn.execute("""
+        # Get the latest event time from Iceberg data
+        latest_time = conn.execute("""
+            SELECT MAX(event_time)
+            FROM lakekeeper_catalog.public.iceberg_page_views
+        """).fetchone()[0]
+        
+        if latest_time is None:
+            print("⚠️  No events found in Iceberg tables.")
+            return
+            
+        result = conn.execute(f"""
             SELECT
-                DATE_TRUNC('minute', CURRENT_TIMESTAMP) as "Window Start",
+                DATE_TRUNC('minute', TIMESTAMP '{latest_time}') as "Window Start",
                 COUNT(DISTINCT p.user_id) as "Viewers",
                 COUNT(DISTINCT c.user_id) as "Carters",
                 COUNT(DISTINCT pur.user_id) as "Purchasers",
@@ -135,25 +145,28 @@ def query_latest_minute(conn: duckdb.DuckDBPyConnection) -> None:
             FROM (
                 SELECT user_id, event_time
                 FROM lakekeeper_catalog.public.iceberg_page_views
-                WHERE event_time >= DATE_TRUNC('minute', CURRENT_TIMESTAMP)
+                WHERE event_time >= DATE_TRUNC('minute', TIMESTAMP '{latest_time}')
+                AND event_time < DATE_TRUNC('minute', TIMESTAMP '{latest_time}') + INTERVAL '1 minute'
             ) p
             LEFT JOIN (
                 SELECT user_id, event_time
                 FROM lakekeeper_catalog.public.iceberg_cart_events
-                WHERE event_time >= DATE_TRUNC('minute', CURRENT_TIMESTAMP)
+                WHERE event_time >= DATE_TRUNC('minute', TIMESTAMP '{latest_time}')
+                AND event_time < DATE_TRUNC('minute', TIMESTAMP '{latest_time}') + INTERVAL '1 minute'
             ) c ON p.user_id = c.user_id
             LEFT JOIN (
                 SELECT user_id, event_time
                 FROM lakekeeper_catalog.public.iceberg_purchases
-                WHERE event_time >= DATE_TRUNC('minute', CURRENT_TIMESTAMP)
+                WHERE event_time >= DATE_TRUNC('minute', TIMESTAMP '{latest_time}')
+                AND event_time < DATE_TRUNC('minute', TIMESTAMP '{latest_time}') + INTERVAL '1 minute'
             ) pur ON p.user_id = pur.user_id;
         """).fetchdf()
         
         if result.empty or result["Total Events"].iloc[0] == 0:
-            print("⚠️  No events yet in current minute.")
+            print(f"⚠️  No events in latest minute (latest event: {latest_time}).")
         else:
             print(result.to_string(index=False))
-            print(f"\n🕐 Last updated: {datetime.now().strftime('%H:%M:%S')}")
+            print(f"\n🕐 Latest data from: {latest_time}")
             
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -161,12 +174,23 @@ def query_latest_minute(conn: duckdb.DuckDBPyConnection) -> None:
 
 def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
     """Compute and display funnel analytics from raw events."""
-    print_section_header("🎯 Funnel Analytics (Last 12 Minutes)")
+    print_section_header("🎯 Funnel Analytics (Recent Data Windows)")
     
     try:
+        # Get the latest event time from Iceberg to base our query on
+        latest_time = conn.execute("""
+            SELECT MAX(event_time)
+            FROM lakekeeper_catalog.public.iceberg_page_views
+        """).fetchone()[0]
+        
+        if latest_time is None:
+            print("⚠️  No events found in Iceberg tables.")
+            print("   Make sure events are being produced and written to Iceberg.")
+            return
+        
         # Compute funnel using tumbling windows like RisingWave
-        # Include current incomplete minute for real-time monitoring
-        result = conn.execute("""
+        # Query last 30 minutes from the latest available data to show ~5 recent windows
+        result = conn.execute(f"""
             WITH page_windows AS (
                 -- Create 1-minute tumbling windows like RisingWave TUMBLE()
                 SELECT
@@ -174,7 +198,7 @@ def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
                     DATE_TRUNC('minute', event_time) + INTERVAL '1 minute' as window_end,
                     user_id
                 FROM lakekeeper_catalog.public.iceberg_page_views
-                WHERE event_time >= CURRENT_TIMESTAMP - INTERVAL '12 minutes'
+                WHERE event_time >= TIMESTAMP '{latest_time}' - INTERVAL '30 minutes'
             ),
             cart_events AS (
                 -- Raw cart events with their exact timestamps
@@ -182,7 +206,7 @@ def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
                     event_time,
                     user_id
                 FROM lakekeeper_catalog.public.iceberg_cart_events
-                WHERE event_time >= CURRENT_TIMESTAMP - INTERVAL '12 minutes'
+                WHERE event_time >= TIMESTAMP '{latest_time}' - INTERVAL '30 minutes'
             ),
             purchase_events AS (
                 -- Raw purchase events with their exact timestamps
@@ -190,7 +214,7 @@ def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
                     event_time,
                     user_id
                 FROM lakekeeper_catalog.public.iceberg_purchases
-                WHERE event_time >= CURRENT_TIMESTAMP - INTERVAL '12 minutes'
+                WHERE event_time >= TIMESTAMP '{latest_time}' - INTERVAL '30 minutes'
             ),
             funnel AS (
                 -- Match RisingWave's join logic: cart/purchase events between window_start and window_end
@@ -227,6 +251,7 @@ def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
             print("⚠️  No funnel data available yet.")
             print("   Make sure events are being produced and written to Iceberg.")
         else:
+            print(f"\n   Data through: {latest_time}")
             print("\n" + result.to_string(index=False))
             
     except Exception as e:
@@ -299,7 +324,6 @@ Examples:
         else:
             if args.debug:
                 debug_raw_counts(conn)
-            query_latest_minute(conn)
             query_funnel(conn)
         
         print("\n" + "=" * 80)

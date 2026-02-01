@@ -19,18 +19,29 @@ dbt/                              # dbt project folder
 │   └── materializations/
 │       ├── iceberg_table.sql
 │       └── sink.sql
+├── modern-dashboard/            # Modern React dashboard
+│   ├── backend/
+│   │   └── api.py              # FastAPI backend
+│   └── frontend/
+│       ├── src/
+│       │   ├── components/
+│       │   │   ├── PureCSSFunnel.jsx
+│       │   │   └── ThreeDFunnel.jsx
+│       │   └── App.jsx
+│       └── package.json
 ├── .python-version              # Python version specification
 ├── profiles.yml                  # dbt profile configuration
 ├── dbt_project.yml               # dbt project configuration
 ├── pyproject.toml               # Python dependencies
 ├── uv.lock                     # Dependency lock file
 ├── producer.py                   # Data generation script
-├── dashboard.py                  # Real-time dashboard
+├── dashboard.py                  # Real-time dashboard (legacy)
 ├── query_raw_iceberg.py        # Query Iceberg tables via DuckDB
 ├── 1_up.sh                      # Start infrastructure services
 ├── 2_create_topics.sh           # Create Kafka topics
 ├── 3_run_dbt.sh                 # Run dbt models
-├── 4_run_dashboard.sh           # Start dashboard
+├── 4_run_dashboard.sh           # Start legacy dashboard
+├── 4_run_modern.sh             # Start modern React dashboard
 ├── 5_query_iceberg.sh           # Query Iceberg tables via DuckDB
 ├── 6_down.sh                    # Stop services and cleanup
 └── README.md                    # This file
@@ -63,8 +74,10 @@ From `dbt` folder, run the following commands in order:
 # 3. Run dbt models to create sources, materialized views, and Iceberg tables
 ./3_run_dbt.sh
 
-# 4. Start dashboard for real-time monitoring
-./4_run_dashboard.sh
+# 4. Start dashboard for real-time monitoring (choose one)
+./4_run_dashboard.sh      # Legacy dashboard (port 8050)
+# OR
+./4_run_modern.sh         # Modern React dashboard (port 3000)
 
 # 5. Query Iceberg tables via DuckDB (optional)
 ./5_query_iceberg.sh
@@ -158,9 +171,45 @@ The `funnel` materialized view provides real-time metrics:
 | `./1_up.sh` | Start all Docker Compose services |
 | `./2_create_topics.sh` | Create required Kafka topics |
 | `./3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
-| `./4_run_dashboard.sh` | Start the real-time dashboard |
+| `./4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
+| `./4_run_modern.sh` | Start the modern React dashboard (port 3000) |
 | `./5_query_iceberg.sh` | Query Iceberg tables via DuckDB |
 | `./6_down.sh` | Stop all services and clean up volumes |
+
+## Modern Dashboard (React)
+
+The modern dashboard is a React-based frontend with a FastAPI backend that provides an enhanced visualization of the conversion funnel.
+
+### Prerequisites
+
+Frontend dependencies are automatically installed when you run `./1_up.sh` (if `node_modules` doesn't exist). If you need to install them manually:
+
+```bash
+cd modern-dashboard/frontend
+npm install
+cd ../..
+```
+
+### Running the Modern Dashboard
+
+From the `dbt` folder, run:
+
+```bash
+./4_run_modern.sh
+```
+
+This will start:
+- **Backend**: FastAPI server at http://localhost:8000
+- **Frontend**: React dev server at http://localhost:3000
+
+### Dashboard Features
+
+- **Real-time Funnel Visualization**: Animated funnel showing viewers → carters → purchasers
+- **Conversion Metrics**: Live view-to-cart and cart-to-purchase rates
+- **3D Funnel View**: Interactive 3D funnel visualization
+- **Dark Theme**: Modern dark UI with RisingWave branding
+
+**Note**: The modern dashboard requires the infrastructure to be running (`./1_up.sh` and `./3_run_dbt.sh` should be executed first).
 
 ## Iceberg Integration
 
