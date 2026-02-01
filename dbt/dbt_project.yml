@@ -11,10 +11,7 @@ macro-paths: ["macros"]
 models:
   realtime_funnel:
     +materialized: materialized_view
-    iceberg:
-      +schema: public
-    sinks:
-      +schema: public
+    +schema: public
 
 vars:
   # Iceberg configuration

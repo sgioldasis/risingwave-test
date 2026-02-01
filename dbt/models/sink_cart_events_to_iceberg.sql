@@ -6,9 +6,11 @@
 
 {{ config(
     materialized='sink',
-    schema='public'
+    schema='public',
+    tags=['iceberg']
 ) }}
 
+-- This sink depends on: {{ ref('iceberg_cart_events') }}
 CREATE SINK IF NOT EXISTS iceberg_cart_events_sink
 INTO iceberg_cart_events
 FROM {{ ref('src_cart') }}

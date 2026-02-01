@@ -1,0 +1,19 @@
+# Dagster instance configuration
+
+# Use synchronous run coordinator for local development
+# This avoids the need for the dagster-daemon to be running
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: DefaultRunCoordinator
+
+# Local SQLite storage for runs and events
+storage:
+  sqlite:
+    base_dir: ./dagster_storage
+
+# Local compute logs
+compute_logs:
+  module: dagster.core.storage.local_compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: ./dagster_storage/logs

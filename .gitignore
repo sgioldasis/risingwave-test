@@ -56,3 +56,10 @@ yarn-debug.log*
 yarn-error.log*
 profiles.yml
 .dbt/
+
+# Dagster
+dagster_storage/
+
+# Telemetry and NUX data
+.telemetry/
+.nux/
