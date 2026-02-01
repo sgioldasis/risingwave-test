@@ -234,8 +234,8 @@ const App = () => {
 
                         {/* Main Charts Row */}
                         <div className="col-8 glass-card" style={{ perspective: '1000px' }}>
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="m-0 text-xl font-semibold">User Activity Flow</h3>
+                            <div className="flex justify-between items-center mb-3">
+                                <h3 className="m-0 text-base font-semibold">User Activity Flow</h3>
                                 <div className="flex gap-2">
                                     <span className="refresh-badge"><Activity size={12} /> {lastEventTime ? `Last event: ${lastEventTime.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}, ${lastEventTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}` : 'No events'}</span>
                                 </div>
@@ -295,19 +295,19 @@ const App = () => {
                         </div>
 
                         <div className="col-4 glass-card">
-                            <h3 className="m-0 text-xl font-semibold mb-6">Conversion Funnel</h3>
+                            <h3 className="m-0 text-base font-semibold mb-3">Conversion Funnel</h3>
                             {hasWebGL ? (
                                 <React.Suspense fallback={<div className="h-[450px] flex items-center justify-center opacity-50">Loading 3D Engine...</div>}>
                                     <ThreeDFunnel data={funnelData} />
                                 </React.Suspense>
                             ) : (
-                                <div className="h-[450px]">
+                                <div className="h-[200px]">
                                     <PureCSSFunnel data={funnelData} />
                                 </div>
                             )}
-                            <div className="mt-8 pt-8 border-t border-white/10">
-                                <div className="flex justify-between items-center mb-4">
-                                    <h3 className="m-0 text-xl font-semibold">Viewers to Purchasers conversion</h3>
+                            <div className="mt-4 pt-4 border-t border-white/10">
+                                <div className="flex justify-between items-center mb-2">
+                                    <h3 className="m-0 text-sm font-semibold">Viewers to Purchasers</h3>
                                     <span className="text-xl font-semibold gradient-text">
                                         {(latest.purchasers / latest.viewers * 100).toFixed(2)}%
                                     </span>
@@ -326,10 +326,10 @@ const App = () => {
 
                         {/* Bottom Row */}
                         <div className="col-12 glass-card" style={{ perspective: '1000px' }}>
-                            <div className="flex justify-between items-start mb-6">
+                            <div className="flex justify-between items-start mb-3">
                                 <div>
-                                    <h3 className="m-0 text-xl font-semibold">Conversion Rate Trends</h3>
-                                    <p className="mt-2 text-sm opacity-50">Track how users progress through the funnel over time</p>
+                                    <h3 className="m-0 text-base font-semibold">Conversion Rate Trends</h3>
+                                    <p className="mt-1 text-xs opacity-50">Track how users progress through the funnel over time</p>
                                 </div>
                                 <div className="flex gap-6">
                                     <div className="flex items-center gap-2">
@@ -494,24 +494,24 @@ const KPICard = ({ label, value, change, icon, gradient }) => (
     <motion.div
         className="col-3 glass-card"
         whileHover={{
-            y: -8,
-            rotateY: 5,
-            rotateX: 5,
-            boxShadow: '0 20px 40px rgba(0,0,0,0.5), 0 0 20px rgba(99, 110, 250, 0.2)'
+            y: -4,
+            rotateY: 3,
+            rotateX: 3,
+            boxShadow: '0 12px 30px rgba(0,0,0,0.5), 0 0 15px rgba(99, 110, 250, 0.2)'
         }}
         transition={{ type: 'spring', stiffness: 300 }}
     >
-        <div className="flex justify-between items-start mb-2">
-            <div className={`p-2 rounded-xl bg-white/5`}>
-                {icon}
+        <div className="flex justify-between items-start mb-1">
+            <div className={`p-1.5 rounded-lg bg-white/5`}>
+                {React.cloneElement(icon, { size: 16 })}
             </div>
             <div className={`trend ${change >= 0 ? 'trend-up' : 'trend-down'}`}>
-                {change >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                {change >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
                 {Math.abs(change).toFixed(1)}%
             </div>
         </div>
-        <div className="kpi-label mb-2">{label} </div>
-        <div className="kpi-value mt-2">
+        <div className="kpi-label">{label} </div>
+        <div className="kpi-value">
             <AnimatePresence mode="wait">
                 <motion.span
                     key={value}

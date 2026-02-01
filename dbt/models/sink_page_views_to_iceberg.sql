@@ -14,6 +14,6 @@ INTO iceberg_page_views
 FROM {{ ref('src_page') }}
 WITH (
     type = 'append-only',
-    commit_checkpoint_interval = 1,
-    sink_decouple = false
+    commit_checkpoint_interval = 10,
+    sink_decouple = true
 )

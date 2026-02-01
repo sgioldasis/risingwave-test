@@ -5,36 +5,64 @@
 
 set -e
 
-echo "=== Stopping Dashboard ==="
+echo "=== Stopping Modern Dashboard ==="
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Kill dashboard process if running
-if [ -f "$SCRIPT_DIR/.dashboard.pid" ]; then
-    DASHBOARD_PID=$(cat "$SCRIPT_DIR/.dashboard.pid")
-    if ps -p "$DASHBOARD_PID" > /dev/null 2>&1; then
-        echo "Stopping dashboard (PID: $DASHBOARD_PID)..."
-        kill "$DASHBOARD_PID" 2>/dev/null || true
+# Kill backend process if running
+if [ -f "$SCRIPT_DIR/.backend.pid" ]; then
+    BACKEND_PID=$(cat "$SCRIPT_DIR/.backend.pid")
+    if ps -p "$BACKEND_PID" > /dev/null 2>&1; then
+        echo "Stopping backend (PID: $BACKEND_PID)..."
+        kill "$BACKEND_PID" 2>/dev/null || true
         sleep 1
         # Force kill if still running
-        if ps -p "$DASHBOARD_PID" > /dev/null 2>&1; then
-            kill -9 "$DASHBOARD_PID" 2>/dev/null || true
+        if ps -p "$BACKEND_PID" > /dev/null 2>&1; then
+            kill -9 "$BACKEND_PID" 2>/dev/null || true
         fi
-        echo "✅ Dashboard stopped"
+        echo "✅ Backend stopped"
     else
-        echo "Dashboard process not found (already stopped)"
+        echo "Backend process not found (already stopped)"
     fi
-    rm -f "$SCRIPT_DIR/.dashboard.pid"
+    rm -f "$SCRIPT_DIR/.backend.pid"
 else
-    # Try to find and kill dashboard process by name
-    if pgrep -f "python dashboard.py" > /dev/null 2>&1; then
-        echo "Stopping dashboard process..."
-        pkill -f "python dashboard.py" 2>/dev/null || true
+    # Try to find and kill backend process by name
+    if pgrep -f "modern-dashboard/backend/api.py" > /dev/null 2>&1; then
+        echo "Stopping backend process..."
+        pkill -f "modern-dashboard/backend/api.py" 2>/dev/null || true
         sleep 1
-        echo "✅ Dashboard stopped"
+        echo "✅ Backend stopped"
     else
-        echo "No dashboard process found"
+        echo "No backend process found"
+    fi
+fi
+
+# Kill frontend process if running
+if [ -f "$SCRIPT_DIR/.frontend.pid" ]; then
+    FRONTEND_PID=$(cat "$SCRIPT_DIR/.frontend.pid")
+    if ps -p "$FRONTEND_PID" > /dev/null 2>&1; then
+        echo "Stopping frontend (PID: $FRONTEND_PID)..."
+        kill "$FRONTEND_PID" 2>/dev/null || true
+        sleep 1
+        # Force kill if still running
+        if ps -p "$FRONTEND_PID" > /dev/null 2>&1; then
+            kill -9 "$FRONTEND_PID" 2>/dev/null || true
+        fi
+        echo "✅ Frontend stopped"
+    else
+        echo "Frontend process not found (already stopped)"
+    fi
+    rm -f "$SCRIPT_DIR/.frontend.pid"
+else
+    # Try to find and kill frontend process by name
+    if pgrep -f "vite" > /dev/null 2>&1; then
+        echo "Stopping frontend process..."
+        pkill -f "vite" 2>/dev/null || true
+        sleep 1
+        echo "✅ Frontend stopped"
+    else
+        echo "No frontend process found"
     fi
 fi
 
@@ -73,6 +101,22 @@ if [ -d "logs" ]; then
     echo "✅ logs/ directory removed"
 else
     echo "logs/ directory does not exist, skipping..."
+fi
+
+echo ""
+echo "=== Cleaning up log files ==="
+
+# Remove log files if they exist
+if [ -f "$SCRIPT_DIR/backend.log" ]; then
+    echo "Removing backend.log..."
+    rm -f "$SCRIPT_DIR/backend.log"
+    echo "✅ backend.log removed"
+fi
+
+if [ -f "$SCRIPT_DIR/frontend.log" ]; then
+    echo "Removing frontend.log..."
+    rm -f "$SCRIPT_DIR/frontend.log"
+    echo "✅ frontend.log removed"
 fi
 
 echo ""

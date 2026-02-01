@@ -235,16 +235,18 @@ def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
                     AND pur.event_time <= p.window_end
                 GROUP BY p.window_start
             )
-            SELECT
-                window_start as "Time",
-                viewers as "Viewers",
-                carters as "Carters",
-                purchasers as "Purchasers",
-                ROUND(CASE WHEN viewers > 0 THEN carters::DECIMAL / viewers * 100 ELSE 0 END, 1) as "V→C %",
-                ROUND(CASE WHEN carters > 0 THEN purchasers::DECIMAL / carters * 100 ELSE 0 END, 1) as "C→B %"
-            FROM funnel
-            ORDER BY window_start ASC
-            LIMIT 10;
+            SELECT * FROM (
+                SELECT
+                    window_start as "Time",
+                    viewers as "Viewers",
+                    carters as "Carters",
+                    purchasers as "Purchasers",
+                    ROUND(CASE WHEN viewers > 0 THEN carters::DECIMAL / viewers * 100 ELSE 0 END, 1) as "V→C %",
+                    ROUND(CASE WHEN carters > 0 THEN purchasers::DECIMAL / carters * 100 ELSE 0 END, 1) as "C→B %"
+                FROM funnel
+                ORDER BY window_start DESC
+                LIMIT 10
+            ) ORDER BY "Time" ASC;
         """).fetchdf()
         
         if result.empty:
