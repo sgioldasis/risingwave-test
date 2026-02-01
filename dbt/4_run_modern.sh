@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Kill any existing processes on these ports
 fuser -k 8000/tcp 2>/dev/null
-fuser -k 3000/tcp 2>/dev/null
+fuser -k 4000/tcp 2>/dev/null
 
 # Start the Backend
 echo "Starting FastAPI Backend..."
@@ -19,7 +19,7 @@ FRONTEND_PID=$!
 echo $FRONTEND_PID > "$SCRIPT_DIR/.frontend.pid"
 
 echo ""
-echo "✅ Dashboard running at http://localhost:3000"
+echo "✅ Dashboard running at http://localhost:4000"
 echo "✅ API running at http://localhost:8000"
 echo ""
 echo "Backend PID: $BACKEND_PID (saved to .backend.pid)"

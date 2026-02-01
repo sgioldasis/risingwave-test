@@ -77,7 +77,7 @@ From `dbt` folder, run the following commands in order:
 # 4. Start dashboard for real-time monitoring (choose one)
 ./4_run_dashboard.sh      # Legacy dashboard (port 8050)
 # OR
-./4_run_modern.sh         # Modern React dashboard (port 3000)
+./4_run_modern.sh         # Modern React dashboard (port 4000)
 
 # 5. Query Iceberg tables via DuckDB (optional)
 ./5_query_iceberg.sh
@@ -172,7 +172,7 @@ The `funnel` materialized view provides real-time metrics:
 | `./2_create_topics.sh` | Create required Kafka topics |
 | `./3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
 | `./4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
-| `./4_run_modern.sh` | Start the modern React dashboard (port 3000) |
+| `./4_run_modern.sh` | Start the modern React dashboard (port 4000) |
 | `./5_query_iceberg.sh` | Query Iceberg tables via DuckDB |
 | `./6_down.sh` | Stop all services and clean up volumes |
 
@@ -200,7 +200,7 @@ From the `dbt` folder, run:
 
 This will start:
 - **Backend**: FastAPI server at http://localhost:8000
-- **Frontend**: React dev server at http://localhost:3000
+- **Frontend**: React dev server at http://localhost:4000
 
 ### Dashboard Features
 
