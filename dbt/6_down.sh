@@ -103,6 +103,15 @@ else
     echo "logs/ directory does not exist, skipping..."
 fi
 
+# Remove marimo cache directory if it exists
+if [ -d "__marimo__" ]; then
+    echo "Removing __marimo__/ directory..."
+    rm -rf __marimo__
+    echo "✅ __marimo__/ directory removed"
+else
+    echo "__marimo__/ directory does not exist, skipping..."
+fi
+
 echo ""
 echo "=== Cleaning up log files ==="
 
@@ -122,5 +131,5 @@ fi
 echo ""
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
-echo "✅ Local directories (target/, logs/) cleaned up"
+echo "✅ Local directories (target/, logs/, __marimo__/) cleaned up"
 echo "All services have been terminated and persistent data removed."

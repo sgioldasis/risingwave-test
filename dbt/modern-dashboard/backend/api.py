@@ -24,14 +24,14 @@ engine = create_engine(DATABASE_URL)
 def get_funnel_data():
     try:
         query = """
-            SELECT 
+            SELECT
                 window_start,
                 viewers,
                 carters,
                 purchasers,
                 view_to_cart_rate,
                 cart_to_buy_rate
-            FROM funnel
+            FROM public.funnel
             ORDER BY window_start DESC
             LIMIT 100
         """
@@ -41,19 +41,24 @@ def get_funnel_data():
         # Convert to JSON-friendly format
         return df.to_dict(orient="records")
     except Exception as e:
-        return {"error": str(e)}
+        # Return empty data with a flag indicating no data available
+        return {
+            "error": str(e),
+            "data": [],
+            "message": "No funnel data available. Please run dbt to create the funnel materialized view."
+        }
 
 @app.get("/api/stats")
 def get_stats():
     try:
         query = """
-            SELECT 
+            SELECT
                 viewers,
                 carters,
                 purchasers,
                 view_to_cart_rate,
                 cart_to_buy_rate
-            FROM funnel
+            FROM public.funnel
             ORDER BY window_start DESC
             LIMIT 2
         """
@@ -61,7 +66,10 @@ def get_stats():
             df = pd.read_sql(text(query), connection)
         
         if len(df) < 1:
-            return {}
+            return {
+                "latest": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
+                "changes": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0}
+            }
 
         latest = df.iloc[0].to_dict()
         previous = df.iloc[1].to_dict() if len(df) > 1 else latest
@@ -81,7 +89,13 @@ def get_stats():
             }
         }
     except Exception as e:
-        return {"error": str(e)}
+        # Return default values when table doesn't exist
+        return {
+            "latest": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
+            "changes": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
+            "error": str(e),
+            "message": "No funnel data available. Please run dbt to create the funnel materialized view."
+        }
 
 import threading
 import time

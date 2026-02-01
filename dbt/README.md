@@ -37,12 +37,15 @@ dbt/                              # dbt project folder
 ├── producer.py                   # Data generation script
 ├── dashboard.py                  # Real-time dashboard (legacy)
 ├── query_raw_iceberg.py        # Query Iceberg tables via DuckDB
+├── user_activity_flow.py       # Marimo notebook for Iceberg analysis
 ├── 1_up.sh                      # Start infrastructure services
 ├── 2_create_topics.sh           # Create Kafka topics
 ├── 3_run_dbt.sh                 # Run dbt models
+├── 3_run_dagster.sh             # Run dbt models with Dagster
 ├── 4_run_dashboard.sh           # Start legacy dashboard
 ├── 4_run_modern.sh             # Start modern React dashboard
 ├── 5_query_iceberg.sh           # Query Iceberg tables via DuckDB
+├── 5_iceberg_notebook.sh        # Run Marimo notebook for Iceberg
 ├── 6_down.sh                    # Stop services and cleanup
 └── README.md                    # This file
 ```
@@ -73,18 +76,30 @@ From `dbt` folder, run the following commands in order:
 
 # 3. Run dbt models to create sources, materialized views, and Iceberg tables
 ./3_run_dbt.sh
+# OR use Dagster for orchestrated dbt runs
+./3_run_dagster.sh
 
 # 4. Start dashboard for real-time monitoring (choose one)
 ./4_run_dashboard.sh      # Legacy dashboard (port 8050)
 # OR
 ./4_run_modern.sh         # Modern React dashboard (port 4000)
 
-# 5. Query Iceberg tables via DuckDB (optional)
-./5_query_iceberg.sh
+# 5. Query Iceberg tables (optional)
+./5_query_iceberg.sh      # Query via DuckDB CLI
+./5_iceberg_notebook.sh   # Interactive Marimo notebook
 
 # 6. When finished, stop all services and clean up volumes
 ./6_down.sh
 ```
+
+### Prerequisites
+
+1. **Development Environment**: Run `devbox shell` from main project folder (`risingwave-test`)
+
+2. **DBT Fusion**: If you have dbt-fusion installed, first uninstall it:
+   ```bash
+   dbtf system uninstall
+   ```
 
 ### Individual Steps
 
@@ -171,9 +186,11 @@ The `funnel` materialized view provides real-time metrics:
 | `./1_up.sh` | Start all Docker Compose services |
 | `./2_create_topics.sh` | Create required Kafka topics |
 | `./3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
+| `./3_run_dagster.sh` | Run dbt models with Dagster orchestration |
 | `./4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
 | `./4_run_modern.sh` | Start the modern React dashboard (port 4000) |
 | `./5_query_iceberg.sh` | Query Iceberg tables via DuckDB |
+| `./5_iceberg_notebook.sh` | Run interactive Marimo notebook for Iceberg analysis |
 | `./6_down.sh` | Stop all services and clean up volumes |
 
 ## Modern Dashboard (React)
@@ -211,6 +228,53 @@ This will start:
 
 **Note**: The modern dashboard requires the infrastructure to be running (`./1_up.sh` and `./3_run_dbt.sh` should be executed first).
 
+## Dagster Orchestration
+
+The project includes Dagster for orchestrating dbt runs with a modern data pipeline approach.
+
+### Running with Dagster
+
+Instead of running dbt directly, you can use Dagster for enhanced observability and scheduling:
+
+```bash
+./3_run_dagster.sh
+```
+
+This will:
+- Start the Dagster webserver
+- Load the dbt project as a Dagster repository
+- Provide a UI for monitoring dbt runs at http://localhost:3000
+
+### Dagster Benefits
+
+- **Observability**: Visual pipeline execution and lineage
+- **Scheduling**: Set up recurring dbt runs
+- **Asset Catalog**: Track dbt models as data assets
+- **Partitioning**: Support for partitioned backfills
+
+## Marimo Notebook
+
+An interactive Marimo notebook is available for analyzing Iceberg table data with rich visualizations.
+
+### Running the Notebook
+
+```bash
+./5_iceberg_notebook.sh
+```
+
+This starts the Marimo notebook server in edit mode, allowing you to interactively explore:
+- User activity flow through the conversion funnel
+- Sankey diagrams showing user progression
+- Time-series analysis of events
+- Detailed breakdown tables with conversion metrics
+
+### Notebook Features
+
+- **PyIceberg Integration**: Direct queries to Iceberg tables via Lakekeeper catalog
+- **Interactive Visualizations**: Plotly charts for funnel analysis
+- **Live Data**: Real-time connection to RisingWave-persisted Iceberg data
+- **Reproducible**: Self-contained notebook with all dependencies
+
 ## Iceberg Integration
 
 The project persists raw events to Apache Iceberg tables for persistent storage and analysis:
@@ -247,14 +311,17 @@ Kafka (Redpanda)
     ↓ (Streaming)
 RisingWave
     ├──→ (SQL) dbt Models → Real-time Conversion Funnel (Dashboard)
+    │                      (via dbt or Dagster orchestration)
     └──→ (Sink) Iceberg Tables (Persistent Storage)
                                               ↓
-                                       DuckDB Queries
+                                        DuckDB Queries
+                                        Marimo Notebook
 ```
 
-Data flows from the producer through Kafka to RisingWave, where it's processed in two ways:
-1. **Real-time funnel** via dbt models displayed on the dashboard
+Data flows from the producer through Kafka to RisingWave, where it's processed in multiple ways:
+1. **Real-time funnel** via dbt models displayed on the dashboard (using direct dbt or Dagster orchestration)
 2. **Persistent storage** via Iceberg sinks for analysis with DuckDB
+3. **Interactive analysis** via the Marimo notebook with PyIceberg
 
 ## Troubleshooting
 
@@ -292,14 +359,3 @@ To stop all services and clean up volumes:
 ```bash
 ./6_down.sh
 ```
-
-## Individual Components
-
-### Prerequisites
-
-1. **Development Environment**: Run `devbox shell` from main project folder (`risingwave-test`)
-
-2. **DBT Fusion**: If you have dbt-fusion installed, first uninstall it:
-   ```bash
-   dbtf system uninstall
-   ```
