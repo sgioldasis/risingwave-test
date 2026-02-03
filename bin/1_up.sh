@@ -1,25 +1,16 @@
 #!/bin/bash
 
 # Script to start Docker Compose services
-# This script should be run from the dbt folder
+# This script should be run from the project root
 
 set -e
 
 echo "=== Starting Docker Compose Services ==="
-echo "Changing to parent directory to run docker compose up -d"
+echo "Running docker compose up -d from project root"
 echo ""
 
-# Save current directory
-ORIGINAL_DIR=$(pwd)
-
-# Change to parent directory
-cd ..
-
-echo "Running: docker compose up -d"
+# Run from project root (where docker-compose.yml is located)
 docker compose up -d
-
-# Change back to original directory
-cd "$ORIGINAL_DIR"
 
 echo ""
 echo "Installing Python dependencies with uv..."

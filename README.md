@@ -1,358 +1,373 @@
-# Complete Guide: Redpanda -> RisingWave -> Iceberg Streaming Pipeline
+# Real-Time E-Commerce Conversion Funnel
 
-This guide provides a complete, step-by-step process to build a real-time data pipeline that ingests events from a Redpanda topic, processes them in RisingWave, and writes the results to an Apache Iceberg table managed by Lakekeeper.
+This project demonstrates a real-time e-commerce conversion funnel using RisingWave, dbt, and Apache Kafka (Redpanda). It tracks user behavior through page views, cart events, and purchases to calculate conversion rates in real-time.
+
+## Project Structure
+
+```
+dbt/                              # dbt project folder
+├── models/                        # dbt models
+│   ├── src_cart.sql            # Cart events source
+│   ├── src_page.sql            # Page views source
+│   ├── src_purchase.sql        # Purchase events source
+│   ├── iceberg_page_views.sql  # Iceberg table for page views
+│   ├── iceberg_cart_events.sql # Iceberg table for cart events
+│   ├── iceberg_purchases.sql   # Iceberg table for purchases
+│   └── funnel.sql              # Conversion funnel materialized view
+├── macros/                       # dbt macros
+│   ├── create_iceberg_connection.sql
+│   └── materializations/
+│       ├── iceberg_table.sql
+│       └── sink.sql
+└── ...
+
+```
+
+Modern Dashboard Structure (in root folder):
+
+```
+modern-dashboard/                # Modern React dashboard
+│   ├── backend/
+│   │   └── api.py              # FastAPI backend
+│   └── frontend/
+│       ├── src/
+│       │   ├── components/
+│       │   │   ├── PureCSSFunnel.jsx
+│       │   │   └── ThreeDFunnel.jsx
+│       │   └── App.jsx
+│       └── package.json
+├── .python-version              # Python version specification
+├── profiles.yml                  # dbt profile configuration
+├── dbt_project.yml               # dbt project configuration
+└── README.md                    # This file
+
+**Note:** Python dependencies are now managed in the root `pyproject.toml`
+```
+
+**Python scripts are located in the `scripts/` folder:**
+- `scripts/producer.py` - Data generation script
+- `scripts/dashboard.py` - Real-time dashboard (legacy)
+- `scripts/query_raw_iceberg.py` - Query Iceberg tables via DuckDB
+- `scripts/user_activity_flow.py` - Marimo notebook for Iceberg analysis
+
+**Scripts are now located in the `bin/` folder:**
+- `bin/1_up.sh` - Start infrastructure services
+- `bin/2_create_topics.sh` - Create Kafka topics
+- `bin/3_run_dbt.sh` - Run dbt models
+- `bin/3_run_dagster.sh` - Run dbt models with Dagster
+- `bin/4_run_dashboard.sh` - Start legacy dashboard
+- `bin/4_run_modern.sh` - Start modern React dashboard
+- `bin/5_query_iceberg.sh` - Query Iceberg tables via DuckDB
+- `bin/5_iceberg_notebook.sh` - Run Marimo notebook for Iceberg
+- `bin/6_down.sh` - Stop services and cleanup
+```
+
+*Note: `logs/` and `target/` directories are generated during runtime and are automatically cleaned up by `6_down.sh`*
 
 ## Prerequisites
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/): Docker Compose is included with Docker Desktop for Windows and macOS. Ensure Docker Desktop is running if you're using it.
-- [Devbox](https://www.jetify.com/devbox): Install via curl -fsSL https://get.jetify.com/devbox
 
-## How to run the demo
-Before you begin, ensure your docker-compose.yml stack is up and running with all services (RisingWave, Lakekeeper, MinIO, Redpanda) healthy.
+1. **Development Environment**: Run `devbox shell` from main project folder (`risingwave-test`)
 
-```bash
-docker compose up -d
-```
+2. **DBT Fusion**: If you have dbt-fusion installed, first uninstall it:
+   ```bash
+   dbtf system uninstall
+   ```
 
-The **Compose** file starts:
+## Quick Start
 
-* **Lakekeeper** at [`127.0.0.1:8181`](http://127.0.0.1:8181) and provisions the Lakekeeper warehouse
-* **RisingWave** at [`127.0.0.1:5691`](http://127.0.0.1:5691) (4566 for psql)
-* **MinIO (S3-compatible)** at [`127.0.0.1:9301`](http://127.0.0.1:9301) with Username/Password hummockadmin
-* **Redpanda** at [`127.0.0.1:9090`](http://127.0.0.1:9090)
+### Complete Setup Sequence
 
-
-## Step 1: Prepare the Environment
-These commands must be run in your host terminal, not in the psql client.
-
-### 1.1. Create the Redpanda Topic
-First, create the topic in Redpanda that will act as the source for your data stream.
+From project **root** folder, run the following commands in order:
 
 ```bash
-docker exec redpanda rpk topic create user_events
+# 1. Start all infrastructure services (includes uv sync for dependencies)
+./bin/1_up.sh
+
+# 2. Create required Kafka topics
+./bin/2_create_topics.sh
+
+# 3. Run dbt models to create sources, materialized views, and Iceberg tables
+./bin/3_run_dbt.sh
+# OR use Dagster for orchestrated dbt runs
+./bin/3_run_dagster.sh
+
+# 4. Start dashboard for real-time monitoring (choose one)
+./bin/4_run_dashboard.sh      # Legacy dashboard (port 8050)
+# OR
+./bin/4_run_modern.sh         # Modern React dashboard (port 4000)
+
+# 5. Query Iceberg tables (optional)
+./bin/5_query_iceberg.sh      # Query via DuckDB CLI
+./bin/5_iceberg_notebook.sh   # Interactive Marimo notebook
+
+# 6. When finished, stop all services and clean up volumes
+./bin/6_down.sh
 ```
 
-You should get the following output
-```
-TOPIC        STATUS
-user_events  OK
-```
+### Prerequisites
 
-### 1.2. Create the analytics Namespace in Lakekeeper
-RisingWave needs a pre-existing namespace in the Iceberg catalog to create the sink. This is a two-step process with Lakekeeper.
+1. **Development Environment**: Run `devbox shell` from main project folder (`risingwave-test`)
+
+2. **DBT Fusion**: If you have dbt-fusion installed, first uninstall it:
+   ```bash
+   dbtf system uninstall
+   ```
+
+### Individual Steps
+
+#### 1. Start Infrastructure
 
 ```bash
-# Get your unique Warehouse ID. This command queries the Lakekeeper management API. You may need to install jq for easy JSON parsing (sudo apt-get install jq or brew install jq).
-# This command stores your Warehouse ID in a shell variable
-WAREHOUSE_ID=$(curl -s http://localhost:8181/management/v1/warehouse | jq -r '.warehouses[0]."warehouse-id"')
-
-# Use the Warehouse ID to create the analytics namespace.
-curl -v -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"namespace": ["analytics"]}' \
-  http://localhost:8181/catalog/v1/"${WAREHOUSE_ID}"/namespaces
-
+./bin/1_up.sh
 ```
-You should see a 200 OK or 201 Created response, confirming the namespace was created.
 
-## Step 2: Configure the RisingWave Pipeline
-Connect to your RisingWave instance with psql:
+This will start:
+- RisingWave database (port 4566)
+- Redpanda Kafka (port 9092)
+- Redpanda Console (port 8080)
+- Supporting services (PostgreSQL, MinIO, LakeKeeper)
+
+#### 2. Install Dependencies
+
+Dependencies are now automatically installed when running `./bin/1_up.sh` (which includes `uv sync`). 
+
+If you need to install/update dependencies manually:
+```bash
+uv sync
+```
+
+#### 3. Create Kafka Topics
 
 ```bash
-psql -h localhost -p 4566 -d dev -U root
+./bin/2_create_topics.sh
 ```
 
-Run the following SQL script inside your psql session. This script sets up the connection, source, table, and sink.
+Creates the required Kafka topics:
+- `page_views`: User page view events
+- `cart_events`: Cart add/remove events  
+- `purchases`: Purchase completion events
 
-```sql
--- ==========================================================
--- == COMPLETE SCRIPT FOR REDPANDA -> RISINGWAVE -> ICEBERG ==
--- ==========================================================
-
--- Reduce barrier interval
-ALTER SYSTEM SET barrier_interval_ms = '250';
-
--- 1. Create a connection object to Lakekeeper
--- This centralizes all catalog and storage configuration.
-CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn
-WITH (
-    type = 'iceberg',
-    catalog.type = 'rest',
-    catalog.uri = 'http://lakekeeper:8181/catalog/',
-    warehouse.path = 'risingwave-warehouse',
-    s3.access.key = 'hummockadmin',
-    s3.secret.key = 'hummockadmin',
-    s3.path.style.access = 'true',
-    s3.endpoint = 'http://minio-0:9301',
-    s3.region = 'us-east-1'
-);
-
--- 2. Set the connection as the default for Iceberg operations
--- This tells RisingWave to use the above connection for all subsequent
--- Iceberg table and sink commands in this session.
-SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
-
--- 3. Create a source to read from the 'user_events' topic in Redpanda
--- This defines the schema of the incoming JSON data.
-CREATE SOURCE IF NOT EXISTS user_events_source (
-    user_id INT,
-    event_type VARCHAR,
-    event_timestamp TIMESTAMP
-) WITH (
-    connector = 'kafka',
-    topic = 'user_events',
-    properties.bootstrap.server = 'redpanda:9092',
-    scan.startup.mode = 'earliest'
-) FORMAT PLAIN ENCODE JSON; -- Note: FORMAT clause is outside the WITH block for CREATE SOURCE
-
--- 4. Create the target Iceberg table
--- This creates the final table in the 'analytics' namespace of your Lakekeeper catalog.
-CREATE TABLE IF NOT EXISTS user_events (
-    user_id INT,
-    event_type VARCHAR,
-    event_timestamp TIMESTAMP
-) ENGINE = iceberg;
-
--- 5. Create a sink to write from the source INTO the target table
--- This links the streaming source to the Iceberg table.
--- CREATE SINK IF NOT EXISTS user_events_sink
--- INTO user_events
--- FROM user_events_source;
-
--- If you want to drop a previously created sink
--- DROP SINK IF EXISTS user_events_sink;
-
--- For the demo, we set it up to commit on every checkpoint
-CREATE SINK user_events_sink
-INTO user_events
-FROM user_events_source
-WITH (
-    commit_checkpoint_interval = 1 -- Commit on every checkpoint
-);
-
--------------------------------------------------------------------------------------
-
--- ==========================================================
--- == SCRIPT TO CREATE A STREAMING AGGREGATION TABLE ==
--- ==========================================================
-
--- 1. Create a materialized view to calculate counts in real-time
-CREATE MATERIALIZED VIEW IF NOT EXISTS user_event_counts_mv AS
-SELECT
-    user_id,
-    COUNT(*) AS event_count
-FROM
-    user_events
-GROUP BY
-    user_id;
-
--- 2. Create the target Iceberg table to store the aggregated results
-CREATE TABLE IF NOT EXISTS user_event_counts (
-    user_id INT PRIMARY KEY,
-    event_count BIGINT
-) ENGINE = iceberg;
-
--- 3. Create an upsert sink to link the view to the table (Corrected Syntax)
-CREATE SINK IF NOT EXISTS user_event_counts_sink
-INTO user_event_counts
-FROM user_event_counts_mv
-WITH (
-    type = 'upsert',
-    primary_key = 'user_id'
-);
-
--- ==========================================================
--- == SETUP COMPLETE! Now proceed to Step 3 for verification ==
--- ==========================================================
-
-```
-
-
-## Step 3: Verify the Pipeline
-Now that everything is configured, let's test the end-to-end flow.
-
-### 3.1. Send Test Data to Redpanda
-You can use the following Python script to produce events:
+#### 4. Create dbt Sources
 
 ```bash
-# python produce_events.py -n 10
-python produce_events.py --count 10
-# or explicitly
-python produce_events.py --count 10 --schema_version 1
+./bin/3_run_dbt.sh
 ```
 
-> **_NOTE:_**
-You can also produce events manually. In your host terminal, run the following command. It will wait for you to type a message.
+This runs the dbt models to create Kafka sources and the funnel view.
+
+#### 5. Start Dashboard
 
 ```bash
-docker exec -i redpanda rpk topic produce user_events
+./bin/4_run_dashboard.sh
 ```
 
-Type the following JSON message, press Enter, and then press Ctrl+D to send it.
+Launches a web-based dashboard at http://localhost:8050 to monitor real-time conversion metrics. 
 
-```json
-{"user_id": 101, "event_type": "savas", "event_timestamp": "2023-10-27T10:00:00.000"}
-{"user_id": 102, "event_type": "savas2", "event_timestamp": "2023-10-27T10:00:01.000", "device_type": "browser"}
+**Note**: The dashboard includes producer controls in the right panel. Use the "Start Producer" button to begin data generation and "Stop Producer" to pause it. The producer no longer auto-starts to prevent unexpected data generation.
+
+#### 6. Monitor Real-Time Results
+
+You can also monitor the conversion funnel directly:
+```bash
+watch "psql -h localhost -p 4566 -d dev -U root -c 'SELECT * FROM funnel ORDER BY window_start DESC LIMIT 5;'"
 ```
 
-### 3.2. Query the Final Iceberg Table
-Finally, in your psql session, run this query to see the data that has flowed through the pipeline.
+#### 7. Generate Test Data (Optional)
 
-```sql
-SELECT * FROM user_events ORDER BY user_id;
-SELECT * FROM user_event_counts ORDER BY user_id;
-```
+To generate test data, either:
+- Use the dashboard's producer controls (recommended)
+- Run standalone producer: `python scripts/producer.py`
 
-You should see the event you just produced, confirming that your real-time streaming pipeline from Redpanda to Iceberg is working correctly.
+**Note**: The producer will generate events every second and send them to Kafka topics. Stop it when you want to see static conversion metrics.
 
-> **_NOTE:_**
-It might take some time before the table is updated. You can try to flush the data:
+## Understanding the Funnel
 
-```sql
-FLUSH;
-```
+The `funnel` materialized view provides real-time metrics:
 
+- **window_start**: Time window (1-minute intervals)
+- **viewers**: Number of unique users viewing pages
+- **carters**: Number of unique users adding items to cart
+- **purchasers**: Number of unique users making purchases
+- **view_to_cart_rate**: Conversion rate from viewing to cart
+- **cart_to_buy_rate**: Conversion rate from cart to purchase
 
-Since your syslog data is stored in an Iceberg table managed by Lakekeeper and MinIO, you can query it using DuckDB in several ways:
+## Available Scripts
 
-## Using DuckDB with REST Catalog
+| Script | Purpose |
+|--------|---------|
+| `./bin/1_up.sh` | Start all Docker Compose services |
+| `./bin/2_create_topics.sh` | Create required Kafka topics |
+| `./bin/3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
+| `./bin/3_run_dagster.sh` | Run dbt models with Dagster orchestration |
+| `./bin/4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
+| `./bin/4_run_modern.sh` | Start the modern React dashboard (port 4000) |
+| `./bin/5_query_iceberg.sh` | Query Iceberg tables via DuckDB |
+| `./bin/5_iceberg_notebook.sh` | Run interactive Marimo notebook for Iceberg analysis |
+| `./bin/6_down.sh` | Stop all services and clean up volumes |
 
-In order to use DuckDB with REST Catalog from your local machine, you first need to add minio-0 to your /etc/hosts file:
+## Modern Dashboard (React)
+
+The modern dashboard is a React-based frontend with a FastAPI backend that provides an enhanced visualization of the conversion funnel.
+
+### Prerequisites
+
+Frontend dependencies are automatically installed when you run `./bin/1_up.sh` (if `node_modules` doesn't exist). If you need to install them manually:
 
 ```bash
-# Add minio-0 to your /etc/hosts file:
-echo "127.0.0.1 minio-0" | sudo tee -a /etc/hosts
+cd modern-dashboard/frontend
+npm install
+cd ../..
 ```
 
-Now start duckdb
-```bash
-duckdb
-```
+### Running the Modern Dashboard
 
-Then connect to your Iceberg data:
-
-```sql
-
--- Install extensions
-INSTALL aws;
-INSTALL httpfs;
-INSTALL avro;
-INSTALL iceberg;
-
--- **** LOAD them (this is mandatory!) ****
-LOAD aws;
-LOAD httpfs;
-LOAD avro;
-LOAD iceberg;
-
--- Configure S3
-SET s3_endpoint = 'http://localhost:9301';
-SET s3_access_key_id = 'hummockadmin';
-SET s3_secret_access_key = 'hummockadmin';
-SET s3_url_style = 'path';
-SET s3_use_ssl = false;
-
--- Attach catalog (remove trailing space!)
-ATTACH 'risingwave-warehouse' AS lakekeeper_catalog (
-      TYPE ICEBERG,
-      ENDPOINT 'http://127.0.0.1:8181/catalog',
-      AUTHORIZATION_TYPE 'none'
-);
-
--- Now query
-SELECT * FROM lakekeeper_catalog.public.user_events ORDER BY user_id;
-
-SELECT * FROM lakekeeper_catalog.public.user_event_counts order by user_id;
-
-```
-
-## Schema Evolution
-
-## Step 1: Configure the RisingWave Pipeline
-Run the following SQL script inside your psql session. This script adjusts the previously created objects in order to accomodate a new column `device_type`.
-
-```sql
--- ==========================================================
--- == SCHEMA EVOLUTION ==
--- ==========================================================
-
--- Reduce barrier interval
-ALTER SYSTEM SET barrier_interval_ms = '250';
-
--- 1. Set the connection as the default for Iceberg operations
--- This tells RisingWave to use the above connection for all subsequent
--- Iceberg table and sink commands in this session.
-SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
-
--- 2. Add the new column to the source
--- This command adds a nullable VARCHAR column to the source. Now, RisingWave will start reading the device_type field from incoming messages.
-ALTER SOURCE user_events_source ADD COLUMN device_type VARCHAR;
-
--- 3. Drop all existing objects to ensure a clean slate for the new schema
-DROP SINK IF EXISTS user_events_sink;
-DROP SINK IF EXISTS user_event_counts_sink;
-DROP TABLE IF EXISTS user_events CASCADE;
-DROP TABLE IF EXISTS user_event_counts;
-
--- 4. Recreate the raw events table with the new column
-CREATE TABLE user_events (
-    user_id INT,
-    event_type VARCHAR,
-    event_timestamp TIMESTAMP,
-    device_type VARCHAR
-) ENGINE = iceberg;
-
--- 5. Recreate the materialized view with the ORIGINAL logic (simple count by user_id)
--- This view ignores the new device_type column and provides a total count per user.
-CREATE MATERIALIZED VIEW user_event_counts_mv AS
-SELECT
-    user_id,
-    COUNT(*) AS event_count
-FROM
-    user_events
-GROUP BY
-    user_id;
-
--- 6. Recreate the target aggregation table with the ORIGINAL schema
-CREATE TABLE user_event_counts (
-    user_id INT PRIMARY KEY,  -- Simple primary key on user_id
-    event_count BIGINT
-) ENGINE = iceberg;
-
--- 7. Recreate both sinks
-CREATE SINK user_events_sink
-INTO user_events
-FROM user_events_source
-WITH (
-    commit_checkpoint_interval = 1
-);
-
-CREATE SINK user_event_counts_sink
-INTO user_event_counts
-FROM user_event_counts_mv
-WITH (
-    type = 'upsert',
-    primary_key = 'user_id'  -- Upsert based on user_id only
-);
-
--- ==========================================================
--- == SETUP COMPLETE! ==
--- ==========================================================
-```
-
-## Step 2: Send Test Data to Redpanda
-You can use the following Python script to produce events with the new schema:
+From the project **root** folder, run:
 
 ```bash
-# python produce_events_v2.py -n 10
-python produce_events.py --count 5 --schema_version 2
+./bin/4_run_modern.sh
 ```
 
-## Step 3: Verify 
-Now you can query the table as described previously (either from psql or duckdb) to verify that the new column is present in the new records (it should be NULL in the old records)
+This will start:
+- **Backend**: FastAPI server at http://localhost:8000
+- **Frontend**: React dev server at http://localhost:4000
 
-## Cleanup
-After you finish, bring the system down by issuing the following command
+### Dashboard Features
+
+- **Real-time Funnel Visualization**: Animated funnel showing viewers → carters → purchasers
+- **Conversion Metrics**: Live view-to-cart and cart-to-purchase rates
+- **3D Funnel View**: Interactive 3D funnel visualization
+- **Dark Theme**: Modern dark UI with RisingWave branding
+
+**Note**: The modern dashboard requires the infrastructure to be running (`./bin/1_up.sh` and `./bin/3_run_dbt.sh` should be executed first).
+
+## Dagster Orchestration
+
+The project includes Dagster for orchestrating dbt runs with a modern data pipeline approach.
+
+### Running with Dagster
+
+Instead of running dbt directly, you can use Dagster for enhanced observability and scheduling:
 
 ```bash
-docker compose down --volumes --remove-orphans
+./bin/3_run_dagster.sh
+```
+
+This will:
+- Start the Dagster webserver
+- Load the dbt project as a Dagster repository
+- Provide a UI for monitoring dbt runs at http://localhost:3000
+
+### Dagster Benefits
+
+- **Observability**: Visual pipeline execution and lineage
+- **Scheduling**: Set up recurring dbt runs
+- **Asset Catalog**: Track dbt models as data assets
+- **Partitioning**: Support for partitioned backfills
+
+## Marimo Notebook
+
+An interactive Marimo notebook is available for analyzing Iceberg table data with rich visualizations.
+
+### Running the Notebook
+
+```bash
+./5_iceberg_notebook.sh
+```
+
+This starts the Marimo notebook server in edit mode, allowing you to interactively explore:
+- User activity flow through the conversion funnel
+- Sankey diagrams showing user progression
+- Time-series analysis of events
+- Detailed breakdown tables with conversion metrics
+
+### Notebook Features
+
+- **PyIceberg Integration**: Direct queries to Iceberg tables via Lakekeeper catalog
+- **Interactive Visualizations**: Plotly charts for funnel analysis
+- **Live Data**: Real-time connection to RisingWave-persisted Iceberg data
+- **Reproducible**: Self-contained notebook with all dependencies
+
+## Iceberg Integration
+
+The project persists raw events to Apache Iceberg tables for persistent storage and analysis:
+
+### Iceberg Tables
+- `iceberg_page_views`: Raw page view events
+- `iceberg_cart_events`: Raw cart add/remove events
+- `iceberg_purchases`: Raw purchase events
+
+### Querying Iceberg Data
+Use the DuckDB query script to analyze data from Iceberg:
+
+```bash
+./5_query_iceberg.sh              # Show funnel analytics
+./5_query_iceberg.sh --debug      # Show debug info with raw counts
+./5_query_iceberg.sh --live       # Live monitoring mode (refreshes every 5 sec)
+```
+
+The query computes the same funnel metrics (viewers, carters, purchasers) from raw Iceberg events using DuckDB.
+
+## Kafka Topics
+
+The system uses three Kafka topics:
+- `page_views`: User page view events
+- `cart_events`: Cart add/remove events
+- `purchases`: Purchase completion events
+
+## Architecture
+
+```
+Producer Python Script
+    ↓ (Events)
+Kafka (Redpanda)
+    ↓ (Streaming)
+RisingWave
+    ├──→ (SQL) dbt Models → Real-time Conversion Funnel (Dashboard)
+    │                      (via dbt or Dagster orchestration)
+    └──→ (Sink) Iceberg Tables (Persistent Storage)
+                                              ↓
+                                        DuckDB Queries
+                                        Marimo Notebook
+```
+
+Data flows from the producer through Kafka to RisingWave, where it's processed in multiple ways:
+1. **Real-time funnel** via dbt models displayed on the dashboard (using direct dbt or Dagster orchestration)
+2. **Persistent storage** via Iceberg sinks for analysis with DuckDB
+3. **Interactive analysis** via the Marimo notebook with PyIceberg
+
+## Troubleshooting
+
+### Connection Issues
+
+If dbt fails with Kafka connection errors, ensure:
+1. All containers are running: `docker ps`
+2. The source models use `redpanda:9092` instead of `localhost:9092`
+
+### Producer Auto-Start Issues
+
+**Fixed**: Previously, counts would keep increasing even after stopping the producer because the dashboard would auto-start a new producer process. This has been resolved:
+- Producer now requires manual start via dashboard controls
+- Sources use `scan.startup.mode = 'latest'` to prevent reprocessing historical data
+- Counts will only increase when producer is manually started
+
+### Data Still Increasing After Stopping Producer?
+
+If you notice counts continue rising after stopping the producer:
+1. Check dashboard: Verify producer indicator shows "Stopped"
+2. Restart dashboard: `./4_run_dashboard.sh` to apply the fixed configuration
+3. Verify no other producer processes: `ps aux | grep producer`
+
+### Redpanda Console
+
+Access the Kafka management UI at: http://localhost:8080
+
+### RisingWave Management
+
+Access the RisingWave UI at: http://localhost:5691 (if available)
+
+## Stopping the Project
+
+To stop all services and clean up volumes:
+```bash
+./bin/6_down.sh
 ```

@@ -6,20 +6,16 @@
 # funnel analytics (viewers, carters, purchasers) from Iceberg.
 #
 # Usage:
-#   ./5_query_iceberg.sh              # Show funnel analytics
-#   ./5_query_iceberg.sh --debug      # Show debug info with raw counts
-#   ./5_query_iceberg.sh --live       # Live monitoring mode
+#   ./bin/5_query_iceberg.sh              # Show funnel analytics
+#   ./bin/5_query_iceberg.sh --debug      # Show debug info with raw counts
+#   ./bin/5_query_iceberg.sh --live       # Live monitoring mode
 
 set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "================================================================================"
 echo "🧊 Querying Iceberg Tables via DuckDB"
 echo "================================================================================"
 echo ""
-
-cd "$SCRIPT_DIR"
 
 # Check if Python is available
 if ! command -v python3 &> /dev/null; then
@@ -28,4 +24,4 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 # Run the query script with any provided arguments
-python3 query_raw_iceberg.py "$@"
+python3 scripts/query_raw_iceberg.py "$@"

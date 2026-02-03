@@ -63,3 +63,6 @@ dagster_storage/
 # Telemetry and NUX data
 .telemetry/
 .nux/
+
+# Marimo notebook cache
+__marimo__/

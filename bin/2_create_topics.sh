@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to create Redpanda topics and Lakekeeper namespace
-# This script should be run from the parent directory where docker-compose.yml is located
+# This script should be run from the project root
 
 set -e
 
@@ -18,7 +18,7 @@ echo "Creating topics using rpk in Redpanda container..."
 check_container_running() {
     if ! docker-compose ps -q "$REDPANDA_CONTAINER" | grep -q .; then
         echo "Error: Redpanda container is not running."
-        echo "Please start your Docker Compose setup first: docker-compose up -d"
+        echo "Please start your Docker Compose setup first: ./bin/1_up.sh"
         exit 1
     fi
 }

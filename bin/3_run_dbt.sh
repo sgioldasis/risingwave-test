@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to run dbt commands with specific profiles directory
-# This script should be run from the dbt folder
+# This script should be run from the project root
 
 set -e
 
@@ -9,5 +9,6 @@ echo "=== Running dbt with custom profiles directory ==="
 echo "Command: dbt run --profiles-dir ."
 echo ""
 
-# Run dbt with profiles directory set to current directory
+# Change to dbt directory and run dbt
+cd dbt
 dbt run --profiles-dir .

@@ -1,16 +1,14 @@
 #!/bin/bash
 
 # Script to run Dagster for the realtime funnel project
+# This script should be run from the project root
 
 echo "Starting Dagster orchestration for realtime funnel project..."
 echo "Dagster UI will be available at: http://localhost:3000"
 echo ""
 
-# Get the directory where this script is located (dbt folder)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Project root is the parent of the script directory
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
+# Get the project root (where this script is located from bin/)
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # Check if orchestration directory exists
