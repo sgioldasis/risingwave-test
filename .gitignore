@@ -66,3 +66,9 @@ dagster_storage/
 
 # Marimo notebook cache
 __marimo__/
+
+# PID files
+*.pid
+
+# Log files
+*.log
