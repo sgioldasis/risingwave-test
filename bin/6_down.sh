@@ -112,6 +112,15 @@ else
     echo "scripts/__marimo__/ directory does not exist, skipping..."
 fi
 
+# Remove dagster storage directory if it exists
+if [ -d "dagster_storage" ]; then
+    echo "Removing dagster_storage/ directory..."
+    rm -rf dagster_storage
+    echo "✅ dagster_storage/ directory removed"
+else
+    echo "dagster_storage/ directory does not exist, skipping..."
+fi
+
 echo ""
 echo "=== Cleaning up log files ==="
 
@@ -131,5 +140,5 @@ fi
 echo ""
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
-echo "✅ Local directories (dbt/target/, dbt/logs/, scripts/__marimo__/) cleaned up"
+echo "✅ Local directories (dbt/target/, dbt/logs/, scripts/__marimo__/, dagster_storage/) cleaned up"
 echo "All services have been terminated and persistent data removed."
