@@ -3,7 +3,7 @@ funnel_profile:
   outputs:
     dev:
       type: risingwave
-      host: 127.0.0.1
+      host: "{{ env_var('DBT_HOST', '127.0.0.1') }}"
       user: root
       pass: ""
       dbname: dev

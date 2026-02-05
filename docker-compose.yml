@@ -495,6 +495,41 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
+  # Dagster Services
+  dagster-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.dagster
+    command: ["dagster-webserver", "-m", "orchestration.definitions", "--host", "0.0.0.0", "--port", "3000"]
+    ports:
+      - "3000:3000"
+    environment:
+      - DAGSTER_HOME=/workspace
+      - PYTHONPATH=/workspace
+      - DBT_HOST=frontend-node-0
+    volumes:
+      # Mount only specific directories needed by Dagster instead of entire project
+      # This prevents root-owned files from being created in the project root
+      - "./orchestration:/workspace/orchestration:ro"
+      - "./dbt:/workspace/dbt"
+      - "dagster-storage:/workspace/dagster_storage"
+      - "./pyproject.toml:/workspace/pyproject.toml:ro"
+      - "./uv.lock:/workspace/uv.lock:ro"
+    depends_on:
+      - frontend-node-0
+      - redpanda
+      - lakekeeper
+    networks:
+      - iceberg_net
+    container_name: dagster-webserver
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: always
+
 volumes:
   postgres-0:
     external: false
@@ -503,6 +538,8 @@ volumes:
   lakekeeper-db:
     external: false
   redpanda-data:
+    external: false
+  dagster-storage:
     external: false
 
 networks:

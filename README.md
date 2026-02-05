@@ -21,6 +21,9 @@ dbt/                              # dbt project folder
 │       └── sink.sql
 └── ...
 
+sql/                              # Compiled SQL files
+└── all_models.sql              # Pre-compiled SQL (ready for psql)
+
 ```
 
 Modern Dashboard Structure (in root folder):
@@ -52,13 +55,12 @@ modern-dashboard/                # Modern React dashboard
 
 **Scripts are now located in the `bin/` folder:**
 - `bin/1_up.sh` - Start infrastructure services (includes automatic topic and namespace creation)
-- `bin/2_create_topics.sh` - Create Kafka topics (deprecated - now automatic)
 - `bin/3_run_dbt.sh` - Run dbt models
-- `bin/3_run_dagster.sh` - Run dbt models with Dagster
+- `bin/3_run_psql.sh` - Run SQL file directly via psql
 - `bin/4_run_dashboard.sh` - Start legacy dashboard
 - `bin/4_run_modern.sh` - Start modern React dashboard
-- `bin/5_query_iceberg.sh` - Query Iceberg tables via DuckDB
-- `bin/5_iceberg_notebook.sh` - Run Marimo notebook for Iceberg
+- `bin/5_duckdb_iceberg.sh` - Query Iceberg tables via DuckDB
+- `bin/5_spark_iceberg.sh` - Run Spark notebook for Iceberg
 - `bin/6_down.sh` - Stop services and cleanup
 ```
 
@@ -86,8 +88,8 @@ From project **root** folder, run the following commands in order:
 
 # 2. Run dbt models to create sources, materialized views, and Iceberg tables
 ./bin/3_run_dbt.sh
-# OR use Dagster for orchestrated dbt runs
-./bin/3_run_dagster.sh
+# OR run the compiled SQL directly via psql (no Jinja compilation needed)
+./bin/3_run_psql.sh
 
 # 4. Start dashboard for real-time monitoring (choose one)
 ./bin/4_run_dashboard.sh      # Legacy dashboard (port 8050)
@@ -95,8 +97,8 @@ From project **root** folder, run the following commands in order:
 ./bin/4_run_modern.sh         # Modern React dashboard (port 4000)
 
 # 5. Query Iceberg tables (optional)
-./bin/5_query_iceberg.sh      # Query via DuckDB CLI
-./bin/5_iceberg_notebook.sh   # Interactive Marimo notebook
+./bin/5_duckdb_iceberg.sh     # Query via DuckDB CLI
+./bin/5_spark_iceberg.sh      # Interactive Spark notebook
 
 # 6. When finished, stop all services and clean up volumes
 ./bin/6_down.sh
@@ -193,13 +195,12 @@ The `funnel` materialized view provides real-time metrics:
 | Script | Purpose |
 |--------|---------|
 | `./bin/1_up.sh` | Start all Docker Compose services (includes topic & namespace creation) |
-| `./bin/2_create_topics.sh` | Create required Kafka topics (deprecated - now automatic) |
 | `./bin/3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
-| `./bin/3_run_dagster.sh` | Run dbt models with Dagster orchestration |
+| `./bin/3_run_psql.sh` | Run SQL file directly via psql (alternative to dbt) |
 | `./bin/4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
 | `./bin/4_run_modern.sh` | Start the modern React dashboard (port 4000) |
-| `./bin/5_query_iceberg.sh` | Query Iceberg tables via DuckDB |
-| `./bin/5_iceberg_notebook.sh` | Run interactive Marimo notebook for Iceberg analysis |
+| `./bin/5_duckdb_iceberg.sh` | Query Iceberg tables via DuckDB |
+| `./bin/5_spark_iceberg.sh` | Run interactive Spark notebook for Iceberg analysis |
 | `./bin/6_down.sh` | Stop all services and clean up volumes |
 
 ## Modern Dashboard (React)
@@ -237,41 +238,43 @@ This will start:
 
 **Note**: The modern dashboard requires the infrastructure to be running (`./bin/1_up.sh` and `./bin/3_run_dbt.sh` should be executed first).
 
-## Dagster Orchestration
+## Running SQL Directly via psql
 
-The project includes Dagster for orchestrating dbt runs with a modern data pipeline approach.
+As an alternative to dbt, you can run the pre-compiled SQL file directly using psql. This is useful when you don't need Jinja2 templating or want faster execution.
 
-### Running with Dagster
+### Using the Pre-compiled SQL File
 
-Instead of running dbt directly, you can use Dagster for enhanced observability and scheduling:
+The [`sql/all_models.sql`](sql/all_models.sql) file contains all the compiled SQL statements ready to run:
 
 ```bash
-./bin/3_run_dagster.sh
+# Run the pre-compiled SQL file
+./bin/3_run_psql.sh
+
+# Or run with custom psql settings
+PSQL_HOST=localhost PSQL_PORT=4566 ./bin/3_run_psql.sh
+
+# Or run psql directly
+psql -h localhost -p 4566 -d dev -U root -f sql/all_models.sql
 ```
 
-This will:
-- Start the Dagster webserver
-- Load the dbt project as a Dagster repository
-- Provide a UI for monitoring dbt runs at http://localhost:3000
+The SQL file creates:
+1. Iceberg connection to Lakekeeper
+2. Kafka sources (page views, cart events, purchases)
+3. Materialized view for funnel analysis
+4. Iceberg tables for persistent storage
+5. Sinks to write data to Iceberg
 
-### Dagster Benefits
+## Spark Notebook
 
-- **Observability**: Visual pipeline execution and lineage
-- **Scheduling**: Set up recurring dbt runs
-- **Asset Catalog**: Track dbt models as data assets
-- **Partitioning**: Support for partitioned backfills
-
-## Marimo Notebook
-
-An interactive Marimo notebook is available for analyzing Iceberg table data with rich visualizations.
+An interactive Spark notebook is available for analyzing Iceberg table data with rich visualizations.
 
 ### Running the Notebook
 
 ```bash
-./5_iceberg_notebook.sh
+./bin/5_spark_iceberg.sh
 ```
 
-This starts the Marimo notebook server in edit mode, allowing you to interactively explore:
+This starts the Spark notebook server in edit mode, allowing you to interactively explore:
 - User activity flow through the conversion funnel
 - Sankey diagrams showing user progression
 - Time-series analysis of events
@@ -297,9 +300,9 @@ The project persists raw events to Apache Iceberg tables for persistent storage 
 Use the DuckDB query script to analyze data from Iceberg:
 
 ```bash
-./5_query_iceberg.sh              # Show funnel analytics
-./5_query_iceberg.sh --debug      # Show debug info with raw counts
-./5_query_iceberg.sh --live       # Live monitoring mode (refreshes every 5 sec)
+./5_duckdb_iceberg.sh             # Show funnel analytics
+./5_duckdb_iceberg.sh --debug     # Show debug info with raw counts
+./5_duckdb_iceberg.sh --live      # Live monitoring mode (refreshes every 5 sec)
 ```
 
 The query computes the same funnel metrics (viewers, carters, purchasers) from raw Iceberg events using DuckDB.

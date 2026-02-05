@@ -1,0 +1,49 @@
+# Dockerfile for Dagster services
+# Uses Python 3.13 and uv for fast dependency management
+
+FROM python:3.13-slim
+
+WORKDIR /workspace
+
+# Install system dependencies required for building Python packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast Python package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Copy project files needed for dependency installation
+COPY pyproject.toml uv.lock ./
+
+# Create virtual environment and install dependencies using uv
+# Install to a fixed location that won't be overwritten by volume mounts
+RUN uv venv /opt/dagster-venv && \
+    uv pip install --python /opt/dagster-venv/bin/python -e .
+
+# Copy the rest of the project
+COPY . .
+
+# Ensure dagster_storage directory exists
+RUN mkdir -p dagster_storage/logs
+
+# Copy and set up entrypoint script
+COPY docker-entrypoint-dagster.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint-dagster.sh
+
+# Set environment variables
+ENV DAGSTER_HOME=/workspace
+ENV PYTHONPATH=/workspace
+ENV PATH="/opt/dagster-venv/bin:$PATH"
+
+# Expose the Dagster webserver port
+EXPOSE 3000
+
+# Set entrypoint
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-dagster.sh"]
+
+# Default command
+CMD ["dagster-webserver", "-m", "orchestration.definitions", "--host", "0.0.0.0", "--port", "3000"]

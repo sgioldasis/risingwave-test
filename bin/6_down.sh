@@ -86,40 +86,38 @@ docker compose down --volumes
 echo ""
 echo "=== Cleaning up local directories ==="
 
+# NOTE: The following directory cleanup sections are commented out because
+# these directories are created by Docker containers running as root, and
+# therefore are owned by root on the host filesystem. The script would fail
+# with permission denied errors when trying to remove them.
+#
+# docker-compose.yml has been updated to mount only specific directories
+# (orchestration/, dbt/) instead of the entire project folder to minimize
+# root-owned files. However, dbt/target/ and dbt/logs/ are still created
+# inside the container when dbt runs, so they remain owned by root.
+#
+# To clean these directories, either:
+# 1. Run this script with sudo: sudo ./bin/6_down.sh
+# 2. Or manually remove them: sudo rm -rf dbt/target dbt/logs
+
 # Remove target and logs directories if they exist
-if [ -d "dbt/target" ]; then
-    echo "Removing dbt/target/ directory..."
-    rm -rf dbt/target
-    echo "✅ dbt/target/ directory removed"
-else
-    echo "dbt/target/ directory does not exist, skipping..."
-fi
+# NOTE: Commented out - dbt/target is owned by root (created by Dagster container)
+# if [ -d "dbt/target" ]; then
+#     echo "Removing dbt/target/ directory..."
+#     rm -rf dbt/target
+#     echo "✅ dbt/target/ directory removed"
+# else
+#     echo "dbt/target/ directory does not exist, skipping..."
+# fi
 
-if [ -d "dbt/logs" ]; then
-    echo "Removing dbt/logs/ directory..."
-    rm -rf dbt/logs
-    echo "✅ dbt/logs/ directory removed"
-else
-    echo "dbt/logs/ directory does not exist, skipping..."
-fi
-
-# Remove marimo cache directory if it exists
-if [ -d "scripts/__marimo__" ]; then
-    echo "Removing scripts/__marimo__/ directory..."
-    rm -rf scripts/__marimo__
-    echo "✅ scripts/__marimo__/ directory removed"
-else
-    echo "scripts/__marimo__/ directory does not exist, skipping..."
-fi
-
-# Remove dagster storage directory if it exists
-if [ -d "dagster_storage" ]; then
-    echo "Removing dagster_storage/ directory..."
-    rm -rf dagster_storage
-    echo "✅ dagster_storage/ directory removed"
-else
-    echo "dagster_storage/ directory does not exist, skipping..."
-fi
+# NOTE: Commented out - dbt/logs is owned by root (created by Dagster container)
+# if [ -d "dbt/logs" ]; then
+#     echo "Removing dbt/logs/ directory..."
+#     rm -rf dbt/logs
+#     echo "✅ dbt/logs/ directory removed"
+# else
+#     echo "dbt/logs/ directory does not exist, skipping..."
+# fi
 
 echo ""
 echo "=== Cleaning up log files ==="
@@ -140,5 +138,12 @@ fi
 echo ""
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
-echo "✅ Local directories (dbt/target/, dbt/logs/, scripts/__marimo__/, dagster_storage/) cleaned up"
+echo "✅ Log files (backend.log, frontend.log) cleaned up"
+echo ""
+echo "⚠️  Note: The following directories were NOT cleaned up because they are owned by root:"
+echo "   - dbt/target/"
+echo "   - dbt/logs/"
+echo ""
+echo "   To clean them, run: sudo rm -rf dbt/target dbt/logs"
+echo ""
 echo "All services have been terminated and persistent data removed."
