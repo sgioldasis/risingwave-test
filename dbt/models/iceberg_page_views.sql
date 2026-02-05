@@ -10,7 +10,6 @@
     tags=['iceberg']
 ) }}
 
--- This table stores data from: {{ ref('src_page') }}
 CREATE TABLE IF NOT EXISTS iceberg_page_views (
     user_id INT,
     page_id VARCHAR,

@@ -10,7 +10,6 @@
     tags=['iceberg']
 ) }}
 
--- This table stores data from: {{ ref('src_cart') }}
 CREATE TABLE IF NOT EXISTS iceberg_cart_events (
     user_id INT,
     item_id VARCHAR,
