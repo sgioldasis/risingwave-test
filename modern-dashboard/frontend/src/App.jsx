@@ -114,8 +114,8 @@ const App = () => {
         <div className={`dashboard-grid tab-${activeTab}`}>
             <header>
                 <div className="logo">
-                    <img src="/risingwave-logo.jpg" alt="RisingWave Logo" className="h-8 w-8 rounded-lg shadow-lg" style={{ height: '32px', width: '32px', objectFit: 'cover' }} />
-                    <span className="brand gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800 }}>RisingWave</span>
+                    <img src="/kaizengaming-logo.png" alt="Kaizen Gaming Logo" className="h-8 w-8 rounded-lg shadow-lg" style={{ height: '32px', width: '32px', objectFit: 'cover' }} />
+                    <span className="brand gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800 }}>Kaizen Gaming</span>
                     <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>|</span>
                     <span style={{ fontSize: '1.1rem', opacity: 0.8, fontWeight: 600, letterSpacing: '-0.01em' }}>Real-time Analytics</span>
                 </div>
