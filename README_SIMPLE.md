@@ -18,13 +18,20 @@ The **Compose** file starts:
 * **Lakekeeper** at [`127.0.0.1:8181`](http://127.0.0.1:8181) and provisions the Lakekeeper warehouse
 * **RisingWave** at [`127.0.0.1:5691`](http://127.0.0.1:5691) (4566 for psql)
 * **MinIO (S3-compatible)** at [`127.0.0.1:9301`](http://127.0.0.1:9301) with Username/Password hummockadmin
-* **Redpanda** at [`127.0.0.1:9090`](http://127.0.0.1:9090)
+* **Redpanda Console** at [`127.0.0.1:9090`](http://127.0.0.1:9090)
 
 
 ## Step 1: Prepare the Environment
 These commands must be run in your host terminal, not in the psql client.
 
+<!--
 ### 1.1. Create the Redpanda Topic
+
+NOTE: Kafka topics are now created automatically during docker-compose startup.
+The redpanda-init container creates the required topics (page_views, cart_events, purchases).
+
+The following manual step is kept for reference only:
+
 First, create the topic in Redpanda that will act as the source for your data stream.
 
 ```bash
@@ -36,13 +43,16 @@ You should get the following output
 TOPIC        STATUS
 user_events  OK
 ```
-
+-->
+<!--
 ### 1.2. Create the analytics Namespace in Lakekeeper
-RisingWave needs a pre-existing namespace in the Iceberg catalog to create the sink. This is a two-step process with Lakekeeper.
+NOTE: This step is no longer required. The analytics namespace is now created
+automatically by the lakekeeper-bootstrap container during docker-compose startup.
+
+The following manual steps are kept for reference only:
 
 ```bash
-# Get your unique Warehouse ID. This command queries the Lakekeeper management API. You may need to install jq for easy JSON parsing (sudo apt-get install jq or brew install jq).
-# This command stores your Warehouse ID in a shell variable
+# Get your unique Warehouse ID. This command queries the Lakekeeper management API.
 WAREHOUSE_ID=$(curl -s http://localhost:8181/management/v1/warehouse | jq -r '.warehouses[0]."warehouse-id"')
 
 # Use the Warehouse ID to create the analytics namespace.
@@ -50,9 +60,8 @@ curl -v -X POST \
   -H "Content-Type: application/json" \
   -d '{"namespace": ["analytics"]}' \
   http://localhost:8181/catalog/v1/"${WAREHOUSE_ID}"/namespaces
-
 ```
-You should see a 200 OK or 201 Created response, confirming the namespace was created.
+-->
 
 ## Step 2: Configure the RisingWave Pipeline
 Connect to your RisingWave instance with psql:

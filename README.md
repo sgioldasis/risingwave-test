@@ -51,8 +51,8 @@ modern-dashboard/                # Modern React dashboard
 - `scripts/user_activity_flow.py` - Marimo notebook for Iceberg analysis
 
 **Scripts are now located in the `bin/` folder:**
-- `bin/1_up.sh` - Start infrastructure services
-- `bin/2_create_topics.sh` - Create Kafka topics
+- `bin/1_up.sh` - Start infrastructure services (includes automatic topic and namespace creation)
+- `bin/2_create_topics.sh` - Create Kafka topics (deprecated - now automatic)
 - `bin/3_run_dbt.sh` - Run dbt models
 - `bin/3_run_dagster.sh` - Run dbt models with Dagster
 - `bin/4_run_dashboard.sh` - Start legacy dashboard
@@ -81,12 +81,10 @@ From project **root** folder, run the following commands in order:
 
 ```bash
 # 1. Start all infrastructure services (includes uv sync for dependencies)
+#    This also creates required Kafka topics and Lakekeeper namespace automatically
 ./bin/1_up.sh
 
-# 2. Create required Kafka topics
-./bin/2_create_topics.sh
-
-# 3. Run dbt models to create sources, materialized views, and Iceberg tables
+# 2. Run dbt models to create sources, materialized views, and Iceberg tables
 ./bin/3_run_dbt.sh
 # OR use Dagster for orchestrated dbt runs
 ./bin/3_run_dagster.sh
@@ -124,30 +122,29 @@ From project **root** folder, run the following commands in order:
 This will start:
 - RisingWave database (port 4566)
 - Redpanda Kafka (port 9092)
-- Redpanda Console (port 8080)
+- Redpanda Console (port 9090)
 - Supporting services (PostgreSQL, MinIO, LakeKeeper)
+
+And automatically creates:
+- **Kafka topics**: `page_views`, `cart_events`, `purchases`
+- **Lakekeeper namespace**: `analytics`
+
+**Web Consoles:**
+- [RisingWave Console](http://localhost:5691) - RisingWave dashboard
+- [Redpanda Console](http://localhost:9090) - Kafka topic management and monitoring
+- [Lakekeeper UI](http://localhost:8181) - Iceberg catalog management
+- [MinIO Console](http://localhost:9301) - S3-compatible storage (login: hummockadmin / hummockadmin)
 
 #### 2. Install Dependencies
 
-Dependencies are now automatically installed when running `./bin/1_up.sh` (which includes `uv sync`). 
+Dependencies are now automatically installed when running `./bin/1_up.sh` (which includes `uv sync`).
 
 If you need to install/update dependencies manually:
 ```bash
 uv sync
 ```
 
-#### 3. Create Kafka Topics
-
-```bash
-./bin/2_create_topics.sh
-```
-
-Creates the required Kafka topics:
-- `page_views`: User page view events
-- `cart_events`: Cart add/remove events  
-- `purchases`: Purchase completion events
-
-#### 4. Create dbt Sources
+#### 3. Create dbt Sources
 
 ```bash
 ./bin/3_run_dbt.sh
@@ -155,24 +152,24 @@ Creates the required Kafka topics:
 
 This runs the dbt models to create Kafka sources and the funnel view.
 
-#### 5. Start Dashboard
+#### 4. Start Dashboard
 
 ```bash
 ./bin/4_run_dashboard.sh
 ```
 
-Launches a web-based dashboard at http://localhost:8050 to monitor real-time conversion metrics. 
+Launches a web-based dashboard at http://localhost:8050 to monitor real-time conversion metrics.
 
 **Note**: The dashboard includes producer controls in the right panel. Use the "Start Producer" button to begin data generation and "Stop Producer" to pause it. The producer no longer auto-starts to prevent unexpected data generation.
 
-#### 6. Monitor Real-Time Results
+#### 5. Monitor Real-Time Results
 
 You can also monitor the conversion funnel directly:
 ```bash
 watch "psql -h localhost -p 4566 -d dev -U root -c 'SELECT * FROM funnel ORDER BY window_start DESC LIMIT 5;'"
 ```
 
-#### 7. Generate Test Data (Optional)
+#### 6. Generate Test Data (Optional)
 
 To generate test data, either:
 - Use the dashboard's producer controls (recommended)
@@ -195,8 +192,8 @@ The `funnel` materialized view provides real-time metrics:
 
 | Script | Purpose |
 |--------|---------|
-| `./bin/1_up.sh` | Start all Docker Compose services |
-| `./bin/2_create_topics.sh` | Create required Kafka topics |
+| `./bin/1_up.sh` | Start all Docker Compose services (includes topic & namespace creation) |
+| `./bin/2_create_topics.sh` | Create required Kafka topics (deprecated - now automatic) |
 | `./bin/3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
 | `./bin/3_run_dagster.sh` | Run dbt models with Dagster orchestration |
 | `./bin/4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
@@ -359,11 +356,21 @@ If you notice counts continue rising after stopping the producer:
 
 ### Redpanda Console
 
-Access the Kafka management UI at: http://localhost:8080
+Access the Kafka management UI at: http://localhost:9090
 
-### RisingWave Management
+### RisingWave Console
 
-Access the RisingWave UI at: http://localhost:5691 (if available)
+Access the RisingWave dashboard at: http://localhost:5691
+
+### Lakekeeper UI
+
+Access the Iceberg catalog management UI at: http://localhost:8181
+
+### MinIO Console
+
+Access the S3-compatible storage browser at: http://localhost:9301
+- Username: `hummockadmin`
+- Password: `hummockadmin`
 
 ## Stopping the Project
 

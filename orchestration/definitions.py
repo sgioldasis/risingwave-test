@@ -20,10 +20,10 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             # Get existing kinds or start with empty set
             kinds = set(spec.kinds) if spec.kinds else set()
             kinds.add("iceberg")
-            # Return a new spec with the updated kinds and iceberg group
+            # Return a new spec with the updated kinds and datalake group
             return spec.replace_attributes(
                 kinds=frozenset(kinds),
-                group_name="iceberg"
+                group_name="datalake"
             )
         else:
             # Set group to "risingwave" for non-iceberg models
