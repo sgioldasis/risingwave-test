@@ -136,6 +136,7 @@ And automatically creates:
 - [Redpanda Console](http://localhost:9090) - Kafka topic management and monitoring
 - [Lakekeeper UI](http://localhost:8181) - Iceberg catalog management
 - [MinIO Console](http://localhost:9301) - S3-compatible storage (login: hummockadmin / hummockadmin)
+- [Dagster UI](http://localhost:3000) - Data pipeline orchestration
 
 #### 2. Install Dependencies
 
