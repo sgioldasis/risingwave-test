@@ -52,8 +52,10 @@ modern-dashboard/                # Modern React dashboard
 - `scripts/dashboard.py` - Real-time dashboard (legacy)
 - `scripts/query_raw_iceberg.py` - Query Iceberg tables via DuckDB
 - `scripts/user_activity_flow.py` - Marimo notebook for Iceberg analysis
+- `scripts/script_runner.py` - Web-based script runner (Python backend)
 
 **Scripts are now located in the `bin/` folder:**
+- `bin/0_script_runner.sh` - Start the web-based script runner (recommended)
 - `bin/1_up.sh` - Start infrastructure services (includes automatic topic and namespace creation)
 - `bin/3_run_dbt.sh` - Run dbt models
 - `bin/3_run_psql.sh` - Run SQL file directly via psql
@@ -103,6 +105,21 @@ From project **root** folder, run the following commands in order:
 # 6. When finished, stop all services and clean up volumes
 ./bin/6_down.sh
 ```
+
+### Alternative: Web-Based Script Runner
+
+You can also use the web-based script runner to manage all scripts from a browser interface:
+
+```bash
+./bin/0_script_runner.sh
+```
+
+This starts a web application at [http://localhost:8080](http://localhost:8080) where you can:
+- Run any script with a single click
+- View output in real-time with tabs for each script
+- Run multiple scripts simultaneously
+- Restart running scripts
+- Auto-detects already-running dashboard processes
 
 ### Prerequisites
 

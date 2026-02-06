@@ -8,6 +8,32 @@ set -e
 echo "=== Stopping Modern Dashboard ==="
 echo ""
 
+# Kill the script runner monitoring processes for dashboards first
+# (this will gracefully shut down the child processes via the trap)
+if pgrep -f "bash bin/4_run_modern.sh" > /dev/null 2>&1; then
+    echo "Stopping modern dashboard monitoring script..."
+    pkill -f "bash bin/4_run_modern.sh" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "bash bin/4_run_modern.sh" > /dev/null 2>&1; then
+        pkill -9 -f "bash bin/4_run_modern.sh" 2>/dev/null || true
+    fi
+    echo "✅ Modern dashboard monitoring stopped"
+fi
+
+if pgrep -f "bash bin/4_run_dashboard.sh" > /dev/null 2>&1; then
+    echo "Stopping legacy dashboard monitoring script..."
+    pkill -f "bash bin/4_run_dashboard.sh" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "bash bin/4_run_dashboard.sh" > /dev/null 2>&1; then
+        pkill -9 -f "bash bin/4_run_dashboard.sh" 2>/dev/null || true
+    fi
+    echo "✅ Legacy dashboard monitoring stopped"
+fi
+
+echo ""
+
 # Kill backend process if running
 if [ -f ".backend.pid" ]; then
     BACKEND_PID=$(cat ".backend.pid")

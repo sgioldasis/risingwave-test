@@ -3,9 +3,18 @@
 # Script to run the modern React dashboard
 # This script should be run from the project root
 
+echo "Starting Modern Dashboard..."
+echo "Dashboard will be available at: http://localhost:4000"
+echo ""
+
 # Kill any existing processes on these ports
 fuser -k 8000/tcp 2>/dev/null
 fuser -k 4000/tcp 2>/dev/null
+
+# Also kill by process pattern
+pkill -f "python3 backend/api.py" 2>/dev/null
+pkill -f "npm run dev" 2>/dev/null
+sleep 0.5
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
@@ -36,3 +45,21 @@ echo "Backend logs: backend.log"
 echo "Frontend logs: frontend.log"
 echo ""
 echo "To stop the application, run: ./bin/6_down.sh"
+echo ""
+echo "Monitoring processes (Ctrl+C to stop)..."
+echo "==========================================="
+
+# Keep script running and monitor child processes
+trap 'echo ""; echo "Stopping dashboard..."; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit 0' INT TERM
+
+# Wait for either process to exit
+while kill -0 $BACKEND_PID 2>/dev/null && kill -0 $FRONTEND_PID 2>/dev/null; do
+    sleep 2
+done
+
+# If we get here, one of the processes died
+echo ""
+echo "⚠️ One of the dashboard processes exited unexpectedly"
+kill $BACKEND_PID 2>/dev/null
+kill $FRONTEND_PID 2>/dev/null
+exit 1

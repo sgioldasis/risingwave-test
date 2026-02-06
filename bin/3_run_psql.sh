@@ -21,13 +21,27 @@ if [ ! -f "${SQL_FILE}" ]; then
     exit 1
 fi
 
+# Wait for Lakekeeper warehouse to be ready
+echo "Checking Lakekeeper warehouse availability..."
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -s http://localhost:8181/management/v1/warehouse | grep -q "risingwave-warehouse"; then
+        echo "✓ Lakekeeper warehouse is ready"
+        break
+    fi
+    echo "  Waiting for Lakekeeper warehouse... (attempt $attempt/10)"
+    sleep 2
+done
+
+echo ""
 echo "Running SQL file: ${SQL_FILE}"
 echo "Host: ${PSQL_HOST}:${PSQL_PORT}"
 echo "Database: ${PSQL_DB}"
 echo "User: ${PSQL_USER}"
 echo ""
 
-psql -h "${PSQL_HOST}" -p "${PSQL_PORT}" -d "${PSQL_DB}" -U "${PSQL_USER}" -f "${SQL_FILE}"
+# Use stdbuf to force line buffering and -a to echo all commands
+# This ensures output appears immediately in the web runner
+stdbuf -oL psql -h "${PSQL_HOST}" -p "${PSQL_PORT}" -d "${PSQL_DB}" -U "${PSQL_USER}" -f "${SQL_FILE}" -a
 
 if [ $? -eq 0 ]; then
     echo ""
