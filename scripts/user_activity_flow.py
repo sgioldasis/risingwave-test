@@ -198,6 +198,11 @@ def _(go, spark):
     # Compute funnel metrics using same logic as DuckDB/RisingWave
     # This ensures consistency across all tools
     try:
+        # Force Spark to refresh metadata caches to see new Iceberg snapshots
+        spark.sql("REFRESH TABLE lakekeeper.public.iceberg_page_views")
+        spark.sql("REFRESH TABLE lakekeeper.public.iceberg_cart_events")
+        spark.sql("REFRESH TABLE lakekeeper.public.iceberg_purchases")
+
         # Get the latest event time from page views
         funnel_latest_time_row = spark.sql("""
             SELECT MAX(event_time) as latest_time FROM lakekeeper.public.iceberg_page_views
@@ -314,6 +319,11 @@ def _(mo):
 def _(go, pd, spark):
     # Run fresh query for time series data (self-contained for rerun)
     # Use same logic as DuckDB and RisingWave funnel query
+    
+    # Force refresh again for this cell
+    spark.sql("REFRESH TABLE lakekeeper.public.iceberg_page_views")
+    spark.sql("REFRESH TABLE lakekeeper.public.iceberg_cart_events")
+    spark.sql("REFRESH TABLE lakekeeper.public.iceberg_purchases")
 
     # Get the latest event time to base our query on
     ts_latest_time_row = spark.sql("""

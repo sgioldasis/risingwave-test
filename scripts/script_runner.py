@@ -57,7 +57,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Script Runner</title>
+    <title>Kaizen Demo Runner</title>
     <style>
         * {
             margin: 0;
@@ -103,7 +103,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             font-weight: 600;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 15px;
+        }
+
+        .header-logo {
+            height: 40px;
+            width: auto;
         }
         
         .status {
@@ -466,7 +471,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <h1>🚀 Script Runner</h1>
+        <h1>
+            <img src="/logo.png" alt="Logo" class="header-logo">
+            Kaizen Demo Runner
+        </h1>
         <div class="status">
             <span id="runningCount"></span>
             <span id="statusText">Ready</span>
@@ -506,6 +514,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <script>
         const scripts = {{ scripts|tojson }};
         const scriptMap = Object.fromEntries(scripts.map(s => [s[0], { file: s[0], name: s[1], desc: s[2] }]));
+        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh'];
         let ws;
         let reconnectInterval;
         let activeTabs = new Map(); // scriptFile -> { element, outputElement, running }
@@ -529,109 +538,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             });
         }
         
-        // Check if background processes are running
-        async function checkBackgroundProcesses() {
-            const backgroundChecks = [
-                { script: '4_run_dashboard.sh', port: 8050, pattern: 'python scripts/dashboard.py' },
-                { script: '4_run_modern.sh', port: 4000, pattern: 'npm run dev' }
-            ];
-            
-            for (const check of backgroundChecks) {
-                try {
-                    // Try to connect to the port to see if service is up
-                    const isRunning = await checkPort(check.port);
-                    const wasRunning = backgroundScriptRunning.has(check.script);
-                    
-                    if (isRunning) {
-                        // Process is running - mark as running if not already
-                        if (!wasRunning) {
-                            backgroundScriptRunning.add(check.script);
-                            // Update sidebar indicator
-                            const scriptItem = document.getElementById(`script-${check.script}`);
-                            if (scriptItem) {
-                                scriptItem.classList.add('running');
-                                document.getElementById(`indicator-${check.script}`).style.display = 'inline-block';
-                            }
-                            // Update running count
-                            updateRunningCount();
-                        }
-                    } else {
-                        // Process is not running but was marked as running - update UI
-                        if (wasRunning) {
-                            backgroundScriptRunning.delete(check.script);
-                            // Clear sidebar indicator
-                            const scriptItem = document.getElementById(`script-${check.script}`);
-                            if (scriptItem) {
-                                scriptItem.classList.remove('running');
-                                document.getElementById(`indicator-${check.script}`).style.display = 'none';
-                            }
-                            // Also update tab if it exists
-                            const tab = activeTabs.get(check.script);
-                            if (tab) {
-                                tab.running = false;
-                                tab.tabElement.classList.remove('running');
-                                const tabIndicator = document.getElementById(`tab-indicator-${check.script}`);
-                                const panelIndicator = document.getElementById(`panel-indicator-${check.script}`);
-                                const stopBtn = document.getElementById(`stop-btn-${check.script}`);
-                                if (tabIndicator) tabIndicator.style.display = 'none';
-                                if (panelIndicator) panelIndicator.style.display = 'none';
-                                if (stopBtn) stopBtn.style.display = 'none';
-                                // Add stopped message to output
-                                const line = document.createElement('div');
-                                line.className = 'output-line warning';
-                                line.textContent = '⚠️ Process stopped externally';
-                                tab.outputElement.appendChild(line);
-                                tab.outputElement.scrollTop = tab.outputElement.scrollHeight;
-                            }
-                            // Update running count
-                            updateRunningCount();
-                        }
-                    }
-                } catch (e) {
-                    // Port not reachable, process not running
-                }
-            }
-        }
-        
-        function checkPort(port) {
-            return new Promise((resolve) => {
-                const xhr = new XMLHttpRequest();
-                xhr.timeout = 1000;
-                
-                let resolved = false;
-                const doResolve = (result) => {
-                    if (!resolved) {
-                        resolved = true;
-                        resolve(result);
-                    }
-                };
-                
-                xhr.onreadystatechange = () => {
-                    if (xhr.readyState === 4) {
-                        // Status 0 = failed to connect (port not in use)
-                        // Status 200+ = connected successfully (port in use)
-                        doResolve(xhr.status !== 0);
-                    }
-                };
-                xhr.onerror = () => {
-                    // Connection error means port is not reachable (not in use)
-                    doResolve(false);
-                };
-                xhr.ontimeout = () => {
-                    // Timeout means no response (port not in use)
-                    doResolve(false);
-                };
-                try {
-                    xhr.open('GET', `http://localhost:${port}`, true);
-                    xhr.send();
-                } catch (e) {
-                    doResolve(false);
-                }
-                // Fallback timeout in case neither handler fires
-                setTimeout(() => doResolve(false), 1200);
-            });
-        }
-        
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
             
@@ -639,15 +545,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 console.log('WebSocket connected');
                 document.getElementById('connectionStatus').textContent = '⚡ Connected';
                 clearInterval(reconnectInterval);
-                
-                // Check for running background processes
-                checkBackgroundProcesses();
-                
-                // Start periodic polling to detect externally stopped processes
-                if (window.bgCheckInterval) {
-                    clearInterval(window.bgCheckInterval);
-                }
-                window.bgCheckInterval = setInterval(checkBackgroundProcesses, 5000);
             };
             
             ws.onmessage = (event) => {
@@ -659,10 +556,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 console.log('WebSocket disconnected');
                 document.getElementById('connectionStatus').textContent = '🔌 Disconnected';
                 reconnectInterval = setInterval(connectWebSocket, 3000);
-                // Stop background process polling
-                if (window.bgCheckInterval) {
-                    clearInterval(window.bgCheckInterval);
-                }
             };
             
             ws.onerror = (error) => {
@@ -920,7 +813,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             let currentBg = null;
             let bold = false;
             
-            const parts = text.split(/(\x1B\[[0-9;]*m)/g);
+            const parts = text.split(/(\\x1B\\[[0-9;]*m)/g);
             
             for (const part of parts) {
                 if (part.startsWith('\x1B[') && part.endsWith('m')) {
@@ -1028,7 +921,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         let userSelectedTab = null;
         
         // Scripts that spawn background processes (dashboards)
-        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh'];
+        // BACKGROUND_SCRIPTS is already defined at start of script
         
         function isScriptRunning(scriptFile) {
             const tab = activeTabs.get(scriptFile);
@@ -1441,36 +1334,94 @@ async def check_running_processes():
             await script_completed(script_file, return_code)
 
 
+async def check_port_open(port):
+    """Check if a local port is open using TCP."""
+    try:
+        reader, writer = await asyncio.open_connection('127.0.0.1', port)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except:
+        return False
+
+
+async def check_external_services():
+    """Periodically check if external services (dashboards) are running."""
+    # Only check services that run on specific ports
+    services = [
+        {"script": "4_run_dashboard.sh", "port": 8050},
+        {"script": "4_run_modern.sh", "port": 4000}
+    ]
+    
+    while True:
+        try:
+            for service in services:
+                is_running = await check_port_open(service["port"])
+                if is_running:
+                    # Notify clients that service is running
+                    # We send 'running' status so the UI shows it as active
+                    print(f"Service {service['script']} on port {service['port']} is RUNNING")
+                    await broadcast({
+                        "type": "status",
+                        "script": service["script"],
+                        "status": "running"
+                    })
+                # else:
+                #    print(f"Service {service['script']} on port {service['port']} is NOT running")
+            
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"Error checking external services: {e}")
+            await asyncio.sleep(5)
+
+
+async def serve_logo(request):
+    """Serve the logo image."""
+    logo_path = PROJECT_ROOT / "modern-dashboard" / "frontend" / "public" / "kaizengaming-logo.png"
+    if logo_path.exists():
+        return web.FileResponse(logo_path)
+    return web.Response(text="Logo not found", status=404)
+
+
 async def main():
     """Start the web server."""
     app = web.Application()
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
+    app.router.add_get('/logo.png', serve_logo)
+    
+    # Start background process checker
+    asyncio.create_task(check_running_processes())
+    # Start external services checker
+    asyncio.create_task(check_external_services())
     
     runner = web.AppRunner(app)
     await runner.setup()
     
-    site = web.TCPSite(runner, 'localhost', 8080)
-    await site.start()
-    
-    print("=" * 60)
-    print("🚀 Script Runner Web Application")
-    print("=" * 60)
-    print("Open your browser at: http://localhost:8080")
-    print("Press Ctrl+C to stop the server")
-    print("=" * 60)
-    
-    # Auto-open browser
-    webbrowser.open('http://localhost:8080')
-    
-    # Start background process checker
-    asyncio.create_task(check_running_processes())
-    
+    # Use port 4001 to avoid conflicts
     try:
+        site = web.TCPSite(runner, '0.0.0.0', 4001)
+        await site.start()
+        
+        print("=" * 60)
+        print("🚀 Script Runner Web Application")
+        print("=" * 60)
+        print("Open your browser at: http://localhost:4001")
+        print("Press Ctrl+C to stop the server")
+        print("=" * 60)
+        
+        # Open browser automatically
+        webbrowser.open('http://localhost:4001')
+        
+        # Keep alive
         while True:
             await asyncio.sleep(3600)
     except asyncio.CancelledError:
         pass
+    except OSError as e:
+        if e.errno == 48:
+            print("❌ Port 4001 is already in use!")
+        raise
     finally:
         await runner.cleanup()
 
