@@ -1353,23 +1353,43 @@ async def check_external_services():
         {"script": "4_run_modern.sh", "port": 4000}
     ]
     
+    # Track previous state to avoid spamming
+    running_services = set()
+    
     while True:
         try:
             for service in services:
                 is_running = await check_port_open(service["port"])
+                script_name = service["script"]
+                
                 if is_running:
                     # Notify clients that service is running
-                    # We send 'running' status so the UI shows it as active
-                    print(f"Service {service['script']} on port {service['port']} is RUNNING")
+                    if script_name not in running_services:
+                        print(f"Service {script_name} on port {service['port']} is RUNNING")
+                        running_services.add(script_name)
+                    
+                    # Always broadcast running status periodically to ensure new clients get it
+                    # (Clients handle duplicates)
                     await broadcast({
                         "type": "status",
-                        "script": service["script"],
+                        "script": script_name,
                         "status": "running"
                     })
-                # else:
-                #    print(f"Service {service['script']} on port {service['port']} is NOT running")
+                else:
+                    # Service is NOT running
+                    if script_name in running_services:
+                        print(f"Service {script_name} on port {service['port']} has STOPPED")
+                        running_services.remove(script_name)
+                        
+                        # Explicitly notify clients it has stopped
+                        # Use 'stopped' status which the frontend will use to clear the running indicator
+                        await broadcast({
+                            "type": "status",
+                            "script": script_name,
+                            "status": "stopped"
+                        })
             
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)  # Check more frequently (was 5)
         except Exception as e:
             print(f"Error checking external services: {e}")
             await asyncio.sleep(5)
