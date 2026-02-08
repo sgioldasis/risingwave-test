@@ -28,6 +28,7 @@ dependencies = [
     "s3fs>=2024.1.0",
     "nbformat>=5.0.0",
     "aiohttp>=3.13.3",
+    "psutil>=7.2.2",
 ]
 
 [tool.dagster]

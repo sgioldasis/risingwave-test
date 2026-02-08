@@ -9,6 +9,7 @@ Left side: script buttons, Right side: tabbed terminal outputs
 import asyncio
 import json
 import os
+import psutil
 import re
 import subprocess
 import sys
@@ -35,6 +36,7 @@ BIN_DIR = PROJECT_ROOT / "bin"
 # Scripts configuration (in order)
 SCRIPTS = [
     ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies"),
+    ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
     ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
     ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
@@ -522,17 +524,35 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         
         function initScripts() {
             const container = document.getElementById('scriptList');
-            scripts.forEach(([file, name, desc]) => {
+            scripts.forEach(([file, name, desc, hasParams]) => {
                 const div = document.createElement('div');
                 div.className = 'script-item';
                 div.id = `script-${file}`;
-                div.onclick = () => runScript(file);
+                div.onclick = (e) => {
+                    // Don't trigger if clicking inside the param input
+                    if (e.target.tagName !== 'INPUT') {
+                        runScript(file);
+                    }
+                };
+                
+                let paramHtml = '';
+                if (hasParams) {
+                    paramHtml = `
+                        <div class="param-container" style="margin-top: 8px;" onclick="e => e.stopPropagation()">
+                            <input type="text" id="param-${file}" placeholder="TPS (default 1)" 
+                                   style="width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--bg-tertiary); background: var(--bg-primary); color: var(--fg-primary); font-size: 0.8rem;"
+                                   value="1">
+                        </div>
+                    `;
+                }
+
                 div.innerHTML = `
                     <div class="script-name">
                         <span class="running-indicator" id="indicator-${file}" style="display: none;"></span>
                         ${name}
                     </div>
                     <div class="script-desc">${desc}</div>
+                    ${paramHtml}
                 `;
                 container.appendChild(div);
             });
@@ -964,6 +984,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 // Mark this as user-selected to prevent auto-switching away
                 userSelectedTab = scriptFile;
                 
+                // Get parameters if any
+                const paramInput = document.getElementById(`param-${scriptFile}`);
+                const params = paramInput ? paramInput.value : '';
+
                 // Check if script is already running
                 let tab = activeTabs.get(scriptFile);
                 if (isScriptRunning(scriptFile)) {
@@ -986,7 +1010,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 }
                 // Always switch to the script's tab when run is clicked
                 switchToTab(scriptFile);
-                ws.send(JSON.stringify({ action: 'run', script: scriptFile }));
+                ws.send(JSON.stringify({ action: 'run', script: scriptFile, params: params }));
             }
         }
         
@@ -1017,7 +1041,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 
                 // Small delay to ensure stop is processed before run
                 setTimeout(() => {
-                    ws.send(JSON.stringify({ action: 'run', script: scriptFile }));
+                    const paramInput = document.getElementById(`param-${scriptFile}`);
+                    const params = paramInput ? paramInput.value : '';
+                    ws.send(JSON.stringify({ action: 'run', script: scriptFile, params: params }));
                 }, 200);
             }
         }
@@ -1094,8 +1120,9 @@ async def websocket_handler(request):
                 
                 if data.get('action') == 'run':
                     script_file = data.get('script')
+                    params = data.get('params', '')
                     if script_file:
-                        await run_script_in_background(script_file, ws)
+                        await run_script_in_background(script_file, ws, params)
                         
                 elif data.get('action') == 'stop':
                     script_file = data.get('script')
@@ -1163,7 +1190,7 @@ async def append_output(script_file, text, tag=None):
     })
 
 
-async def run_script_in_background(script_file, ws):
+async def run_script_in_background(script_file, ws, params=''):
     """Run a script in a background thread."""
     global running_processes
     
@@ -1190,7 +1217,7 @@ async def run_script_in_background(script_file, ws):
     
     # Add header
     await append_output(script_file, "=" * 60, 'info')
-    await append_output(script_file, f"Running: {script_file}", 'command')
+    await append_output(script_file, f"Running: {script_file} {params}", 'command')
     await append_output(script_file, f"Working directory: {PROJECT_ROOT}", 'info')
     if not in_devbox:
         await append_output(script_file, "Environment: devbox (using 'devbox run')", 'info')
@@ -1205,27 +1232,35 @@ async def run_script_in_background(script_file, ws):
     # Run script in a thread
     def run_script_thread():
         try:
+            # Prepare arguments
+            cmd_args = ['bash', str(script_path)]
+            if params:
+                # Basic space-splitting for params, could be improved if needed
+                cmd_args.extend(params.split())
+
             if in_devbox:
                 # Already in devbox, run script directly
                 process = subprocess.Popen(
-                    ['bash', str(script_path)],
+                    cmd_args,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=str(PROJECT_ROOT),
                     text=True,
                     bufsize=1,
-                    universal_newlines=True
+                    universal_newlines=True,
+                    start_new_session=True
                 )
             else:
                 # Not in devbox, use devbox run to execute script
                 process = subprocess.Popen(
-                    ['devbox', 'run', '--', 'bash', str(script_path)],
+                    ['devbox', 'run', '--'] + cmd_args,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=str(PROJECT_ROOT),
                     text=True,
                     bufsize=1,
-                    universal_newlines=True
+                    universal_newlines=True,
+                    start_new_session=True
                 )
             
             # Store process reference
@@ -1295,13 +1330,43 @@ def stop_script(script_file):
     process = running_processes[script_file]
     
     try:
-        process.terminate()
+        parent = psutil.Process(process.pid)
+        children = parent.children(recursive=True)
+        
+        # Terminate children first
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        
+        # Terminate parent
+        try:
+            parent.terminate()
+        except psutil.NoSuchProcess:
+            pass
+            
+        # Wait a bit
         import time
-        time.sleep(0.5)
+        for _ in range(5):
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
         
+        # Force kill if still alive
         if process.poll() is None:
-            process.kill()
-        
+            for child in children:
+                try:
+                    if child.is_running():
+                        child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            try:
+                if parent.is_running():
+                    parent.kill()
+            except psutil.NoSuchProcess:
+                pass
+
         if script_file in running_processes:
             del running_processes[script_file]
         
@@ -1314,8 +1379,13 @@ def stop_script(script_file):
             broadcast({'type': 'status', 'status': 'ready', 'script': script_file}),
             loop=main_loop
         )
+    except psutil.NoSuchProcess:
+        if script_file in running_processes:
+            del running_processes[script_file]
     except Exception as e:
         print(f"Error stopping script {script_file}: {e}")
+        if script_file in running_processes:
+            del running_processes[script_file]
 
 
 async def check_running_processes():
