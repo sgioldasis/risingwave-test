@@ -55,7 +55,7 @@ def main():
 
             # Produce events if TPS > 0
             if interval > 0:
-                user_id = random.randint(1, 10000)
+                user_id = random.randint(1, 1000000)
                 event_time_str = get_timestamp()
 
                 # 1. Page Views (Always)
