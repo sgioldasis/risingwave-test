@@ -2,14 +2,9 @@ import json
 import time
 import random
 import argparse
+import sys
 from datetime import datetime
 from kafka import KafkaProducer
-
-# Connect to local Kafka
-producer = KafkaProducer(
-    bootstrap_servers=['localhost:19092'],
-    value_serializer=lambda x: json.dumps(x).encode('utf-8')
-)
 
 TOPICS = ['page_views', 'cart_events', 'purchases']
 
@@ -21,14 +16,36 @@ def main():
     parser.add_argument("--tps", type=float, default=1.0, help="Transactions per second (default: 1.0)")
     args = parser.parse_args()
 
-    # Connect to local Kafka
-    producer = KafkaProducer(
-        bootstrap_servers=['localhost:19092'],
-        value_serializer=lambda x: json.dumps(x).encode('utf-8')
-    )
-
     TOPICS = ['page_views', 'cart_events', 'purchases']
+    bootstrap_servers = ['localhost:19092']
 
+    print(f"Starting producer pre-flight checks...", flush=True)
+
+    # 1. Connect and Check Kafka Connectivity
+    try:
+        from kafka.errors import NoBrokersAvailable
+        producer = KafkaProducer(
+            bootstrap_servers=bootstrap_servers,
+            value_serializer=lambda x: json.dumps(x).encode('utf-8'),
+            request_timeout_ms=5000
+        )
+    except NoBrokersAvailable:
+        print(f"❌ Error: Could not connect to Kafka at {bootstrap_servers}.", file=sys.stderr, flush=True)
+        print(f"👉 Please make sure services are started with './bin/1_up.sh'", file=sys.stderr, flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: Unexpected error connecting to Kafka: {str(e)}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    # 2. Check Topic Availability
+    for topic in TOPICS:
+        if producer.partitions_for(topic) is None:
+            print(f"❌ Error: Required topic '{topic}' does not exist.", file=sys.stderr, flush=True)
+            print(f"👉 Please make sure initialization scripts have run (e.g., './bin/3_run_dbt.sh')", file=sys.stderr, flush=True)
+            producer.close()
+            sys.exit(1)
+
+    print(f"✅ Pre-flight checks passed. Kafka is reachable and all topics exist.", flush=True)
     print(f"Starting data generation at {args.tps} TPS... Press Ctrl+C to stop.", flush=True)
 
     interval = 1.0 / args.tps if args.tps > 0 else 0

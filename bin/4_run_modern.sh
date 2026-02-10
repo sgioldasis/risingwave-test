@@ -21,17 +21,14 @@ mkdir -p logs
 
 # Start the Backend
 echo "Starting FastAPI Backend..."
-cd modern-dashboard
-nohup uv run python3 backend/api.py > ../backend.log 2>&1 &
+(cd modern-dashboard && nohup uv run python3 backend/api.py > ../backend.log 2>&1) &
 BACKEND_PID=$!
-echo $BACKEND_PID > ../.backend.pid
-cd ..
+echo $BACKEND_PID > .backend.pid
 
 # Start the Frontend
 echo "Starting Vite Frontend..."
-cd modern-dashboard/frontend && nohup npm run dev > ../../frontend.log 2>&1 &
+(cd modern-dashboard/frontend && nohup npm run dev > ../../frontend.log 2>&1) &
 FRONTEND_PID=$!
-cd ../..
 echo $FRONTEND_PID > .frontend.pid
 
 echo ""

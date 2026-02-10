@@ -13,6 +13,7 @@ import psutil
 import re
 import subprocess
 import sys
+import time
 import threading
 import webbrowser
 from datetime import datetime
@@ -36,9 +37,9 @@ BIN_DIR = PROJECT_ROOT / "bin"
 # Scripts configuration (in order)
 SCRIPTS = [
     ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies"),
-    ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
     ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
+    ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
@@ -48,9 +49,16 @@ SCRIPTS = [
 
 # Global state - track per-script
 running_processes = {}  # script_file -> process
+running_background_services = set()  # script_file -> set (detected as running by ports/pattern)
+tailing_tasks = {} # script_file -> asyncio task
+last_stop_time = {}  # script_file -> timestamp of last stop/failure
+completed_guard = set() # script_file -> set of scripts currently handling completion
 output_histories = {}   # script_file -> [output lines]
 output_lock = threading.Lock()
 connected_websockets = set()
+completion_seq = 0 # To track completion messages
+
+PRODUCER_LOG = PROJECT_ROOT / "producer.log"
 
 
 # HTML Template
@@ -405,6 +413,19 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .terminal-output .info {
             color: var(--info);
         }
+
+        .terminal-output a {
+            color: var(--accent);
+            text-decoration: underline;
+            text-decoration-thickness: 1px;
+            text-underline-offset: 3px;
+            transition: all 0.2s;
+        }
+
+        .terminal-output a:hover {
+            color: var(--accent-hover);
+            text-decoration-thickness: 2px;
+        }
         
         .empty-state {
             display: flex;
@@ -516,7 +537,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <script>
         const scripts = {{ scripts|tojson }};
         const scriptMap = Object.fromEntries(scripts.map(s => [s[0], { file: s[0], name: s[1], desc: s[2] }]));
-        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh'];
+        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh', '3_run_producer.sh'];
         let ws;
         let reconnectInterval;
         let activeTabs = new Map(); // scriptFile -> { element, outputElement, running }
@@ -564,7 +585,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             ws.onopen = () => {
                 console.log('WebSocket connected');
                 document.getElementById('connectionStatus').textContent = '⚡ Connected';
-                clearInterval(reconnectInterval);
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
             };
             
             ws.onmessage = (event) => {
@@ -575,7 +599,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
                 document.getElementById('connectionStatus').textContent = '🔌 Disconnected';
-                reconnectInterval = setInterval(connectWebSocket, 3000);
+                if (!reconnectInterval) {
+                    reconnectInterval = setInterval(connectWebSocket, 3000);
+                }
             };
             
             ws.onerror = (error) => {
@@ -862,20 +888,34 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     if (bold) style += 'font-weight: bold;';
                     
                     if (style) {
-                        html += `<span style="${style}">${escapeHtml(part)}</span>`;
+                        html += `<span style="${style}">${linkify(escapeHtml(part))}</span>`;
                     } else {
-                        html += escapeHtml(part);
+                        html += linkify(escapeHtml(part));
                     }
                 }
             }
             
-            return html || escapeHtml(text);
+            return html || linkify(escapeHtml(text));
         }
         
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function linkify(text) {
+            const urlRegex = /(https?:\\/\\/[^\\s$.?#].[^\\s]*)/gi;
+            return text.replace(urlRegex, (url) => {
+                let displayUrl = url;
+                // Basic cleanup for trailing punctuation
+                if (url.endsWith('.') || url.endsWith(',') || url.endsWith(')') || url.endsWith('!')) {
+                    const lastChar = url.slice(-1);
+                    url = url.slice(0, -1);
+                    return `<a href="${url}" target="_blank">${url}</a>${lastChar}`;
+                }
+                return `<a href="${url}" target="_blank">${url}</a>`;
+            });
         }
         
         function updateStatus(scriptFile, status) {
@@ -909,6 +949,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 if (scriptItem) {
                     scriptItem.classList.remove('running');
                     document.getElementById(`indicator-${scriptFile}`).style.display = 'none';
+                }
+                
+                // CRITICAL: For background scripts, clear the tracking set when they stop
+                if (BACKGROUND_SCRIPTS.includes(scriptFile)) {
+                    backgroundScriptRunning.delete(scriptFile);
                 }
             }
             
@@ -1113,6 +1158,15 @@ async def websocket_handler(request):
             'script': script_file
         })
     
+    # Also send status for background services that might not have a process reference but are running
+    for script_file in running_background_services:
+        if script_file not in running_processes:
+            await ws.send_json({
+                'type': 'status',
+                'status': 'running',
+                'script': script_file
+            })
+    
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -1268,9 +1322,7 @@ async def run_script_in_background(script_file, ws, params=''):
             
             # Read output line by line
             for line in process.stdout:
-                # Remove trailing newline
                 line = line.rstrip('\n')
-                # Use asyncio to schedule the output
                 asyncio.run_coroutine_threadsafe(
                     append_output(script_file, line),
                     loop=main_loop
@@ -1279,11 +1331,11 @@ async def run_script_in_background(script_file, ws, params=''):
             # Wait for completion
             return_code = process.wait()
             
-            # Remove from running processes
+            # Explicitly clear from running processes
             if script_file in running_processes:
                 del running_processes[script_file]
-            
-            # Send completion status
+                
+            # Trigger completion if not already handled
             asyncio.run_coroutine_threadsafe(
                 script_completed(script_file, return_code),
                 loop=main_loop
@@ -1302,18 +1354,43 @@ async def run_script_in_background(script_file, ws, params=''):
 
 
 async def script_completed(script_file, return_code):
-    """Handle script completion."""
+    """Handle script completion with guard to prevent duplicates."""
+    global completion_seq
+    
+    # Simple guard to prevent immediate double-calls
+    # We check if this script has been marked as 'stopped' or 'ready' in the last 500ms
+    now = time.time()
+    if now - last_stop_time.get(script_file, 0) < 0.5:
+        return
+
+    # Update stop time first to lock out other callers
+    last_stop_time[script_file] = now
+    completion_seq += 1
+    
+    # Clean up state
+    if script_file in running_processes:
+        del running_processes[script_file]
+    if script_file in running_background_services:
+        running_background_services.remove(script_file)
+    
+    # Append completion message
     await append_output(script_file, "", None)
     await append_output(script_file, "=" * 60, 'info')
     
-    if return_code == 0:
-        await append_output(script_file, f"✅ Script completed successfully (exit code: {return_code})", 'success')
-    else:
-        await append_output(script_file, f"❌ Script failed (exit code: {return_code})", 'error')
+    msg = f"✅ Script completed successfully (exit code: {return_code}) [seq:{completion_seq}]"
+    if return_code != 0:
+        msg = f"❌ Script failed (exit code: {return_code}) [seq:{completion_seq}]"
     
+    await append_output(script_file, msg, 'success' if return_code == 0 else 'error')
     await append_output(script_file, "=" * 60, 'info')
     
-    await broadcast({'type': 'status', 'status': 'ready', 'script': script_file})
+    # Determine new status
+    status = 'ready'
+    if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
+        status = 'stopped'
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Broadcasting completion for {script_file}: {status} (seq:{completion_seq})")
+    await broadcast({'type': 'status', 'status': status, 'script': script_file})
 
 
 async def script_error(script_file, error_msg):
@@ -1371,21 +1448,52 @@ def stop_script(script_file):
             del running_processes[script_file]
         
         main_loop = asyncio.get_event_loop()
+        status = 'ready'
         asyncio.run_coroutine_threadsafe(
             append_output(script_file, "\n⚠️ Script terminated by user\n", 'warning'),
             loop=main_loop
         )
+        
+        if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
+            status = 'stopped'
+            last_stop_time[script_file] = time.time()
+            if script_file in running_background_services:
+                running_background_services.remove(script_file)
+            
         asyncio.run_coroutine_threadsafe(
-            broadcast({'type': 'status', 'status': 'ready', 'script': script_file}),
+            broadcast({'type': 'status', 'status': status, 'script': script_file}),
             loop=main_loop
         )
-    except psutil.NoSuchProcess:
+    except (psutil.NoSuchProcess, ProcessLookupError):
         if script_file in running_processes:
             del running_processes[script_file]
+            
+        main_loop = asyncio.get_event_loop()
+        status = 'ready'
+        if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
+            status = 'stopped'
+            last_stop_time[script_file] = time.time()
+            if script_file in running_background_services:
+                running_background_services.remove(script_file)
+            
+        asyncio.run_coroutine_threadsafe(
+            broadcast({'type': 'status', 'status': status, 'script': script_file}),
+            loop=main_loop
+        )
     except Exception as e:
         print(f"Error stopping script {script_file}: {e}")
         if script_file in running_processes:
             del running_processes[script_file]
+
+    # Also handle background scripts that might have been started externally
+    if script_file == "3_run_producer.sh":
+        for proc in psutil.process_iter(['cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline')
+                if cmdline and any("scripts/producer.py" in arg for arg in cmdline):
+                    proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
 
 async def check_running_processes():
@@ -1395,12 +1503,10 @@ async def check_running_processes():
         
         processes_to_remove = []
         for script_file, process in list(running_processes.items()):
-            # Check if process has terminated
             if process.poll() is not None:
                 processes_to_remove.append((script_file, process.returncode))
         
         for script_file, return_code in processes_to_remove:
-            del running_processes[script_file]
             await script_completed(script_file, return_code)
 
 
@@ -1415,51 +1521,125 @@ async def check_port_open(port):
         return False
 
 
+async def tail_log_file(script_file, log_path):
+    """Tail a log file and broadcast new lines to clients."""
+    print(f"Starting to tail log: {log_path} for {script_file}")
+    
+    try:
+        # Initial read of last few lines if exists
+        if os.path.exists(log_path):
+            with open(log_path, 'r') as f:
+                f.seek(0, os.SEEK_END)
+                # Just start from the end
+                
+        while True:
+            if os.path.exists(log_path):
+                with open(log_path, 'r') as f:
+                    f.seek(0, os.SEEK_END)
+                    while script_file in running_background_services and script_file not in running_processes:
+                        line = f.readline()
+                        if line:
+                            await append_output(script_file, line.rstrip('\n'))
+                        else:
+                            await asyncio.sleep(0.5)
+            else:
+                await asyncio.sleep(1)
+                
+            if script_file not in running_background_services or script_file in running_processes:
+                break
+    except asyncio.CancelledError:
+        print(f"Tailing task for {script_file} cancelled")
+    except Exception as e:
+        print(f"Error tailing {log_path}: {e}")
+    finally:
+        print(f"Stopped tailing log: {log_path}")
+
+
+def check_process_running(pattern):
+    """Check if any process specifically matches the given pattern in its command line."""
+    for proc in psutil.process_iter(['cmdline', 'pid']):
+        try:
+            if proc.pid == os.getpid():
+                continue
+                
+            cmdline = proc.info.get('cmdline')
+            if not cmdline:
+                continue
+            
+            # More specific matching - look for the exact script path or name
+            for arg in cmdline:
+                if pattern in arg and not arg.endswith('.pyc'):
+                    # Ensure it's not a grep or other accidental match
+                    if "grep" not in cmdline[0]:
+                        return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+
 async def check_external_services():
     """Periodically check if external services (dashboards) are running."""
     # Only check services that run on specific ports
     services = [
         {"script": "4_run_dashboard.sh", "port": 8050},
-        {"script": "4_run_modern.sh", "port": 4000}
+        {"script": "4_run_modern.sh", "port": 4000},
+        {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"}
     ]
     
     # Track previous state to avoid spamming
-    running_services = set()
     
     while True:
         try:
             for service in services:
-                is_running = await check_port_open(service["port"])
+                if "port" in service:
+                    is_running = await check_port_open(service["port"])
+                else:
+                    is_running = check_process_running(service["pattern"])
+                
                 script_name = service["script"]
                 
                 if is_running:
-                    # Notify clients that service is running
-                    if script_name not in running_services:
-                        print(f"Service {script_name} on port {service['port']} is RUNNING")
-                        running_services.add(script_name)
+                    # Notify clients only on state transition
+                    # AND handle cooldown to prevent flapping back to 'running' after an explicit stop
+                    cooldown = time.time() - last_stop_time.get(script_name, 0) < 10
                     
-                    # Always broadcast running status periodically to ensure new clients get it
-                    # (Clients handle duplicates)
-                    await broadcast({
-                        "type": "status",
-                        "script": script_name,
-                        "status": "running"
-                    })
+                    if script_name not in running_background_services and not cooldown:
+                        print(f"Service {script_name} is now RUNNING")
+                        running_background_services.add(script_name)
+                        
+                        await broadcast({
+                            "type": "status",
+                            "script": script_name,
+                            "status": "running"
+                        })
+                        
+                        # Start tailing if it's the producer and we didn't start it
+                        if script_name == "3_run_producer.sh" and script_name not in running_processes:
+                            if script_name in tailing_tasks:
+                                tailing_tasks[script_name].cancel()
+                            tailing_tasks[script_name] = asyncio.create_task(tail_log_file(script_name, PRODUCER_LOG))
                 else:
                     # Service is NOT running
-                    if script_name in running_services:
-                        print(f"Service {script_name} on port {service['port']} has STOPPED")
-                        running_services.remove(script_name)
+                    if script_name in running_background_services:
+                        print(f"Service {script_name} has STOPPED")
+                        running_background_services.remove(script_name)
+                        
+                        # Cancel tailing task if exists
+                        if script_name in tailing_tasks:
+                            tailing_tasks[script_name].cancel()
+                            del tailing_tasks[script_name]
                         
                         # Explicitly notify clients it has stopped
-                        # Use 'stopped' status which the frontend will use to clear the running indicator
+                        # AND set a cooldown even for spontaneous stops to prevent flappy re-discovery
+                        last_stop_time[script_name] = time.time()
+                        
                         await broadcast({
                             "type": "status",
                             "script": script_name,
                             "status": "stopped"
                         })
             
-            await asyncio.sleep(2)  # Check more frequently (was 5)
+            await asyncio.sleep(2)  # Check every 2 seconds
         except Exception as e:
             print(f"Error checking external services: {e}")
             await asyncio.sleep(5)

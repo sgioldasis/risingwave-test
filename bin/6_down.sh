@@ -5,6 +5,25 @@
 
 set -e
 
+echo "=== Stopping Producer ==="
+if pgrep -f "scripts/producer.py" > /dev/null 2>&1; then
+    echo "Stopping producer process..."
+    pkill -f "scripts/producer.py" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "scripts/producer.py" > /dev/null 2>&1; then
+        pkill -9 -f "scripts/producer.py" 2>/dev/null || true
+    fi
+    echo "✅ Producer stopped"
+else
+    echo "No producer process found"
+fi
+
+# Also ensure producer port is closed if it uses one (though default is usually logic-based)
+fuser -k 5000/tcp 2>/dev/null || true
+
+echo ""
+
 echo "=== Stopping Modern Dashboard ==="
 echo ""
 
@@ -31,6 +50,12 @@ if pgrep -f "bash bin/4_run_dashboard.sh" > /dev/null 2>&1; then
     fi
     echo "✅ Legacy dashboard monitoring stopped"
 fi
+
+# Force kill ports used by dashboards
+echo "Cleaning up dashboard ports..."
+fuser -k 4000/tcp 2>/dev/null || true
+fuser -k 8000/tcp 2>/dev/null || true
+fuser -k 8050/tcp 2>/dev/null || true
 
 echo ""
 
@@ -101,6 +126,9 @@ if [ -f ".dashboard.pid" ]; then
     fi
     rm -f ".dashboard.pid"
 fi
+
+# Final cleanup of any potential stale PID files in project root
+rm -f .backend.pid .frontend.pid .dashboard.pid
 
 echo ""
 echo "=== Stopping Docker Compose Services ==="
