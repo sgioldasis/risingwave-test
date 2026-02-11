@@ -8,12 +8,28 @@ import dash_bootstrap_components as dbc
 from sqlalchemy import create_engine
 
 
+import psutil
+import os
+import signal
+import subprocess
+
+# Configuration
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PRODUCER_LOG = os.path.join(PROJECT_ROOT, "producer.log")
+
+def find_producer_process():
+    """Find the external producer process."""
+    for proc in psutil.process_iter(['cmdline']):
+        try:
+            cmdline = proc.info.get('cmdline')
+            if cmdline and any("scripts/producer.py" in arg for arg in cmdline):
+                return proc
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
 # Producer state management
-producer_running = False  # Start producer manually
-producer_process = None
-producer_output = [
-    f"[{datetime.now().strftime('%H:%M:%S')}] Dashboard initialized - producer must be started manually"
-]
+producer_output = []
 
 
 # Database connection with connection pooling
@@ -495,28 +511,56 @@ def update_dashboard(n, start_clicks, stop_clicks):
 
     # Handle producer controls
     ctx = dash.callback_context
+    proc = find_producer_process()
+    
     if ctx.triggered:
         button_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
         if button_id == "start-producer-btn" and start_clicks > 0:
-            if not producer_running:
-                producer_running = True
-                producer_output.append(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Starting producer..."
-                )
-                # Start producer in background
-                import threading
-
-                producer_thread = threading.Thread(target=run_producer)
-                producer_thread.daemon = True
-                producer_thread.start()
+            if not proc:
+                # Clear old log
+                if os.path.exists(PRODUCER_LOG):
+                    try:
+                        os.remove(PRODUCER_LOG)
+                    except Exception:
+                        pass
+                
+                # Start producer in background via runner script
+                subprocess.Popen(["bash", "bin/3_run_producer.sh", "1"], cwd=PROJECT_ROOT)
+                # Wait briefly for process to start
+                import time
+                time.sleep(1)
+                proc = find_producer_process()
 
         elif button_id == "stop-producer-btn" and stop_clicks > 0:
-            if producer_running:
-                producer_running = False
-                producer_output.append(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Stopping producer..."
-                )
+            if proc:
+                # Kill the producer process and its children
+                try:
+                    parent = psutil.Process(proc.pid)
+                    for child in parent.children(recursive=True):
+                        child.send_signal(signal.SIGTERM)
+                    parent.send_signal(signal.SIGTERM)
+                except Exception:
+                    pass
+                proc = None
+
+    # Check current running state after potential trigger
+    producer_running = proc is not None
+
+    # Sync producer_output with producer.log
+    if os.path.exists(PRODUCER_LOG):
+        try:
+            with open(PRODUCER_LOG, "r") as f:
+                # Read last 30 lines for the buffer
+                producer_output = f.readlines()[-30:]
+                producer_output = [line.strip() for line in producer_output]
+        except Exception:
+            pass
+    else:
+        if not producer_running:
+            producer_output = [f"[{datetime.now().strftime('%H:%M:%S')}] Producer stopped - no logs available"]
+        else:
+            producer_output = [f"[{datetime.now().strftime('%H:%M:%S')}] Producer starting..."]
 
     try:
         df = get_funnel_data()
@@ -586,68 +630,7 @@ def update_dashboard(n, start_clicks, stop_clicks):
         )
 
 
-def run_producer():
-    """Run the producer process and capture output"""
-    global producer_output, producer_running
 
-    import json
-    import time
-    import random
-    from datetime import datetime
-    from kafka import KafkaProducer
-
-    producer = KafkaProducer(
-        bootstrap_servers=["localhost:19092"],
-        value_serializer=lambda x: json.dumps(x).encode("utf-8"),
-    )
-
-    TOPICS = ["page_views", "cart_events", "purchases"]
-
-    producer_output.append(
-        f"[{datetime.now().strftime('%H:%M:%S')}] Producer started successfully"
-    )
-
-    try:
-        while producer_running:
-            user_id = random.randint(1, 100)
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            # 1. Page Views (High volume)
-            view_data = {
-                "user_id": user_id,
-                "page_id": f"page_{random.randint(1, 20)}",
-                "event_time": current_time,
-            }
-            producer.send("page_views", value=view_data)
-
-            # 2. Add to Cart (Medium volume)
-            if random.random() < 0.3:
-                cart_data = {
-                    "user_id": user_id,
-                    "item_id": f"item_{random.randint(100, 200)}",
-                    "event_time": current_time,
-                }
-                producer.send("cart_events", value=cart_data)
-
-            # 3. Purchases (Low volume)
-            if random.random() < 0.1:
-                purchase_data = {
-                    "user_id": user_id,
-                    "amount": round(random.uniform(10, 500), 2),
-                    "event_time": current_time,
-                }
-                producer.send("purchases", value=purchase_data)
-
-            producer_output.append(f"Sent events for User {user_id} at {current_time}")
-            time.sleep(1)
-
-    except Exception as e:
-        producer_output.append(f"[ERROR] {str(e)}")
-    finally:
-        producer.close()
-        producer_output.append(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Producer stopped"
-        )
 
 
 # Add auto-scrolling JavaScript
