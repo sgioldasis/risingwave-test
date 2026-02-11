@@ -77,14 +77,19 @@ if [ -f ".backend.pid" ]; then
     rm -f ".backend.pid"
 else
     # Try to find and kill backend process by name
-    if pgrep -f "modern-dashboard/backend/api.py" > /dev/null 2>&1; then
-        echo "Stopping backend process..."
-        pkill -f "modern-dashboard/backend/api.py" 2>/dev/null || true
-        sleep 1
-        echo "✅ Backend stopped"
-    else
-        echo "No backend process found"
-    fi
+    echo "Stopping backend processes..."
+    
+    # Kill backend API processes
+    pkill -f "modern-dashboard/backend/api.py" 2>/dev/null || true
+    pkill -f "uvicorn.*api:app" 2>/dev/null || true
+    
+    sleep 1
+    
+    # Force kill if still running
+    pkill -9 -f "modern-dashboard/backend/api.py" 2>/dev/null || true
+    pkill -9 -f "uvicorn.*api:app" 2>/dev/null || true
+    
+    echo "✅ Backend processes stopped"
 fi
 
 # Kill frontend process if running
@@ -105,14 +110,31 @@ if [ -f ".frontend.pid" ]; then
     rm -f ".frontend.pid"
 else
     # Try to find and kill frontend process by name
-    if pgrep -f "vite" > /dev/null 2>&1; then
-        echo "Stopping frontend process..."
-        pkill -f "vite" 2>/dev/null || true
-        sleep 1
-        echo "✅ Frontend stopped"
-    else
-        echo "No frontend process found"
-    fi
+    echo "Stopping frontend processes (npm/node/vite)..."
+    
+    # Kill npm run dev processes
+    pkill -f "npm run dev" 2>/dev/null || true
+    
+    # Kill vite processes
+    pkill -f "node_modules/.bin/vite" 2>/dev/null || true
+    pkill -f "node.*vite" 2>/dev/null || true
+    
+    # Kill any node process in the frontend directory
+    pkill -f "modern-dashboard/frontend" 2>/dev/null || true
+    
+    # Kill esbuild processes (spawned by vite)
+    pkill -f "esbuild.*--service" 2>/dev/null || true
+    
+    sleep 2
+    
+    # Force kill if still running
+    pkill -9 -f "npm run dev" 2>/dev/null || true
+    pkill -9 -f "node_modules/.bin/vite" 2>/dev/null || true
+    pkill -9 -f "node.*vite" 2>/dev/null || true
+    pkill -9 -f "modern-dashboard/frontend" 2>/dev/null || true
+    pkill -9 -f "esbuild.*--service" 2>/dev/null || true
+    
+    echo "✅ Frontend processes stopped"
 fi
 
 # Kill dashboard process if running
@@ -129,6 +151,41 @@ fi
 
 # Final cleanup of any potential stale PID files in project root
 rm -f .backend.pid .frontend.pid .dashboard.pid
+
+echo ""
+echo "=== Final Port Cleanup ===" 
+echo "Waiting for processes to fully terminate..."
+sleep 2
+
+# Force kill any remaining processes on dashboard ports
+echo "Ensuring all dashboard ports are freed..."
+lsof -ti :4000 | xargs kill -9 2>/dev/null || true
+lsof -ti :8000 | xargs kill -9 2>/dev/null || true
+lsof -ti :8050 | xargs kill -9 2>/dev/null || true
+
+sleep 1
+
+# Verify ports are free
+if lsof -i :4000 > /dev/null 2>&1; then
+    echo "⚠️  Warning: Port 4000 still in use"
+    lsof -i :4000
+else
+    echo "✅ Port 4000 is free"
+fi
+
+if lsof -i :8000 > /dev/null 2>&1; then
+    echo "⚠️  Warning: Port 8000 still in use"
+    lsof -i :8000
+else
+    echo "✅ Port 8000 is free"
+fi
+
+if lsof -i :8050 > /dev/null 2>&1; then
+    echo "⚠️  Warning: Port 8050 still in use"
+    lsof -i :8050
+else
+    echo "✅ Port 8050 is free"
+fi
 
 echo ""
 echo "=== Stopping Docker Compose Services ==="

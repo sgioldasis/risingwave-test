@@ -1587,6 +1587,8 @@ async def check_external_services():
     ]
     
     # Track previous state to avoid spamming
+    # Track consecutive positive checks to prevent false positives during shutdown
+    consecutive_checks = {}  # script_name -> count
     
     while True:
         try:
@@ -1599,12 +1601,16 @@ async def check_external_services():
                 script_name = service["script"]
                 
                 if is_running:
+                    # Increment consecutive check counter
+                    consecutive_checks[script_name] = consecutive_checks.get(script_name, 0) + 1
+                    
                     # Notify clients only on state transition
                     # AND handle cooldown to prevent flapping back to 'running' after an explicit stop
-                    cooldown = time.time() - last_stop_time.get(script_name, 0) < 10
+                    cooldown = time.time() - last_stop_time.get(script_name, 0) < 30
                     
-                    if script_name not in running_background_services and not cooldown:
-                        print(f"Service {script_name} is now RUNNING")
+                    # Require 2 consecutive positive checks to prevent false positives
+                    if script_name not in running_background_services and not cooldown and consecutive_checks[script_name] >= 2:
+                        print(f"Service {script_name} is now RUNNING (confirmed after {consecutive_checks[script_name]} checks)")
                         running_background_services.add(script_name)
                         
                         await broadcast({
@@ -1619,7 +1625,8 @@ async def check_external_services():
                                 tailing_tasks[script_name].cancel()
                             tailing_tasks[script_name] = asyncio.create_task(tail_log_file(script_name, PRODUCER_LOG))
                 else:
-                    # Service is NOT running
+                    # Service is NOT running - reset consecutive check counter
+                    consecutive_checks[script_name] = 0
                     if script_name in running_background_services:
                         print(f"Service {script_name} has STOPPED")
                         running_background_services.remove(script_name)
