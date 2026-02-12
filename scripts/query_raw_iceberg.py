@@ -261,7 +261,7 @@ def query_funnel(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def live_mode(conn: duckdb.DuckDBPyConnection) -> None:
-    """Run in live monitoring mode, refreshing every 5 seconds."""
+    """Run in live monitoring mode, refreshing every 1 second."""
     try:
         while True:
             # Clear screen (works on Unix-like systems)
@@ -272,10 +272,17 @@ def live_mode(conn: duckdb.DuckDBPyConnection) -> None:
             print("=" * 80)
             print("(Press Ctrl+C to exit)")
             
+            # Re-attach catalog to bypass Iceberg metadata caching
+            try:
+                conn.execute("DETACH lakekeeper_catalog;")
+            except:
+                pass  # Catalog might not be attached yet
+            attach_catalog(conn)
+            
             query_funnel(conn)
             
-            print("\n⏳ Refreshing in 5 seconds...")
-            time.sleep(5)
+            print("\n⏳ Refreshing in 1 second...")
+            time.sleep(1)
             
     except KeyboardInterrupt:
         print("\n\n👋 Live monitoring stopped.")

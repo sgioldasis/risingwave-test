@@ -137,8 +137,8 @@ INTO iceberg_cart_events
 FROM src_cart
 WITH (
     type = 'append-only',
-    commit_checkpoint_interval = 10,
-    sink_decouple = true
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
 );
 
 -- ----- Model: sink_page_views_to_iceberg -----
@@ -147,8 +147,8 @@ INTO iceberg_page_views
 FROM src_page
 WITH (
     type = 'append-only',
-    commit_checkpoint_interval = 10,
-    sink_decouple = true
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
 );
 
 -- ----- Model: sink_purchases_to_iceberg -----
@@ -157,8 +157,8 @@ INTO iceberg_purchases
 FROM src_purchase
 WITH (
     type = 'append-only',
-    commit_checkpoint_interval = 10,
-    sink_decouple = true
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
 );
 
 -- ==========================================================

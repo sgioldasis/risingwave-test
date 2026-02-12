@@ -8,5 +8,5 @@ CREATE SOURCE {{ this }} (
     connector = 'kafka',
     topic = 'page_views',
     properties.bootstrap.server = 'redpanda:9092',
-    scan.startup.mode = 'latest'
+    scan.startup.mode = 'earliest'
 ) FORMAT PLAIN ENCODE JSON

@@ -16,6 +16,6 @@ INTO iceberg_purchases
 FROM {{ ref('src_purchase') }}
 WITH (
     type = 'append-only',
-    commit_checkpoint_interval = 10,
-    sink_decouple = true
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
 )

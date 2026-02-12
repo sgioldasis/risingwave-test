@@ -188,6 +188,16 @@ else
 fi
 
 echo ""
+echo "=== Cleaning dbt directories in Dagster container ==="
+if docker ps | grep -q "dagster-webserver"; then
+    echo "Removing dbt/target and dbt/logs inside dagster-webserver container..."
+    docker exec dagster-webserver bash -c "rm -rf /workspace/dbt/target /workspace/dbt/logs" || echo "⚠️  Directory removal failed, continuing anyway"
+    echo "✅ dbt directories cleaned"
+else
+    echo "dagster-webserver container not running, skipping dbt directory cleanup"
+fi
+
+echo ""
 echo "=== Stopping Docker Compose Services ==="
 echo "Running docker compose down --volumes from project root"
 echo ""
@@ -195,7 +205,17 @@ echo ""
 docker compose down --volumes
 
 echo ""
-echo "=== Cleaning up local directories ==="
+echo "=== Cleaning up dbt directories on host ==="
+echo "Using temporary Docker container to remove root-owned files..."
+docker run --rm -v "$(pwd)/dbt:/dbt" alpine:latest rm -rf /dbt/target /dbt/logs 2>/dev/null || true
+if [ -d "dbt/target" ] || [ -d "dbt/logs" ]; then
+    echo "⚠️  Warning: dbt/target or dbt/logs may still exist (check permissions)"
+else
+    echo "✅ dbt/target and dbt/logs removed successfully"
+fi
+
+echo ""
+echo "=== Cleaning up other local directories ==="
 
 # NOTE: The following directory cleanup sections are commented out because
 # these directories are created by Docker containers running as root, and
@@ -250,11 +270,20 @@ echo ""
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
 echo "✅ Log files (backend.log, frontend.log) cleaned up"
-echo ""
-echo "⚠️  Note: The following directories were NOT cleaned up because they are owned by root:"
-echo "   - dbt/target/"
-echo "   - dbt/logs/"
-echo ""
-echo "   To clean them, run: sudo rm -rf dbt/target dbt/logs"
+
+# Only show warning if directories still exist
+if [ -d "dbt/target" ] || [ -d "dbt/logs" ]; then
+    echo ""
+    echo "⚠️  Note: The following directories were NOT cleaned up because they are owned by root:"
+    if [ -d "dbt/target" ]; then
+        echo "   - dbt/target/"
+    fi
+    if [ -d "dbt/logs" ]; then
+        echo "   - dbt/logs/"
+    fi
+    echo ""
+    echo "   To clean them, run: sudo rm -rf dbt/target dbt/logs"
+fi
+
 echo ""
 echo "All services have been terminated and persistent data removed."
