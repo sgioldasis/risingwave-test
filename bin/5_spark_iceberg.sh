@@ -83,23 +83,38 @@ echo $MARIMO_PID > /tmp/marimo.pid
 
 echo "🔄 Marimo started with PID: $MARIMO_PID"
 
-# Wait for server to be ready and open browser
+# Wait for server to be ready
 echo "⏳ Waiting for server to start..."
 for i in {1..30}; do
     if curl -s http://localhost:$MARIMO_PORT >/dev/null 2>&1; then
         echo "✅ Server ready at http://localhost:$MARIMO_PORT"
-        echo "🌐 Opening browser..."
-        python3 -c "import webbrowser; webbrowser.open('http://localhost:$MARIMO_PORT')" 2>/dev/null || true
         break
     fi
     sleep 0.5
 done
 
 echo ""
-echo "✨ Marimo notebook is running in the background"
+echo "✨ Marimo notebook is running"
 echo "📍 URL: http://localhost:$MARIMO_PORT"
 echo "📝 Logs: tail -f /tmp/marimo.log"
-echo "🔄 To restart with latest changes, just run this script again"
-echo "⛔ To stop manually: kill \$(cat /tmp/marimo.pid)"
 echo ""
-echo "This script has completed. The notebook server remains running."
+echo "Marimo PID: $MARIMO_PID (saved to /tmp/marimo.pid)"
+echo ""
+echo "To stop the application, run: ./bin/6_down.sh"
+echo ""
+echo "Monitoring processes (Ctrl+C to stop)..."
+echo "==========================================="
+
+# Keep script running and monitor marimo process
+trap 'echo ""; echo "Stopping marimo..."; kill $MARIMO_PID 2>/dev/null; rm -f /tmp/marimo.pid; exit 0' INT TERM
+
+# Wait for marimo process to exit
+while kill -0 $MARIMO_PID 2>/dev/null; do
+    sleep 2
+done
+
+# If we get here, marimo died unexpectedly
+echo ""
+echo "⚠️ Marimo process exited unexpectedly"
+rm -f /tmp/marimo.pid
+exit 1

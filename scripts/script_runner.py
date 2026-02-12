@@ -57,6 +57,15 @@ output_histories = {}   # script_file -> [output lines]
 output_lock = threading.Lock()
 connected_websockets = set()
 completion_seq = 0 # To track completion messages
+manually_stopped_services = set()  # script_file -> set of services explicitly stopped by user
+
+# Background services with their ports for the external services checker
+BACKGROUND_SERVICES_CONFIG = [
+    {"script": "4_run_dashboard.sh", "port": 8050},
+    {"script": "4_run_modern.sh", "port": 4000},
+    {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"},
+    {"script": "5_spark_iceberg.sh", "port": 2718},
+]
 
 PRODUCER_LOG = PROJECT_ROOT / "producer.log"
 
@@ -537,7 +546,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <script>
         const scripts = {{ scripts|tojson }};
         const scriptMap = Object.fromEntries(scripts.map(s => [s[0], { file: s[0], name: s[1], desc: s[2] }]));
-        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh', '3_run_producer.sh'];
+        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh', '3_run_producer.sh', '5_spark_iceberg.sh'];
         let ws;
         let reconnectInterval;
         let activeTabs = new Map(); // scriptFile -> { element, outputElement, running }
@@ -865,7 +874,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             let currentBg = null;
             let bold = false;
             
-            const parts = text.split(/(\\x1B\\[[0-9;]*m)/g);
+            const parts = text.split(/(\x1B\[[0-9;]*m)/g);
             
             for (const part of parts) {
                 if (part.startsWith('\x1B[') && part.endsWith('m')) {
@@ -911,7 +920,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
 
         function linkify(text) {
-            const urlRegex = /(https?:\\/\\/[^\\s$.?#].[^\\s]*)/gi;
+            const urlRegex = /(https?:\/\/[^\s$.?#].[^\s]*)/gi;
             return text.replace(urlRegex, (url) => {
                 let displayUrl = url;
                 // Basic cleanup for trailing punctuation
@@ -1165,11 +1174,13 @@ async def websocket_handler(request):
         })
     
     # Also send status for background services that might not have a process reference but are running
-    # Filter out any that have been stopped recently (within last 5 seconds)
+    # Filter out any that have been stopped recently (within last 5 seconds) or are manually stopped
     for script_file in list(running_background_services):
         if script_file not in running_processes:
-            # Check if it was recently stopped - don't report as running
+            # Check if it was recently stopped or manually stopped - don't report as running
             if time.time() - last_stop_time.get(script_file, 0) < 5:
+                continue
+            if script_file in manually_stopped_services:
                 continue
             await ws.send_json({
                 'type': 'status',
@@ -1273,6 +1284,9 @@ async def run_script_in_background(script_file, ws, params=''):
     # Clear previous output for this script
     with output_lock:
         output_histories[script_file] = []
+    
+    # Clear from manually stopped set when user explicitly runs the script
+    manually_stopped_services.discard(script_file)
     
     await broadcast({'type': 'status', 'status': 'running', 'script': script_file})
     
@@ -1395,12 +1409,34 @@ async def script_completed(script_file, return_code):
     await append_output(script_file, "=" * 60, 'info')
     
     # Determine new status
+    # For background services, 'ready' means the service is running (script completed successfully)
+    # 'stopped' is only used when user explicitly stops the service
     status = 'ready'
-    if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
-        status = 'stopped'
+    bg_script_names = [s["script"] for s in BACKGROUND_SERVICES_CONFIG]
+    if script_file in bg_script_names:
+        # Background services that exit successfully should show as 'ready'
+        # (the external services checker will detect the actual running service)
+        # Only mark as 'stopped' if the script failed
+        if return_code != 0:
+            status = 'stopped'
     
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Broadcasting completion for {script_file}: {status} (seq:{completion_seq})")
     await broadcast({'type': 'status', 'status': status, 'script': script_file})
+    
+    # Special handling for "Stop Everything" script - mark all background services as manually stopped
+    if script_file == "6_down.sh" and return_code == 0:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Stop Everything completed - marking all background services as manually stopped")
+        for bg_script in [s["script"] for s in BACKGROUND_SERVICES_CONFIG]:
+            manually_stopped_services.add(bg_script)
+            # Only broadcast if it was previously tracked as running
+            if bg_script in running_background_services:
+                running_background_services.remove(bg_script)
+            # Also clear any tailing tasks
+            if bg_script in tailing_tasks:
+                tailing_tasks[bg_script].cancel()
+                del tailing_tasks[bg_script]
+            # Broadcast stopped status
+            await broadcast({'type': 'status', 'status': 'stopped', 'script': bg_script})
 
 
 async def script_error(script_file, error_msg):
@@ -1461,6 +1497,9 @@ def stop_script(script_file):
         if script_file in running_background_services:
             running_background_services.remove(script_file)
         
+        # Mark as manually stopped to prevent the external services checker from re-adding it
+        manually_stopped_services.add(script_file)
+        
         main_loop = asyncio.get_event_loop()
         status = 'ready'
         asyncio.run_coroutine_threadsafe(
@@ -1469,7 +1508,8 @@ def stop_script(script_file):
         )
         
         # Background scripts use 'stopped' status to trigger client-side cleanup
-        if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
+        bg_script_names = [s["script"] for s in BACKGROUND_SERVICES_CONFIG]
+        if script_file in bg_script_names:
             status = 'stopped'
             last_stop_time[script_file] = time.time()
             
@@ -1484,11 +1524,15 @@ def stop_script(script_file):
         # Always ensure cleanup of background services tracking
         if script_file in running_background_services:
             running_background_services.remove(script_file)
+        
+        # Mark as manually stopped to prevent the external services checker from re-adding it
+        manually_stopped_services.add(script_file)
             
         main_loop = asyncio.get_event_loop()
         status = 'ready'
         # Background scripts use 'stopped' status to trigger client-side cleanup
-        if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
+        bg_script_names = [s["script"] for s in BACKGROUND_SERVICES_CONFIG]
+        if script_file in bg_script_names:
             status = 'stopped'
             last_stop_time[script_file] = time.time()
             
@@ -1595,12 +1639,8 @@ def check_process_running(pattern):
 
 async def check_external_services():
     """Periodically check if external services (dashboards) are running."""
-    # Only check services that run on specific ports
-    services = [
-        {"script": "4_run_dashboard.sh", "port": 8050},
-        {"script": "4_run_modern.sh", "port": 4000},
-        {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"}
-    ]
+    # Use the configured services list for all background services
+    services = BACKGROUND_SERVICES_CONFIG
     
     # Track consecutive positive checks to prevent false positives during startup
     consecutive_checks = {}  # script_name -> count
@@ -1618,6 +1658,10 @@ async def check_external_services():
                 if is_running:
                     # Increment consecutive check counter
                     consecutive_checks[script_name] = consecutive_checks.get(script_name, 0) + 1
+                    
+                    # Skip if this service was manually stopped by user (until they explicitly run it again)
+                    if script_name in manually_stopped_services:
+                        continue
                     
                     # Handle cooldown to prevent flapping back to 'running' after an explicit stop
                     cooldown_active = time.time() - last_stop_time.get(script_name, 0) < 5

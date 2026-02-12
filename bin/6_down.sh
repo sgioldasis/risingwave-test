@@ -57,18 +57,51 @@ if pgrep -f "bash bin/4_run_dashboard.sh" > /dev/null 2>&1; then
     echo "✅ Legacy dashboard monitoring stopped"
 fi
 
-# Force kill ports used by dashboards
+# Force kill ports used by dashboards and marimo
 echo "Cleaning up dashboard ports..."
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS - use lsof instead
     kill $(lsof -t -i:4000) 2>/dev/null || true
     kill $(lsof -t -i:8000) 2>/dev/null || true
     kill $(lsof -t -i:8050) 2>/dev/null || true
+    kill $(lsof -t -i:2718) 2>/dev/null || true
 else
     # Linux syntax
     fuser -k 4000/tcp 2>/dev/null || true
     fuser -k 8000/tcp 2>/dev/null || true
     fuser -k 8050/tcp 2>/dev/null || true
+    fuser -k 2718/tcp 2>/dev/null || true
+fi
+
+echo ""
+echo "=== Stopping Spark Iceberg (Marimo) ==="
+# Kill marimo processes
+if pgrep -f "marimo edit" > /dev/null 2>&1; then
+    echo "Stopping marimo process..."
+    pkill -f "marimo edit" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "marimo edit" > /dev/null 2>&1; then
+        pkill -9 -f "marimo edit" 2>/dev/null || true
+    fi
+    echo "✅ Marimo stopped"
+else
+    echo "No marimo process found"
+fi
+
+# Kill from PID file if exists
+if [ -f /tmp/marimo.pid ]; then
+    MARIMO_PID=$(cat /tmp/marimo.pid)
+    if kill -0 $MARIMO_PID 2>/dev/null; then
+        echo "Stopping marimo from PID file (PID: $MARIMO_PID)..."
+        kill $MARIMO_PID 2>/dev/null || true
+        sleep 1
+        if kill -0 $MARIMO_PID 2>/dev/null; then
+            kill -9 $MARIMO_PID 2>/dev/null || true
+        fi
+        echo "✅ Marimo stopped from PID file"
+    fi
+    rm -f /tmp/marimo.pid
 fi
 
 echo ""
