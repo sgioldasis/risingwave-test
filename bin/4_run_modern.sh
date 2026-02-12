@@ -8,8 +8,15 @@ echo "Dashboard will be available at: http://localhost:4000"
 echo ""
 
 # Kill any existing processes on these ports
-fuser -k 8000/tcp 2>/dev/null
-fuser -k 4000/tcp 2>/dev/null
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - use lsof instead
+    kill $(lsof -t -i:8000) 2>/dev/null || true
+    kill $(lsof -t -i:4000) 2>/dev/null || true
+else
+    # Linux syntax
+    fuser -k 8000/tcp 2>/dev/null || true
+    fuser -k 4000/tcp 2>/dev/null || true
+fi
 
 # Also kill by process pattern
 pkill -f "python3 backend/api.py" 2>/dev/null

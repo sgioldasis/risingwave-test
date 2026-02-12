@@ -20,7 +20,13 @@ else
 fi
 
 # Also ensure producer port is closed if it uses one (though default is usually logic-based)
-fuser -k 5000/tcp 2>/dev/null || true
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - use lsof instead
+    kill $(lsof -t -i:5000) 2>/dev/null || true
+else
+    # Linux syntax
+    fuser -k 5000/tcp 2>/dev/null || true
+fi
 
 echo ""
 
@@ -53,9 +59,17 @@ fi
 
 # Force kill ports used by dashboards
 echo "Cleaning up dashboard ports..."
-fuser -k 4000/tcp 2>/dev/null || true
-fuser -k 8000/tcp 2>/dev/null || true
-fuser -k 8050/tcp 2>/dev/null || true
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - use lsof instead
+    kill $(lsof -t -i:4000) 2>/dev/null || true
+    kill $(lsof -t -i:8000) 2>/dev/null || true
+    kill $(lsof -t -i:8050) 2>/dev/null || true
+else
+    # Linux syntax
+    fuser -k 4000/tcp 2>/dev/null || true
+    fuser -k 8000/tcp 2>/dev/null || true
+    fuser -k 8050/tcp 2>/dev/null || true
+fi
 
 echo ""
 
