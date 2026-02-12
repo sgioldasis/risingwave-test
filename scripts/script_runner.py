@@ -618,10 +618,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             } else if (data.type === 'status') {
                 // For background scripts, don't mark as not-running when script completes
                 // The actual processes (dashboards) are still running
-                if (BACKGROUND_SCRIPTS.includes(data.script) && data.status === 'ready') {
-                    // Don't update status to ready - keep it as running
-                    // But we do want to update the UI to show it completed starting
-                    updateBackgroundScriptStatus(data.script);
+                // Handle both 'ready' (script finished starting service) and 'stopped' (explicitly stopped)
+                if (BACKGROUND_SCRIPTS.includes(data.script) && (data.status === 'ready' || data.status === 'stopped')) {
+                    if (data.status === 'ready') {
+                        // Script finished starting the service - keep as running
+                        updateBackgroundScriptStatus(data.script);
+                    } else {
+                        // Script was explicitly stopped - clear the running status
+                        backgroundScriptRunning.delete(data.script);
+                        updateStatus(data.script, 'stopped');
+                    }
                 } else {
                     updateStatus(data.script, data.status);
                 }
@@ -1159,8 +1165,12 @@ async def websocket_handler(request):
         })
     
     # Also send status for background services that might not have a process reference but are running
-    for script_file in running_background_services:
+    # Filter out any that have been stopped recently (within last 5 seconds)
+    for script_file in list(running_background_services):
         if script_file not in running_processes:
+            # Check if it was recently stopped - don't report as running
+            if time.time() - last_stop_time.get(script_file, 0) < 5:
+                continue
             await ws.send_json({
                 'type': 'status',
                 'status': 'running',
@@ -1367,11 +1377,11 @@ async def script_completed(script_file, return_code):
     last_stop_time[script_file] = now
     completion_seq += 1
     
-    # Clean up state
+    # Clean up state - remove from running processes
     if script_file in running_processes:
         del running_processes[script_file]
-    if script_file in running_background_services:
-        running_background_services.remove(script_file)
+    # Note: Don't remove from running_background_services here for background scripts
+    # The external services checker will handle that when the port/process actually stops
     
     # Append completion message
     await append_output(script_file, "", None)
@@ -1447,6 +1457,10 @@ def stop_script(script_file):
         if script_file in running_processes:
             del running_processes[script_file]
         
+        # Always ensure cleanup of background services tracking
+        if script_file in running_background_services:
+            running_background_services.remove(script_file)
+        
         main_loop = asyncio.get_event_loop()
         status = 'ready'
         asyncio.run_coroutine_threadsafe(
@@ -1454,11 +1468,10 @@ def stop_script(script_file):
             loop=main_loop
         )
         
+        # Background scripts use 'stopped' status to trigger client-side cleanup
         if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
             status = 'stopped'
             last_stop_time[script_file] = time.time()
-            if script_file in running_background_services:
-                running_background_services.remove(script_file)
             
         asyncio.run_coroutine_threadsafe(
             broadcast({'type': 'status', 'status': status, 'script': script_file}),
@@ -1467,14 +1480,17 @@ def stop_script(script_file):
     except (psutil.NoSuchProcess, ProcessLookupError):
         if script_file in running_processes:
             del running_processes[script_file]
+        
+        # Always ensure cleanup of background services tracking
+        if script_file in running_background_services:
+            running_background_services.remove(script_file)
             
         main_loop = asyncio.get_event_loop()
         status = 'ready'
+        # Background scripts use 'stopped' status to trigger client-side cleanup
         if script_file in ["4_run_dashboard.sh", "4_run_modern.sh", "3_run_producer.sh"]:
             status = 'stopped'
             last_stop_time[script_file] = time.time()
-            if script_file in running_background_services:
-                running_background_services.remove(script_file)
             
         asyncio.run_coroutine_threadsafe(
             broadcast({'type': 'status', 'status': status, 'script': script_file}),
@@ -1586,8 +1602,7 @@ async def check_external_services():
         {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"}
     ]
     
-    # Track previous state to avoid spamming
-    # Track consecutive positive checks to prevent false positives during shutdown
+    # Track consecutive positive checks to prevent false positives during startup
     consecutive_checks = {}  # script_name -> count
     
     while True:
@@ -1604,26 +1619,28 @@ async def check_external_services():
                     # Increment consecutive check counter
                     consecutive_checks[script_name] = consecutive_checks.get(script_name, 0) + 1
                     
-                    # Notify clients only on state transition
-                    # AND handle cooldown to prevent flapping back to 'running' after an explicit stop
-                    cooldown = time.time() - last_stop_time.get(script_name, 0) < 30
+                    # Handle cooldown to prevent flapping back to 'running' after an explicit stop
+                    cooldown_active = time.time() - last_stop_time.get(script_name, 0) < 5
                     
                     # Require 2 consecutive positive checks to prevent false positives
-                    if script_name not in running_background_services and not cooldown and consecutive_checks[script_name] >= 2:
-                        print(f"Service {script_name} is now RUNNING (confirmed after {consecutive_checks[script_name]} checks)")
-                        running_background_services.add(script_name)
-                        
-                        await broadcast({
-                            "type": "status",
-                            "script": script_name,
-                            "status": "running"
-                        })
-                        
-                        # Start tailing if it's the producer and we didn't start it
-                        if script_name == "3_run_producer.sh" and script_name not in running_processes:
-                            if script_name in tailing_tasks:
-                                tailing_tasks[script_name].cancel()
-                            tailing_tasks[script_name] = asyncio.create_task(tail_log_file(script_name, PRODUCER_LOG))
+                    is_confirmed = consecutive_checks[script_name] >= 2
+                    
+                    if script_name not in running_background_services:
+                        if not cooldown_active and is_confirmed:
+                            print(f"Service {script_name} is now RUNNING (confirmed after {consecutive_checks[script_name]} checks)")
+                            running_background_services.add(script_name)
+                            
+                            await broadcast({
+                                "type": "status",
+                                "script": script_name,
+                                "status": "running"
+                            })
+                            
+                            # Start tailing if it's the producer and we didn't start it
+                            if script_name == "3_run_producer.sh" and script_name not in running_processes:
+                                if script_name in tailing_tasks:
+                                    tailing_tasks[script_name].cancel()
+                                tailing_tasks[script_name] = asyncio.create_task(tail_log_file(script_name, PRODUCER_LOG))
                 else:
                     # Service is NOT running - reset consecutive check counter
                     consecutive_checks[script_name] = 0
