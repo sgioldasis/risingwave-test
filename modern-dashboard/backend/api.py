@@ -188,5 +188,110 @@ def get_last_event_time():
     except Exception as e:
         return {"error": str(e)}
 
+
+@app.get("/api/clickstream/events-by-time")
+def get_clickstream_events_by_time():
+    """Get clickstream event counts grouped by minute for the last 30 minutes."""
+    try:
+        # Use substring to extract timestamp part before Z and cast directly
+        query = """
+            SELECT
+                DATE_TRUNC('minute', substring(event_time from 1 for 19)::timestamp) as time_bucket,
+                event_type,
+                COUNT(*) as count
+            FROM clickstream_events
+            WHERE substring(event_time from 1 for 19)::timestamp >= NOW() - INTERVAL '60 minutes'
+              AND substring(event_time from 1 for 19)::timestamp <= NOW() + INTERVAL '5 minutes'
+            GROUP BY time_bucket, event_type
+            ORDER BY time_bucket DESC, event_type
+            LIMIT 100
+        """
+        with engine.connect() as connection:
+            df = pd.read_sql(text(query), connection)
+        
+        # Pivot the data to have time_bucket as rows and event_types as columns
+        if not df.empty:
+            pivot_df = df.pivot(index='time_bucket', columns='event_type', values='count').fillna(0)
+            pivot_df = pivot_df.reset_index()
+            # Convert to list of dicts for JSON
+            return pivot_df.to_dict(orient='records')
+        return []
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.get("/api/clickstream/recent-sessions")
+def get_recent_sessions():
+    """Get recent sessions with revenue statistics (most recent per city)."""
+    try:
+        # Get all recent sessions
+        query = """
+            SELECT
+                s.session_id,
+                s.geo_city,
+                s.geo_region,
+                s.session_start,
+                COUNT(e.event_id) as event_count,
+                COALESCE(SUM(e.revenue_usd), 0) as total_revenue
+            FROM sessions s
+            LEFT JOIN clickstream_events e ON s.session_id = e.session_id
+            WHERE substring(s.session_start from 1 for 19)::timestamp >= NOW() - INTERVAL '30 minutes'
+            GROUP BY s.session_id, s.geo_city, s.geo_region, s.session_start
+            ORDER BY s.session_start DESC
+            LIMIT 100
+        """
+        with engine.connect() as connection:
+            df = pd.read_sql(text(query), connection)
+        
+        # Keep only most recent session per city with revenue > 0
+        seen_cities = set()
+        unique_sessions = []
+        for _, row in df.iterrows():
+            city = row['geo_city']
+            revenue = row['total_revenue']
+            # Skip cities with 0 revenue
+            if revenue <= 0:
+                continue
+            if city not in seen_cities:
+                seen_cities.add(city)
+                unique_sessions.append(row.to_dict())
+            if len(unique_sessions) >= 20:
+                break
+        
+        return unique_sessions
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.get("/api/clickstream/event-summary")
+def get_clickstream_event_summary():
+    """Get summary stats for clickstream events in the last minute."""
+    try:
+        query = """
+            SELECT
+                COUNT(*) FILTER (WHERE event_type = 'page_view') as page_views,
+                COUNT(*) FILTER (WHERE event_type = 'click') as clicks,
+                COUNT(*) FILTER (WHERE event_type = 'add_to_cart') as add_to_carts,
+                COUNT(*) FILTER (WHERE event_type = 'checkout_start') as checkouts,
+                COUNT(*) FILTER (WHERE event_type = 'purchase') as purchases,
+                COALESCE(SUM(revenue_usd) FILTER (WHERE event_type = 'purchase'), 0) as revenue
+            FROM clickstream_events
+            WHERE substring(event_time from 1 for 19)::timestamp >= NOW() - INTERVAL '5 minutes'
+        """
+        with engine.connect() as connection:
+            result = connection.execute(text(query))
+            row = result.fetchone()
+            
+        return {
+            "page_views": row[0] or 0,
+            "clicks": row[1] or 0,
+            "add_to_carts": row[2] or 0,
+            "checkouts": row[3] or 0,
+            "purchases": row[4] or 0,
+            "revenue": float(row[5]) if row[5] else 0
+        }
+    except Exception as e:
+        return {"error": str(e), "page_views": 0, "clicks": 0, "add_to_carts": 0, "checkouts": 0, "purchases": 0, "revenue": 0}
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -28,14 +28,6 @@ docker exec dagster-webserver bash -c "cd /workspace/dbt && dbt clean --profiles
 echo "✓ dbt clean completed"
 echo ""
 
-# Always drop sinks first (they depend on sources and prevent source recreation)
-echo "=== Dropping existing sinks ==="
-psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS iceberg_cart_events_sink CASCADE;" 2>/dev/null || true
-psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS iceberg_purchases_sink CASCADE;" 2>/dev/null || true
-psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS iceberg_page_views_sink CASCADE;" 2>/dev/null || true
-echo "✓ Sinks dropped"
-echo ""
-
 # Check if we need full cleanup (only if sources exist with wrong schema)
 echo "=== Checking source schemas ==="
 NEED_CLEANUP=false

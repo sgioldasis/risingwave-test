@@ -29,6 +29,7 @@ dependencies = [
     "nbformat>=5.0.0",
     "aiohttp>=3.13.3",
     "psutil>=7.2.2",
+    "faker>=35.0.0",
 ]
 
 [tool.dagster]

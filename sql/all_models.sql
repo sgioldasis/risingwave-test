@@ -26,7 +26,7 @@ WITH (
 SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 
 -- ==========================================================
--- STEP 2: Create Kafka Sources
+-- STEP 2: Create Kafka Sources (Original Funnel)
 -- ==========================================================
 
 -- ----- Model: src_page -----
@@ -56,7 +56,7 @@ CREATE SOURCE src_cart (
 -- ----- Model: src_purchase -----
 CREATE SOURCE src_purchase (
     user_id int,
-    amount numeric,
+    amount DOUBLE,
     event_time timestamp
 ) WITH (
     connector = 'kafka',
@@ -66,7 +66,79 @@ CREATE SOURCE src_purchase (
 ) FORMAT PLAIN ENCODE JSON;
 
 -- ==========================================================
--- STEP 3: Create Materialized View (Funnel Analysis)
+-- STEP 3: Create Rich Clickstream Tables (Direct Producer)
+-- ==========================================================
+
+-- ----- Model: users -----
+CREATE TABLE users (
+    user_id BIGINT,
+    full_name VARCHAR,
+    email VARCHAR,
+    country VARCHAR,
+    signup_time VARCHAR,
+    marketing_opt_in BOOLEAN,
+    ingested_at VARCHAR
+);
+
+-- ----- Model: sessions -----
+CREATE TABLE sessions (
+    session_id VARCHAR,
+    user_id BIGINT,
+    device_id VARCHAR,
+    session_start VARCHAR,
+    ip_address VARCHAR,
+    geo_city VARCHAR,
+    geo_region VARCHAR,
+    ingested_at VARCHAR
+);
+
+-- ----- Model: devices -----
+CREATE TABLE devices (
+    device_id VARCHAR,
+    device_type VARCHAR,
+    os VARCHAR,
+    browser VARCHAR,
+    user_agent VARCHAR,
+    ingested_at VARCHAR
+);
+
+-- ----- Model: campaigns -----
+CREATE TABLE campaigns (
+    campaign_id VARCHAR,
+    source VARCHAR,
+    medium VARCHAR,
+    campaign VARCHAR,
+    content VARCHAR,
+    term VARCHAR,
+    ingested_at VARCHAR
+);
+
+-- ----- Model: page_catalog -----
+CREATE TABLE page_catalog (
+    page_url VARCHAR,
+    page_category VARCHAR,
+    product_id VARCHAR,
+    product_category VARCHAR,
+    ingested_at VARCHAR
+);
+
+-- ----- Model: clickstream_events -----
+CREATE TABLE clickstream_events (
+    event_id VARCHAR,
+    user_id BIGINT,
+    session_id VARCHAR,
+    event_type VARCHAR,
+    page_url VARCHAR,
+    element_id VARCHAR,
+    event_time VARCHAR,
+    referrer VARCHAR,
+    campaign_id VARCHAR,
+    revenue_usd DOUBLE PRECISION,
+    ingested_at VARCHAR
+);
+
+-- ==========================================================
+-- STEP 4: Create Materialized View (Funnel Analysis)
 -- ==========================================================
 
 -- ----- Model: funnel -----
@@ -103,7 +175,7 @@ SELECT
 FROM stats;
 
 -- ==========================================================
--- STEP 4: Create Iceberg Tables
+-- STEP 5: Create Original Iceberg Tables (Funnel)
 -- ==========================================================
 
 -- ----- Model: iceberg_cart_events -----
@@ -123,12 +195,84 @@ CREATE TABLE IF NOT EXISTS iceberg_page_views (
 -- ----- Model: iceberg_purchases -----
 CREATE TABLE IF NOT EXISTS iceberg_purchases (
     user_id INT,
-    amount NUMERIC,
+    amount DOUBLE,
     event_time TIMESTAMP
 ) ENGINE = iceberg;
 
 -- ==========================================================
--- STEP 5: Create Sinks to Iceberg
+-- STEP 6: Create New Clickstream Iceberg Tables
+-- ==========================================================
+
+-- ----- Model: iceberg_users -----
+CREATE TABLE IF NOT EXISTS iceberg_users (
+    user_id BIGINT,
+    full_name VARCHAR,
+    email VARCHAR,
+    country VARCHAR,
+    signup_time VARCHAR,
+    marketing_opt_in BOOLEAN,
+    ingested_at VARCHAR
+) ENGINE = iceberg;
+
+-- ----- Model: iceberg_sessions -----
+CREATE TABLE IF NOT EXISTS iceberg_sessions (
+    session_id VARCHAR,
+    user_id BIGINT,
+    device_id VARCHAR,
+    session_start VARCHAR,
+    ip_address VARCHAR,
+    geo_city VARCHAR,
+    geo_region VARCHAR,
+    ingested_at VARCHAR
+) ENGINE = iceberg;
+
+-- ----- Model: iceberg_devices -----
+CREATE TABLE IF NOT EXISTS iceberg_devices (
+    device_id VARCHAR,
+    device_type VARCHAR,
+    os VARCHAR,
+    browser VARCHAR,
+    user_agent VARCHAR,
+    ingested_at VARCHAR
+) ENGINE = iceberg;
+
+-- ----- Model: iceberg_campaigns -----
+CREATE TABLE IF NOT EXISTS iceberg_campaigns (
+    campaign_id VARCHAR,
+    source VARCHAR,
+    medium VARCHAR,
+    campaign VARCHAR,
+    content VARCHAR,
+    term VARCHAR,
+    ingested_at VARCHAR
+) ENGINE = iceberg;
+
+-- ----- Model: iceberg_page_catalog -----
+CREATE TABLE IF NOT EXISTS iceberg_page_catalog (
+    page_url VARCHAR,
+    page_category VARCHAR,
+    product_id VARCHAR,
+    product_category VARCHAR,
+    ingested_at VARCHAR
+) ENGINE = iceberg;
+
+-- ----- Model: iceberg_clickstream_events -----
+CREATE TABLE IF NOT EXISTS iceberg_clickstream_events (
+    event_id VARCHAR,
+    user_id BIGINT,
+    session_id VARCHAR,
+    event_type VARCHAR,
+    page_url VARCHAR,
+    element_id VARCHAR,
+    event_time VARCHAR,
+    referrer VARCHAR,
+    campaign_id VARCHAR,
+    revenue_usd DOUBLE PRECISION,
+    ingested_at VARCHAR
+) ENGINE = iceberg;
+
+-- ==========================================================
+-- STEP 7: Create Original Sinks to Iceberg (Funnel)
 -- ==========================================================
 
 -- ----- Model: sink_cart_events_to_iceberg -----
@@ -157,6 +301,76 @@ INTO iceberg_purchases
 FROM src_purchase
 WITH (
     type = 'append-only',
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
+);
+
+-- ==========================================================
+-- STEP 8: Create New Clickstream Sinks to Iceberg
+-- ==========================================================
+
+-- ----- Model: sink_users_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_users_sink
+INTO iceberg_users
+FROM users
+WITH (
+    type = 'append-only',
+    force_append_only = 'true',
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
+);
+
+-- ----- Model: sink_sessions_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_sessions_sink
+INTO iceberg_sessions
+FROM sessions
+WITH (
+    type = 'append-only',
+    force_append_only = 'true',
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
+);
+
+-- ----- Model: sink_devices_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_devices_sink
+INTO iceberg_devices
+FROM devices
+WITH (
+    type = 'append-only',
+    force_append_only = 'true',
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
+);
+
+-- ----- Model: sink_campaigns_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_campaigns_sink
+INTO iceberg_campaigns
+FROM campaigns
+WITH (
+    type = 'append-only',
+    force_append_only = 'true',
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
+);
+
+-- ----- Model: sink_page_catalog_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_page_catalog_sink
+INTO iceberg_page_catalog
+FROM page_catalog
+WITH (
+    type = 'append-only',
+    force_append_only = 'true',
+    commit_checkpoint_interval = 1,
+    sink_decouple = false
+);
+
+-- ----- Model: sink_clickstream_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_clickstream_events_sink
+INTO iceberg_clickstream_events
+FROM clickstream_events
+WITH (
+    type = 'append-only',
+    force_append_only = 'true',
     commit_checkpoint_interval = 1,
     sink_decouple = false
 );

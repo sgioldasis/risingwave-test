@@ -140,15 +140,32 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
 _manifest_path = Path(dbt_PROJECT_PATH) / "target" / "manifest.json"
 if not _manifest_path.exists():
     print("manifest.json not found, running dbt compile...")
+    # Ensure target directory exists
+    _manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    # Run dbt compile from the project directory with proper environment
     result = subprocess.run(
         ["dbt", "compile", "--project-dir", str(dbt_PROJECT_PATH)],
         capture_output=True,
-        text=True
+        text=True,
+        cwd=str(dbt_PROJECT_PATH)
     )
     if result.returncode != 0:
-        print(f"Warning: dbt compile failed: {result.stderr}")
+        print(f"dbt compile stdout: {result.stdout}")
+        print(f"dbt compile stderr: {result.stderr}")
+        raise RuntimeError(
+            f"dbt compile failed with return code {result.returncode}. "
+            f"Cannot generate manifest.json required for Dagster. "
+            f"Error: {result.stderr}"
+        )
     else:
         print("dbt compile completed successfully")
+
+# Verify manifest exists after compilation attempt
+if not _manifest_path.exists():
+    raise FileNotFoundError(
+        f"manifest.json not found at {_manifest_path} after dbt compile. "
+        f"Please ensure dbt is properly configured and can compile the project."
+    )
 
 # Define the dbt project
 dbt_project = DbtProject(
@@ -163,21 +180,6 @@ custom_translator = CustomDagsterDbtTranslator()
 def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     """All dbt assets for the realtime funnel project."""
     context.log.info(f"Starting dbt build for project: {dbt_PROJECT_PATH}")
-    
-    # Always drop sinks first (they depend on sources and prevent source recreation)
-    context.log.info("Dropping existing sinks...")
-    run_sql_command("DROP SINK IF EXISTS iceberg_cart_events_sink CASCADE;")
-    run_sql_command("DROP SINK IF EXISTS iceberg_purchases_sink CASCADE;")
-    run_sql_command("DROP SINK IF EXISTS iceberg_page_views_sink CASCADE;")
-    context.log.info("Sinks dropped")
-    
-    # Check if we need to recreate sources due to schema changes
-    if check_schema_needs_cleanup():
-        context.log.info("Schema mismatch detected (old 'numeric' type found). Recreating sources...")
-        recreate_sources()
-        context.log.info("Sources recreated with correct schema")
-    else:
-        context.log.info("No schema changes detected, skipping source recreation")
     
     # Run dbt clean first to clear cached compiled files
     context.log.info("Running dbt clean to clear target directory...")

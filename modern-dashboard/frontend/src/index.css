@@ -85,6 +85,37 @@ h3::before {
     box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.45), 0 0 20px rgba(99, 110, 250, 0.1);
 }
 
+/* Flash animation for updates */
+@keyframes flash-green {
+    0% { background-color: rgba(0, 204, 150, 0); }
+    50% { background-color: rgba(0, 204, 150, 0.3); box-shadow: 0 0 20px rgba(0, 204, 150, 0.4); }
+    100% { background-color: rgba(0, 204, 150, 0); }
+}
+
+@keyframes flash-row {
+    0% { background-color: rgba(255, 255, 255, 0); }
+    50% { background-color: rgba(0, 204, 150, 0.2); }
+    100% { background-color: rgba(255, 255, 255, 0); }
+}
+
+@keyframes flash-row-blue {
+    0% { background-color: rgba(99, 110, 250, 0); }
+    50% { background-color: rgba(99, 110, 250, 0.25); }
+    100% { background-color: rgba(99, 110, 250, 0); }
+}
+
+.flash-update {
+    animation: flash-green 0.5s ease-out;
+}
+
+.flash-row-update {
+    animation: flash-row 0.8s ease-out;
+}
+
+.flash-row-new {
+    animation: flash-row-blue 0.8s ease-out;
+}
+
 /* Gradients */
 .gradient-text {
     background: linear-gradient(135deg, #636efa 0%, #00cc96 100%);

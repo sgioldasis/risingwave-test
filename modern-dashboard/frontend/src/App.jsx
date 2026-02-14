@@ -35,6 +35,19 @@ const App = () => {
     const logContainerRef = useRef(null);
     const logEndRef = useRef(null);
 
+    // Clickstream data state
+    const [clickstreamData, setClickstreamData] = useState([]);
+    const [clickstreamSummary, setClickstreamSummary] = useState({
+        page_views: 0, clicks: 0, add_to_carts: 0, checkouts: 0, purchases: 0, revenue: 0
+    });
+    const [recentSessions, setRecentSessions] = useState([]);
+    
+    // Track updates for flash animation
+    const [flashCards, setFlashCards] = useState({});
+    const [flashSessions, setFlashSessions] = useState({});
+    const prevSummaryRef = useRef({});
+    const prevSessionsRef = useRef([]);
+
     const [producerStatus, setProducerStatus] = useState({ running: false, output: [] });
 
     // Auto-scroll to show last line with padding below
@@ -47,16 +60,22 @@ const App = () => {
 
     const fetchData = async () => {
         try {
-            const [funnelRes, statsRes, producerRes, lastEventRes] = await Promise.all([
+            const [funnelRes, statsRes, producerRes, lastEventRes, clickstreamRes, clickstreamSummaryRes, sessionsRes] = await Promise.all([
                 fetch('/api/funnel'),
                 fetch('/api/stats'),
                 fetch('/api/producer/status'),
-                fetch('/api/last-event-time')
+                fetch('/api/last-event-time'),
+                fetch('/api/clickstream/events-by-time'),
+                fetch('/api/clickstream/event-summary'),
+                fetch('/api/clickstream/recent-sessions')
             ]);
             const funnelData = await funnelRes.json();
             const statsData = await statsRes.json();
             const prodData = await producerRes.json();
             const lastEventData = await lastEventRes.json();
+            const clickstreamData = await clickstreamRes.json();
+            const clickstreamSummaryData = await clickstreamSummaryRes.json();
+            const sessionsData = await sessionsRes.json();
 
             // Process for chart (recharts needs oldest first)
             setData([...funnelData].reverse());
@@ -65,6 +84,63 @@ const App = () => {
             setLastUpdate(new Date());
             if (lastEventData.last_event_time) {
                 setLastEventTime(new Date(lastEventData.last_event_time));
+            }
+            // Set clickstream data
+            if (!clickstreamData.error) {
+                setClickstreamData([...clickstreamData].reverse());
+            }
+            if (!clickstreamSummaryData.error) {
+                // Check which cards have updates
+                const newFlashCards = {};
+                const prevSummary = prevSummaryRef.current;
+                ['page_views', 'clicks', 'add_to_carts', 'checkouts', 'purchases', 'revenue'].forEach(key => {
+                    if (prevSummary[key] !== undefined && clickstreamSummaryData[key] !== prevSummary[key]) {
+                        newFlashCards[key] = true;
+                    }
+                });
+                if (Object.keys(newFlashCards).length > 0) {
+                    setFlashCards(newFlashCards);
+                    setTimeout(() => setFlashCards({}), 500);
+                }
+                prevSummaryRef.current = clickstreamSummaryData;
+                setClickstreamSummary(clickstreamSummaryData);
+            }
+            if (!sessionsData.error) {
+                // Check which sessions are new or have revenue updates
+                const newFlashSessions = {};
+                const prevSessions = prevSessionsRef.current;
+                const prevSessionIds = new Set(prevSessions.map(s => s.session_id));
+                
+                sessionsData.forEach((session) => {
+                    const prevSession = prevSessions.find(s => s.session_id === session.session_id);
+                    // Flash if it's a new session OR if revenue changed
+                    if (!prevSession) {
+                        newFlashSessions[session.session_id] = 'new';
+                    } else if (prevSession.total_revenue !== session.total_revenue) {
+                        newFlashSessions[session.session_id] = 'updated';
+                    }
+                });
+                
+                // Store flash sessions for sorting before clearing
+                const flashSessionsForSort = { ...newFlashSessions };
+                
+                // Update flash sessions state
+                if (Object.keys(newFlashSessions).length > 0) {
+                    setFlashSessions(newFlashSessions);
+                    setTimeout(() => setFlashSessions({}), 800);
+                }
+                prevSessionsRef.current = sessionsData;
+                
+                // Sort sessions: updated/new first, then by session_start desc
+                const sortedSessions = [...sessionsData].sort((a, b) => {
+                    const aFlash = flashSessionsForSort[a.session_id];
+                    const bFlash = flashSessionsForSort[b.session_id];
+                    if (aFlash && !bFlash) return -1;
+                    if (!aFlash && bFlash) return 1;
+                    return new Date(b.session_start) - new Date(a.session_start);
+                });
+                
+                setRecentSessions(sortedSessions);
             }
             setLoading(false);
         } catch (error) {
@@ -135,6 +211,20 @@ const App = () => {
                             />
                         )}
                         Dashboard
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('clickstream')}
+                        className={`tab-item ${activeTab === 'clickstream' ? 'active' : ''}`}
+                    >
+                        {activeTab === 'clickstream' && (
+                            <motion.div
+                                layoutId="activeTab"
+                                className="tab-active-pill"
+                                style={{ position: 'absolute', inset: '4px', zIndex: -1 }}
+                                transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                            />
+                        )}
+                        Clickstream
                     </button>
                     <button
                         onClick={() => setActiveTab('producer')}
@@ -392,6 +482,149 @@ const App = () => {
                                     </LineChart>
                                 </ResponsiveContainer>
                             </motion.div>
+                        </div>
+                    </motion.div>
+                ) : activeTab === 'clickstream' ? (
+                    <motion.div
+                        key="clickstream"
+                        initial={{ opacity: 0, scale: 0.98 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 1.02 }}
+                        className="dashboard-content-grid"
+                    >
+                        {/* Clickstream KPI Cards - Full Width Row */}
+                        <div className="col-12" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '0.75rem' }}>
+                            <motion.div className={`glass-card ${flashCards.page_views ? 'flash-update' : ''}`} style={{ padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div className="text-xs opacity-70 mb-2">Page Views</div>
+                                <div className="text-4xl font-bold" style={{ fontSize: '2.25rem', lineHeight: '1.2' }}>{clickstreamSummary.page_views.toLocaleString()}</div>
+                                <div className="text-[10px] opacity-50 mt-1">per minute</div>
+                            </motion.div>
+                            <motion.div className={`glass-card ${flashCards.clicks ? 'flash-update' : ''}`} style={{ padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div className="text-xs opacity-70 mb-2">Clicks</div>
+                                <div className="text-4xl font-bold" style={{ fontSize: '2.25rem', lineHeight: '1.2' }}>{clickstreamSummary.clicks.toLocaleString()}</div>
+                                <div className="text-[10px] opacity-50 mt-1">per minute</div>
+                            </motion.div>
+                            <motion.div className={`glass-card ${flashCards.add_to_carts ? 'flash-update' : ''}`} style={{ padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div className="text-xs opacity-70 mb-2">Add to Cart</div>
+                                <div className="text-4xl font-bold" style={{ fontSize: '2.25rem', lineHeight: '1.2' }}>{clickstreamSummary.add_to_carts.toLocaleString()}</div>
+                                <div className="text-[10px] opacity-50 mt-1">per minute</div>
+                            </motion.div>
+                            <motion.div className={`glass-card ${flashCards.checkouts ? 'flash-update' : ''}`} style={{ padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div className="text-xs opacity-70 mb-2">Checkouts</div>
+                                <div className="text-4xl font-bold" style={{ fontSize: '2.25rem', lineHeight: '1.2' }}>{clickstreamSummary.checkouts.toLocaleString()}</div>
+                                <div className="text-[10px] opacity-50 mt-1">per minute</div>
+                            </motion.div>
+                            <motion.div className={`glass-card ${flashCards.purchases ? 'flash-update' : ''}`} style={{ padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div className="text-xs opacity-70 mb-2">Purchases</div>
+                                <div className="text-4xl font-bold" style={{ fontSize: '2.25rem', lineHeight: '1.2' }}>{clickstreamSummary.purchases.toLocaleString()}</div>
+                                <div className="text-[10px] opacity-50 mt-1">per minute</div>
+                            </motion.div>
+                            <motion.div className={`glass-card ${flashCards.revenue ? 'flash-update' : ''}`} style={{ padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div className="text-xs opacity-70 mb-2">Revenue</div>
+                                <div className="text-4xl font-bold" style={{ fontSize: '2.25rem', lineHeight: '1.2' }}>${clickstreamSummary.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                                <div className="text-[10px] opacity-50 mt-1">per minute</div>
+                            </motion.div>
+                        </div>
+
+                        {/* Event Timeline Chart */}
+                        <div className="col-8 glass-card">
+                            <div className="flex justify-between items-center mb-3">
+                                <h3 className="m-0 text-base font-semibold">Event Timeline (Last 30 Minutes)</h3>
+                                <div className="flex gap-4 text-xs">
+                                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#636efa]"></div> Page Views</span>
+                                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#00cc96]"></div> Clicks</span>
+                                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#f59e0b]"></div> Add to Cart</span>
+                                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#8b5cf6]"></div> Checkouts</span>
+                                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-[#ff6692]"></div> Purchases</span>
+                                </div>
+                            </div>
+                            <div className="chart-container" style={{ height: '300px' }}>
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={clickstreamData}>
+                                        <defs>
+                                            <linearGradient id="colorPageViews" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#636efa" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#636efa" stopOpacity={0} />
+                                            </linearGradient>
+                                            <linearGradient id="colorClicks" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#00cc96" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#00cc96" stopOpacity={0} />
+                                            </linearGradient>
+                                            <linearGradient id="colorCart" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                                            </linearGradient>
+                                            <linearGradient id="colorCheckout" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                                            </linearGradient>
+                                            <linearGradient id="colorPurchase" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#ff6692" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#ff6692" stopOpacity={0} />
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                                        <XAxis
+                                            dataKey="time_bucket"
+                                            tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10 }}
+                                            axisLine={false}
+                                            tickLine={false}
+                                            tickFormatter={(str) => {
+                                                const date = new Date(str);
+                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                                            }}
+                                        />
+                                        <YAxis
+                                            tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10 }}
+                                            axisLine={false}
+                                            tickLine={false}
+                                        />
+                                        <Tooltip
+                                            contentStyle={{ background: '#1a1d29', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
+                                            labelFormatter={(label) => new Date(label).toLocaleString()}
+                                        />
+                                        <Area type="monotone" dataKey="page_view" name="Page Views" stroke="#636efa" fill="url(#colorPageViews)" strokeWidth={2} />
+                                        <Area type="monotone" dataKey="click" name="Clicks" stroke="#00cc96" fill="url(#colorClicks)" strokeWidth={2} />
+                                        <Area type="monotone" dataKey="add_to_cart" name="Add to Cart" stroke="#f59e0b" fill="url(#colorCart)" strokeWidth={2} />
+                                        <Area type="monotone" dataKey="checkout_start" name="Checkouts" stroke="#8b5cf6" fill="url(#colorCheckout)" strokeWidth={2} />
+                                        <Area type="monotone" dataKey="purchase" name="Purchases" stroke="#ff6692" fill="url(#colorPurchase)" strokeWidth={2} />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+
+                        {/* Recent Sessions Table */}
+                        <div className="col-4 glass-card">
+                            <h3 className="m-0 text-base font-semibold mb-3">Recent Sessions</h3>
+                            <div className="overflow-auto" style={{ maxHeight: '300px' }}>
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className="text-left opacity-50 border-b border-white/10">
+                                            <th className="pb-2">Time</th>
+                                            <th className="pb-2">City</th>
+                                            <th className="pb-2">Events</th>
+                                            <th className="pb-2 text-right">Revenue</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {recentSessions.map((session) => {
+                                            const flashType = flashSessions[session.session_id];
+                                            const flashClass = flashType === 'new' ? 'flash-row-new' : flashType === 'updated' ? 'flash-row-update' : '';
+                                            return (
+                                                <tr key={session.session_id} className={`border-b border-white/5 ${flashClass}`}>
+                                                    <td className="py-2 opacity-70">{new Date(session.session_start).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</td>
+                                                    <td className="py-2">{session.geo_city}</td>
+                                                    <td className="py-2">{session.event_count}</td>
+                                                    <td className="py-2 text-right">${session.total_revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                        {recentSessions.length === 0 && (
+                                            <tr><td colSpan="4" className="py-4 text-center opacity-50">No recent sessions</td></tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </motion.div>
                 ) : (

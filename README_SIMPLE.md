@@ -2,6 +2,8 @@
 
 This guide provides a complete, step-by-step process to build a real-time data pipeline that ingests events from a Redpanda topic, processes them in RisingWave, and writes the results to an Apache Iceberg table managed by Lakekeeper.
 
+> **Note:** This project now includes an extended **Clickstream Analytics** feature with rich event tracking (users, sessions, devices, campaigns). See [README.md](README.md) for full documentation on the new clickstream tables, direct producer, and modern dashboard features.
+
 ## Prerequisites
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/): Docker Compose is included with Docker Desktop for Windows and macOS. Ensure Docker Desktop is running if you're using it.
 - [Devbox](https://www.jetify.com/devbox): Install via curl -fsSL https://get.jetify.com/devbox

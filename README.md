@@ -7,12 +7,25 @@ This project demonstrates a real-time e-commerce conversion funnel using RisingW
 ```
 dbt/                              # dbt project folder
 ├── models/                        # dbt models
-│   ├── src_cart.sql            # Cart events source
-│   ├── src_page.sql            # Page views source
-│   ├── src_purchase.sql        # Purchase events source
+│   ├── src_cart.sql            # Cart events source (Kafka)
+│   ├── src_page.sql            # Page views source (Kafka)
+│   ├── src_purchase.sql        # Purchase events source (Kafka)
+│   ├── rich/                   # Rich clickstream tables (direct producer)
+│   │   ├── users.sql           # User data
+│   │   ├── sessions.sql        # Session data
+│   │   ├── devices.sql         # Device data
+│   │   ├── campaigns.sql       # Campaign attribution
+│   │   ├── page_catalog.sql    # Page metadata
+│   │   └── clickstream_events.sql  # Rich clickstream events
 │   ├── iceberg_page_views.sql  # Iceberg table for page views
 │   ├── iceberg_cart_events.sql # Iceberg table for cart events
 │   ├── iceberg_purchases.sql   # Iceberg table for purchases
+│   ├── iceberg_users.sql       # Iceberg table for users
+│   ├── iceberg_sessions.sql    # Iceberg table for sessions
+│   ├── iceberg_devices.sql     # Iceberg table for devices
+│   ├── iceberg_campaigns.sql   # Iceberg table for campaigns
+│   ├── iceberg_page_catalog.sql # Iceberg table for page catalog
+│   ├── iceberg_clickstream_events.sql # Iceberg table for clickstream events
 │   └── funnel.sql              # Conversion funnel materialized view
 ├── macros/                       # dbt macros
 │   ├── create_iceberg_connection.sql
@@ -59,9 +72,12 @@ modern-dashboard/                # Modern React dashboard
 - `bin/1_up.sh` - Start infrastructure services (includes automatic topic and namespace creation)
 - `bin/3_run_dbt.sh` - Run dbt models
 - `bin/3_run_psql.sh` - Run SQL file directly via psql
+- `bin/3_run_producer.sh` - Run Kafka-based event producer
+- `bin/3_run_producer_direct.sh` - Run direct producer (sends to RisingWave without Kafka)
 - `bin/4_run_dashboard.sh` - Start legacy dashboard
 - `bin/4_run_modern.sh` - Start modern React dashboard
 - `bin/5_duckdb_iceberg.sh` - Query Iceberg tables via DuckDB
+- `bin/5_query_clickstream_iceberg.sh` - Query clickstream tables with DuckDB
 - `bin/5_spark_iceberg.sh` - Run Spark notebook for Iceberg
 - `bin/6_down.sh` - Stop services and cleanup
 ```
@@ -212,12 +228,16 @@ The `funnel` materialized view provides real-time metrics:
 
 | Script | Purpose |
 |--------|---------|
+| `./bin/0_script_runner.sh` | Web-based script runner (recommended) |
 | `./bin/1_up.sh` | Start all Docker Compose services (includes topic & namespace creation) |
 | `./bin/3_run_dbt.sh` | Run dbt models (sources, views, Iceberg tables, sinks) |
 | `./bin/3_run_psql.sh` | Run SQL file directly via psql (alternative to dbt) |
+| `./bin/3_run_producer.sh` | Run Kafka-based event producer |
+| `./bin/3_run_producer_direct.sh` | Run direct producer (sends to RisingWave without Kafka) |
 | `./bin/4_run_dashboard.sh` | Start the legacy real-time dashboard (port 8050) |
 | `./bin/4_run_modern.sh` | Start the modern React dashboard (port 4000) |
-| `./bin/5_duckdb_iceberg.sh` | Query Iceberg tables via DuckDB |
+| `./bin/5_duckdb_iceberg.sh` | Query original funnel Iceberg tables via DuckDB |
+| `./bin/5_query_clickstream_iceberg.sh` | Query clickstream Iceberg tables via DuckDB |
 | `./bin/5_spark_iceberg.sh` | Run interactive Spark notebook for Iceberg analysis |
 | `./bin/6_down.sh` | Stop all services and clean up volumes |
 
@@ -251,6 +271,8 @@ This will start:
 
 - **Real-time Funnel Visualization**: Animated funnel showing viewers → carters → purchasers
 - **Conversion Metrics**: Live view-to-cart and cart-to-purchase rates
+- **Clickstream Tab**: Rich clickstream analytics with event timeline and recent sessions
+- **Recent Sessions**: Shows active sessions by city with revenue (24h format, sorted by updates)
 - **3D Funnel View**: Interactive 3D funnel visualization
 - **Dark Theme**: Modern dark UI with RisingWave branding
 
@@ -277,10 +299,12 @@ psql -h localhost -p 4566 -d dev -U root -f sql/all_models.sql
 
 The SQL file creates:
 1. Iceberg connection to Lakekeeper
-2. Kafka sources (page views, cart events, purchases)
-3. Materialized view for funnel analysis
-4. Iceberg tables for persistent storage
-5. Sinks to write data to Iceberg
+2. **Kafka sources** (page views, cart events, purchases) - Original funnel
+3. **Rich tables** (users, sessions, devices, campaigns, page_catalog, clickstream_events) - Direct producer
+4. Materialized view for funnel analysis
+5. **Original Iceberg tables** (page_views, cart_events, purchases)
+6. **New clickstream Iceberg tables** (users, sessions, devices, campaigns, page_catalog, clickstream_events)
+7. Sinks to write data to Iceberg
 
 ## Spark Notebook
 
@@ -310,9 +334,19 @@ This starts the Spark notebook server in edit mode, allowing you to interactivel
 The project persists raw events to Apache Iceberg tables for persistent storage and analysis:
 
 ### Iceberg Tables
+
+**Original Funnel Tables:**
 - `iceberg_page_views`: Raw page view events
 - `iceberg_cart_events`: Raw cart add/remove events
 - `iceberg_purchases`: Raw purchase events
+
+**New Clickstream Tables:**
+- `iceberg_users`: User data (profile info)
+- `iceberg_sessions`: Session data (city, IP, geo)
+- `iceberg_devices`: Device data (type, OS, browser)
+- `iceberg_campaigns`: Campaign attribution data
+- `iceberg_page_catalog`: Page metadata (categories, products)
+- `iceberg_clickstream_events`: Rich clickstream events
 
 ### Querying Iceberg Data
 Use the DuckDB query script to analyze data from Iceberg:
@@ -334,6 +368,9 @@ The system uses three Kafka topics:
 
 ## Architecture
 
+### Data Flow
+
+**Original Funnel Flow (Kafka-based):**
 ```
 Producer Python Script
     ↓ (Events)
@@ -348,10 +385,22 @@ RisingWave
                                         Marimo Notebook
 ```
 
+**New Clickstream Flow (Direct):**
+```
+Producer Direct Script
+    ↓ (Events)
+RisingWave (Tables: users, sessions, devices, campaigns, page_catalog, clickstream_events)
+    ↓ (Sink)
+Iceberg Tables (analytics namespace)
+    ↓
+Dashboard (Clickstream tab with Recent Sessions)
+```
+
 Data flows from the producer through Kafka to RisingWave, where it's processed in multiple ways:
 1. **Real-time funnel** via dbt models displayed on the dashboard (using direct dbt or Dagster orchestration)
-2. **Persistent storage** via Iceberg sinks for analysis with DuckDB
-3. **Interactive analysis** via the Marimo notebook with PyIceberg
+2. **Direct clickstream** via direct producer to RisingWave tables, then to Iceberg
+3. **Persistent storage** via Iceberg sinks for analysis with DuckDB
+4. **Interactive analysis** via the Marimo notebook with PyIceberg
 
 ## Troubleshooting
 

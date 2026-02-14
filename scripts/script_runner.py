@@ -40,8 +40,10 @@ SCRIPTS = [
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
     ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
+    ("3_run_producer_direct.sh", "🚀 Start Producer (Direct)", "Run producer sending directly to RisingWave (no Kafka)", True),
     ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
+    ("5_query_clickstream_iceberg.sh", "🧊 DuckDB Clickstream Iceberg", "Query new clickstream tables in Iceberg with DuckDB"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
@@ -64,10 +66,12 @@ BACKGROUND_SERVICES_CONFIG = [
     {"script": "4_run_dashboard.sh", "port": 8050},
     {"script": "4_run_modern.sh", "port": 4000},
     {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"},
+    {"script": "3_run_producer_direct.sh", "pattern": "scripts/producer_direct.py"},
     {"script": "5_spark_iceberg.sh", "port": 2718},
 ]
 
 PRODUCER_LOG = PROJECT_ROOT / "producer.log"
+PRODUCER_DIRECT_LOG = PROJECT_ROOT / "producer_direct.log"
 
 
 # HTML Template
@@ -396,6 +400,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             margin: 0;
             padding: 0;
             min-height: 1.5em;
+            white-space: pre-wrap;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
         }
         
         .terminal-output .timestamp {
@@ -1551,6 +1557,14 @@ def stop_script(script_file):
             try:
                 cmdline = proc.info.get('cmdline')
                 if cmdline and any("scripts/producer.py" in arg for arg in cmdline):
+                    proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    elif script_file == "3_run_producer_direct.sh":
+        for proc in psutil.process_iter(['cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline')
+                if cmdline and any("scripts/producer_direct.py" in arg for arg in cmdline):
                     proc.terminate()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
