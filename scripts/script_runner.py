@@ -37,6 +37,7 @@ BIN_DIR = PROJECT_ROOT / "bin"
 # Scripts configuration (in order)
 SCRIPTS = [
     ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies"),
+    ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
     ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),

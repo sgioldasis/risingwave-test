@@ -1,0 +1,46 @@
+#!/bin/bash
+# Script to display all available tool links
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║                    🔗 Available Tool Links                    ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo ""
+
+echo "📊 Dashboards & UIs"
+echo "────────────────────────────────────────────────────────────────"
+echo "  🎨 Modern Dashboard      http://localhost:4000"
+echo "  🌊 RisingWave Dashboard   http://localhost:5691"
+echo "  🔷 Dagster UI             http://localhost:3000"
+echo "  📈 Redpanda Console      http://localhost:9090"
+echo "  📁 Lakekeeper Catalog    http://localhost:8181"
+echo ""
+
+echo "🗄️  Databases & APIs"
+echo "────────────────────────────────────────────────────────────────"
+echo "  🌊 RisingWave SQL (psql)  postgresql://root:root@localhost:4566/dev"
+echo "  🔌 Dashboard API         http://localhost:8000"
+echo "  🧊 Iceberg REST Catalog   http://localhost:8181"
+echo ""
+
+echo "📡 Kafka Topics"
+echo "────────────────────────────────────────────────────────────────"
+echo "  📥 page_views            (input to RisingWave)"
+echo "  🛒️ cart_events           (input to RisingWave)"
+echo "  💰 purchases             (input to RisingWave)"
+echo "  📊 funnel                (output from RisingWave sink)"
+echo ""
+
+echo "🛠️  CLI Tools"
+echo "────────────────────────────────────────────────────────────────"
+echo "  🐘 psql RisingWave       ./bin/3_run_psql.sh"
+echo "  🦆 DuckDB Iceberg        ./bin/5_duckdb_iceberg.sh"
+echo "  🔥 Spark Iceberg         ./bin/5_spark_iceberg.sh"
+echo "  📝 Query Iceberg         ./scripts/query_clickstream_iceberg.py"
+echo ""
+
+echo "📖 Documentation"
+echo "────────────────────────────────────────────────────────────────"
+echo "  📄 Kafka Sink Setup      ./KAFKA_SINK_SETUP.md"
+echo "  🚀 Quick Start           ./README.md"
+echo ""
