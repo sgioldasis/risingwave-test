@@ -58,13 +58,28 @@ const App = () => {
             const prodData = await producerRes.json();
             const lastEventData = await lastEventRes.json();
 
-            // Process for chart (recharts needs oldest first)
-            setData([...funnelData].reverse());
+            // Data from API is already in chronological order (oldest -> newest)
+            // Keep as-is so latest minute appears on the right of the chart
+            setData(funnelData);
             setStats(statsData);
             setProducerStatus(prodData);
             setLastUpdate(new Date());
             if (lastEventData.last_event_time) {
-                setLastEventTime(new Date(lastEventData.last_event_time));
+                try {
+                    // Parse as UTC to avoid timezone offset issues
+                    const ts = lastEventData.last_event_time;
+                    // Handle both ISO strings with timezone and those without
+                    const utcDate = new Date(ts);
+                    if (!isNaN(utcDate.getTime())) {
+                        setLastEventTime(utcDate);
+                    } else {
+                        setLastEventTime(null);
+                    }
+                } catch (e) {
+                    setLastEventTime(null);
+                }
+            } else {
+                setLastEventTime(null);
             }
             setLoading(false);
         } catch (error) {
@@ -237,7 +252,7 @@ const App = () => {
                             <div className="flex justify-between items-center mb-3">
                                 <h3 className="m-0 text-base font-semibold">User Activity Flow</h3>
                                 <div className="flex gap-2">
-                                    <span className="refresh-badge"><Activity size={12} /> {lastEventTime ? `Last event: ${lastEventTime.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}, ${lastEventTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}` : 'No events'}</span>
+                                    <span className="refresh-badge"><Activity size={12} /> {lastEventTime && !isNaN(lastEventTime.getTime()) ? `Last event: ${lastEventTime.toISOString().replace('T', ' ').slice(0, 19)} UTC` : 'No events'}</span>
                                 </div>
                             </div>
                             <motion.div
@@ -270,7 +285,7 @@ const App = () => {
                                             tickLine={false}
                                             tickFormatter={(str) => {
                                                 const date = new Date(str);
-                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                                                return `${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`;
                                             }}
                                         />
                                         <YAxis
@@ -283,7 +298,7 @@ const App = () => {
                                             itemStyle={{ fontSize: '12px' }}
                                             labelFormatter={(label) => {
                                                 const date = new Date(label);
-                                                return `${date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}, ${date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}`;
+                                                return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
                                             }}
                                         />
                                         <Area type="monotone" dataKey="viewers" stroke="#636efa" strokeWidth={3} fillOpacity={1} fill="url(#colorViewers)" />
@@ -358,7 +373,7 @@ const App = () => {
                                             tickLine={false}
                                             tickFormatter={(str) => {
                                                 const date = new Date(str);
-                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                                                return `${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`;
                                             }}
                                         />
                                         <YAxis

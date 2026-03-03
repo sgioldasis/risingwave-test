@@ -1,11 +1,28 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, text
-import pandas as pd
-import uvicorn
+from contextlib import asynccontextmanager
+from kafka import KafkaConsumer, KafkaProducer
 import json
+import threading
+import time
+import uvicorn
 
-app = FastAPI()
+# Lifespan context manager for startup/shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events."""
+    global kafka_consumer_thread, consumer_running
+    # Startup
+    consumer_running = True
+    kafka_consumer_thread = threading.Thread(target=kafka_consumer_loop, daemon=True)
+    kafka_consumer_thread.start()
+    yield
+    # Shutdown
+    consumer_running = False
+    if kafka_consumer_thread:
+        kafka_consumer_thread.join(timeout=2)
+
+app = FastAPI(lifespan=lifespan)
 
 # Enable CORS for the frontend
 app.add_middleware(
@@ -16,70 +33,164 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database connection
-DATABASE_URL = "postgresql://root:root@localhost:4566/dev"
-engine = create_engine(DATABASE_URL)
+# Kafka configuration - use localhost when running outside Docker
+import os
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092').split(',')
+FUNNEL_TOPIC = 'funnel'
+print(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
+
+# In-memory cache for the latest funnel data
+latest_funnel_data = {
+    "window_start": None,
+    "window_end": None,
+    "viewers": 0,
+    "carters": 0,
+    "purchasers": 0,
+    "view_to_cart_rate": 0.0,
+    "cart_to_buy_rate": 0.0
+}
+previous_funnel_data = None
+funnel_data_history = []  # Keep last 1000 records for chart (deduplicated to ~50 unique minutes)
+MAX_HISTORY_SIZE = 1000
+kafka_consumer_thread = None
+consumer_running = False
+
+
+def parse_timestamp(ts):
+    """Parse timestamp (Unix ms, string, or datetime) to ISO format in UTC."""
+    if ts is None:
+        return None
+    from datetime import datetime, timezone
+    # Handle Unix timestamp in milliseconds (from Kafka JSON)
+    if isinstance(ts, (int, float)):
+        return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+    # Handle string
+    if isinstance(ts, str):
+        # Check if it's already a number string
+        if ts.isdigit():
+            return datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc).isoformat()
+        return ts
+    # Handle datetime object
+    if isinstance(ts, datetime):
+        return ts.isoformat()
+    return str(ts)
+
+
+def kafka_consumer_loop():
+    """Background thread that consumes funnel data from Kafka."""
+    global latest_funnel_data, previous_funnel_data, funnel_data_history, consumer_running
+    
+    consumer = None
+    while consumer_running:
+        try:
+            consumer = KafkaConsumer(
+                FUNNEL_TOPIC,
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                key_deserializer=lambda m: m.decode('utf-8') if m else None,
+                auto_offset_reset='earliest',
+                enable_auto_commit=False,
+                consumer_timeout_ms=1000
+            )
+            
+            while consumer_running:
+                try:
+                    for message in consumer:
+                        if not consumer_running:
+                            break
+                        
+                        data = message.value
+                        
+                        # Parse timestamps
+                        if 'window_start' in data:
+                            data['window_start'] = parse_timestamp(data['window_start'])
+                        if 'window_end' in data:
+                            data['window_end'] = parse_timestamp(data['window_end'])
+                        
+                        # Store previous data before updating
+                        previous_funnel_data = latest_funnel_data.copy()
+                        
+                        # Update latest data
+                        latest_funnel_data.update({
+                            "window_start": data.get('window_start'),
+                            "window_end": data.get('window_end'),
+                            "viewers": int(data.get('viewers', 0)),
+                            "carters": int(data.get('carters', 0)),
+                            "purchasers": int(data.get('purchasers', 0)),
+                            "view_to_cart_rate": float(data.get('view_to_cart_rate', 0.0)),
+                            "cart_to_buy_rate": float(data.get('cart_to_buy_rate', 0.0))
+                        })
+                        
+                        # Add to history
+                        funnel_data_history.insert(0, latest_funnel_data.copy())
+                        if len(funnel_data_history) > MAX_HISTORY_SIZE:
+                            funnel_data_history.pop()
+                            
+                except Exception as e:
+                    print(f"Error processing Kafka message: {e}")
+                    time.sleep(1)
+                    
+        except Exception as e:
+            print(f"Kafka connection error: {e}")
+            time.sleep(5)  # Wait before reconnecting
+        finally:
+            if consumer:
+                try:
+                    consumer.close()
+                except:
+                    pass
+
 
 @app.get("/api/funnel")
 def get_funnel_data():
+    """Return funnel data from Kafka consumer cache."""
     try:
-        query = """
-            SELECT
-                window_start,
-                viewers,
-                carters,
-                purchasers,
-                view_to_cart_rate,
-                cart_to_buy_rate
-            FROM public.funnel
-            ORDER BY window_start DESC
-            LIMIT 100
-        """
-        with engine.connect() as connection:
-            df = pd.read_sql(text(query), connection)
+        # Deduplicate by window_start, keeping only the latest for each minute
+        seen_windows = {}
+        for record in funnel_data_history:
+            window_start = record.get('window_start')
+            if window_start:
+                # Keep the record with the latest window_end for each window_start
+                if window_start not in seen_windows:
+                    seen_windows[window_start] = record
+                else:
+                    # Keep the one with later window_end (more recent update)
+                    existing_end = seen_windows[window_start].get('window_end', '')
+                    new_end = record.get('window_end', '')
+                    if new_end > existing_end:
+                        seen_windows[window_start] = record
         
-        # Convert to JSON-friendly format
-        return df.to_dict(orient="records")
+        # Sort by window_start to ensure chronological order for charts
+        sorted_data = sorted(seen_windows.values(), key=lambda x: x.get('window_start') or '')
+        return sorted_data
     except Exception as e:
-        # Return empty data with a flag indicating no data available
         return {
             "error": str(e),
             "data": [],
-            "message": "No funnel data available. Please run dbt to create the funnel materialized view."
+            "message": "No funnel data available from Kafka. Waiting for data..."
         }
+
 
 @app.get("/api/stats")
 def get_stats():
+    """Return latest stats and changes from Kafka consumer cache."""
     try:
-        query = """
-            SELECT
-                viewers,
-                carters,
-                purchasers,
-                view_to_cart_rate,
-                cart_to_buy_rate
-            FROM public.funnel
-            ORDER BY window_start DESC
-            LIMIT 2
-        """
-        with engine.connect() as connection:
-            df = pd.read_sql(text(query), connection)
-        
-        if len(df) < 1:
-            return {
-                "latest": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
-                "changes": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0}
-            }
-
-        latest = df.iloc[0].to_dict()
-        previous = df.iloc[1].to_dict() if len(df) > 1 else latest
+        latest = latest_funnel_data
+        previous = previous_funnel_data if previous_funnel_data else latest
 
         def calc_change(curr, prev):
-            if prev == 0: return 0
+            if prev == 0 or prev is None: 
+                return 0
             return ((curr - prev) / prev) * 100
 
         return {
-            "latest": latest,
+            "latest": {
+                "viewers": latest["viewers"],
+                "carters": latest["carters"],
+                "purchasers": latest["purchasers"],
+                "view_to_cart_rate": latest["view_to_cart_rate"],
+                "cart_to_buy_rate": latest["cart_to_buy_rate"]
+            },
             "changes": {
                 "viewers": calc_change(latest["viewers"], previous["viewers"]),
                 "carters": calc_change(latest["carters"], previous["carters"]),
@@ -89,14 +200,15 @@ def get_stats():
             }
         }
     except Exception as e:
-        # Return default values when table doesn't exist
         return {
             "latest": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
             "changes": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
             "error": str(e),
-            "message": "No funnel data available. Please run dbt to create the funnel materialized view."
+            "message": "No funnel data available from Kafka. Waiting for data..."
         }
 
+
+# Producer management
 import psutil
 import os
 import signal
@@ -104,6 +216,7 @@ import subprocess
 
 # Log file for the producer
 PRODUCER_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "producer.log")
+
 
 def find_producer_process():
     """Find the external producer process."""
@@ -115,6 +228,7 @@ def find_producer_process():
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return None
+
 
 @app.post("/api/producer/start")
 def start_producer():
@@ -131,6 +245,7 @@ def start_producer():
         return {"status": "started"}
     return {"status": "already running"}
 
+
 @app.post("/api/producer/stop")
 def stop_producer():
     proc = find_producer_process()
@@ -145,6 +260,7 @@ def stop_producer():
         except Exception as e:
             return {"status": "error", "message": str(e)}
     return {"status": "not running"}
+
 
 @app.get("/api/producer/status")
 def get_producer_status():
@@ -166,27 +282,16 @@ def get_producer_status():
         "output": logs
     }
 
+
 @app.get("/api/last-event-time")
 def get_last_event_time():
+    """Return the timestamp of the latest funnel data from Kafka."""
     try:
-        # Query the maximum timestamp from all raw event tables
-        query = """
-            SELECT MAX(ts) as last_timestamp FROM (
-                SELECT event_time as ts FROM src_page
-                UNION ALL
-                SELECT event_time as ts FROM src_cart
-                UNION ALL
-                SELECT event_time as ts FROM src_purchase
-            ) all_events
-        """
-        with engine.connect() as connection:
-            result = connection.execute(text(query))
-            row = result.fetchone()
-            last_timestamp = row[0] if row and row[0] else None
-        
-        return {"last_event_time": last_timestamp.isoformat() if last_timestamp else None}
+        latest = latest_funnel_data
+        return {"last_event_time": latest.get("window_end")}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "last_event_time": None}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
