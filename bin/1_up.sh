@@ -10,7 +10,8 @@ echo "Running docker compose up -d from project root"
 echo ""
 
 # Run from project root (where docker-compose.yml is located)
-docker compose up -d
+# Use --build to ensure images are rebuilt when Dockerfiles change
+docker compose up --build -d
 
 echo ""
 echo "Installing Python dependencies with uv..."

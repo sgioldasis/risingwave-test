@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a non-root user with UID 1000 to match host user
+RUN useradd -m -u 1000 -s /bin/bash dagster && \
+    chown -R dagster:dagster /workspace
+
 # Install uv for fast Python package management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -24,15 +28,18 @@ COPY pyproject.toml uv.lock ./
 RUN uv venv /opt/dagster-venv && \
     uv pip install --python /opt/dagster-venv/bin/python -e .
 
-# Copy the rest of the project
-COPY . .
-
-# Ensure dagster_storage directory exists
-RUN mkdir -p dagster_storage/logs
-
-# Copy and set up entrypoint script
+# Copy and set up entrypoint script (must be done as root)
 COPY docker-entrypoint-dagster.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint-dagster.sh
+
+# Copy the rest of the project with proper ownership
+COPY --chown=dagster:dagster . .
+
+# Ensure dagster_storage directory exists and is owned by dagster user
+RUN mkdir -p dagster_storage/logs && chown -R dagster:dagster /workspace
+
+# Switch to non-root user
+USER dagster
 
 # Set environment variables
 ENV DAGSTER_HOME=/workspace

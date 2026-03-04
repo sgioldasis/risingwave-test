@@ -13,5 +13,5 @@
 CREATE TABLE IF NOT EXISTS iceberg_purchases (
     user_id INT,
     amount DOUBLE,
-    event_time TIMESTAMP
+    event_time TIMESTAMPTZ
 ) ENGINE = iceberg

@@ -3,7 +3,7 @@
 CREATE SOURCE {{ this }} (
     user_id int,
     page_id varchar,
-    event_time timestamp
+    event_time timestamptz
 ) WITH (
     connector = 'kafka',
     topic = 'page_views',

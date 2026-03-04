@@ -3,7 +3,7 @@
 CREATE SOURCE {{ this }} (
     user_id int,
     item_id varchar,
-    event_time timestamp
+    event_time timestamptz
 ) WITH (
     connector = 'kafka',
     topic = 'cart_events',

@@ -3,13 +3,13 @@ import time
 import random
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from kafka import KafkaProducer
 
 TOPICS = ['page_views', 'cart_events', 'purchases']
 
 def get_timestamp():
-    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    return datetime.now(timezone.utc).isoformat()
 
 def main():
     parser = argparse.ArgumentParser(description="Kafka Event Producer with configurable TPS")

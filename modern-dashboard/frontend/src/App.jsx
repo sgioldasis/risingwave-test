@@ -6,10 +6,11 @@ import {
 } from 'recharts';
 import {
     TrendingUp, TrendingDown, Users, ShoppingCart, CreditCard,
-    Activity, Zap, Clock, Maximize2, MoreHorizontal
+    Activity, Zap, Clock, Maximize2, MoreHorizontal, Brain
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import PureCSSFunnel from './components/PureCSSFunnel';
+import PredictionsTab from './components/PredictionsTab';
 
 const isWebGLAvailable = () => {
     try {
@@ -32,6 +33,7 @@ const App = () => {
     const [lastUpdate, setLastUpdate] = useState(new Date());
     const [lastEventTime, setLastEventTime] = useState(null);
     const [activeTab, setActiveTab] = useState('dashboard');
+    const [predictionsEnabled, setPredictionsEnabled] = useState(true);
     const logContainerRef = useRef(null);
     const logEndRef = useRef(null);
 
@@ -166,6 +168,22 @@ const App = () => {
                         Producer
                         <span className={`ml-2 w-2 h-2 rounded-full ${producerStatus.running ? 'bg-[#00cc96] animate-pulse' : 'bg-white/20'}`} />
                     </button>
+                    <button
+                        onClick={() => setActiveTab('predictions')}
+                        className={`tab-item ${activeTab === 'predictions' ? 'active' : ''}`}
+                        disabled={!predictionsEnabled}
+                    >
+                        {activeTab === 'predictions' && (
+                            <motion.div
+                                layoutId="activeTab"
+                                className="tab-active-pill"
+                                style={{ position: 'absolute', inset: '4px', zIndex: -1 }}
+                                transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                            />
+                        )}
+                        Predictions
+                        <Brain size={14} className="ml-1 opacity-70" />
+                    </button>
                     <div className="flex gap-2 ml-2 items-center">
                         <button
                             onClick={startProducer}
@@ -209,7 +227,9 @@ const App = () => {
             </header>
 
             <AnimatePresence mode="wait">
-                {activeTab === 'dashboard' ? (
+                {activeTab === 'predictions' ? (
+                        <PredictionsTab funnelData={data} />
+                    ) : activeTab === 'dashboard' ? (
                     <motion.div
                         key="dashboard"
                         initial={{ opacity: 0, scale: 0.98 }}
@@ -285,7 +305,7 @@ const App = () => {
                                             tickLine={false}
                                             tickFormatter={(str) => {
                                                 const date = new Date(str);
-                                                return `${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`;
+                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
                                             }}
                                         />
                                         <YAxis
@@ -298,7 +318,7 @@ const App = () => {
                                             itemStyle={{ fontSize: '12px' }}
                                             labelFormatter={(label) => {
                                                 const date = new Date(label);
-                                                return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+                                                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                                             }}
                                         />
                                         <Area type="monotone" dataKey="viewers" stroke="#636efa" strokeWidth={3} fillOpacity={1} fill="url(#colorViewers)" />
@@ -373,7 +393,7 @@ const App = () => {
                                             tickLine={false}
                                             tickFormatter={(str) => {
                                                 const date = new Date(str);
-                                                return `${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2, '0')}`;
+                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
                                             }}
                                         />
                                         <YAxis

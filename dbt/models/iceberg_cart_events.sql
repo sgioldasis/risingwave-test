@@ -13,5 +13,5 @@
 CREATE TABLE IF NOT EXISTS iceberg_cart_events (
     user_id INT,
     item_id VARCHAR,
-    event_time TIMESTAMP
+    event_time TIMESTAMPTZ
 ) ENGINE = iceberg

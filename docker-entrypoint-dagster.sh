@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e
 
+# Use the user's home directory for dbt config (works for both root and dagster user)
+DBT_HOME="${HOME}/.dbt"
+
 # Generate dbt manifest if it doesn't exist
 if [ ! -f "/workspace/dbt/target/manifest.json" ]; then
     echo "Generating dbt manifest..."
     cd /workspace/dbt
     # Create minimal profiles.yml if it doesn't exist
-    mkdir -p /root/.dbt
-    if [ ! -f "/root/.dbt/profiles.yml" ]; then
-        cat > /root/.dbt/profiles.yml << 'EOF'
+    mkdir -p "$DBT_HOME"
+    if [ ! -f "$DBT_HOME/profiles.yml" ]; then
+        cat > "$DBT_HOME/profiles.yml" << 'EOF'
 funnel_profile:
   target: dev
   outputs:
