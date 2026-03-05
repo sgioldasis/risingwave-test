@@ -81,30 +81,40 @@ class ModelRegistry:
         version = self._generate_version()
         now = datetime.now(timezone.utc).isoformat()
         
-        # Serialize model and scaler
-        model_bytes = pickle.dumps(model)
-        scaler_bytes = pickle.dumps(scaler)
-        
-        # Define paths
-        model_key = f"{metric}/{version}.pkl"
-        scaler_key = f"{metric}/{version}_scaler.pkl"
-        metadata_key = f"{metric}/{version}_metadata.json"
-        
-        # Upload model
-        self.s3_client.put_object(
-            Bucket=self.BUCKET_NAME,
-            Key=model_key,
-            Body=model_bytes
-        )
-        
-        # Upload scaler
-        self.s3_client.put_object(
-            Bucket=self.BUCKET_NAME,
-            Key=scaler_key,
-            Body=scaler_bytes
-        )
+        # Handle moving average models (saved as JSON)
+        if model_type == "MovingAverage":
+            model_key = f"{metric}/{version}_model.json"
+            scaler_key = None
+            # Upload model as JSON
+            self.s3_client.put_object(
+                Bucket=self.BUCKET_NAME,
+                Key=model_key,
+                Body=json.dumps(model, indent=2)
+            )
+        else:
+            # Serialize model and scaler as pickle for sklearn models
+            model_bytes = pickle.dumps(model)
+            scaler_bytes = pickle.dumps(scaler)
+            
+            model_key = f"{metric}/{version}.pkl"
+            scaler_key = f"{metric}/{version}_scaler.pkl"
+            
+            # Upload model
+            self.s3_client.put_object(
+                Bucket=self.BUCKET_NAME,
+                Key=model_key,
+                Body=model_bytes
+            )
+            
+            # Upload scaler
+            self.s3_client.put_object(
+                Bucket=self.BUCKET_NAME,
+                Key=scaler_key,
+                Body=scaler_bytes
+            )
         
         # Create and upload metadata
+        metadata_key = f"{metric}/{version}_metadata.json"
         metadata = {
             "metric": metric,
             "version": version,

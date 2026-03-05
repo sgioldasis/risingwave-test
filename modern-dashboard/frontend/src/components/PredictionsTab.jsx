@@ -19,6 +19,8 @@ const PredictionsTab = ({ funnelData }) => {
     const [timeAdjustedPredictions, setTimeAdjustedPredictions] = useState(null);
     const [minuteProgress, setMinuteProgress] = useState(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [lastModelVersion, setLastModelVersion] = useState(null);
+    const [modelVersionFlash, setModelVersionFlash] = useState(false);
 
     // Helper to format timestamps - handles both ISO with timezone and without
     const formatTimestamp = (ts) => {
@@ -44,6 +46,19 @@ const PredictionsTab = ({ funnelData }) => {
         const date = parseModelVersion(version);
         if (!date) return 'Unknown';
         return date.toLocaleTimeString();
+    };
+
+    // Format model version for display (v20260305_125613 -> "5 Mar 2026, 14:57:03" in local time)
+    const formatModelVersionDisplay = (version) => {
+        const date = parseModelVersion(version);
+        if (!date) return version;
+        const day = date.getDate();
+        const month = date.toLocaleString('en-US', { month: 'short' });
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${day} ${month} ${year}, ${hours}:${minutes}:${seconds}`;
     };
 
     // Get model age in minutes
@@ -85,6 +100,15 @@ const PredictionsTab = ({ funnelData }) => {
             if (compareData.time_adjusted_predictions) {
                 setTimeAdjustedPredictions(compareData.time_adjusted_predictions);
                 setMinuteProgress(compareData.current_minute_progress);
+            }
+            
+            // Check if model version changed
+            const newModelVersion = nextData.model_version;
+            if (newModelVersion && newModelVersion !== 'unknown' && newModelVersion !== lastModelVersion) {
+                // Always trigger flash when model version changes (including first load)
+                setModelVersionFlash(true);
+                setTimeout(() => setModelVersionFlash(false), 1000);
+                setLastModelVersion(newModelVersion);
             }
             
             setLoading(false);
@@ -223,59 +247,36 @@ const PredictionsTab = ({ funnelData }) => {
                     <Brain size={28} className="text-purple-400" />
                     <div>
                         <h2 className="text-xl font-semibold">ML Predictions</h2>
-                        <p className="text-sm text-gray-400">
-                            Next-minute forecasts using scikit-learn (RandomForest/LinearRegression)
-                        </p>
+                        <div className="flex items-center gap-4 mt-1">
+                            {modelStatus?.models && (
+                                <div className="flex items-center gap-2 text-sm text-gray-400">
+                                    <CheckCircle2 size={14} className={modelStatus.total_models > 0 ? "text-green-400" : "text-gray-400"} />
+                                    <span>{modelStatus.total_models || 0} of {Object.keys(modelStatus.models).length} models trained</span>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
                 <div className="flex items-center gap-4">
-                    {modelStatus?.models && (
-                        <div className="flex items-center gap-2 text-sm">
-                            <CheckCircle2 size={16} className={modelStatus.total_models > 0 ? "text-green-400" : "text-gray-400"} />
-                            <span>{modelStatus.total_models || 0} of {Object.keys(modelStatus.models).length} models trained</span>
-                        </div>
-                    )}
-                    <button
-                        onClick={async () => {
-                            try {
-                                const res = await fetch('/api/predictions/train', { method: 'POST' });
-                                const data = await res.json();
-                                if (data.success) {
-                                    fetchPredictions();
-                                }
-                            } catch (e) {
-                                console.error('Training failed:', e);
-                            }
-                        }}
-                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-sm rounded-lg transition-colors flex items-center gap-2"
-                    >
-                        <Brain size={14} />
-                        Reload Models
-                    </button>
+
                     <div className="flex flex-col items-end gap-1">
-                        <div className="refresh-badge flex items-center gap-2">
-                            {isRefreshing && (
-                                <motion.div
-                                    animate={{ rotate: 360 }}
-                                    transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                                >
-                                    <Clock size={14} className="text-purple-400" />
-                                </motion.div>
-                            )}
-                            {!isRefreshing && <Clock size={14} />}
-                            Predicted: {predictions?.predicted_at ? formatTimestamp(predictions.predicted_at) : '-'}
+                        <div className="flex items-center gap-3">
+                            <div className="refresh-badge flex items-center gap-2">
+                                {isRefreshing && (
+                                    <motion.div
+                                        animate={{ rotate: 360 }}
+                                        transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                                    >
+                                        <Clock size={14} className="text-purple-400" />
+                                    </motion.div>
+                                )}
+                                {!isRefreshing && <Clock size={14} />}
+                                <span>Predicted: {predictions?.predicted_at ? formatTimestamp(predictions.predicted_at) : '-'}</span>
+                            </div>
                         </div>
                         {predictions?.model_version && predictions.model_version !== 'unknown' && (
-                            <div className="text-xs text-gray-500 flex items-center gap-1" title={`Model version: ${predictions.model_version}`}>
-                                <span className="text-gray-400">Trained:</span>
-                                <span className="text-purple-400 font-medium">
-                                    {formatModelTrainingTime(predictions.model_version)}
-                                </span>
-                                {getModelAgeMinutes(predictions.model_version) !== null && (
-                                    <span className="text-gray-500">
-                                        ({getModelAgeMinutes(predictions.model_version)}m ago)
-                                    </span>
-                                )}
+                            <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''}`}>
+                                <span>Model version: {formatModelVersionDisplay(predictions.model_version)}</span>
                             </div>
                         )}
                     </div>

@@ -181,25 +181,76 @@ def kafka_consumer_loop():
 
 @app.get("/api/funnel")
 def get_funnel_data():
-    """Return funnel data from Kafka consumer cache."""
+    """Return funnel data from Kafka consumer cache, aggregated to per-minute points."""
     try:
-        # Deduplicate by window_start, keeping only the latest for each minute
-        seen_windows = {}
+        # Step 1: Deduplicate 20-second windows - keep only the latest for each window_start
+        # Materialized views emit updates (retractions + new values), so we need to dedupe first
+        latest_windows = {}
         for record in funnel_data_history:
             window_start = record.get('window_start')
-            if window_start:
+            if not window_start:
+                continue
+            
+            try:
                 # Keep the record with the latest window_end for each window_start
-                if window_start not in seen_windows:
-                    seen_windows[window_start] = record
+                if window_start not in latest_windows:
+                    latest_windows[window_start] = record
                 else:
-                    # Keep the one with later window_end (more recent update)
-                    existing_end = seen_windows[window_start].get('window_end', '')
+                    existing_end = latest_windows[window_start].get('window_end', '')
                     new_end = record.get('window_end', '')
                     if new_end > existing_end:
-                        seen_windows[window_start] = record
+                        latest_windows[window_start] = record
+            except Exception:
+                continue
+        
+        # Step 2: Aggregate deduplicated 20-second windows to per-minute buckets
+        minute_buckets = {}
+        for record in latest_windows.values():
+            window_start = record.get('window_start')
+            if not window_start:
+                continue
+            
+            try:
+                # Truncate to minute for aggregation
+                if isinstance(window_start, str):
+                    minute_key = window_start[:16]  # "YYYY-MM-DDTHH:MM"
+                    minute_start = minute_key + ":00"
+                else:
+                    continue
+                
+                # Sum values for all 20-second windows in the same minute
+                if minute_key not in minute_buckets:
+                    minute_buckets[minute_key] = {
+                        'window_start': minute_start,
+                        'window_end': minute_key + ":59",
+                        'viewers': 0,
+                        'carters': 0,
+                        'purchasers': 0,
+                        'view_to_cart_rate': 0.0,
+                        'cart_to_buy_rate': 0.0
+                    }
+                
+                # Accumulate the values from deduplicated records only
+                bucket = minute_buckets[minute_key]
+                bucket['viewers'] += record.get('viewers', 0)
+                bucket['carters'] += record.get('carters', 0)
+                bucket['purchasers'] += record.get('purchasers', 0)
+            except Exception:
+                continue
+        
+        # Step 3: Calculate conversion rates for each minute bucket
+        for bucket in minute_buckets.values():
+            viewers = bucket['viewers']
+            carters = bucket['carters']
+            purchasers = bucket['purchasers']
+            
+            if viewers > 0:
+                bucket['view_to_cart_rate'] = round(carters / viewers, 4)
+            if carters > 0:
+                bucket['cart_to_buy_rate'] = round(purchasers / carters, 4)
         
         # Sort by window_start to ensure chronological order for charts
-        sorted_data = sorted(seen_windows.values(), key=lambda x: x.get('window_start') or '')
+        sorted_data = sorted(minute_buckets.values(), key=lambda x: x.get('window_start') or '')
         return sorted_data
     except Exception as e:
         return {
@@ -398,6 +449,9 @@ async def get_next_predictions():
     
     Returns predicted values for viewers, carters, purchasers,
     and conversion rates for the upcoming minute.
+    
+    Note: ML models predict for 20-second windows. We scale up by 3x
+    to provide minute-level predictions that match the dashboard aggregation.
     """
     try:
         result = await call_ml_serving("/predict")
@@ -409,20 +463,40 @@ async def get_next_predictions():
                 "predicted_at": datetime.now(timezone.utc).isoformat()
             }
         
+        # Extract model_version from first metric that has it (ML serving returns it per-metric)
+        model_version = "unknown"
+        for metric in ['viewers', 'carters', 'purchasers']:
+            metric_data = result.get(metric)
+            if metric_data and isinstance(metric_data, dict) and metric_data.get("model_version"):
+                model_version = metric_data.get("model_version")
+                break
+        
+        # If model_version is a heuristic/non-datetime value, generate a timestamp-based version
+        if model_version in ['moving_average', 'heuristic', 'unknown', None]:
+            now = datetime.now(timezone.utc)
+            model_version = f"v{now.strftime('%Y%m%d_%H%M%S')}"
+        
         # Build response with flat structure for frontend compatibility
         predictions = {
             "predicted_at": result.get("predicted_at", datetime.now(timezone.utc).isoformat()),
             "timestamp": result.get("timestamp", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()),
-            "model_version": result.get("model_version", "unknown")
+            "model_version": model_version
         }
         
         # Add predictions for each metric at the root level
+        # ML models predict for 20-second windows, scale up by 3x for minute-level display
         # ML serving returns format: {"viewers": {"value": x, "confidence": y, ...}, ...}
+        WINDOW_SCALE = 3  # 3 x 20-second windows = 1 minute
         metrics = ['viewers', 'carters', 'purchasers', 'view_to_cart_rate', 'cart_to_buy_rate']
         for metric in metrics:
             metric_data = result.get(metric)
             if metric_data and isinstance(metric_data, dict):
-                predictions[metric] = metric_data.get("value")
+                raw_value = metric_data.get("value")
+                # Scale up absolute counts (viewers, carters, purchasers) but not rates
+                if raw_value is not None and metric in ['viewers', 'carters', 'purchasers']:
+                    predictions[metric] = raw_value * WINDOW_SCALE
+                else:
+                    predictions[metric] = raw_value
                 predictions[f"{metric}_confidence"] = metric_data.get("confidence", 0)
             else:
                 predictions[metric] = None
@@ -580,14 +654,65 @@ async def get_predictions_comparison():
                 "elapsed_seconds": round(elapsed_seconds, 1)
             }
         
-        # Get recent actual data from history
-        recent_actuals = []
-        seen_windows = {}
-        for record in funnel_data_history[:50]:  # Last 50 records
+        # Get recent actual data from history - dedupe then aggregate to minute buckets
+        # Step 1: Deduplicate - keep only latest for each 20-second window
+        latest_windows = {}
+        for record in funnel_data_history[:100]:
             window_start = record.get('window_start')
-            if window_start and window_start not in seen_windows:
-                seen_windows[window_start] = record
-                recent_actuals.append(record)
+            if not window_start:
+                continue
+            
+            if window_start not in latest_windows:
+                latest_windows[window_start] = record
+            else:
+                existing_end = latest_windows[window_start].get('window_end', '')
+                new_end = record.get('window_end', '')
+                if new_end > existing_end:
+                    latest_windows[window_start] = record
+        
+        # Step 2: Aggregate to minute buckets
+        minute_buckets = {}
+        for record in latest_windows.values():
+            window_start = record.get('window_start')
+            if not window_start:
+                continue
+            
+            try:
+                if isinstance(window_start, str):
+                    minute_key = window_start[:16]  # "YYYY-MM-DDTHH:MM"
+                    minute_start = minute_key + ":00"
+                else:
+                    continue
+                
+                if minute_key not in minute_buckets:
+                    minute_buckets[minute_key] = {
+                        'window_start': minute_start,
+                        'viewers': 0,
+                        'carters': 0,
+                        'purchasers': 0,
+                        'view_to_cart_rate': 0.0,
+                        'cart_to_buy_rate': 0.0
+                    }
+                
+                minute_buckets[minute_key]['viewers'] += record.get('viewers', 0)
+                minute_buckets[minute_key]['carters'] += record.get('carters', 0)
+                minute_buckets[minute_key]['purchasers'] += record.get('purchasers', 0)
+            except Exception:
+                continue
+        
+        # Calculate conversion rates for minute buckets
+        recent_actuals = []
+        for bucket in minute_buckets.values():
+            viewers = bucket['viewers']
+            carters = bucket['carters']
+            purchasers = bucket['purchasers']
+            
+            if viewers > 0:
+                bucket['view_to_cart_rate'] = round(carters / viewers, 4)
+            if carters > 0:
+                bucket['cart_to_buy_rate'] = round(purchasers / carters, 4)
+            
+            recent_actuals.append(bucket)
         
         # Sort chronologically
         recent_actuals.sort(key=lambda x: x.get('window_start') or '')

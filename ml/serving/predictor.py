@@ -102,15 +102,26 @@ class ModelPredictor:
         # First try to get recent average as a baseline
         recent_avg = self._fetch_recent_average(metric)
         
-        # Check if we have a trained model with sufficient data
+        # Check if we have a trained model
         if metric in self.models:
             model_data = self.models[metric]
             metadata = model_data.get("metadata", {})
+            model_type = metadata.get("model_type", "Unknown")
             training_samples = metadata.get("training_samples", 0)
+            version = model_data.get("version", "unknown")
             
-            # Only use ML model if it has enough training data (at least 60 samples)
-            # With fewer samples, moving average is more reliable
-            if training_samples >= 60:
+            # Handle MovingAverage models (trained with minimal data)
+            # Use LIVE recent average instead of saved average for faster reaction to TPS changes
+            if model_type == "MovingAverage":
+                if recent_avg > 0:
+                    return Prediction(
+                        value=round(recent_avg, 2),
+                        confidence=0.7,  # Moderate confidence for moving average
+                        model_version=version
+                    )
+            
+            # Use ML model if it has enough training data (at least 10 samples)
+            elif training_samples >= 10:
                 try:
                     ml_prediction = self._predict_with_model(metric, model_data, features)
                     if ml_prediction is not None:
@@ -124,7 +135,7 @@ class ModelPredictor:
                 except Exception as e:
                     print(f"ML prediction failed for {metric}, using moving average: {e}")
         
-        # Fall back to moving average prediction
+        # Fall back to live moving average prediction
         if recent_avg > 0:
             return Prediction(
                 value=round(recent_avg, 2),
@@ -208,17 +219,17 @@ class ModelPredictor:
             if len(rows) == 1:
                 return float(rows[0]['value'])
             
-            # Weighted average: most recent window counts more
-            # Weights: 50% for most recent, 30% for middle, 20% for oldest
-            weights = [0.5, 0.3, 0.2]
+            # Weighted average: most recent window counts MUCH more for faster TPS reaction
+            # Weights: 70% for most recent, 20% for middle, 10% for oldest
+            weights = [0.7, 0.2, 0.1]
             weighted_sum = 0.0
             total_weight = 0.0
-            
+
             for i, row in enumerate(rows):
                 weight = weights[i] if i < len(weights) else 0.0
                 weighted_sum += float(row['value']) * weight
                 total_weight += weight
-            
+
             if total_weight > 0:
                 return weighted_sum / total_weight
             return 0.0

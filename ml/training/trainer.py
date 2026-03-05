@@ -137,12 +137,12 @@ class ModelTrainer:
             # Prepare features and target
             X, y = self._prepare_features(data, metric)
             
-            # Require at least 60 samples for reliable ML model training
-            # With 20-second windows, this is equivalent to 20 minutes of data
-            # With fewer samples, the model overfits and produces poor predictions
-            if len(X) < 60:
-                print(f"Insufficient samples for {metric}: {len(X)} (need at least 60 for reliable training with 20s windows)")
-                return None
+            # Require at least 10 samples for ML model training
+            # With 20-second windows, this is equivalent to ~3 minutes of data
+            # With fewer samples, use moving average heuristic instead
+            if len(X) < 10:
+                print(f"Insufficient samples for {metric}: {len(X)}, using moving average")
+                return self._train_moving_average(data, metric)
             
             print(f"Training {metric} with {len(X)} samples")
             
@@ -197,6 +197,58 @@ class ModelTrainer:
             print(f"Error training {metric}: {e}")
             import traceback
             print(traceback.format_exc())
+            return None
+    
+    def _train_moving_average(
+        self,
+        data: List[Dict[str, Any]],
+        metric: str
+    ) -> Optional[TrainingResult]:
+        """
+        Create a moving average 'model' for when insufficient data exists.
+        This saves the average value to the model registry so it can be served.
+        
+        Args:
+            data: Training data
+            metric: Metric to create moving average for
+            
+        Returns:
+            TrainingResult for the moving average model
+        """
+        try:
+            # Calculate the moving average from the data
+            values = [float(r[metric]) for r in data if r.get(metric) is not None]
+            if not values:
+                print(f"No values for {metric} moving average")
+                return None
+            
+            moving_avg = sum(values) / len(values)
+            
+            # Save as a "model" to the registry
+            # We use a simple dictionary to store the moving average
+            version = self.registry.save_model(
+                model={"type": "moving_average", "value": moving_avg, "window_size": len(values)},
+                scaler=None,
+                metric=metric,
+                training_metrics={"mae": 0, "r2": 0, "samples": len(values)},
+                model_type="MovingAverage",
+                feature_columns=[],
+                training_samples=len(values)
+            )
+            
+            print(f"Created moving average for {metric}: {moving_avg:.2f} (n={len(values)}), version={version.version}")
+            
+            return TrainingResult(
+                metric=metric,
+                version=version.version,
+                model_type="MovingAverage",
+                mae=0.0,
+                r2=0.0,
+                training_samples=len(values)
+            )
+            
+        except Exception as e:
+            print(f"Error creating moving average for {metric}: {e}")
             return None
     
     def _prepare_features(

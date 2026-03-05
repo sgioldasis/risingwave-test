@@ -78,6 +78,21 @@ class ModelLoader:
             )
             metadata = json.loads(metadata_response['Body'].read())
             
+            # Handle moving average models (stored as JSON, not pickle)
+            model_type = metadata.get("model_type", "Unknown")
+            if model_type == "MovingAverage":
+                model_response = self.s3_client.get_object(
+                    Bucket=self.BUCKET_NAME,
+                    Key=f"{metric}/{version}_model.json"
+                )
+                model_data = json.loads(model_response['Body'].read())
+                return {
+                    "model": model_data,
+                    "scaler": None,
+                    "version": version,
+                    "metadata": metadata
+                }
+            
             # Get model (pickle)
             import pickle
             model_response = self.s3_client.get_object(
