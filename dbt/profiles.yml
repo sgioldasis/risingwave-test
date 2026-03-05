@@ -5,7 +5,7 @@ funnel_profile:
       type: risingwave
       host: "{{ env_var('DBT_HOST', '127.0.0.1') }}"
       user: root
-      pass: ""
+      password: "{{ env_var('DBT_PASSWORD', 'root') }}"
       dbname: dev
       port: 4566     # RisingWave default port
       schema: public

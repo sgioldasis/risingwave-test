@@ -1,62 +1,75 @@
+# Git
+.git
+.gitignore
+
 # Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+__pycache__
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
+*.so
 *.egg
+*.egg-info
+dist
+build
 
 # Virtual environments
-venv/
-ENV/
-env/
-.venv/
-
-# Dagster storage
-dagster_storage/
-
-# dbt
-dbt/target/
-dbt/dbt_packages/
-dbt/logs/
-
-# Node.js
-node_modules/
+venv
+.venv
+env
 
 # IDE
-.idea/
-.vscode/
+.vscode
+.idea
 *.swp
 *.swo
 *~
-
-# Git
-.git/
-.gitignore
-
-# Logs
-*.log
-.logs_queue/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project specific
-.devbox/
-devbox.json
-devbox.lock
+# Logs
+*.log
+.logs_queue
+
+# Data files (large)
+*.parquet
+*.csv
+*.jsonl
+*.ndjson
+
+# Documentation
+*.md
+!README.md
+plans/
+docs/
+
+# Docker
+.docker-cache
+Dockerfile*
+docker-compose*.yml
+
+# Node modules (if any)
+node_modules
+
+# Dagster storage (runtime data)
+dagster_storage
+
+# Minio data
+minio-data
+
+# Test files
+tests/
+test_*.py
+*_test.py
+.pytest_cache
+
+# Coverage
+.coverage
+htmlcov
+
+# Misc
+*.bak
+*.tmp

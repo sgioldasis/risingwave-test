@@ -508,6 +508,12 @@ services:
       - DAGSTER_HOME=/workspace
       - PYTHONPATH=/workspace
       - DBT_HOST=frontend-node-0
+      - DBT_PROFILES_DIR=/workspace/dbt
+      - DBT_PASSWORD=root
+      - MINIO_ENDPOINT=http://minio-0:9301
+      - MINIO_ACCESS_KEY=hummockadmin
+      - MINIO_SECRET_KEY=hummockadmin
+      - RISINGWAVE_HOST=frontend-node-0
     volumes:
       # Mount only specific directories needed by Dagster instead of entire project
       # This prevents root-owned files from being created in the project root
@@ -529,6 +535,34 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    restart: always
+
+  dagster-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.dagster
+    command: ["dagster-daemon", "run", "-m", "orchestration.definitions"]
+    environment:
+      - DAGSTER_HOME=/workspace
+      - PYTHONPATH=/workspace
+      - DBT_HOST=frontend-node-0
+      - DBT_PROFILES_DIR=/workspace/dbt
+      - DBT_PASSWORD=root
+      - MINIO_ENDPOINT=http://minio-0:9301
+      - MINIO_ACCESS_KEY=hummockadmin
+      - MINIO_SECRET_KEY=hummockadmin
+      - RISINGWAVE_HOST=frontend-node-0
+    volumes:
+      - "./orchestration:/workspace/orchestration:ro"
+      - "./dbt:/workspace/dbt"
+      - "dagster-storage:/workspace/dagster_storage"
+      - "./pyproject.toml:/workspace/pyproject.toml:ro"
+      - "./uv.lock:/workspace/uv.lock:ro"
+    depends_on:
+      - dagster-webserver
+    networks:
+      - iceberg_net
+    container_name: dagster-daemon
     restart: always
 
 volumes:

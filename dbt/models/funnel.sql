@@ -2,13 +2,13 @@
 
 WITH stats AS (
     SELECT
-        -- Create 1-minute tumbling windows
+        -- Create 20-second tumbling windows for faster prediction updates
         window_start,
         window_end,
         count(distinct p.user_id) as viewers,
         count(distinct c.user_id) as carters,
         count(distinct pur.user_id) as purchasers
-    FROM TUMBLE({{ ref('src_page') }}, event_time, INTERVAL '1 MINUTE') p
+    FROM TUMBLE({{ ref('src_page') }}, event_time, INTERVAL '20 SECOND') p
     -- Join Cart events
     LEFT JOIN {{ ref('src_cart') }} c 
         ON p.user_id = c.user_id 

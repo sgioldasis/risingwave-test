@@ -1,12 +1,16 @@
 # Dockerfile for Dagster services
 # Uses Python 3.13 and uv for fast dependency management
+# Build with: docker buildx build --cache-to type=local,dest=.docker-cache --cache-from type=local,src=.docker-cache -f Dockerfile.dagster .
 
 FROM python:3.13-slim
 
 WORKDIR /workspace
 
 # Install system dependencies required for building Python packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Uses cache mounts for apt to speed up rebuilds
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     libpq-dev \
@@ -24,9 +28,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 
 # Create virtual environment and install dependencies using uv
-# Install to a fixed location that won't be overwritten by volume mounts
-RUN uv venv /opt/dagster-venv && \
-    uv pip install --python /opt/dagster-venv/bin/python -e .
+# Uses cache mount for uv cache to speed up rebuilds
+# Cache is invalidated only when pyproject.toml or uv.lock changes
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv /opt/dagster-venv && \
+    uv pip install --python /opt/dagster-venv/bin/python --cache-dir /root/.cache/uv -e .
 
 # Copy and set up entrypoint script (must be done as root)
 COPY docker-entrypoint-dagster.sh /usr/local/bin/

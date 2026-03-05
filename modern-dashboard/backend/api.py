@@ -9,55 +9,37 @@ import time
 import uvicorn
 import asyncio
 import logging
+import httpx
+import os
 
 logger = logging.getLogger(__name__)
 
-# Global ML predictor instance
-_ml_predictor = None
-_ml_training_task = None
+# ML Serving Service configuration
+ML_SERVING_URL = os.environ.get("ML_SERVING_URL", "http://localhost:8001")
 
-def _get_ml_predictor():
-    """Get or create the ML predictor instance."""
-    global _ml_predictor
-    if _ml_predictor is None:
-        from services.ml_predictor import FunnelMLPredictor
-        _ml_predictor = FunnelMLPredictor()
-    return _ml_predictor
-
-
-async def auto_train_loop():
-    """Background task to auto-train models every 30 seconds."""
-    while True:
-        try:
-            await asyncio.sleep(30)  # Train every 30 seconds for faster startup
-            predictor = _get_ml_predictor()
-            # Only train if models aren't already trained
-            status = predictor.get_model_status()
-            if not status.get('is_trained', False):
-                logger.info("Auto-training: models not trained, attempting training...")
-                success = predictor.train_models()
-                if success:
-                    logger.info("Auto-training completed successfully")
-                else:
-                    logger.debug("Auto-training skipped - insufficient data")
-            else:
-                # Still train periodically to update models with new data
-                logger.debug("Models already trained, retraining with latest data...")
-                predictor.train_models()
-        except Exception as e:
-            logger.error(f"Auto-training error: {e}")
-
-
-def start_auto_training():
-    """Start the background auto-training task."""
-    global _ml_training_task
+async def call_ml_serving(endpoint: str, method: str = "GET", json_data: dict = None) -> dict:
+    """Call the ML serving service."""
+    url = f"{ML_SERVING_URL}{endpoint}"
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            _ml_training_task = asyncio.create_task(auto_train_loop())
-            logger.info("Auto-training loop started")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if method == "GET":
+                response = await client.get(url)
+            elif method == "POST":
+                response = await client.post(url, json=json_data)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+            
+            response.raise_for_status()
+            return response.json()
+    except httpx.ConnectError:
+        logger.error(f"Cannot connect to ML serving service at {ML_SERVING_URL}")
+        return {"error": "ML serving service unavailable"}
+    except httpx.HTTPStatusError as e:
+        logger.error(f"ML serving error: {e.response.status_code} - {e.response.text}")
+        return {"error": f"ML serving error: {e.response.status_code}"}
     except Exception as e:
-        logger.error(f"Failed to start auto-training: {e}")
+        logger.error(f"Error calling ML serving: {e}")
+        return {"error": str(e)}
 
 
 # Lifespan context manager for startup/shutdown events
@@ -70,24 +52,7 @@ async def lifespan(app: FastAPI):
     kafka_consumer_thread = threading.Thread(target=kafka_consumer_loop, daemon=True)
     kafka_consumer_thread.start()
     
-    # Start auto-training loop for live demo
-    start_auto_training()
-    
-    # Do an initial training attempt after a short delay to allow data to be available
-    async def initial_training():
-        await asyncio.sleep(5)  # Wait 5 seconds for startup
-        try:
-            logger.info("Attempting initial model training...")
-            predictor = _get_ml_predictor()
-            success = predictor.train_models()
-            if success:
-                logger.info("Initial training completed successfully")
-            else:
-                logger.warning("Initial training failed - will retry in auto-train loop")
-        except Exception as e:
-            logger.error(f"Initial training error: {e}")
-    
-    asyncio.create_task(initial_training())
+    logger.info(f"Dashboard API started. ML serving at: {ML_SERVING_URL}")
     
     yield
     # Shutdown
@@ -367,66 +332,58 @@ def get_last_event_time():
 
 
 # =============================================================================
-# ML Prediction Endpoints (scikit-learn based)
+# ML Prediction Endpoints (via ML Serving Service)
 # =============================================================================
 
-# Note: ML predictor instance and auto-training functions are defined at top of file
+# Note: ML training is now handled by Dagster, serving by separate service
 
 @app.get("/api/predictions/health")
-def get_predictions_health():
+async def get_predictions_health():
     """Check if ML prediction service is healthy."""
-    try:
-        predictor = _get_ml_predictor()
-        return {
-            "healthy": True,
-            "message": "ML prediction service is available",
-            "engine": "scikit-learn",
-            "models_trained": len(predictor.models) > 0,
-            "metrics": predictor.metrics
-        }
-    except Exception as e:
-        logger.error(f"ML health check failed: {e}")
+    result = await call_ml_serving("/health")
+    if "error" in result:
         return {
             "healthy": False,
-            "message": str(e),
+            "message": result["error"],
             "engine": "scikit-learn",
             "error": "Service unavailable"
         }
+    return {
+        "healthy": True,
+        "message": "ML serving service is available",
+        "engine": "scikit-learn",
+        "models_available": result.get("models_loaded", False),
+        "metrics": result.get("available_metrics", [])
+    }
 
 
 @app.post("/api/predictions/train")
-def train_predictions_models():
+async def train_predictions_models():
     """
-    Train ML models on the funnel data.
+    Trigger model reload from ML serving service.
     
-    This endpoint trains RandomForest/LinearRegression models
-    for each metric (viewers, carters, purchasers, etc.)
+    Note: Actual training is now handled by Dagster.
+    This endpoint just reloads models from MinIO.
     """
     try:
-        logger.info("Manual training triggered via API")
-        predictor = _get_ml_predictor()
-        success = predictor.train_models()
+        logger.info("Model reload triggered via API")
+        result = await call_ml_serving("/reload", method="POST")
         
-        if success:
-            return {
-                "success": True,
-                "message": f"Trained {len(predictor.models)} models successfully",
-                "models": list(predictor.models.keys()),
-                "trained_at": datetime.now(timezone.utc).isoformat()
-            }
-        else:
-            # Get status for debugging
-            status = predictor.get_model_status()
+        if "error" in result:
             return {
                 "success": False,
-                "message": "Training failed - insufficient data or error occurred",
-                "debug_info": status,
+                "message": f"Failed to reload models: {result['error']}",
                 "trained_at": datetime.now(timezone.utc).isoformat()
             }
+        
+        return {
+            "success": True,
+            "message": f"Reloaded {result.get('models_loaded', 0)} models",
+            "models": result.get("available_metrics", []),
+            "trained_at": datetime.now(timezone.utc).isoformat()
+        }
     except Exception as e:
-        logger.error(f"Error training models: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Error reloading models: {e}")
         return {
             "success": False,
             "error": str(e),
@@ -435,7 +392,7 @@ def train_predictions_models():
 
 
 @app.get("/api/predictions/next")
-def get_next_predictions():
+async def get_next_predictions():
     """
     Get predictions for the next minute from ML models.
     
@@ -443,24 +400,30 @@ def get_next_predictions():
     and conversion rates for the upcoming minute.
     """
     try:
-        predictor = _get_ml_predictor()
+        result = await call_ml_serving("/predict")
         
-        # Ensure models are trained
-        if not predictor.models:
-            predictor.train_models()
+        if "error" in result:
+            logger.error(f"ML serving error: {result['error']}")
+            return {
+                "error": result["error"],
+                "predicted_at": datetime.now(timezone.utc).isoformat()
+            }
         
         # Build response with flat structure for frontend compatibility
         predictions = {
-            "predicted_at": datetime.now(timezone.utc).isoformat(),
-            "timestamp": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+            "predicted_at": result.get("predicted_at", datetime.now(timezone.utc).isoformat()),
+            "timestamp": result.get("timestamp", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()),
+            "model_version": result.get("model_version", "unknown")
         }
         
         # Add predictions for each metric at the root level
-        for metric in predictor.metrics:
-            result = predictor.predict_next(metric)
-            if result:
-                predictions[metric] = result.predicted_value
-                predictions[f"{metric}_confidence"] = result.confidence
+        # ML serving returns format: {"viewers": {"value": x, "confidence": y, ...}, ...}
+        metrics = ['viewers', 'carters', 'purchasers', 'view_to_cart_rate', 'cart_to_buy_rate']
+        for metric in metrics:
+            metric_data = result.get(metric)
+            if metric_data and isinstance(metric_data, dict):
+                predictions[metric] = metric_data.get("value")
+                predictions[f"{metric}_confidence"] = metric_data.get("confidence", 0)
             else:
                 predictions[metric] = None
                 predictions[f"{metric}_confidence"] = 0
@@ -486,19 +449,43 @@ def get_next_predictions():
 
 
 @app.get("/api/predictions/history")
-def get_predictions_history(limit: int = 20):
+async def get_predictions_history(limit: int = 20):
     """
     Get historical predictions for analysis and comparison.
     
-    Args:
-        limit: Maximum number of historical predictions to return
+    Note: History is now maintained in the ML serving service.
     """
     try:
-        predictor = _get_ml_predictor()
-        history = predictor.get_prediction_history(limit=limit)
+        result = await call_ml_serving(f"/predict?include_details=true")
+        
+        if "error" in result:
+            return {
+                "error": result["error"],
+                "data": [],
+                "count": 0
+            }
+        
+        # Build predictions array from individual metric results
+        # ML serving returns: {"viewers": {"value": x, ...}, ...}
+        predictions_list = []
+        metrics = ['viewers', 'carters', 'purchasers', 'view_to_cart_rate', 'cart_to_buy_rate']
+        for metric in metrics:
+            metric_data = result.get(metric)
+            if metric_data and isinstance(metric_data, dict):
+                predictions_list.append({
+                    "metric": metric,
+                    "predicted_value": metric_data.get("value"),
+                    "confidence": metric_data.get("confidence", 0),
+                    "model_version": metric_data.get("model_version", "unknown")
+                })
+        
         return {
-            "data": history,
-            "count": len(history),
+            "data": [{
+                "timestamp": result.get("timestamp"),
+                "model_version": result.get("model_version", "unknown"),
+                "predictions": predictions_list
+            }],
+            "count": 1,
             "fetched_at": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
@@ -511,21 +498,45 @@ def get_predictions_history(limit: int = 20):
 
 
 @app.get("/api/predictions/status")
-def get_predictions_status():
-    """Get the status of all ML models."""
+async def get_predictions_status():
+    """Get the status of all ML models including version info."""
     try:
-        predictor = _get_ml_predictor()
+        result = await call_ml_serving("/models")
+        
+        if "error" in result:
+            return {
+                "error": result["error"],
+                "models": {},
+                "checked_at": datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Build model status with version info
+        # ML serving returns: {"models": {metric: {...}}, "manifest": {...}, "last_reload": ...}
+        models_data = result.get("models", {})
+        manifest = result.get("manifest", {})
+        
+        models_status = {}
+        current_versions = {}
+        available_metrics = []
+        
+        for metric, model_info in models_data.items():
+            available_metrics.append(metric)
+            version = model_info.get("version", "unknown")
+            current_versions[metric] = version
+            models_status[metric] = {
+                "trained": model_info.get("loaded", False),
+                "version": version,
+                "model_type": model_info.get("model_type", "unknown"),
+                "loaded_at": model_info.get("loaded_at")
+            }
+        
         return {
             "engine": "scikit-learn",
-            "models": {
-                metric: {
-                    "trained": metric in predictor.models,
-                    "scaler_trained": metric in predictor.scalers
-                }
-                for metric in predictor.metrics
-            },
-            "total_models": len(predictor.models),
-            "metrics": predictor.metrics,
+            "models": models_status,
+            "total_models": len(available_metrics),
+            "metrics": available_metrics,
+            "current_versions": current_versions,
+            "manifest": manifest,
             "checked_at": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
@@ -538,7 +549,7 @@ def get_predictions_status():
 
 
 @app.get("/api/predictions/comparison")
-def get_predictions_comparison():
+async def get_predictions_comparison():
     """
     Get a comparison of recent predictions vs actual values.
     
@@ -554,7 +565,7 @@ def get_predictions_comparison():
         progress_percent = elapsed_seconds / 60.0  # 0.0 to 1.0
         
         # Get latest predictions
-        next_pred = get_next_predictions()
+        next_pred = await get_next_predictions()
         
         # Calculate time-adjusted predictions (prorated for elapsed time)
         time_adjusted = None

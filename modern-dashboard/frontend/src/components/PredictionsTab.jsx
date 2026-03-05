@@ -29,6 +29,32 @@ const PredictionsTab = ({ funnelData }) => {
         return isNaN(date.getTime()) ? 'Invalid Date' : date.toLocaleTimeString();
     };
 
+    // Helper to parse model version and extract training time
+    const parseModelVersion = (version) => {
+        if (!version || version === 'unknown') return null;
+        // Version format: vYYYYMMDD_HHMMSS
+        const match = version.match(/v(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+        if (!match) return null;
+        const [, year, month, day, hour, minute, second] = match;
+        return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+    };
+
+    // Format model training time from version
+    const formatModelTrainingTime = (version) => {
+        const date = parseModelVersion(version);
+        if (!date) return 'Unknown';
+        return date.toLocaleTimeString();
+    };
+
+    // Get model age in minutes
+    const getModelAgeMinutes = (version) => {
+        const date = parseModelVersion(version);
+        if (!date) return null;
+        const now = new Date();
+        const diffMs = now - date;
+        return Math.floor(diffMs / 60000);
+    };
+
     // Fetch predictions from API
     const fetchPredictions = async () => {
         setIsRefreshing(true);
@@ -79,26 +105,15 @@ const PredictionsTab = ({ funnelData }) => {
     }, [predictions, funnelData, timeAdjustedPredictions]);
 
     useEffect(() => {
-        // Function to calculate milliseconds until next minute
-        const getMsUntilNextMinute = () => {
-            const now = new Date();
-            return (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
-        };
-
         // Initial fetch
         fetchPredictions();
 
-        // Schedule first refresh at exactly the next minute boundary
-        const timeout = setTimeout(() => {
-            fetchPredictions();
-            // Then set up interval to refresh every 60 seconds (at minute boundaries)
-            const interval = setInterval(fetchPredictions, 60000);
-            // Store interval ID on window to clear it later
-            window._predictionInterval = interval;
-        }, getMsUntilNextMinute());
+        // Set up interval to refresh every 10 seconds
+        const interval = setInterval(fetchPredictions, 10000);
+        // Store interval ID on window to clear it later
+        window._predictionInterval = interval;
 
         return () => {
-            clearTimeout(timeout);
             if (window._predictionInterval) {
                 clearInterval(window._predictionInterval);
             }
@@ -179,7 +194,7 @@ const PredictionsTab = ({ funnelData }) => {
                 <h3 className="text-xl font-semibold mb-2">Prediction Service Unavailable</h3>
                 <p className="text-gray-400 mb-4">{error}</p>
                 <p className="text-sm text-gray-500">
-                    Make sure scikit-learn models are trained. Click "Train Models" to get started.
+                    Make sure ML Serving service is running (port 8001) and models are trained via Dagster.
                 </p>
             </div>
         );
@@ -235,19 +250,34 @@ const PredictionsTab = ({ funnelData }) => {
                         className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-sm rounded-lg transition-colors flex items-center gap-2"
                     >
                         <Brain size={14} />
-                        Train Models
+                        Reload Models
                     </button>
-                    <div className="refresh-badge flex items-center gap-2">
-                        {isRefreshing && (
-                            <motion.div
-                                animate={{ rotate: 360 }}
-                                transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                            >
-                                <Clock size={14} className="text-purple-400" />
-                            </motion.div>
+                    <div className="flex flex-col items-end gap-1">
+                        <div className="refresh-badge flex items-center gap-2">
+                            {isRefreshing && (
+                                <motion.div
+                                    animate={{ rotate: 360 }}
+                                    transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                                >
+                                    <Clock size={14} className="text-purple-400" />
+                                </motion.div>
+                            )}
+                            {!isRefreshing && <Clock size={14} />}
+                            Predicted: {predictions?.predicted_at ? formatTimestamp(predictions.predicted_at) : '-'}
+                        </div>
+                        {predictions?.model_version && predictions.model_version !== 'unknown' && (
+                            <div className="text-xs text-gray-500 flex items-center gap-1" title={`Model version: ${predictions.model_version}`}>
+                                <span className="text-gray-400">Trained:</span>
+                                <span className="text-purple-400 font-medium">
+                                    {formatModelTrainingTime(predictions.model_version)}
+                                </span>
+                                {getModelAgeMinutes(predictions.model_version) !== null && (
+                                    <span className="text-gray-500">
+                                        ({getModelAgeMinutes(predictions.model_version)}m ago)
+                                    </span>
+                                )}
+                            </div>
                         )}
-                        {!isRefreshing && <Clock size={14} />}
-                        Predicted: {predictions?.predicted_at ? formatTimestamp(predictions.predicted_at) : '-'}
                     </div>
                 </div>
             </div>

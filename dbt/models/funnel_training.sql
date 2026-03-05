@@ -59,18 +59,19 @@ lag_features AS (
 ),
 
 -- Calculate rolling averages with PARTITION BY for RisingWave compatibility
+-- With 20-second windows: 15 windows = 5 minutes of data
 rolling_features AS (
     SELECT
         *,
         AVG(viewers) OVER (
             PARTITION BY 1::int
             ORDER BY window_start
-            ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 14 PRECEDING AND CURRENT ROW
         ) AS viewers_ma_5,
         AVG(carters) OVER (
             PARTITION BY 1::int
             ORDER BY window_start
-            ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 14 PRECEDING AND CURRENT ROW
         ) AS carters_ma_5
     FROM lag_features
 )
@@ -102,14 +103,33 @@ SELECT
     viewers_ma_5,
     carters_ma_5,
     -- Trend indicators (positive/negative momentum)
-    CASE 
-        WHEN viewers_lag_1 IS NOT NULL AND viewers_lag_1 > 0 
-        THEN (viewers - viewers_lag_1)::numeric / viewers_lag_1 
-        ELSE 0 
+    CASE
+        WHEN viewers_lag_1 IS NOT NULL AND viewers_lag_1 > 0
+        THEN (viewers - viewers_lag_1)::numeric / viewers_lag_1
+        ELSE 0
     END AS viewers_trend,
-    CASE 
-        WHEN carters_lag_1 IS NOT NULL AND carters_lag_1 > 0 
-        THEN (carters - carters_lag_1)::numeric / carters_lag_1 
-        ELSE 0 
-    END AS carters_trend
+    CASE
+        WHEN carters_lag_1 IS NOT NULL AND carters_lag_1 > 0
+        THEN (carters - carters_lag_1)::numeric / carters_lag_1
+        ELSE 0
+    END AS carters_trend,
+    -- TPS (transactions per second) - calculated from viewers rate of change
+    -- With 20-second windows, lag_1 is 60 seconds (3 windows) ago
+    -- TPS = absolute change per second (change / 60 seconds)
+    CASE
+        WHEN viewers_lag_1 IS NOT NULL
+        THEN ABS(viewers - viewers_lag_1)::numeric / 60.0  -- 60 seconds between lag_1 and current
+        ELSE 0
+    END AS tps_viewers,
+    CASE
+        WHEN carters_lag_1 IS NOT NULL
+        THEN ABS(carters - carters_lag_1)::numeric / 60.0
+        ELSE 0
+    END AS tps_carters,
+    -- Smoothed TPS over last 3 lag periods (3 minutes of data)
+    CASE
+        WHEN viewers_lag_1 IS NOT NULL AND viewers_lag_2 IS NOT NULL AND viewers_lag_3 IS NOT NULL
+        THEN (ABS(viewers - viewers_lag_1) + ABS(viewers_lag_1 - viewers_lag_2) + ABS(viewers_lag_2 - viewers_lag_3))::numeric / 180.0
+        ELSE NULL
+    END AS tps_smoothed
 FROM rolling_features

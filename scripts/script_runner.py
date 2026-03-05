@@ -43,6 +43,7 @@ SCRIPTS = [
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
+    ("4_run_ml_serving.sh", "🤖 ML Serving", "Start the ML model serving service (port 8001)"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
@@ -64,6 +65,7 @@ manually_stopped_services = set()  # script_file -> set of services explicitly s
 BACKGROUND_SERVICES_CONFIG = [
     {"script": "4_run_dashboard.sh", "port": 8050},
     {"script": "4_run_modern.sh", "port": 4000},
+    {"script": "4_run_ml_serving.sh", "port": 8001},
     {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"},
     {"script": "5_spark_iceberg.sh", "port": 2718},
 ]

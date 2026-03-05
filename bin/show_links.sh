@@ -21,6 +21,7 @@ echo "────────────────────────�
 echo "  🌊 RisingWave SQL (psql)  postgresql://root:root@localhost:4566/dev"
 echo "  🔌 Dashboard API         http://localhost:8000"
 echo "  🧊 Iceberg REST Catalog   http://localhost:8181"
+echo "  📦 MinIO Console         http://localhost:9400 (login: hummockadmin / hummockadmin)"
 echo ""
 
 echo "📡 Kafka Topics"
