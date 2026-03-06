@@ -33,6 +33,7 @@ dependencies = [
     "psutil>=7.2.2",
     "boto3>=1.34.0",
     "httpx>=0.27.0",
+    "trino>=0.331.0",
 ]
 
 [tool.dagster]

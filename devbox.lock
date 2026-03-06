@@ -595,6 +595,54 @@
         }
       }
     },
+    "trino-cli@latest": {
+      "last_modified": "2026-02-23T15:40:43Z",
+      "resolved": "github:NixOS/nixpkgs/80d901ec0377e19ac3f7bb8c035201e2e098cc97#trino-cli",
+      "source": "devbox-search",
+      "version": "476",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/mz42l3k21jrqchzk5kn27x48yxpg20qi-trino-cli-476",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/mz42l3k21jrqchzk5kn27x48yxpg20qi-trino-cli-476"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/8m4zh1xfpby6rf8y18cyp41i92qvs62d-trino-cli-476",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/8m4zh1xfpby6rf8y18cyp41i92qvs62d-trino-cli-476"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/g86q7kvsr4qkzndzd2b0g27awmda5464-trino-cli-476",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/g86q7kvsr4qkzndzd2b0g27awmda5464-trino-cli-476"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/sh10h0bwpnadwzj679r8rpwf85icvc0r-trino-cli-476",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/sh10h0bwpnadwzj679r8rpwf85icvc0r-trino-cli-476"
+        }
+      }
+    },
     "uv@latest": {
       "last_modified": "2025-12-04T04:58:45Z",
       "resolved": "github:NixOS/nixpkgs/821f1a2ebab0f13d6d65170d6bd7d2b3a182efdb#uv",

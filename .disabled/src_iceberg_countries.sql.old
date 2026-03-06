@@ -1,0 +1,48 @@
+{#
+  This model creates a RisingWave source that connects to the Iceberg table.
+  It depends on the Dagster asset that creates the iceberg_countries table.
+  
+  Run with: dbt run --select src_iceberg_countries --full-refresh
+#}
+
+{{ config(
+    materialized='view',
+    meta={
+        'dagster': {
+            'deps': ['iceberg_countries_table']
+        }
+    }
+) }}
+
+-- Create the source if it doesn't exist (using pre-hook logic in the query)
+-- Note: In full refresh mode, drop and recreate
+
+{% if execute %}
+  {% if flags.FULL_REFRESH %}
+    {% do run_query("DROP SOURCE IF EXISTS src_iceberg_countries CASCADE;") %}
+  {% endif %}
+  
+  {% set create_source_sql %}
+    CREATE SOURCE IF NOT EXISTS src_iceberg_countries
+    WITH (
+        connector = 'iceberg',
+        catalog.type = 'rest',
+        catalog.uri = 'http://lakekeeper:8181/catalog',
+        warehouse.path = 'risingwave-warehouse',
+        database.name = 'analytics',
+        table.name = 'iceberg_countries',
+        s3.endpoint = 'http://minio-0:9301',
+        s3.region = 'us-east-1',
+        s3.access.key = 'hummockadmin',
+        s3.secret.key = 'hummockadmin'
+    )
+  {% endset %}
+  
+  {% do run_query(create_source_sql) %}
+{% endif %}
+
+-- The view just selects from the source
+SELECT 
+    country::VARCHAR as country,
+    country_name::VARCHAR as country_name
+FROM src_iceberg_countries

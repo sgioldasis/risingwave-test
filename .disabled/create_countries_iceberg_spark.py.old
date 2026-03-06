@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""
+Create the countries Iceberg table using PySpark for RisingWave compatibility.
+
+This script creates an Iceberg table with explicit StringType schema
+to ensure compatibility with RisingWave's Iceberg reader.
+
+Usage:
+    uv run python scripts/create_countries_iceberg_spark.py
+"""
+
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType
+
+
+def main():
+    print("🚀 Creating Iceberg countries table via PySpark...")
+    
+    # Initialize Spark session with Iceberg support
+    spark = (SparkSession.builder
+        .appName("CountriesIcebergTable")
+        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config("spark.sql.catalog.lakekeeper", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.lakekeeper.type", "rest")
+        .config("spark.sql.catalog.lakekeeper.uri", "http://lakekeeper:8181/catalog")
+        .config("spark.sql.catalog.lakekeeper.warehouse", "risingwave-warehouse")
+        .config("spark.sql.catalog.lakekeeper.s3.endpoint", "http://minio-0:9301")
+        .config("spark.sql.catalog.lakekeeper.s3.access-key-id", "hummockadmin")
+        .config("spark.sql.catalog.lakekeeper.s3.secret-access-key", "hummockadmin")
+        .config("spark.sql.catalog.lakekeeper.s3.path-style-access", "true")
+        .config("spark.sql.catalog.lakekeeper.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .getOrCreate()
+    )
+    
+    # Define schema explicitly for RisingWave compatibility
+    schema = StructType([
+        StructField("country", StringType(), False),
+        StructField("country_name", StringType(), False)
+    ])
+    
+    # Countries data
+    countries_data = [
+        ("GR", "Greece"),
+        ("DE", "Germany"),
+        ("FR", "France"),
+        ("IT", "Italy"),
+        ("ES", "Spain"),
+        ("PT", "Portugal"),
+        ("NL", "Netherlands"),
+        ("BE", "Belgium"),
+        ("AT", "Austria"),
+        ("CH", "Switzerland"),
+    ]
+    
+    # Create DataFrame
+    df = spark.createDataFrame(countries_data, schema)
+    
+    # Ensure database exists
+    spark.sql("CREATE DATABASE IF NOT EXISTS lakekeeper.analytics")
+    
+    # Write to Iceberg table with overwrite mode for idempotency
+    (df.writeTo("lakekeeper.analytics.iceberg_countries_spark")
+        .using("iceberg")
+        .tableProperty("format-version", "2")
+        .createOrReplace()
+    )
+    
+    print(f"✅ Successfully created Iceberg table with {len(countries_data)} countries")
+    
+    # Verify by reading back
+    count = spark.sql("SELECT COUNT(*) FROM lakekeeper.analytics.iceberg_countries_spark").collect()[0][0]
+    print(f"✅ Verified: {count} rows in table")
+    
+    # Show sample data
+    print("\n📋 Sample data:")
+    spark.sql("SELECT * FROM lakekeeper.analytics.iceberg_countries_spark LIMIT 5").show()
+    
+    spark.stop()
+    print("\n🎉 Done! Table 'lakekeeper.analytics.iceberg_countries_spark' is ready.")
+    print("\nNext steps:")
+    print("1. Create RisingWave source: CREATE SOURCE src_iceberg_countries_spark ...")
+    print("2. Query from RisingWave: SELECT * FROM src_iceberg_countries_spark;")
+
+
+if __name__ == "__main__":
+    main()

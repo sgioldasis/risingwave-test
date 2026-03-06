@@ -1,0 +1,33 @@
+"""Dagster asset for creating and populating Iceberg countries table using PySpark.
+
+This uses a standalone PySpark script to write Iceberg tables, which may have better
+schema compatibility with RisingWave's Iceberg reader.
+"""
+from dagster import asset, AssetExecutionContext
+import subprocess
+
+
+@asset(
+    group_name="iceberg_reference",
+    description="Create and populate Iceberg countries table using PySpark (via uv run) for RisingWave compatibility",
+)
+def iceberg_countries_table_spark(context: AssetExecutionContext):
+    """Creates the iceberg_countries_spark table using PySpark for better RisingWave compatibility."""
+    context.log.info("Creating Iceberg countries table via PySpark...")
+
+    # Run the PySpark script using uv run (same as other spark workflows)
+    result = subprocess.run(
+        ["uv", "run", "python", "scripts/create_countries_iceberg_spark.py"],
+        capture_output=True,
+        text=True,
+        cwd="/workspace",
+    )
+
+    if result.returncode != 0:
+        context.log.error(f"PySpark failed: {result.stderr}")
+        raise Exception(f"Spark script failed: {result.stderr}")
+
+    context.log.info(result.stdout)
+    context.log.info("✅ Iceberg countries table created successfully via PySpark")
+
+    return {"rows_inserted": 10, "method": "pyspark"}

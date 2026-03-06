@@ -1,0 +1,53 @@
+{{ config(
+    materialized='view',
+    meta={
+        'dagster': {
+            'deps': ['iceberg_countries_table']
+        }
+    }
+) }}
+
+{% if execute %}
+  -- Drop and recreate source on full refresh to pick up schema changes
+  {% if flags.FULL_REFRESH %}
+    {% do run_query("DROP SOURCE IF EXISTS src_iceberg_countries CASCADE;") %}
+    {% do run_query("DROP MATERIALIZED VIEW IF EXISTS countries_iceberg_snapshot;") %}
+  {% endif %}
+  
+  -- Create the Iceberg source if it doesn't exist
+  {% set create_source_sql %}
+    CREATE SOURCE IF NOT EXISTS src_iceberg_countries
+    WITH (
+        connector = 'iceberg',
+        catalog.type = 'rest',
+        catalog.uri = 'http://lakekeeper:8181/catalog',
+        warehouse.path = 'risingwave-warehouse',
+        database.name = 'analytics',
+        table.name = 'iceberg_countries',
+        s3.endpoint = 'http://minio-0:9301',
+        s3.region = 'us-east-1',
+        s3.access.key = 'hummockadmin',
+        s3.secret.key = 'hummockadmin'
+    )
+  {% endset %}
+  
+  {% do run_query(create_source_sql) %}
+  
+  -- Create the materialized view that auto-refreshes from the Iceberg source
+  {% set create_mv_sql %}
+    CREATE MATERIALIZED VIEW IF NOT EXISTS countries_iceberg_snapshot AS
+    SELECT 
+        country,
+        country_name
+    FROM src_iceberg_countries
+  {% endset %}
+  
+  {% do run_query(create_mv_sql) %}
+{% endif %}
+
+-- Return a simple query to satisfy dbt's need for a result
+SELECT 
+    country,
+    country_name
+FROM countries_iceberg_snapshot
+LIMIT 1

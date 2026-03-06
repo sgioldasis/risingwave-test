@@ -13,7 +13,8 @@
     "bat@latest",
     "sqlfluff@latest",
     "watch@latest",
-    "ngrok@latest"
+    "ngrok@latest",
+    "trino-cli@latest"
   ],
   "shell": {
     "init_hook": [

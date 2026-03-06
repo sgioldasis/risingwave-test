@@ -1,0 +1,182 @@
+"""Scheduled snapshot asset for countries data from Iceberg to RisingWave.
+
+This provides a reverse ETL solution that works around RisingWave's Iceberg
+schema compatibility issues with DuckDB by using batch sync triggered on a schedule.
+"""
+
+import os
+import subprocess
+import json
+import psycopg2
+from dagster import (
+    AssetExecutionContext,
+    asset,
+    sensor,
+    RunRequest,
+    SkipReason,
+    DefaultSensorStatus,
+    AssetSelection,
+    define_asset_job,
+)
+
+
+def _get_risingwave_connection():
+    """Get connection to RisingWave."""
+    return psycopg2.connect(
+        host="frontend-node-0",
+        port=4566,
+        database="dev",
+        user="root",
+        password="",
+    )
+
+
+@asset(
+    name="countries_iceberg_snapshot",
+    deps=["iceberg_countries"],  # Depends on the Iceberg table asset
+    description="Scheduled snapshot of countries data from Iceberg to RisingWave using batch sync (FULL_RELOAD behavior)",
+    group_name="risingwave",
+    compute_kind="python",
+)
+def countries_iceberg_snapshot(context: AssetExecutionContext):
+    """
+    Creates a table in RisingWave with data from Iceberg.
+    
+    This uses batch sync (not streaming) due to schema compatibility issues
+    between DuckDB's Iceberg writer and RisingWave's native Iceberg source reader.
+    
+    The sync is triggered by a sensor on a schedule, achieving "FULL_RELOAD" behavior.
+    """
+    context.log.info("Starting scheduled snapshot sync from Iceberg to RisingWave...")
+    
+    # Step 1: Extract data from Iceberg using DuckDB
+    env = os.environ.copy()
+    env['AWS_ACCESS_KEY_ID'] = 'hummockadmin'
+    env['AWS_SECRET_ACCESS_KEY'] = 'hummockadmin'
+    env['AWS_DEFAULT_REGION'] = 'us-east-1'
+    env['AWS_ENDPOINT_URL'] = 'http://minio-0:9301'
+
+    extract_script = '''
+import duckdb
+import json
+
+conn = duckdb.connect(":memory:")
+conn.execute("INSTALL iceberg;")
+conn.execute("INSTALL httpfs;")
+conn.execute("LOAD iceberg;")
+conn.execute("LOAD httpfs;")
+conn.execute("SET s3_region = 'us-east-1';")
+conn.execute("SET s3_endpoint = 'minio-0:9301';")
+conn.execute("SET s3_url_style = 'path';")
+conn.execute("SET s3_access_key_id = 'hummockadmin';")
+conn.execute("SET s3_secret_access_key = 'hummockadmin';")
+conn.execute("SET s3_use_ssl = false;")
+conn.execute("""
+    ATTACH 'risingwave-warehouse' AS lk (
+        TYPE ICEBERG,
+        ENDPOINT 'http://lakekeeper:8181/catalog',
+        AUTHORIZATION_TYPE 'none'
+    );
+""")
+
+# Query the data
+result = conn.execute("SELECT country, country_name FROM lk.analytics.iceberg_countries").fetchall()
+print(json.dumps(result))
+conn.close()
+'''
+
+    context.log.info("Extracting data from Iceberg...")
+    result = subprocess.run(
+        ["python", "-c", extract_script],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    if result.returncode != 0:
+        context.log.error(f"Failed to extract data: {result.stderr}")
+        raise Exception(f"DuckDB extraction failed: {result.stderr}")
+
+    # Parse the extracted data
+    data = json.loads(result.stdout.strip())
+    context.log.info(f"Extracted {len(data)} rows from Iceberg")
+
+    # Step 2: Load data into RisingWave (FULL_RELOAD: drop and recreate table)
+    context.log.info("Loading data into RisingWave...")
+    
+    rw_conn = _get_risingwave_connection()
+    try:
+        rw_conn.autocommit = True
+        with rw_conn.cursor() as cur:
+            # Drop and recreate table (FULL_RELOAD behavior)
+            # Use CASCADE to handle any type of object
+            cur.execute("DROP TABLE IF EXISTS countries_iceberg_snapshot CASCADE;")
+            cur.execute("""
+                CREATE TABLE countries_iceberg_snapshot (
+                    country VARCHAR PRIMARY KEY,
+                    country_name VARCHAR
+                );
+            """)
+            
+            # Insert data using individual inserts (more reliable than executemany)
+            if data:
+                for row in data:
+                    cur.execute(
+                        "INSERT INTO countries_iceberg_snapshot (country, country_name) VALUES (%s, %s);",
+                        row
+                    )
+            
+            # Verify
+            cur.execute("SELECT COUNT(*) FROM countries_iceberg_snapshot;")
+            count = cur.fetchone()[0]
+            context.log.info(f"✅ Snapshot sync complete! {count} rows in countries_iceberg_snapshot")
+    finally:
+        rw_conn.close()
+    
+    return {"rows_synced": count}
+
+
+# Define a job for the snapshot asset
+countries_snapshot_job = define_asset_job(
+    name="countries_snapshot_job",
+    selection=AssetSelection.assets("countries_iceberg_snapshot"),
+)
+
+
+@sensor(
+    name="countries_snapshot_sensor",
+    job=countries_snapshot_job,
+    minimum_interval_seconds=60,  # Check every 60 seconds
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Triggers scheduled snapshot sync from Iceberg to RisingWave every 5 minutes",
+)
+def countries_snapshot_sensor(context):
+    """
+    Sensor that triggers the countries snapshot sync on a schedule.
+    
+    This provides FULL_RELOAD behavior similar to refresh_mode='FULL_RELOAD'
+    by periodically re-syncing all data from Iceberg to RisingWave.
+    """
+    import time
+    
+    # Get the last run time from cursor
+    last_run_time = context.cursor
+    current_time = time.time()
+    
+    # Run every 5 minutes (300 seconds)
+    SYNC_INTERVAL = 300
+    
+    if last_run_time is None:
+        # First run
+        context.update_cursor(str(current_time))
+        context.log.info("🔄 First snapshot sync - triggering job")
+        return RunRequest(run_key=f"snapshot_{int(current_time)}")
+    
+    time_since_last_run = current_time - float(last_run_time)
+    
+    if time_since_last_run >= SYNC_INTERVAL:
+        context.update_cursor(str(current_time))
+        context.log.info(f"🔄 Scheduled snapshot sync triggered (last run {time_since_last_run:.0f}s ago)")
+        return RunRequest(run_key=f"snapshot_{int(current_time)}")
+    else:
+        return SkipReason(f"Next sync in {SYNC_INTERVAL - time_since_last_run:.0f}s")

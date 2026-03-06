@@ -1,0 +1,25 @@
+{#
+  This model creates a RisingWave materialized view that continuously
+  ingests data from the Iceberg source (src_iceberg_countries).
+  
+  The materialized view auto-refreshes when the Iceberg table changes.
+  
+  Run with: dbt run --select mv_countries_from_iceberg --full-refresh
+#}
+
+{{ config(
+    materialized='materialized_view',
+    unique_key='country',
+    meta={
+        'dagster': {
+            'deps': [
+                {'asset_key': ['public', 'src_iceberg_countries']}
+            ]
+        }
+    }
+) }}
+
+SELECT
+    country::VARCHAR as country,
+    country_name::VARCHAR as country_name
+FROM {{ ref('src_iceberg_countries') }}

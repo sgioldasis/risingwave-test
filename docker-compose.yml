@@ -565,6 +565,26 @@ services:
     container_name: dagster-daemon
     restart: always
 
+  # Trino - Iceberg SQL query engine with full CRUD support
+  trino:
+    image: trinodb/trino:453
+    ports:
+      - "8080:8080"
+    environment:
+      - CATALOG_MANAGEMENT=dynamic
+    volumes:
+      - type: bind
+        source: ./trino/catalog
+        target: /etc/trino/catalog
+        read_only: true
+    depends_on:
+      - lakekeeper
+      - minio-0
+    networks:
+      - iceberg_net
+    container_name: trino
+    restart: always
+
 volumes:
   postgres-0:
     external: false

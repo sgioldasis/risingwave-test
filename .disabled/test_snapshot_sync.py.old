@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Test the snapshot sync directly."""
+import os
+import subprocess
+import json
+import psycopg2
+
+print("Starting snapshot sync...")
+
+# Step 1: Extract data from Iceberg using DuckDB
+env = os.environ.copy()
+env['AWS_ACCESS_KEY_ID'] = 'hummockadmin'
+env['AWS_SECRET_ACCESS_KEY'] = 'hummockadmin'
+env['AWS_DEFAULT_REGION'] = 'us-east-1'
+env['AWS_ENDPOINT_URL'] = 'http://minio-0:9301'
+
+extract_script = '''
+import duckdb
+import json
+
+conn = duckdb.connect(":memory:")
+conn.execute("INSTALL iceberg;")
+conn.execute("INSTALL httpfs;")
+conn.execute("LOAD iceberg;")
+conn.execute("LOAD httpfs;")
+conn.execute("SET s3_region = 'us-east-1';")
+conn.execute("SET s3_endpoint = 'minio-0:9301';")
+conn.execute("SET s3_url_style = 'path';")
+conn.execute("SET s3_access_key_id = 'hummockadmin';")
+conn.execute("SET s3_secret_access_key = 'hummockadmin';")
+conn.execute("SET s3_use_ssl = false;")
+conn.execute("""
+    ATTACH 'risingwave-warehouse' AS lk (
+        TYPE ICEBERG,
+        ENDPOINT 'http://lakekeeper:8181/catalog',
+        AUTHORIZATION_TYPE 'none'
+    );
+""")
+
+# Query the data
+result = conn.execute("SELECT country, country_name FROM lk.analytics.iceberg_countries").fetchall()
+print(json.dumps(result))
+conn.close()
+'''
+
+print("Extracting data from Iceberg...")
+result = subprocess.run(
+    ["python", "-c", extract_script],
+    capture_output=True,
+    text=True,
+    env=env,
+)
+
+if result.returncode != 0:
+    print(f"Failed to extract data: {result.stderr}")
+    raise Exception(f"DuckDB extraction failed: {result.stderr}")
+
+# Parse the extracted data
+data = json.loads(result.stdout.strip())
+print(f"Extracted {len(data)} rows from Iceberg")
+print(f"Sample: {data[:3]}")
+
+# Step 2: Load data into RisingWave (FULL_RELOAD: drop and recreate table)
+print("Loading data into RisingWave...")
+
+rw_conn = psycopg2.connect(
+    host="frontend-node-0",
+    port=4566,
+    database="dev",
+    user="root",
+    password="",
+)
+
+rw_conn.autocommit = True
+with rw_conn.cursor() as cur:
+    # Drop and recreate table (FULL_RELOAD behavior)
+    # Use CASCADE to handle any type of object
+    cur.execute("DROP TABLE IF EXISTS countries_iceberg_snapshot CASCADE;")
+    cur.execute("""
+        CREATE TABLE countries_iceberg_snapshot (
+            country VARCHAR PRIMARY KEY,
+            country_name VARCHAR
+        );
+    """)
+    
+    # Insert data using individual inserts (more reliable than executemany)
+    if data:
+        print(f"Inserting {len(data)} rows...")
+        for row in data:
+            cur.execute(
+                "INSERT INTO countries_iceberg_snapshot (country, country_name) VALUES (%s, %s);",
+                row
+            )
+    
+    # Verify
+    cur.execute("SELECT COUNT(*) FROM countries_iceberg_snapshot;")
+    count = cur.fetchone()[0]
+    print(f"Snapshot sync complete! {count} rows in countries_iceberg_snapshot")
+    
+    # Show sample data
+    cur.execute("SELECT * FROM countries_iceberg_snapshot LIMIT 5;")
+    rows = cur.fetchall()
+    print("Sample data:")
+    for row in rows:
+        print(f"  {row}")
+
+rw_conn.close()
+print("Done!")

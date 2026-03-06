@@ -1,0 +1,180 @@
+"""Reverse ETL: Sync Iceberg countries table to RisingWave."""
+from dagster import asset, AssetExecutionContext, AssetKey
+import subprocess
+import os
+import psycopg2
+
+
+def _get_risingwave_connection():
+    """Get a connection to RisingWave."""
+    return psycopg2.connect(
+        host="frontend-node-0",  # Use the RisingWave frontend service
+        port=4566,
+        database="dev",
+        user="root",
+        password="",
+    )
+
+
+@asset(
+    deps=["iceberg_countries_table"],
+    group_name="reverse_etl",
+    description="Batch sync countries from Iceberg to RisingWave MV",
+)
+def risingwave_countries_mv(context: AssetExecutionContext):
+    """Batch sync from Iceberg to RisingWave using DuckDB (reliable method).
+    
+    This reads data from Iceberg using DuckDB and creates a materialized view
+    in RisingWave. This approach is more reliable than native Iceberg sources
+    because it avoids schema compatibility issues between DuckDB and RisingWave.
+    """
+    context.log.info("Starting batch reverse ETL: Iceberg → RisingWave MV...")
+
+    # Step 1: Read data from Iceberg using DuckDB subprocess
+    env = os.environ.copy()
+    env['AWS_ACCESS_KEY_ID'] = 'hummockadmin'
+    env['AWS_SECRET_ACCESS_KEY'] = 'hummockadmin'
+    env['AWS_DEFAULT_REGION'] = 'us-east-1'
+    env['AWS_ENDPOINT_URL'] = 'http://minio-0:9301'
+
+    extract_script = '''
+import duckdb
+import json
+
+conn = duckdb.connect(":memory:")
+conn.execute("INSTALL iceberg;")
+conn.execute("INSTALL httpfs;")
+conn.execute("LOAD iceberg;")
+conn.execute("LOAD httpfs;")
+conn.execute("SET s3_region = 'us-east-1';")
+conn.execute("SET s3_endpoint = 'minio-0:9301';")
+conn.execute("SET s3_url_style = 'path';")
+conn.execute("SET s3_access_key_id = 'hummockadmin';")
+conn.execute("SET s3_secret_access_key = 'hummockadmin';")
+conn.execute("SET s3_use_ssl = false;")
+conn.execute("""
+    ATTACH 'risingwave-warehouse' AS lk (
+        TYPE ICEBERG,
+        ENDPOINT 'http://lakekeeper:8181/catalog',
+        AUTHORIZATION_TYPE 'none'
+    );
+""")
+
+result = conn.execute("SELECT country, country_name FROM lk.analytics.iceberg_countries ORDER BY country").fetchall()
+data = [{"country": r[0], "country_name": r[1]} for r in result]
+print(json.dumps(data))
+conn.close()
+'''
+
+    context.log.info("Extracting data from Iceberg...")
+    result = subprocess.run(
+        ['python3', '-c', extract_script],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60
+    )
+
+    if result.returncode != 0:
+        raise Exception(f"Failed to extract from Iceberg: {result.stderr}")
+
+    import json
+    countries = json.loads(result.stdout.strip())
+    context.log.info(f"Extracted {len(countries)} countries from Iceberg")
+
+    # Step 2: Load data into RisingWave as a materialized view
+    context.log.info("Creating materialized view in RisingWave...")
+
+    conn = _get_risingwave_connection()
+
+    try:
+        with conn.cursor() as cur:
+            # Drop existing objects for full refresh
+            cur.execute("DROP MATERIALIZED VIEW IF EXISTS mv_countries_from_iceberg;")
+            cur.execute("DROP TABLE IF EXISTS _tmp_countries_staging;")
+            context.log.info("Dropped existing MV and staging table")
+
+            # Create staging table and insert data
+            cur.execute("""
+                CREATE TABLE _tmp_countries_staging (
+                    country VARCHAR,
+                    country_name VARCHAR
+                );
+            """)
+
+            for row in countries:
+                cur.execute(
+                    "INSERT INTO _tmp_countries_staging (country, country_name) VALUES (%s, %s);",
+                    (row["country"], row["country_name"])
+                )
+
+            # Create materialized view from staging
+            cur.execute("""
+                CREATE MATERIALIZED VIEW mv_countries_from_iceberg AS
+                SELECT country, country_name 
+                FROM _tmp_countries_staging;
+            """)
+            
+            # Clean up staging table
+            cur.execute("DROP TABLE _tmp_countries_staging;")
+
+            conn.commit()
+
+            # Verify
+            cur.execute("SELECT COUNT(*) FROM mv_countries_from_iceberg;")
+            count = cur.fetchone()[0]
+            context.log.info(f"✓ Successfully created MV with {count} countries")
+
+            # Show sample
+            cur.execute("SELECT * FROM mv_countries_from_iceberg ORDER BY country LIMIT 5;")
+            sample = cur.fetchall()
+            context.log.info(f"Sample: {sample}")
+
+    finally:
+        conn.close()
+
+    return {
+        "materialized_view": "mv_countries_from_iceberg",
+        "count": count,
+        "method": "batch_via_duckdb"
+    }
+
+
+@asset(
+    deps=["risingwave_countries_mv"],
+    group_name="reverse_etl",
+    description="Create regular table from MV for query performance",
+)
+def risingwave_countries_table(context: AssetExecutionContext):
+    """Creates a regular table from the MV for faster queries."""
+    context.log.info("Creating RisingWave table from MV...")
+
+    conn = _get_risingwave_connection()
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS countries_from_iceberg;")
+            
+            cur.execute("""
+                CREATE TABLE countries_from_iceberg AS
+                SELECT * FROM mv_countries_from_iceberg;
+            """)
+            
+            cur.execute("""
+                ALTER TABLE countries_from_iceberg 
+                ADD PRIMARY KEY (country);
+            """)
+
+            conn.commit()
+
+            cur.execute("SELECT COUNT(*) FROM countries_from_iceberg;")
+            count = cur.fetchone()[0]
+            context.log.info(f"✓ Created table with {count} countries")
+
+    finally:
+        conn.close()
+
+    return {
+        "table": "countries_from_iceberg",
+        "count": count
+    }
