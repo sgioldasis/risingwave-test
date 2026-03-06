@@ -1,27 +1,24 @@
 """Dagster asset for creating and populating Iceberg countries table using Trino."""
+import csv
+import os
+
 from dagster import asset, AssetExecutionContext
 from trino.dbapi import connect
 
 
-# Country data
-COUNTRIES_DATA = [
-    ("US", "United States"),
-    ("CA", "Canada"),
-    ("GB", "United Kingdom"),
-    ("DE", "Germany"),
-    ("FR", "France"),
-    ("IT", "Italy"),
-    ("ES", "Spain"),
-    ("NL", "Netherlands"),
-    ("AU", "Australia"),
-    ("JP", "Japan"),
-    ("GR", "Greece"),
-]
+def load_csv_data(filepath: str) -> list[tuple]:
+    """Load country data from CSV file."""
+    countries = []
+    with open(filepath, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            countries.append((row['country_code'], row['country_name']))
+    return countries
 
 
 @asset(
     name="iceberg_countries",
-    group_name="datalake",
+    group_name="csv",
     description="Create and populate Iceberg countries table using Trino",
 )
 def iceberg_countries(context: AssetExecutionContext):
@@ -29,6 +26,12 @@ def iceberg_countries(context: AssetExecutionContext):
     context.log.info("Creating Iceberg countries table via Trino...")
 
     try:
+        # Load data from CSV
+        csv_path = os.path.join('/workspace', 'data', 'countries.csv')
+        context.log.info(f"Loading countries from {csv_path}...")
+        countries = load_csv_data(csv_path)
+        context.log.info(f"Loaded {len(countries)} countries from CSV")
+
         # Connect to Trino (running in Docker, use 'trino' as host from within Dagster container)
         conn = connect(
             host="trino",
@@ -56,8 +59,8 @@ def iceberg_countries(context: AssetExecutionContext):
         conn.commit()
 
         # Insert data
-        context.log.info(f"Inserting {len(COUNTRIES_DATA)} countries...")
-        for country_code, country_name in COUNTRIES_DATA:
+        context.log.info(f"Inserting {len(countries)} countries...")
+        for country_code, country_name in countries:
             cur.execute(
                 "INSERT INTO iceberg_countries (country, country_name) VALUES (?, ?)",
                 (country_code, country_name)

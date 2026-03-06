@@ -4,24 +4,11 @@ Load countries data directly into Iceberg using Trino.
 This provides full SQL support including UPDATE/DELETE.
 """
 
+import csv
+import os
+
 import trino
 from trino.dbapi import connect
-
-
-# Country data (from the original dbt seeds)
-COUNTRIES_DATA = [
-    ("US", "United States"),
-    ("CA", "Canada"),
-    ("GB", "United Kingdom"),
-    ("DE", "Germany"),
-    ("FR", "France"),
-    ("IT", "Italy"),
-    ("ES", "Spain"),
-    ("NL", "Netherlands"),
-    ("AU", "Australia"),
-    ("JP", "Japan"),
-    ("GR", "Greece"),
-]
 
 
 def get_trino_connection():
@@ -33,6 +20,16 @@ def get_trino_connection():
         catalog="iceberg",
         schema="analytics",
     )
+
+
+def load_csv_data(filepath: str) -> list[tuple]:
+    """Load country data from CSV file."""
+    countries = []
+    with open(filepath, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            countries.append((row['country_code'], row['country_name']))
+    return countries
 
 
 def create_table(conn):
@@ -83,8 +80,14 @@ def main():
     print("Loading countries to Iceberg via Trino...")
     print("-" * 50)
     
+    # Load data from CSV
+    csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'countries.csv')
+    print(f"Loading countries from {csv_path}...")
+    countries = load_csv_data(csv_path)
+    print(f"  Loaded {len(countries)} countries from CSV")
+    
     # Connect to Trino
-    print("Connecting to Trino...")
+    print("\nConnecting to Trino...")
     conn = get_trino_connection()
     print("  Connected to Trino at localhost:8080")
     
@@ -94,7 +97,7 @@ def main():
     
     # Load data
     print("\nLoading data...")
-    load_data(conn, COUNTRIES_DATA)
+    load_data(conn, countries)
     
     # Verify
     count = verify_data(conn)

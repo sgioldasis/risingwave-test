@@ -10,9 +10,20 @@ version: 2
 # Use mv_countries_from_iceberg (materialized view) for cached deduplicated data
 
 sources:
-  - name: risingwave
+  - name: iceberg
     database: dev
     schema: public
     tables:
-      - name: src_iceberg_countries
+      - name: iceberg_countries
+        identifier: src_iceberg_countries
         description: "Native RisingWave SOURCE that reads changelog from Iceberg table"
+        meta:
+          dagster:
+            deps: ['iceberg_countries']
+        columns:
+          - name: country
+            data_type: varchar
+            description: "Country code (e.g., GR, DE)"
+          - name: country_name
+            data_type: varchar
+            description: "Full country name (e.g., Greece, Germany)"

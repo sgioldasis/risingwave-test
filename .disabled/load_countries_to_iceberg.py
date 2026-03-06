@@ -37,8 +37,8 @@ def main():
     # Create table and load data
     print("Loading countries from CSV...")
     conn.execute("""
-        CREATE OR REPLACE TABLE lk.public.iceberg_countries AS 
-        SELECT * FROM read_csv_auto('dbt/seeds/countries.csv');
+        CREATE OR REPLACE TABLE lk.public.iceberg_countries AS
+        SELECT * FROM read_csv_auto('data/countries.csv');
     """)
     
     # Verify

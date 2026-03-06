@@ -519,6 +519,7 @@ services:
       # This prevents root-owned files from being created in the project root
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
+      - "./data:/workspace/data:ro"
       - "dagster-storage:/workspace/dagster_storage"
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
@@ -555,6 +556,7 @@ services:
     volumes:
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
+      - "./data:/workspace/data:ro"
       - "dagster-storage:/workspace/dagster_storage"
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
