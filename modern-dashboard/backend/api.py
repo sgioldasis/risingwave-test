@@ -463,24 +463,35 @@ async def get_next_predictions():
                 "predicted_at": datetime.now(timezone.utc).isoformat()
             }
         
-        # Extract model_version from first metric that has it (ML serving returns it per-metric)
+        # Extract model_version and model_type from first metric that has it (ML serving returns it per-metric)
         model_version = "unknown"
+        model_type = "unknown"
+        is_heuristic = False
         for metric in ['viewers', 'carters', 'purchasers']:
             metric_data = result.get(metric)
             if metric_data and isinstance(metric_data, dict) and metric_data.get("model_version"):
                 model_version = metric_data.get("model_version")
+                # Check if this is a heuristic prediction (moving_average fallback)
+                if model_version in ['moving_average', 'heuristic']:
+                    is_heuristic = True
+                    model_type = "heuristic"
+                else:
+                    model_type = "ml"
                 break
         
-        # If model_version is a heuristic/non-datetime value, generate a timestamp-based version
+        # If model_version is a heuristic/non-datetime value, use a fixed label instead of fake timestamp
         if model_version in ['moving_average', 'heuristic', 'unknown', None]:
-            now = datetime.now(timezone.utc)
-            model_version = f"v{now.strftime('%Y%m%d_%H%M%S')}"
+            model_version = "heuristic"
+            model_type = "heuristic"
+            is_heuristic = True
         
         # Build response with flat structure for frontend compatibility
         predictions = {
             "predicted_at": result.get("predicted_at", datetime.now(timezone.utc).isoformat()),
             "timestamp": result.get("timestamp", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()),
-            "model_version": model_version
+            "model_version": model_version,
+            "model_type": model_type,
+            "is_heuristic": is_heuristic
         }
         
         # Add predictions for each metric at the root level

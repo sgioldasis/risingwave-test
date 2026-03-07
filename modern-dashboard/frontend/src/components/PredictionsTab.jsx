@@ -5,7 +5,8 @@ import {
 } from 'recharts';
 import {
     Brain, TrendingUp, TrendingDown, Activity, Clock,
-    Target, BarChart3, Zap, AlertCircle, CheckCircle2
+    Target, BarChart3, Zap, AlertCircle, CheckCircle2,
+    Calculator, Sparkles
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -274,9 +275,19 @@ const PredictionsTab = ({ funnelData }) => {
                                 <span>Predicted: {predictions?.predicted_at ? formatTimestamp(predictions.predicted_at) : '-'}</span>
                             </div>
                         </div>
-                        {predictions?.model_version && predictions.model_version !== 'unknown' && (
-                            <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''}`}>
-                                <span>Model version: {formatModelVersionDisplay(predictions.model_version)}</span>
+                        {predictions?.model_type && (
+                            <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''} ${predictions.model_type === 'heuristic' ? 'heuristic' : 'ml-model'}`}>
+                                {predictions.model_type === 'heuristic' ? (
+                                    <>
+                                        <Calculator size={14} className="text-amber-400" />
+                                        <span className="text-amber-400">Heuristic prediction</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Sparkles size={14} className="text-purple-400" />
+                                        <span>ML Model: {formatModelVersionDisplay(predictions.model_version)}</span>
+                                    </>
+                                )}
                             </div>
                         )}
                     </div>

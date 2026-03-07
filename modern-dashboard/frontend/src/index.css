@@ -362,6 +362,27 @@ header {
     letter-spacing: 0.03em;
 }
 
+/* Model type badges - Heuristic vs ML */
+.refresh-badge.heuristic {
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.refresh-badge.heuristic:hover {
+    background: rgba(251, 191, 36, 0.15);
+    border-color: rgba(251, 191, 36, 0.5);
+}
+
+.refresh-badge.ml-model {
+    background: rgba(168, 85, 247, 0.1);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.refresh-badge.ml-model:hover {
+    background: rgba(168, 85, 247, 0.15);
+    border-color: rgba(168, 85, 247, 0.5);
+}
+
 /* Animations */
 @keyframes pulse {
     0% {
