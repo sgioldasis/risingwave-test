@@ -1,7 +1,8 @@
-{{ config(materialized='materialized_view') }}
+{{ config(materialized='view') }}
 
 -- Join funnel_summary with Iceberg countries data within RisingWave
 -- This avoids cross-catalog join issues in Trino
+-- Using VIEW materialization to ensure fresh data on each query
 
 SELECT
     f.window_start,
