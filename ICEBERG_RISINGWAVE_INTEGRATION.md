@@ -100,11 +100,12 @@ psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries
 
 ## Models
 
-| Model | Type | Purpose |
-|-------|------|---------|
-| `iceberg_countries` (Iceberg catalog) | Trino/Iceberg Table | Source of truth in Iceberg |
-| `src_iceberg_countries` | RisingWave SOURCE | Native source (changelog data) |
-| `rw_countries` | Materialized View | Deduplicates changelog to current snapshot |
+| Model | Type | Purpose | Dagster Asset |
+|-------|------|---------|---------------|
+| `iceberg_countries` (Iceberg) | Trino/Iceberg Table | Source of truth in Iceberg | `csv/iceberg_countries` |
+| `src_iceberg_countries` | RisingWave SOURCE | Native source (changelog data) | `public/src_iceberg_countries` |
+| `rw_countries` | RisingWave MV | Deduplicates changelog to current snapshot | `public/rw_countries` |
+| `funnel_summary_with_country` | RisingWave MV | Pre-joined funnel + countries | `public/funnel_summary_with_country` |
 
 ## dbt Commands
 

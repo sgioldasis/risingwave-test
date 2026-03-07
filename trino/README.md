@@ -48,7 +48,10 @@ docker run -it --rm --network risingwave-test_iceberg_net trinodb/trino:453 trin
 
 #### Using Local trino-cli (from devbox)
 ```bash
-# Interactive shell
+# Interactive shell (no catalog specified - can query any catalog)
+trino --server http://localhost:8080
+
+# Interactive shell with specific catalog
 trino --server http://localhost:8080 --catalog iceberg --schema analytics
 
 # One-liner query
@@ -68,12 +71,11 @@ conn = connect(
     host="localhost",
     port=8080,
     user="trino",
-    catalog="iceberg",
-    schema="analytics",
 )
 
 cur = conn.cursor()
-cur.execute("SELECT * FROM iceberg_countries")
+# Use fully qualified names to query any catalog
+cur.execute("SELECT * FROM iceberg.analytics.iceberg_countries")
 rows = cur.fetchall()
 ```
 
@@ -81,22 +83,22 @@ rows = cur.fetchall()
 
 ```sql
 -- List tables
-SHOW TABLES;
+SHOW TABLES FROM iceberg.analytics;
 
 -- Query data
-SELECT * FROM iceberg_countries;
+SELECT * FROM iceberg.analytics.iceberg_countries;
 
 -- Update data (works in Trino, not DuckDB!)
-UPDATE iceberg_countries SET country_name = 'Greece Updated' WHERE country = 'GR';
+UPDATE iceberg.analytics.iceberg_countries SET country_name = 'Greece Updated' WHERE country = 'GR';
 
 -- Delete data
-DELETE FROM iceberg_countries WHERE country = 'CY';
+DELETE FROM iceberg.analytics.iceberg_countries WHERE country = 'CY';
 
 -- Insert data
-INSERT INTO iceberg_countries VALUES ('JP', 'Japan');
+INSERT INTO iceberg.analytics.iceberg_countries VALUES ('JP', 'Japan');
 
 -- Create new table
-CREATE TABLE new_table (
+CREATE TABLE iceberg.analytics.new_table (
     id INTEGER,
     name VARCHAR
 ) WITH (
@@ -124,11 +126,14 @@ docker compose exec trino trino --catalog risingwave --schema public
 
 #### Using Local trino-cli (from devbox)
 ```bash
-# Interactive shell
+# Interactive shell (no catalog specified - can query any catalog)
+trino --server http://localhost:8080
+
+# Interactive shell with specific catalog
 trino --server http://localhost:8080 --catalog risingwave --schema public
 
 # One-liner query
-trino --server http://localhost:8080 --catalog risingwave --schema public --execute "SELECT * FROM src_iceberg_countries"
+trino --server http://localhost:8080 --catalog risingwave --schema public --execute "SELECT * FROM rw_countries"
 ```
 
 #### Using DBeaver/DataGrip
@@ -140,20 +145,20 @@ trino --server http://localhost:8080 --catalog risingwave --schema public --exec
 
 ```sql
 -- List tables in RisingWave
-SHOW TABLES;
+SHOW TABLES FROM risingwave.public;
 
 -- Query materialized views
-SELECT * FROM mv_countries_from_iceberg;
+SELECT * FROM risingwave.public.funnel_summary_with_country;
 
--- Query streaming sources
-SELECT * FROM src_cart LIMIT 10;
+-- Query funnel data
+SELECT * FROM risingwave.public.funnel_summary LIMIT 10;
 
 -- Check table schemas
-DESCRIBE mv_countries_from_iceberg;
+DESCRIBE risingwave.public.rw_countries;
 
 -- Aggregate queries
 SELECT country_name, COUNT(*) as count
-FROM mv_countries_from_iceberg
+FROM risingwave.public.rw_countries
 GROUP BY country_name;
 ```
 
@@ -169,25 +174,79 @@ One of Trino's most powerful features is the ability to query across different d
 
 ### Example: Join Iceberg and RisingWave Data
 
+**Note**: When joining RisingWave materialized views with Iceberg tables, query the Iceberg table directly from its catalog rather than through RisingWave's native Iceberg SOURCE (which may have type compatibility issues in cross-catalog joins).
+
 ```sql
--- Query Iceberg table from RisingWave
+-- ✅ WORKING: Join RisingWave MV with Iceberg table directly
 SELECT 
-    i.country,
-    i.country_name as iceberg_name,
-    r.country_name as risingwave_name
-FROM iceberg.analytics.iceberg_countries i
-JOIN risingwave.public.src_iceberg_countries r 
-    ON i.country = r.country;
+    f.window_start,
+    f.country,
+    c.country_name,
+    f.viewers,
+    f.carters,
+    f.purchasers
+FROM risingwave.public.funnel_summary f
+JOIN iceberg.analytics.iceberg_countries c
+    ON f.country = c.country;
+
+-- ❌ NOT WORKING: Joining two RisingWave views where one reads from Iceberg SOURCE
+-- This fails with "Unable to find name datatype in the system catalogs"
+-- SELECT * FROM funnel_summary f JOIN vw_iceberg_countries c ON f.country = c.country;
+```
+
+**Solution for complex joins**: Create a pre-joined materialized view in RisingWave:
+```sql
+-- In RisingWave (via dbt model funnel_summary_with_country)
+SELECT f.*, c.country_name 
+FROM funnel_summary f 
+LEFT JOIN rw_countries c ON f.country = c.country;
+
+-- Then query simply in Trino:
+SELECT * FROM risingwave.public.funnel_summary_with_country;
 ```
 
 ### Example: Compare Data Between Sources
 
 ```sql
--- Find records that exist in Iceberg but not in RisingWave
-SELECT * FROM iceberg.analytics.iceberg_countries
+-- Find records that exist in Iceberg but not in RisingWave (rw_countries is the materialized view)
+SELECT country, country_name FROM iceberg.analytics.iceberg_countries
 EXCEPT
-SELECT * FROM risingwave.public.src_iceberg_countries;
+SELECT country, country_name FROM risingwave.public.rw_countries;
 ```
+
+### Example: Real-time Update from Iceberg to RisingWave
+
+This demonstrates how changes in Iceberg are immediately reflected in RisingWave materialized views:
+
+```sql
+-- Step 1: Check current country name for GR in RisingWave
+SELECT country, country_name FROM risingwave.public.rw_countries WHERE country = 'GR';
+-- Result: GR | Greece
+
+-- Step 2: Update the country name in Iceberg
+UPDATE iceberg.analytics.iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR';
+
+-- Step 3: Verify the change in Iceberg
+SELECT country, country_name FROM iceberg.analytics.iceberg_countries WHERE country = 'GR';
+-- Result: GR | Hellas
+
+-- Step 4: Immediately check RisingWave - the change is reflected in real-time!
+SELECT country, country_name FROM risingwave.public.rw_countries WHERE country = 'GR';
+-- Result: GR | Hellas
+
+-- Step 5: See the updated country name in the funnel summary
+SELECT window_start, country, country_name, viewers, carters, purchasers
+FROM risingwave.public.funnel_summary_with_country
+WHERE country = 'GR';
+-- Result shows 'Hellas' as the country_name
+```
+
+**How it works:**
+1. `rw_countries` is a materialized view that reads from `src_iceberg_countries` (RisingWave's Iceberg SOURCE)
+2. When you update data in Iceberg via Trino, the change is written to the Iceberg table
+3. RisingWave's Iceberg SOURCE (`src_iceberg_countries`) polls the Iceberg table and detects the change
+4. The `rw_countries` materialized view automatically reflects the updated data
+5. `funnel_summary_with_country` joins `funnel_summary` with `rw_countries`, so it immediately shows the new country name
 
 ---
 
@@ -221,12 +280,47 @@ SELECT * FROM risingwave.public.src_iceberg_countries;
 
 | Table | Description |
 |-------|-------------|
-| `mv_countries_from_iceberg` | Materialized view of Iceberg data (queryable via Trino) |
-| `countries_iceberg_snapshot` | Table with Iceberg data |
-| `funnel` | Funnel aggregation materialized view |
+| `rw_countries` | Deduplicated countries from Iceberg (materialized view) |
 | `funnel_summary` | Funnel summary table |
+| `funnel_summary_with_country` | Pre-joined funnel + countries (recommended for queries) |
+| `funnel` | Funnel aggregation materialized view |
+| `src_iceberg_countries` | Native RisingWave SOURCE (Iceberg connector) - **Not queryable via Trino** |
+| `src_cart` | Cart events source (Kafka) - **Not queryable via Trino** |
+| `src_page` | Page view events source (Kafka) - **Not queryable via Trino** |
+| `src_purchase` | Purchase events source (Kafka) - **Not queryable via Trino** |
 
 **Note**: To query RisingWave sources directly, use `psql`:
 ```bash
 psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries"
+```
+
+---
+
+## Recommended Query Patterns
+
+### Query Funnel Data with Country Names
+```sql
+-- Use the pre-joined materialized view (recommended)
+SELECT * FROM risingwave.public.funnel_summary_with_country;
+
+-- Or join with Iceberg table directly
+SELECT 
+    f.window_start,
+    f.country,
+    c.country_name,
+    f.viewers,
+    f.carters,
+    f.purchasers
+FROM risingwave.public.funnel_summary f
+JOIN iceberg.analytics.iceberg_countries c
+    ON f.country = c.country;
+```
+
+### Query Deduplicated Countries
+```sql
+-- Use rw_countries (deduplicated materialized view)
+SELECT * FROM risingwave.public.rw_countries;
+
+-- Or query Iceberg directly
+SELECT * FROM iceberg.analytics.iceberg_countries;
 ```
