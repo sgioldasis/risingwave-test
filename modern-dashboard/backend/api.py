@@ -11,6 +11,7 @@ import asyncio
 import logging
 import httpx
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -95,22 +96,42 @@ consumer_running = False
 
 
 def parse_timestamp(ts):
-    """Parse timestamp (Unix ms, string, or datetime) to ISO format in UTC."""
+    """Parse timestamp (Unix ms, string, or datetime) to ISO format in UTC with timezone, truncated to seconds."""
     if ts is None:
         return None
     from datetime import datetime, timezone
     # Handle Unix timestamp in milliseconds (from Kafka JSON)
     if isinstance(ts, (int, float)):
-        return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+        dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+        return dt.replace(microsecond=0).isoformat()
     # Handle string
     if isinstance(ts, str):
         # Check if it's already a number string
         if ts.isdigit():
-            return datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc).isoformat()
-        return ts
+            dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+            return dt.replace(microsecond=0).isoformat()
+        # Parse string to datetime to handle microseconds and ensure consistent format
+        try:
+            # Remove timezone suffix for parsing
+            ts_no_tz = ts.replace('Z', '+00:00')
+            if ts_no_tz.endswith('+00:00'):
+                ts_no_tz = ts_no_tz[:-6]
+            # Parse the base timestamp
+            dt = datetime.fromisoformat(ts_no_tz)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            # Truncate to seconds and return with timezone
+            return dt.replace(microsecond=0).isoformat()
+        except Exception:
+            # Fallback: ensure string has timezone info
+            if not ts.endswith('Z') and not re.search(r'[+-]\d{2}:\d{2}$', ts):
+                ts = ts + '+00:00'
+            return ts
     # Handle datetime object
     if isinstance(ts, datetime):
-        return ts.isoformat()
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.replace(microsecond=0).isoformat()
     return str(ts)
 
 
@@ -214,7 +235,7 @@ def get_funnel_data():
                 # Truncate to minute for aggregation
                 if isinstance(window_start, str):
                     minute_key = window_start[:16]  # "YYYY-MM-DDTHH:MM"
-                    minute_start = minute_key + ":00"
+                    minute_start = minute_key + ":00+00:00"  # Include UTC timezone
                 else:
                     continue
                 
@@ -222,7 +243,7 @@ def get_funnel_data():
                 if minute_key not in minute_buckets:
                     minute_buckets[minute_key] = {
                         'window_start': minute_start,
-                        'window_end': minute_key + ":59",
+                        'window_end': minute_key + ":59+00:00",
                         'viewers': 0,
                         'carters': 0,
                         'purchasers': 0,
@@ -514,9 +535,18 @@ async def get_next_predictions():
                 predictions[f"{metric}_confidence"] = 0
         
         # Add historical context (last actual values for comparison)
-        if latest_funnel_data and latest_funnel_data.get("window_end"):
+        if latest_funnel_data and latest_funnel_data.get("window_start"):
+            # Use window_start for consistency with aggregated minute data
+            # and truncate to minute level to avoid duplicates
+            window_start = latest_funnel_data.get("window_start")
+            if isinstance(window_start, str):
+                # Ensure timezone
+                if not window_start.endswith('Z') and not re.search(r'[+-]\d{2}:\d{2}$', window_start):
+                    window_start = window_start + '+00:00'
+                # Truncate to minute (remove seconds)
+                window_start = window_start[:16] + ':00+00:00'
             predictions["last_actual"] = {
-                "timestamp": latest_funnel_data.get("window_end"),
+                "timestamp": window_start,
                 "viewers": latest_funnel_data.get("viewers"),
                 "carters": latest_funnel_data.get("carters"),
                 "purchasers": latest_funnel_data.get("purchasers"),
@@ -691,7 +721,7 @@ async def get_predictions_comparison():
             try:
                 if isinstance(window_start, str):
                     minute_key = window_start[:16]  # "YYYY-MM-DDTHH:MM"
-                    minute_start = minute_key + ":00"
+                    minute_start = minute_key + ":00+00:00"  # Include UTC timezone
                 else:
                     continue
                 

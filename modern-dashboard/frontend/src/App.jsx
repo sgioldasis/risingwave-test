@@ -305,7 +305,7 @@ const App = () => {
                                             tickLine={false}
                                             tickFormatter={(str) => {
                                                 const date = new Date(str);
-                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                                                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                                             }}
                                         />
                                         <YAxis
@@ -318,7 +318,7 @@ const App = () => {
                                             itemStyle={{ fontSize: '12px' }}
                                             labelFormatter={(label) => {
                                                 const date = new Date(label);
-                                                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                                             }}
                                         />
                                         <Area type="monotone" dataKey="viewers" stroke="#636efa" strokeWidth={3} fillOpacity={1} fill="url(#colorViewers)" />
@@ -393,7 +393,7 @@ const App = () => {
                                             tickLine={false}
                                             tickFormatter={(str) => {
                                                 const date = new Date(str);
-                                                return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                                                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                                             }}
                                         />
                                         <YAxis
@@ -405,6 +405,10 @@ const App = () => {
                                         <Tooltip
                                             contentStyle={{ background: '#1a1d29', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
                                             formatter={(val, name) => [`${(val * 100).toFixed(1)}%`, name]}
+                                            labelFormatter={(label) => {
+                                                const date = new Date(label);
+                                                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                                            }}
                                         />
                                         <Line
                                             type="monotone"

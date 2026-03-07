@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
     BarChart, Bar, Cell, ReferenceLine, Legend
@@ -20,8 +20,11 @@ const PredictionsTab = ({ funnelData }) => {
     const [timeAdjustedPredictions, setTimeAdjustedPredictions] = useState(null);
     const [minuteProgress, setMinuteProgress] = useState(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
-    const [lastModelVersion, setLastModelVersion] = useState(null);
+    const [lastModelType, setLastModelType] = useState(null);
     const [modelVersionFlash, setModelVersionFlash] = useState(false);
+    
+    // Ref to store previous valid predictions for smooth transitions
+    const prevPredictionsRef = useRef(null);
 
     // Helper to format timestamps - handles both ISO with timezone and without
     const formatTimestamp = (ts) => {
@@ -90,6 +93,10 @@ const PredictionsTab = ({ funnelData }) => {
             if (nextData.error) {
                 setError(nextData.error);
             } else {
+                // Store previous valid predictions before updating
+                if (predictions && !predictions.error) {
+                    prevPredictionsRef.current = predictions;
+                }
                 setPredictions(nextData);
                 setError(null);
             }
@@ -103,13 +110,13 @@ const PredictionsTab = ({ funnelData }) => {
                 setMinuteProgress(compareData.current_minute_progress);
             }
             
-            // Check if model version changed
-            const newModelVersion = nextData.model_version;
-            if (newModelVersion && newModelVersion !== 'unknown' && newModelVersion !== lastModelVersion) {
-                // Always trigger flash when model version changes (including first load)
+            // Flash the model type badge on every prediction update (every 20 seconds)
+            // This indicates fresh prediction data has been received
+            const newModelType = nextData.model_type;
+            if (newModelType) {
                 setModelVersionFlash(true);
                 setTimeout(() => setModelVersionFlash(false), 1000);
-                setLastModelVersion(newModelVersion);
+                setLastModelType(newModelType);
             }
             
             setLoading(false);
@@ -121,7 +128,9 @@ const PredictionsTab = ({ funnelData }) => {
         }
     };
 
-    // Build comparison data when we have funnel data
+    // Build comparison data when actuals or predictions change
+    // Actuals come from funnelData (parent) - same as dashboard tab
+    // Predictions come from predictions API - updated separately
     useEffect(() => {
         if (funnelData && funnelData.length > 0) {
             const combined = buildComparisonData(funnelData, predictions, timeAdjustedPredictions);
@@ -133,8 +142,8 @@ const PredictionsTab = ({ funnelData }) => {
         // Initial fetch
         fetchPredictions();
 
-        // Set up interval to refresh every 10 seconds
-        const interval = setInterval(fetchPredictions, 10000);
+        // Set up interval to refresh every 20 seconds for predictions
+        const interval = setInterval(fetchPredictions, 20000);
         // Store interval ID on window to clear it later
         window._predictionInterval = interval;
 
@@ -145,9 +154,24 @@ const PredictionsTab = ({ funnelData }) => {
         };
     }, []);
 
+    // Helper to extract minute-level key for comparison
+    const getMinuteKey = (ts) => {
+        if (!ts) return '';
+        // Remove timezone and extract YYYY-MM-DDTHH:MM
+        return ts.replace(/[+-]\d{2}:\d{2}$/, '').replace('Z', '').slice(0, 16);
+    };
+
     const buildComparisonData = (actuals, preds, adjustedPreds) => {
+        // Determine effective predictions with fallback for transition stability
+        // Only use fallback for prediction values to prevent dashed lines from flickering
+        const hasValidPreds = preds && !preds.error && preds.timestamp;
+        const effectivePreds = hasValidPreds ? preds : prevPredictionsRef.current;
+        
+        // Note: Actuals come purely from funnelData (same update rate as dashboard tab)
+        // Predictions are updated separately and merged here for display
+        
         // Get last 10 actual data points with _actual keys for chart
-        const recentActuals = actuals.slice(-10).map(d => ({
+        let recentActuals = actuals.slice(-10).map(d => ({
             ...d,
             viewers_actual: d.viewers,
             carters_actual: d.carters,
@@ -157,39 +181,88 @@ const PredictionsTab = ({ funnelData }) => {
             purchasers_pred: null,
             type: 'actual'
         }));
+        
+        // Actuals come purely from funnelData (same as dashboard tab)
+        // No merging with last_actual from predictions to keep updates consistent
 
-        // Add prediction point if available
-        // Chart shows FULL predictions on dotted lines (for next minute comparison)
-        // adjustedPreds are only used for the percentage display in cards
-        const predValues = preds && preds.viewers !== undefined ? preds : null;
-            
-        if (preds && !preds.error && preds.timestamp && predValues) {
-            // Create a connecting point (last actual with prediction values)
+        // Add prediction values to last actual point for line connection (immutably)
+        // This creates the dotted line connection from actual to prediction
+        const predValues = effectivePreds && effectivePreds.viewers !== undefined ? effectivePreds : null;
+        if (effectivePreds && !effectivePreds.error && effectivePreds.timestamp && predValues && recentActuals.length > 0) {
+            // Always add prediction values to the last actual point for line connection
+            // The prediction point itself will be added separately after deduplication
             const lastActual = recentActuals[recentActuals.length - 1];
-            const predPoint = {
-                window_start: preds.timestamp,
-                viewers_actual: null,  // Don't show for actual line
+            const updatedLastActual = {
+                ...lastActual,
                 viewers_pred: predValues.viewers,
-                carters_actual: null,
                 carters_pred: predValues.carters,
-                purchasers_actual: null,
-                purchasers_pred: predValues.purchasers,
-                view_to_cart_rate: predValues.view_to_cart_rate,
-                cart_to_buy_rate: predValues.cart_to_buy_rate,
-                type: 'predicted'
+                purchasers_pred: predValues.purchasers
             };
-            
-            // Add prediction values to last actual point for line connection
-            if (lastActual) {
-                lastActual.viewers_pred = predValues.viewers;
-                lastActual.carters_pred = predValues.carters;
-                lastActual.purchasers_pred = predValues.purchasers;
-            }
-            
-            return [...recentActuals, predPoint];
+            recentActuals = [...recentActuals.slice(0, -1), updatedLastActual];
         }
 
-        return recentActuals;
+        // Final deduplication: ensure no two data points share the same minute
+        // This handles race conditions when minute changes
+        // Iterate backwards to keep the last occurrence (prediction points come last)
+        const seenMinutes = new Set();
+        const deduplicated = [];
+        
+        for (let i = recentActuals.length - 1; i >= 0; i--) {
+            const point = recentActuals[i];
+            const minuteKey = getMinuteKey(point.window_start);
+            if (!seenMinutes.has(minuteKey)) {
+                seenMinutes.add(minuteKey);
+                deduplicated.unshift(point); // Add to front to preserve order
+            }
+            // If we've seen this minute before, skip this point
+            // (the last occurrence takes precedence - keeps prediction points)
+        }
+        
+        // Add placeholder for next minute to shift x-axis and show new time label
+        // This ensures the chart shows the upcoming minute even before actual data arrives
+        // Use effectivePreds (with fallback to prevPredictionsRef) to prevent flickering
+        if (effectivePreds && !effectivePreds.error) {
+            const lastPoint = deduplicated[deduplicated.length - 1];
+            const lastPointKey = lastPoint ? getMinuteKey(lastPoint.window_start) : null;
+            
+            // Determine the prediction timestamp to use
+            let predTimestamp = effectivePreds.timestamp;
+            let predValues = effectivePreds;
+            
+            // If effectivePreds timestamp is not in the future, calculate next minute
+            // This happens during minute transitions when predictions haven't updated yet
+            if (lastPoint && predTimestamp) {
+                const predMinuteKey = getMinuteKey(predTimestamp);
+                if (predMinuteKey <= lastPointKey) {
+                    // Prediction is stale (same or older minute), calculate next minute
+                    const lastDate = new Date(lastPoint.window_start);
+                    lastDate.setMinutes(lastDate.getMinutes() + 1);
+                    predTimestamp = lastDate.toISOString();
+                }
+            }
+            
+            // Only add if we have a valid timestamp that's different from last actual
+            if (predTimestamp && lastPointKey) {
+                const predMinuteKey = getMinuteKey(predTimestamp);
+                if (predMinuteKey > lastPointKey) {
+                    const placeholderPoint = {
+                        window_start: predTimestamp,
+                        viewers_actual: null,
+                        viewers_pred: predValues.viewers,
+                        carters_actual: null,
+                        carters_pred: predValues.carters,
+                        purchasers_actual: null,
+                        purchasers_pred: predValues.purchasers,
+                        view_to_cart_rate: predValues.view_to_cart_rate,
+                        cart_to_buy_rate: predValues.cart_to_buy_rate,
+                        type: 'predicted'
+                    };
+                    deduplicated.push(placeholderPoint);
+                }
+            }
+        }
+        
+        return deduplicated;
     };
 
 
@@ -299,14 +372,11 @@ const PredictionsTab = ({ funnelData }) => {
                 <div className="flex justify-between items-center mb-4">
                     <div>
                         <h3 className="text-lg font-semibold">User Activity Flow with Predictions</h3>
-                        <p className="text-sm text-gray-400">
-                            Solid = Actual history, Dotted = Full next-minute prediction
-                        </p>
                     </div>
                 </div>
                 <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={comparisonData}>
+                        <AreaChart data={comparisonData} margin={{ top: 5, right: 30, left: 5, bottom: 5 }}>
                             <defs>
                                 <linearGradient id="colorViewersActual" x1="0" y1="0" x2="0" y2="1">
                                     <stop offset="5%" stopColor="#636efa" stopOpacity={0.3} />
@@ -327,10 +397,12 @@ const PredictionsTab = ({ funnelData }) => {
                                 tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10 }}
                                 axisLine={false}
                                 tickLine={false}
-                                tickFormatter={(str) => {
+                                tickFormatter={(str, index) => {
                                     const date = new Date(str);
-                                    return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                                 }}
+                                // Use interval 0 to show all ticks, but let recharts handle deduplication
+                                interval={0}
                             />
                             <YAxis
                                 tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10 }}
@@ -340,7 +412,7 @@ const PredictionsTab = ({ funnelData }) => {
                             <Legend
                                 verticalAlign="top"
                                 height={36}
-                                iconType="line"
+                                iconType="plainline"
                                 formatter={(value) => {
                                     if (value.includes('actual')) return value.replace('_actual', ' (Actual)');
                                     if (value.includes('pred')) return value.replace('_pred', ' (Predicted)');
@@ -352,7 +424,7 @@ const PredictionsTab = ({ funnelData }) => {
                                 itemStyle={{ fontSize: '12px' }}
                                 labelFormatter={(label) => {
                                     const date = new Date(label);
-                                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                                 }}
                                 formatter={(value, name) => {
                                     const displayName = name
