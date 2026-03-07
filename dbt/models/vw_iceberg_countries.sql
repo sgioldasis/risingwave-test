@@ -15,8 +15,8 @@
 
 WITH ranked_changes AS (
     SELECT
-        country,
-        country_name,
+        country::varchar as country,
+        country_name::varchar as country_name,
         -- Use _row_id which is monotonically increasing in RisingWave
         -- Higher _row_id = more recent change
         ROW_NUMBER() OVER (

@@ -21,7 +21,7 @@ WITH stats AS (
 
 SELECT
     window_start,
-    'GR' as country,
+    'GR'::varchar as country,
     viewers,
     carters,
     purchasers,
