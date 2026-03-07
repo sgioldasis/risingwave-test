@@ -324,9 +324,10 @@ def ml_training_sensor_realtime(context):
 # Dagster definitions
 defs = Definitions(
     assets=[
+        # Yield iceberg_countries first (dependency of dbt assets)
+        iceberg_countries,
         realtime_funnel_dbt_assets,
         ml_trained_models,
-        iceberg_countries,
     ],
     jobs=[
         dbt_build_job,

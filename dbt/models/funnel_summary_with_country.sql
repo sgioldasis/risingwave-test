@@ -13,5 +13,5 @@ SELECT
     f.view_to_cart_rate,
     f.cart_to_buy_rate
 FROM {{ ref('funnel_summary') }} f
-LEFT JOIN {{ ref('vw_iceberg_countries') }} c
+LEFT JOIN {{ ref('rw_countries') }} c
     ON f.country = c.country

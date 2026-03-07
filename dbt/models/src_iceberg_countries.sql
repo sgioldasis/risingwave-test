@@ -3,6 +3,11 @@
     tags=['risingwave'],
     schema='public',
     persist_docs={"relation": true, "columns": true},
+    meta={
+        "dagster": {
+            "deps": [{"asset_key": ["csv", "iceberg_countries"]}]
+        }
+    },
     connector='iceberg',
     catalog_uri='http://lakekeeper:8181/catalog',
     warehouse_path='risingwave-warehouse',

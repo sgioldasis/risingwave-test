@@ -6,7 +6,7 @@ version: 2
 # directly from the Iceberg table (created outside dbt). Changes made via Trino
 # are automatically reflected in RisingWave without needing batch sync.
 #
-# Use vw_iceberg_countries (view) to get deduplicated data (latest snapshot only)
+# Use rw_countries (view) to get deduplicated data (latest snapshot only)
 # Use mv_countries_from_iceberg (materialized view) for cached deduplicated data
 
 sources:

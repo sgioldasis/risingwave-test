@@ -41,7 +41,7 @@ This document describes the data flow between Iceberg and RisingWave using Trino
 - **Note**: Returns **changelog data** (all changes), causing duplicates
 
 ### 4. Materialized View (Deduplication Layer)
-- **Model**: `vw_iceberg_countries` ([`dbt/models/vw_iceberg_countries.sql`](dbt/models/vw_iceberg_countries.sql))
+- **Model**: `rw_countries` ([`dbt/models/rw_countries.sql`](dbt/models/rw_countries.sql))
 - **Purpose**: Materialized view that filters changelog to only latest row per country using `ROW_NUMBER()`
 - **Result**: Current snapshot only, no duplicates, auto-refreshes
 
@@ -58,7 +58,7 @@ This document describes the data flow between Iceberg and RisingWave using Trino
 2. **Read Path** (via Materialized View) - **Immediate automatic refresh**:
    ```bash
    # Query the Materialized View (deduplicated, auto-refreshes)
-   psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM vw_iceberg_countries WHERE country = 'GR'"
+   psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM rw_countries WHERE country = 'GR'"
    # Result: GR | Hellas (immediately reflects the Trino update!)
    ```
 
@@ -102,9 +102,9 @@ psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries
 
 | Model | Type | Purpose |
 |-------|------|---------|
-| `iceberg_countries` | Trino/Iceberg Table | Source of truth in Iceberg |
+| `iceberg_countries` (Iceberg catalog) | Trino/Iceberg Table | Source of truth in Iceberg |
 | `src_iceberg_countries` | RisingWave SOURCE | Native source (changelog data) |
-| `vw_iceberg_countries` | Materialized View | Deduplicates changelog to current snapshot |
+| `rw_countries` | Materialized View | Deduplicates changelog to current snapshot |
 
 ## dbt Commands
 
@@ -112,7 +112,7 @@ psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries
 cd dbt
 
 # Create/update the materialized view (deduplicates source data)
-dbt run --select vw_iceberg_countries
+dbt run --select rw_countries
 ```
 
 ## Important Configuration Note

@@ -3,13 +3,13 @@
     persist_docs={"relation": true, "columns": true},
     meta={
         "dagster": {
-            "deps": [{"asset_key": ["public", "src_iceberg_countries"]}]
+            "deps": [{"asset_key": ["csv", "iceberg_countries"]}]
         }
     }
 ) }}
 
--- View (vw_iceberg_countries) that shows only the latest snapshot from Iceberg
--- Reads from native RisingWave SOURCE iceberg.iceberg_countries (src_iceberg_countries)
+-- View (rw_countries) that shows only the latest snapshot from Iceberg
+-- Reads from native RisingWave SOURCE src_iceberg_countries
 -- Filters out changelog history using ROW_NUMBER()
 -- This gives you current data only, not all changes
 
@@ -23,7 +23,7 @@ WITH ranked_changes AS (
             PARTITION BY country
             ORDER BY _row_id DESC NULLS LAST
         ) as rn
-    FROM {{ source('iceberg', 'iceberg_countries') }}
+    FROM {{ ref('src_iceberg_countries') }}
 )
 SELECT
     country,
