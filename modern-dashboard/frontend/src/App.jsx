@@ -47,30 +47,20 @@ const App = () => {
         }
     }, [producerStatus.output]);
 
-    const fetchData = async () => {
+    const fetchStaticData = async () => {
+        // Fetch data that doesn't change frequently (producer status, last event time)
         try {
-            const [funnelRes, statsRes, producerRes, lastEventRes] = await Promise.all([
-                fetch('/api/funnel'),
-                fetch('/api/stats'),
+            const [producerRes, lastEventRes] = await Promise.all([
                 fetch('/api/producer/status'),
                 fetch('/api/last-event-time')
             ]);
-            const funnelData = await funnelRes.json();
-            const statsData = await statsRes.json();
             const prodData = await producerRes.json();
             const lastEventData = await lastEventRes.json();
 
-            // Data from API is already in chronological order (oldest -> newest)
-            // Keep as-is so latest minute appears on the right of the chart
-            setData(funnelData);
-            setStats(statsData);
             setProducerStatus(prodData);
-            setLastUpdate(new Date());
             if (lastEventData.last_event_time) {
                 try {
-                    // Parse as UTC to avoid timezone offset issues
                     const ts = lastEventData.last_event_time;
-                    // Handle both ISO strings with timezone and those without
                     const utcDate = new Date(ts);
                     if (!isNaN(utcDate.getTime())) {
                         setLastEventTime(utcDate);
@@ -83,26 +73,96 @@ const App = () => {
             } else {
                 setLastEventTime(null);
             }
-            setLoading(false);
         } catch (error) {
-            console.error('Error fetching data:', error);
+            console.error('Error fetching static data:', error);
         }
+    };
+
+    const handleSSEMessage = (eventData) => {
+        // Handle SSE data updates
+        if (eventData.funnel !== undefined) {
+            setData(eventData.funnel);
+        }
+        if (eventData.stats !== undefined) {
+            setStats(eventData.stats);
+        }
+        setLastUpdate(new Date());
+        setLoading(false);
     };
 
     const startProducer = async () => {
         await fetch('/api/producer/start', { method: 'POST' });
-        fetchData();
+        fetchStaticData();
     };
 
     const stopProducer = async () => {
         await fetch('/api/producer/stop', { method: 'POST' });
-        fetchData();
+        fetchStaticData();
     };
 
+    // SSE connection for real-time funnel updates
     useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 2000);
-        return () => clearInterval(interval);
+        let eventSource = null;
+        let reconnectTimeout = null;
+        let staticDataInterval = null;
+
+        const connectSSE = () => {
+            // Fetch initial data via regular endpoint
+            fetchStaticData();
+            setLoading(true);
+
+            // Create EventSource connection
+            eventSource = new EventSource('/api/funnel/stream');
+
+            eventSource.onopen = () => {
+                console.log('SSE connection established');
+            };
+
+            eventSource.onmessage = (event) => {
+                try {
+                    const eventData = JSON.parse(event.data);
+                    
+                    if (eventData.error) {
+                        console.error('SSE error:', eventData.error);
+                        return;
+                    }
+                    
+                    handleSSEMessage(eventData);
+                } catch (error) {
+                    console.error('Error parsing SSE data:', error);
+                }
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE connection error:', error);
+                eventSource.close();
+                
+                // Reconnect after 3 seconds
+                reconnectTimeout = setTimeout(() => {
+                    console.log('Attempting to reconnect SSE...');
+                    connectSSE();
+                }, 3000);
+            };
+        };
+
+        // Start SSE connection
+        connectSSE();
+
+        // Poll static data (producer status, last event time) every 5 seconds
+        staticDataInterval = setInterval(fetchStaticData, 5000);
+
+        // Cleanup on unmount
+        return () => {
+            if (eventSource) {
+                eventSource.close();
+            }
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+            }
+            if (staticDataInterval) {
+                clearInterval(staticDataInterval);
+            }
+        };
     }, []);
 
     if (loading) {

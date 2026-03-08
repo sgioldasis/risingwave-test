@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from kafka import KafkaConsumer, KafkaProducer
 from datetime import datetime, timedelta, timezone
@@ -316,6 +317,68 @@ def get_stats():
             "error": str(e),
             "message": "No funnel data available from Kafka. Waiting for data..."
         }
+
+
+# SSE endpoint for real-time funnel updates
+@app.get("/api/funnel/stream")
+async def funnel_stream():
+    """Server-Sent Events endpoint for real-time funnel data updates.
+    
+    This endpoint provides a persistent connection that pushes updates
+    to the client only when data changes, eliminating the need for polling.
+    """
+    async def event_generator():
+        last_funnel_hash = None
+        last_stats_hash = None
+        
+        while True:
+            try:
+                # Get current data (using the same logic as the polling endpoints)
+                current_funnel = get_funnel_data()
+                current_stats = get_stats()
+                
+                # Create hashes to detect changes
+                funnel_json = json.dumps(current_funnel, sort_keys=True) if isinstance(current_funnel, list) else str(current_funnel)
+                stats_json = json.dumps(current_stats, sort_keys=True) if isinstance(current_stats, dict) else str(current_stats)
+                
+                current_funnel_hash = hash(funnel_json)
+                current_stats_hash = hash(stats_json)
+                
+                # Only send if data changed
+                if current_funnel_hash != last_funnel_hash or current_stats_hash != last_stats_hash:
+                    event_data = {
+                        "funnel": current_funnel if isinstance(current_funnel, list) else [],
+                        "stats": current_stats if isinstance(current_stats, dict) else {},
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    
+                    # SSE format: data: <json>\n\n
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    
+                    last_funnel_hash = current_funnel_hash
+                    last_stats_hash = current_stats_hash
+                else:
+                    # Send heartbeat comment to keep connection alive
+                    yield ":heartbeat\n\n"
+                
+                # Check every 100ms for new data
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in SSE stream: {e}")
+                error_data = {"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
+                yield f"data: {json.dumps(error_data)}\n\n"
+                await asyncio.sleep(1)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering if using nginx
+        }
+    )
 
 
 # Producer management
