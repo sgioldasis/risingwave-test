@@ -34,7 +34,7 @@ dbt/                              # dbt project folder
 │   ├── iceberg_purchases.sql     # Iceberg table for purchases
 │   ├── funnel.sql                # Conversion funnel materialized view
 │   ├── funnel_training.sql       # ML training data view
-│   ├── rw_countries.sql          # Countries materialized view
+│   ├── rw_countries.sql          # Countries view
 │   ├── sink_funnel_to_kafka.sql  # Kafka sink for dashboard
 │   └── sink_funnel_to_iceberg.sql # Iceberg sink for persistence
 ├── macros/                       # dbt macros
@@ -104,26 +104,25 @@ The modern dashboard uses a **push architecture** where data flows from RisingWa
 │   cart_events,  │     │  funnel_summary │────▶│  Kafka Sink     │
 │   purchases)    │     │  (1-min window) │     │  (funnel topic) │
 └─────────────────┘     └─────────────────┘     └────────┬────────┘
-         ↑                                               │
-         │                                               │ PUSH
-         │                                               │ (no pull)
-         │                               ┌───────────────┘
-         │                               ▼
-         │                     ┌─────────────────┐
-         │                     │  Dashboard      │
-         │                     │  Backend API    │
-         │                     │  (port 8000)    │
-         │                     │                 │
-         │                     │  Kafka Consumer │
-         │                     │  + SSE Emitter  │
-         │                     └────────┬────────┘
-         │                              │
-         │                               ▼
-         │                     ┌─────────────────┐
-         │                     │  React Frontend │
-         └─────────────────────│  (port 4000)    │
-                               │  (EventSource)  │
-                               └─────────────────┘
+                                                  │ PUSH
+                                                  │ (no pull)
+                                        ┌─────────┘
+                                        ▼
+                              ┌─────────────────┐
+                              │  Dashboard      │
+                              │  Backend API    │
+                              │  (port 8000)    │
+                              │                 │
+                              │  Kafka Consumer │
+                              │  + SSE Emitter  │
+                              └────────┬────────┘
+                                       │ SSE
+                                       ▼
+                              ┌─────────────────┐
+                              │  React Frontend │
+                              │  (port 4000)    │
+                              │  (EventSource)  │
+                              └─────────────────┘
 ```
 
 #### Components
@@ -174,15 +173,11 @@ ML models are trained on funnel data using Dagster orchestration, stored in MinI
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              TRAINING PIPELINE                               │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                 │
-│  │   Dagster    │────▶│   ML Training│────▶│    MinIO     │                 │
-│  │   Sensor     │     │   (trainer)  │     │  (ml-models  │                 │
-│  │  (20s/demo)  │     │              │     │   bucket)    │                 │
-│  └──────────────┘     └──────────────┘     └──────────────┘                 │
-│         │                    ▲                                              │
-│         │                    │                                              │
-│         └────────────────────┘                                              │
-│              Reads funnel_training MV                                       │
+│  ┌──────────────┐     ┌──────────────────────────────┐     ┌──────────────┐ │
+│  │   Dagster    │────▶│      ML Training             │────▶│    MinIO     │ │
+│  │   Sensor     │     │      (trainer)               │     │  (ml-models  │ │
+│  │  (20s/demo)  │     │  Reads funnel_training MV    │     │   bucket)    │ │
+│  └──────────────┘     └──────────────────────────────┘     └──────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        │ Models stored with version
@@ -318,17 +313,28 @@ This use case demonstrates how historical/reference data stored in Iceberg can b
 │  │ countries    │     │ Auto-refresh │     │              │                 │
 │  └──────┬───────┘     └──────────────┘     └──────────────┘                 │
 │         │                                                                    │
-│         │ (changelog stream)                                                 │
+│         │                                                                    │
 │         ▼                                                                    │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                 │
-│  │ Materialized │     │funnel_summary│     │ funnel_summary│                │
-│  │ View         │────▶│   _with_     │────▶│   (joined)   │                 │
-│  │ rw_countries │     │  countries   │     │              │                 │
-│  │              │     │              │     │              │                 │
-│  │ Deduplicates │     │ Joins funnel │     │ View in      │                 │
-│  │ changelog to │     │ with country │     │ RisingWave   │                 │
-│  │ latest only  │     │ names        │     │              │                 │
-│  └──────────────┘     └──────────────┘     └──────────────┘                 │
+│  ┌──────────────┐     ┌─────────────────────┐                                │
+│  │     View     │     │   funnel_summary    │                                │
+│  │  rw_countries│     │ (materialized view) │                                │
+│  │              │     │                     │                                │
+│  │ Countries    │     │  Funnel metrics     │                                │
+│  │ from Iceberg │     │  by time window     │                                │
+│  └──────┬──────┘     └──────────┬──────────┘                                │
+│         │                       │                                            │
+│         │                       │                                            │
+│         │         LEFT JOIN     │                                            │
+│         └───────────┬───────────┘                                            │
+│                     │                                                        │
+│                     ▼                                                        │
+│    ┌────────────────────────────────┐                                        │
+│    │  funnel_summary_with_country   │                                        │
+│    │        (joined view)           │                                        │
+│    │                                │                                        │
+│    │  Joins funnel_summary with     │                                        │
+│    │  rw_countries on country       │                                        │
+│    └────────────────────────────────┘                                        │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -365,26 +371,18 @@ WITH (
 - **Auto-refresh**: ✅ **Immediate automatic refresh** when Iceberg data changes
 - **No polling**: RisingWave uses the Lakekeeper REST API to detect changes
 
-**3. Deduplication Layer** ([`dbt/models/rw_countries.sql`](dbt/models/rw_countries.sql))
+**3. View Layer** ([`dbt/models/rw_countries.sql`](dbt/models/rw_countries.sql))
 ```sql
-{{ config(materialized='materialized_view') }}
+{{ config(materialized='view') }}
 
-WITH ranked_countries AS (
-    SELECT
-        country,
-        country_name,
-        region,
-        _row_id,
-        ROW_NUMBER() OVER (PARTITION BY country ORDER BY _row_id DESC) as rn
-    FROM {{ source('public', 'src_iceberg_countries') }}
-)
-SELECT country, country_name, region
-FROM ranked_countries
-WHERE rn = 1
+SELECT
+    country::varchar as country,
+    country_name::varchar as country_name
+FROM {{ ref('src_iceberg_countries') }}
 ```
-- **Problem**: `src_iceberg_countries` returns changelog (duplicates on update)
-- **Solution**: Materialized view uses `ROW_NUMBER()` to keep only latest row per country
-- **Result**: Current snapshot only, no duplicates, auto-refreshes when source changes
+- **Type**: Simple view over the Iceberg source
+- **Purpose**: Provides a clean interface to Iceberg country data with proper type casting
+- **Result**: Always queries fresh data from the source; if source is stale, recreate it
 
 **4. Join with Funnel Data** ([`dbt/models/funnel_summary_with_country.sql`](dbt/models/funnel_summary_with_country.sql))
 ```sql

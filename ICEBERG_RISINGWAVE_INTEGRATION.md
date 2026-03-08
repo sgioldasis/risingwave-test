@@ -40,10 +40,10 @@ This document describes the data flow between Iceberg and RisingWave using Trino
 - **Behavior**: ✅ **Automatic refresh when Iceberg data changes**
 - **Note**: Returns **changelog data** (all changes), causing duplicates
 
-### 4. Materialized View (Deduplication Layer)
+### 4. View Layer
 - **Model**: `rw_countries` ([`dbt/models/rw_countries.sql`](dbt/models/rw_countries.sql))
-- **Purpose**: Materialized view that filters changelog to only latest row per country using `ROW_NUMBER()`
-- **Result**: Current snapshot only, no duplicates, auto-refreshes
+- **Purpose**: Simple view over the Iceberg source providing a clean interface with proper type casting
+- **Result**: Always queries fresh data from the source
 
 ## Verified Data Flow
 
@@ -55,9 +55,9 @@ This document describes the data flow between Iceberg and RisingWave using Trino
    # Result: UPDATE: 1 row
    ```
 
-2. **Read Path** (via Materialized View) - **Immediate automatic refresh**:
+2. **Read Path** (via View) - **Immediate automatic refresh**:
    ```bash
-   # Query the Materialized View (deduplicated, auto-refreshes)
+   # Query the View (auto-refreshes from source)
    psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM rw_countries WHERE country = 'GR'"
    # Result: GR | Hellas (immediately reflects the Trino update!)
    ```
@@ -104,7 +104,7 @@ psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries
 |-------|------|---------|---------------|
 | `iceberg_countries` (Iceberg) | Trino/Iceberg Table | Source of truth in Iceberg | `csv/iceberg_countries` |
 | `src_iceberg_countries` | RisingWave SOURCE | Native source (changelog data) | `public/src_iceberg_countries` |
-| `rw_countries` | RisingWave MV | Deduplicates changelog to current snapshot | `public/rw_countries` |
+| `rw_countries` | RisingWave View | Simple view over Iceberg source with type casting | `public/rw_countries` |
 | `funnel_summary_with_country` | RisingWave MV | Pre-joined funnel + countries | `public/funnel_summary_with_country` |
 
 ## dbt Commands
@@ -112,7 +112,7 @@ psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries
 ```bash
 cd dbt
 
-# Create/update the materialized view (deduplicates source data)
+# Create/update the view
 dbt run --select rw_countries
 ```
 

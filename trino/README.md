@@ -208,7 +208,7 @@ SELECT * FROM risingwave.public.funnel_summary_with_country;
 ### Example: Compare Data Between Sources
 
 ```sql
--- Find records that exist in Iceberg but not in RisingWave (rw_countries is the materialized view)
+-- Find records that exist in Iceberg but not in RisingWave (rw_countries is a view)
 SELECT country, country_name FROM iceberg.analytics.iceberg_countries
 EXCEPT
 SELECT country, country_name FROM risingwave.public.rw_countries;
@@ -216,7 +216,7 @@ SELECT country, country_name FROM risingwave.public.rw_countries;
 
 ### Example: Real-time Update from Iceberg to RisingWave
 
-This demonstrates how changes in Iceberg are immediately reflected in RisingWave materialized views:
+This demonstrates how changes in Iceberg are immediately reflected in RisingWave views:
 
 ```sql
 -- Step 1: Check current country name for GR in RisingWave
@@ -242,10 +242,10 @@ WHERE country = 'GR';
 ```
 
 **How it works:**
-1. `rw_countries` is a materialized view that reads from `src_iceberg_countries` (RisingWave's Iceberg SOURCE)
+1. `rw_countries` is a view that reads from `src_iceberg_countries` (RisingWave's Iceberg SOURCE)
 2. When you update data in Iceberg via Trino, the change is written to the Iceberg table
 3. RisingWave's Iceberg SOURCE (`src_iceberg_countries`) polls the Iceberg table and detects the change
-4. The `rw_countries` materialized view automatically reflects the updated data
+4. The `rw_countries` view automatically reflects the updated data
 5. `funnel_summary_with_country` joins `funnel_summary` with `rw_countries`, so it immediately shows the new country name
 
 ---
@@ -280,7 +280,7 @@ WHERE country = 'GR';
 
 | Table | Description |
 |-------|-------------|
-| `rw_countries` | Deduplicated countries from Iceberg (materialized view) |
+| `rw_countries` | Countries from Iceberg (view) |
 | `funnel_summary` | Funnel summary table |
 | `funnel_summary_with_country` | Pre-joined funnel + countries (recommended for queries) |
 | `funnel` | Funnel aggregation materialized view |
@@ -318,7 +318,7 @@ JOIN iceberg.analytics.iceberg_countries c
 
 ### Query Deduplicated Countries
 ```sql
--- Use rw_countries (deduplicated materialized view)
+-- Use rw_countries (view over Iceberg source)
 SELECT * FROM risingwave.public.rw_countries;
 
 -- Or query Iceberg directly
