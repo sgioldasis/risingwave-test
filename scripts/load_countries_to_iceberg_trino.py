@@ -15,7 +15,7 @@ def get_trino_connection():
     """Create a connection to Trino."""
     return connect(
         host="localhost",
-        port=8080,
+        port=9080,
         user="trino",
         catalog="iceberg",
         schema="analytics",
@@ -89,7 +89,7 @@ def main():
     # Connect to Trino
     print("\nConnecting to Trino...")
     conn = get_trino_connection()
-    print("  Connected to Trino at localhost:8080")
+    print("  Connected to Trino at localhost:9080")
     
     # Create table
     print("\nCreating table...")

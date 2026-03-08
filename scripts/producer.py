@@ -56,6 +56,9 @@ def main():
     purchases_count = 0
     last_report_time = time.time()
 
+    # Track target time for precise TPS control
+    target_time = time.time()
+    
     try:
         while True:
             current_loop_time = time.time()
@@ -85,6 +88,8 @@ def main():
                 views_count += 1
 
                 # 2. Add to Cart (Medium volume)
+                # Only users who viewed can cart
+                cart_created = False
                 if random.random() < 0.3:
                     cart_data = {
                         "user_id": user_id,
@@ -93,9 +98,11 @@ def main():
                     }
                     producer.send('cart_events', value=cart_data)
                     carts_count += 1
+                    cart_created = True
 
                 # 3. Purchases (Low volume)
-                if random.random() < 0.1:
+                # Only users who carted can purchase
+                if cart_created and random.random() < 0.33:
                     purchase_data = {
                         "user_id": user_id,
                         "amount": round(random.uniform(10, 500), 2),
@@ -104,11 +111,9 @@ def main():
                     producer.send('purchases', value=purchase_data)
                     purchases_count += 1
 
-                # Control execution rate for events
-                elapsed = time.time() - current_loop_time
-                # We want to sleep for 'interval' but not longer than the time until the next report
-                time_to_next_report = max(0, 1.0 - (time.time() - last_report_time))
-                sleep_time = min(max(0, interval - elapsed), time_to_next_report)
+                # Control execution rate using target time for precise TPS
+                target_time += interval
+                sleep_time = target_time - time.time()
                 
                 if sleep_time > 0:
                     time.sleep(sleep_time)

@@ -49,17 +49,17 @@ docker run -it --rm --network risingwave-test_iceberg_net trinodb/trino:453 trin
 #### Using Local trino-cli (from devbox)
 ```bash
 # Interactive shell (no catalog specified - can query any catalog)
-trino --server http://localhost:8080
+trino --server http://localhost:9080
 
 # Interactive shell with specific catalog
-trino --server http://localhost:8080 --catalog iceberg --schema analytics
+trino --server http://localhost:9080 --catalog iceberg --schema analytics
 
 # One-liner query
-trino --server http://localhost:8080 --catalog iceberg --schema analytics --execute "SELECT * FROM iceberg_countries"
+trino --server http://localhost:9080 --catalog iceberg --schema analytics --execute "SELECT * FROM iceberg_countries"
 ```
 
 #### Using DBeaver/DataGrip
-- **JDBC URL**: `jdbc:trino://localhost:8080/iceberg/analytics`
+- **JDBC URL**: `jdbc:trino://localhost:9080/iceberg/analytics`
 - **User**: `trino` (any username works, no auth required)
 - **Password**: (leave empty)
 
@@ -69,7 +69,7 @@ from trino.dbapi import connect
 
 conn = connect(
     host="localhost",
-    port=8080,
+    port=9080,
     user="trino",
 )
 
@@ -127,17 +127,17 @@ docker compose exec trino trino --catalog risingwave --schema public
 #### Using Local trino-cli (from devbox)
 ```bash
 # Interactive shell (no catalog specified - can query any catalog)
-trino --server http://localhost:8080
+trino --server http://localhost:9080
 
 # Interactive shell with specific catalog
-trino --server http://localhost:8080 --catalog risingwave --schema public
+trino --server http://localhost:9080 --catalog risingwave --schema public
 
 # One-liner query
-trino --server http://localhost:8080 --catalog risingwave --schema public --execute "SELECT * FROM rw_countries"
+trino --server http://localhost:9080 --catalog risingwave --schema public --execute "SELECT * FROM rw_countries"
 ```
 
 #### Using DBeaver/DataGrip
-- **JDBC URL**: `jdbc:trino://localhost:8080/risingwave/public`
+- **JDBC URL**: `jdbc:trino://localhost:9080/risingwave/public`
 - **User**: `trino` (any username works, no auth required)
 - **Password**: (leave empty)
 

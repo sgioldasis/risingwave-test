@@ -559,7 +559,7 @@ You can also use the web-based script runner to manage all scripts from a browse
 ./bin/0_script_runner.sh
 ```
 
-This starts a web application at [http://localhost:8080](http://localhost:8080) where you can:
+This starts a web application at [http://localhost:4001](http://localhost:4001) where you can:
 - Run any script with a single click
 - View output in real-time with tabs for each script
 - Run multiple scripts simultaneously
@@ -613,10 +613,10 @@ uv run python scripts/load_countries_to_iceberg_trino.py
 ### Query via Trino CLI
 ```bash
 # Interactive shell
-trino --server http://localhost:8080 --catalog iceberg --schema analytics
+trino --server http://localhost:9080 --catalog iceberg --schema analytics
 
 # One-liner query
-trino --server http://localhost:8080 --catalog iceberg --schema analytics \
+trino --server http://localhost:9080 --catalog iceberg --schema analytics \
   --execute "SELECT * FROM iceberg_countries"
 ```
 

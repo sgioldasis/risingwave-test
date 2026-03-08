@@ -25,7 +25,7 @@ This document describes the data flow between Iceberg and RisingWave using Trino
 ## Components
 
 ### 1. Trino (Write Interface)
-- **Location**: `localhost:8080`
+- **Location**: `localhost:9080`
 - **Purpose**: Full SQL CRUD operations on Iceberg tables
 - **Works with**: UPDATE, DELETE, INSERT (unlike DuckDB)
 

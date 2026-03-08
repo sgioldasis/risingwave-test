@@ -192,27 +192,33 @@ def create_kafka_events_for_history(minutes=60, tps=100):
         base_carters = int(30 * hour_factor / 60 * tps)
         base_purchasers = int(8 * hour_factor / 60 * tps)
         
-        # Generate page views
+        # Generate page views and track viewer user IDs
+        viewer_ids = []
         for _ in range(base_viewers):
             user_id = random.randint(1, 100000)
+            viewer_ids.append(user_id)
             producer.send('page_views', value={
                 "user_id": user_id,
                 "page_id": f"page_{random.randint(1, 100)}",
                 "event_time": timestamp_str
             })
         
-        # Generate cart events
-        for _ in range(base_carters):
-            user_id = random.randint(1, 100000)
+        # Generate cart events only from users who viewed
+        # Sample carters from the viewer pool to ensure carters <= viewers
+        actual_carters = min(base_carters, len(viewer_ids))
+        cart_user_ids = random.sample(viewer_ids, actual_carters) if viewer_ids else []
+        for user_id in cart_user_ids:
             producer.send('cart_events', value={
                 "user_id": user_id,
                 "item_id": f"item_{random.randint(100, 1000)}",
                 "event_time": timestamp_str
             })
         
-        # Generate purchase events
-        for _ in range(base_purchasers):
-            user_id = random.randint(1, 100000)
+        # Generate purchase events only from users who carted
+        # Sample purchasers from the carter pool to ensure purchasers <= carters
+        actual_purchasers = min(base_purchasers, len(cart_user_ids))
+        purchase_user_ids = random.sample(cart_user_ids, actual_purchasers) if cart_user_ids else []
+        for user_id in purchase_user_ids:
             producer.send('purchases', value={
                 "user_id": user_id,
                 "amount": round(random.uniform(10, 500), 2),
