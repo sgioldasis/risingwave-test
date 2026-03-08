@@ -106,6 +106,45 @@ fi
 
 echo ""
 
+echo "=== Stopping ML Serving ==="
+# Kill ML serving script runner
+if pgrep -f "bash bin/4_run_ml_serving.sh" > /dev/null 2>&1; then
+    echo "Stopping ML serving script..."
+    pkill -f "bash bin/4_run_ml_serving.sh" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "bash bin/4_run_ml_serving.sh" > /dev/null 2>&1; then
+        pkill -9 -f "bash bin/4_run_ml_serving.sh" 2>/dev/null || true
+    fi
+    echo "✅ ML serving script stopped"
+fi
+
+# Kill uvicorn ML serving processes
+if pgrep -f "uvicorn.*ml.serving.main:app" > /dev/null 2>&1; then
+    echo "Stopping ML serving uvicorn process..."
+    pkill -f "uvicorn.*ml.serving.main:app" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "uvicorn.*ml.serving.main:app" > /dev/null 2>&1; then
+        pkill -9 -f "uvicorn.*ml.serving.main:app" 2>/dev/null || true
+    fi
+    echo "✅ ML serving uvicorn stopped"
+else
+    echo "No ML serving process found"
+fi
+
+# Kill port 8001 (ML serving default port)
+echo "Cleaning up ML serving port..."
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - use lsof instead
+    kill $(lsof -t -i:8001) 2>/dev/null || true
+else
+    # Linux syntax
+    fuser -k 8001/tcp 2>/dev/null || true
+fi
+
+echo ""
+
 # Kill backend process if running
 if [ -f ".backend.pid" ]; then
     BACKEND_PID=$(cat ".backend.pid")
@@ -208,6 +247,7 @@ sleep 2
 echo "Ensuring all dashboard ports are freed..."
 lsof -ti :4000 | xargs kill -9 2>/dev/null || true
 lsof -ti :8000 | xargs kill -9 2>/dev/null || true
+lsof -ti :8001 | xargs kill -9 2>/dev/null || true
 lsof -ti :8050 | xargs kill -9 2>/dev/null || true
 
 sleep 1
@@ -225,6 +265,13 @@ if lsof -i :8000 > /dev/null 2>&1; then
     lsof -i :8000
 else
     echo "✅ Port 8000 is free"
+fi
+
+if lsof -i :8001 > /dev/null 2>&1; then
+    echo "⚠️  Warning: Port 8001 (ML serving) still in use"
+    lsof -i :8001
+else
+    echo "✅ Port 8001 is free"
 fi
 
 if lsof -i :8050 > /dev/null 2>&1; then
@@ -314,6 +361,7 @@ if [ -f "frontend.log" ]; then
 fi
 
 echo ""
+echo "✅ ML serving stopped"
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
 echo "✅ Log files (backend.log, frontend.log) cleaned up"

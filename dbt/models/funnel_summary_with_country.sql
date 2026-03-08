@@ -6,6 +6,7 @@
 
 SELECT
     f.window_start,
+    f.window_end,
     f.country,
     c.country_name,
     f.viewers,

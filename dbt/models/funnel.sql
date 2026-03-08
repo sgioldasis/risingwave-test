@@ -10,12 +10,12 @@ WITH stats AS (
         count(distinct pur.user_id) as purchasers
     FROM TUMBLE({{ ref('src_page') }}, event_time, INTERVAL '20 SECOND') p
     -- Join Cart events
-    LEFT JOIN {{ ref('src_cart') }} c 
-        ON p.user_id = c.user_id 
+    LEFT JOIN {{ ref('src_cart') }} c
+        ON p.user_id = c.user_id
         AND c.event_time BETWEEN p.window_start AND p.window_end
     -- Join Purchase events
-    LEFT JOIN {{ ref('src_purchase') }} pur 
-        ON p.user_id = pur.user_id 
+    LEFT JOIN {{ ref('src_purchase') }} pur
+        ON p.user_id = pur.user_id
         AND pur.event_time BETWEEN p.window_start AND p.window_end
     GROUP BY window_start, window_end
 )
@@ -26,7 +26,7 @@ SELECT
     viewers,
     carters,
     purchasers,
-    -- Calculate live conversion rates
-    case when viewers > 0 then round(carters::numeric / viewers, 2) else 0 end as view_to_cart_rate,
-    case when carters > 0 then round(purchasers::numeric / carters, 2) else 0 end as cart_to_buy_rate
+    -- Use COALESCE with NULLIF instead of CASE for Trino compatibility
+    round(coalesce(carters::numeric / nullif(viewers, 0), 0), 2) as view_to_cart_rate,
+    round(coalesce(purchasers::numeric / nullif(carters, 0), 0), 2) as cart_to_buy_rate
 FROM stats
