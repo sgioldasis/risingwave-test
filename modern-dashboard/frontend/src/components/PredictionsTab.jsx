@@ -349,16 +349,24 @@ const PredictionsTab = ({ funnelData }) => {
                             </div>
                         </div>
                         {predictions?.model_type && (
-                            <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''} ${predictions.model_type === 'heuristic' ? 'heuristic' : 'ml-model'}`}>
-                                {predictions.model_type === 'heuristic' ? (
+                            <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''} ${predictions.is_heuristic ? 'heuristic' : 'ml-model'}`}>
+                                {predictions.is_heuristic ? (
                                     <>
                                         <Calculator size={14} className="text-amber-400" />
-                                        <span className="text-amber-400">Heuristic prediction</span>
+                                        <span className="text-amber-400">
+                                            {predictions.model_version === 'rate_proportional' ? 'Rate-Proportional' :
+                                             predictions.model_version === 'ema' ? 'EMA' :
+                                             `Moving Average${predictions.model_version && predictions.model_version !== 'heuristic' && predictions.model_version !== 'live' && predictions.model_version !== 'live_moving_average' && predictions.model_version !== 'moving_average' ? `: ${formatModelVersionDisplay(predictions.model_version)}` : ' (Live)'}`}
+                                        </span>
                                     </>
                                 ) : (
                                     <>
                                         <Sparkles size={14} className="text-purple-400" />
-                                        <span>ML Model: {formatModelVersionDisplay(predictions.model_version)}</span>
+                                        <span>
+                                            {predictions.model_type === 'RandomForestRegressor' ? 'RandomForest' :
+                                             predictions.model_type === 'LinearRegression' ? 'Linear Regression' :
+                                             predictions.model_type}: {formatModelVersionDisplay(predictions.model_version)}
+                                        </span>
                                     </>
                                 )}
                             </div>

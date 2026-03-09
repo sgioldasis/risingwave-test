@@ -41,7 +41,7 @@ def get_predictor() -> ModelPredictor:
 
 async def auto_reload_loop():
     """Background task to check for model updates."""
-    reload_interval = int(os.getenv('MODEL_RELOAD_INTERVAL_SECONDS', '10'))
+    reload_interval = int(os.getenv('MODEL_RELOAD_INTERVAL_SECONDS', '5'))
     
     while True:
         try:
@@ -118,6 +118,9 @@ async def predict_all():
     """Get predictions for all metrics."""
     predictor = get_predictor()
     
+    # Check for model updates on each prediction request for faster pickup
+    predictor.check_and_reload()
+    
     # Predictions work even without ML models - falls back to moving average
     predictions = predictor.predict_all()
     
@@ -139,10 +142,20 @@ async def predict_all():
     }
     
     for metric, pred in predictions.items():
+        # Get detailed model type from loaded model metadata
+        model_type = "unknown"
+        if metric in predictor.models:
+            model_data = predictor.models[metric]
+            metadata = model_data.get("metadata", {})
+            model_type = metadata.get("model_type", "unknown")
+        elif pred.model_version == "moving_average":
+            model_type = "MovingAverage"
+        
         result[metric] = {
             "value": pred.value,
             "confidence": pred.confidence,
-            "model_version": pred.model_version
+            "model_version": pred.model_version,
+            "model_type": model_type
         }
     
     return result
@@ -155,6 +168,9 @@ async def predict_metric(metric: str):
     
     if metric not in predictor.METRICS:
         raise HTTPException(status_code=400, detail=f"Unknown metric: {metric}")
+    
+    # Check for model updates on each prediction request for faster pickup
+    predictor.check_and_reload()
     
     prediction = predictor.predict(metric)
     

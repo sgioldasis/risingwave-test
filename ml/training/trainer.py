@@ -134,64 +134,9 @@ class ModelTrainer:
             TrainingResult or None if training failed
         """
         try:
-            # Prepare features and target
-            X, y = self._prepare_features(data, metric)
-            
-            # Require at least 10 samples for ML model training
-            # With 20-second windows, this is equivalent to ~3 minutes of data
-            # With fewer samples, use moving average heuristic instead
-            if len(X) < 10:
-                print(f"Insufficient samples for {metric}: {len(X)}, using moving average")
-                return self._train_moving_average(data, metric)
-            
-            print(f"Training {metric} with {len(X)} samples")
-            
-            # Initialize and fit scaler
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            # Choose model type based on sample size
-            if len(X) >= 10:
-                model = RandomForestRegressor(
-                    n_estimators=50,
-                    max_depth=5,
-                    min_samples_split=2,
-                    random_state=42
-                )
-                model_type = "RandomForestRegressor"
-            else:
-                model = LinearRegression()
-                model_type = "LinearRegression"
-            
-            # Train model
-            model.fit(X_scaled, y)
-            
-            # Calculate training metrics
-            y_pred = model.predict(X_scaled)
-            mae = mean_absolute_error(y, y_pred)
-            r2 = r2_score(y, y_pred)
-            
-            # Save model to registry
-            version = self.registry.save_model(
-                model=model,
-                scaler=scaler,
-                metric=metric,
-                training_metrics={"mae": mae, "r2": r2},
-                model_type=model_type,
-                feature_columns=self.FEATURE_COLUMNS,
-                training_samples=len(X)
-            )
-            
-            print(f"Trained {metric}: MAE={mae:.2f}, R²={r2:.3f}, version={version.version}")
-            
-            return TrainingResult(
-                metric=metric,
-                version=version.version,
-                model_type=model_type,
-                mae=mae,
-                r2=r2,
-                training_samples=len(X)
-            )
+            # Use Moving Average for all predictions - simpler and more responsive to TPS changes
+            print(f"Training {metric} with Moving Average (data-based)")
+            return self._train_moving_average(data, metric)
             
         except Exception as e:
             print(f"Error training {metric}: {e}")

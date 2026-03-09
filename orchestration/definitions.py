@@ -261,7 +261,7 @@ def ml_trained_models(context: AssetExecutionContext):
     
     try:
         trainer = ModelTrainer()
-        results = trainer.train_all_metrics(minutes_back=1)
+        results = trainer.train_all_metrics(minutes_back=4)
         
         if results and results.successful_models > 0:
             context.log.info(f"Successfully trained {results.successful_models} models")

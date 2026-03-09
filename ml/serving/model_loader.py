@@ -34,7 +34,16 @@ class ModelLoader:
         models = {}
         
         try:
-            # Get manifest
+            # Get manifest and update ETag cache to prevent redundant reloads
+            try:
+                response = self.s3_client.head_object(
+                    Bucket=self.BUCKET_NAME,
+                    Key="manifest.json"
+                )
+                self._cached_manifest_etag = response.get('ETag')
+            except ClientError:
+                pass
+            
             manifest = self._get_manifest()
             if not manifest:
                 print("No manifest found")

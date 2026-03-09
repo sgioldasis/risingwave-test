@@ -547,34 +547,48 @@ async def get_next_predictions():
                 "predicted_at": datetime.now(timezone.utc).isoformat()
             }
         
-        # Extract model_version and model_type from first metric that has it (ML serving returns it per-metric)
+        # Extract model_version and detailed model_type from first metric that has it
+        # ML serving now returns per-metric model_type and uses live moving average
         model_version = "unknown"
-        model_type = "unknown"
+        detailed_model_type = "unknown"
         is_heuristic = False
         for metric in ['viewers', 'carters', 'purchasers']:
             metric_data = result.get(metric)
             if metric_data and isinstance(metric_data, dict) and metric_data.get("model_version"):
                 model_version = metric_data.get("model_version")
-                # Check if this is a heuristic prediction (moving_average fallback)
-                if model_version in ['moving_average', 'heuristic']:
+                # Get detailed model type from ML serving response
+                detailed_model_type = metric_data.get("model_type", "unknown")
+                # Check if this is a heuristic/live prediction
+                if model_version in ['moving_average', 'heuristic', 'live_moving_average', 'unknown', None]:
                     is_heuristic = True
-                    model_type = "heuristic"
-                else:
-                    model_type = "ml"
                 break
         
-        # If model_version is a heuristic/non-datetime value, use a fixed label instead of fake timestamp
-        if model_version in ['moving_average', 'heuristic', 'unknown', None]:
-            model_version = "heuristic"
-            model_type = "heuristic"
+        # Handle model version display
+        # If version looks like a timestamp (vYYYYMMDD_HHMMSS), it's from MinIO trained model
+        if model_version in ['moving_average', 'heuristic', 'live_moving_average', 'unknown', None]:
             is_heuristic = True
+            if detailed_model_type == "unknown":
+                detailed_model_type = "MovingAverage"
+            model_version = "heuristic"
+        elif model_version == "rate_proportional":
+            # Rate-proportional scaling prediction
+            is_heuristic = True
+            detailed_model_type = "RateProportional"
+        elif model_version == "ema":
+            # Exponential Moving Average prediction
+            is_heuristic = True
+            detailed_model_type = "EMA"
+        elif model_version.startswith('v') and len(model_version) >= 8:
+            # It's a trained model version from MinIO (e.g., v20260309_125613)
+            is_heuristic = True  # MovingAverage is heuristic
+            detailed_model_type = "MovingAverage"
         
         # Build response with flat structure for frontend compatibility
         predictions = {
             "predicted_at": result.get("predicted_at", datetime.now(timezone.utc).isoformat()),
             "timestamp": result.get("timestamp", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()),
             "model_version": model_version,
-            "model_type": model_type,
+            "model_type": detailed_model_type,  # Detailed type: RandomForestRegressor, LinearRegression, MovingAverage
             "is_heuristic": is_heuristic
         }
         
