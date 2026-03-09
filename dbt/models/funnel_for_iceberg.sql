@@ -1,6 +1,6 @@
 {#
   Model: funnel_for_iceberg
-  Purpose: Casts funnel data to types compatible with Iceberg sink
+  Purpose: Casts funnel_summary data to types compatible with Iceberg sink
   Converts NUMERIC rates to DOUBLE for Iceberg compatibility
 #}
 
@@ -10,12 +10,13 @@
     tags=['iceberg', 'funnel']
 ) }}
 
-SELECT 
+SELECT
     window_start,
     window_end,
+    country,
     viewers,
     carters,
     purchasers,
     view_to_cart_rate::DOUBLE as view_to_cart_rate,
     cart_to_buy_rate::DOUBLE as cart_to_buy_rate
-FROM {{ ref('funnel') }}
+FROM {{ ref('funnel_summary') }}

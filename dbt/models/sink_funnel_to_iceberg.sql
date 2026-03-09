@@ -1,7 +1,7 @@
 {#
   Model: sink_funnel_to_iceberg
-  Purpose: Creates an upsert sink from funnel to Iceberg using the Iceberg connector
-  This writes funnel analytics data to Iceberg with upsert semantics
+  Purpose: Creates an upsert sink from funnel_summary to Iceberg using the Iceberg connector
+  This writes funnel analytics data (1-minute aggregated) to Iceberg with upsert semantics
 #}
 
 {{ config(
@@ -12,6 +12,7 @@
 
 -- Upsert sink to Iceberg using the Iceberg connector
 -- Requires primary_key for upsert mode
+-- Primary key is window_start since funnel_summary currently filters to 'GR' country
 CREATE SINK IF NOT EXISTS iceberg_funnel_sink
 FROM {{ ref('funnel_for_iceberg') }}
 WITH (
