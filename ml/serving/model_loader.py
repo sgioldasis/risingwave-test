@@ -145,9 +145,12 @@ class ModelLoader:
             current_etag = response.get('ETag')
             
             if self._cached_manifest_etag is None:
-                # First check, just store the ETag
+                # No cached ETag means either:
+                # 1. We checked before and there was no manifest (now there is - NEW MODELS!)
+                # 2. This is the first check after startup
+                # In both cases, we should trigger a reload to load/verify models.
                 self._cached_manifest_etag = current_etag
-                return False
+                return True
             
             if current_etag != self._cached_manifest_etag:
                 # Manifest has changed
@@ -157,6 +160,8 @@ class ModelLoader:
             return False
             
         except ClientError:
+            # Manifest doesn't exist
+            self._cached_manifest_etag = None
             return False
     
     def get_manifest(self) -> Optional[Dict[str, Any]]:
