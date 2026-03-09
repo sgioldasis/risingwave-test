@@ -25,6 +25,8 @@ const PredictionsTab = ({ funnelData }) => {
     
     // Ref to store previous valid predictions for smooth transitions
     const prevPredictionsRef = useRef(null);
+    // Ref to store stable chart data to prevent full redraws
+    const chartDataRef = useRef([]);
 
     // Helper to format timestamps - handles both ISO with timezone and without
     const formatTimestamp = (ts) => {
@@ -134,7 +136,13 @@ const PredictionsTab = ({ funnelData }) => {
     useEffect(() => {
         if (funnelData && funnelData.length > 0) {
             const combined = buildComparisonData(funnelData, predictions, timeAdjustedPredictions);
-            setComparisonData(combined);
+            // Only update state if data actually changed to prevent chart redraws
+            const currentJson = JSON.stringify(chartDataRef.current);
+            const newJson = JSON.stringify(combined);
+            if (currentJson !== newJson) {
+                chartDataRef.current = combined;
+                setComparisonData(combined);
+            }
         }
     }, [predictions, funnelData, timeAdjustedPredictions]);
 
@@ -446,13 +454,13 @@ const PredictionsTab = ({ funnelData }) => {
                                 }}
                             />
                             {/* Actual data - solid lines with gradient fill */}
-                            <Area type="monotone" dataKey="viewers_actual" stroke="#636efa" strokeWidth={3} fillOpacity={1} fill="url(#colorViewersActual)" />
-                            <Area type="monotone" dataKey="carters_actual" stroke="#00cc96" strokeWidth={3} fillOpacity={1} fill="url(#colorCartersActual)" />
-                            <Area type="monotone" dataKey="purchasers_actual" stroke="#ff6692" strokeWidth={3} fillOpacity={1} fill="url(#colorPurchasersActual)" />
+                            <Area type="monotone" dataKey="viewers_actual" stroke="#636efa" strokeWidth={3} fillOpacity={1} fill="url(#colorViewersActual)" isAnimationActive={false} />
+                            <Area type="monotone" dataKey="carters_actual" stroke="#00cc96" strokeWidth={3} fillOpacity={1} fill="url(#colorCartersActual)" isAnimationActive={false} />
+                            <Area type="monotone" dataKey="purchasers_actual" stroke="#ff6692" strokeWidth={3} fillOpacity={1} fill="url(#colorPurchasersActual)" isAnimationActive={false} />
                             {/* Predicted data - dotted lines without fill */}
-                            <Area type="monotone" dataKey="viewers_pred" stroke="#636efa" strokeWidth={2} strokeDasharray="5 5" fill="none" />
-                            <Area type="monotone" dataKey="carters_pred" stroke="#00cc96" strokeWidth={2} strokeDasharray="5 5" fill="none" />
-                            <Area type="monotone" dataKey="purchasers_pred" stroke="#ff6692" strokeWidth={2} strokeDasharray="5 5" fill="none" />
+                            <Area type="monotone" dataKey="viewers_pred" stroke="#636efa" strokeWidth={2} strokeDasharray="5 5" fill="none" isAnimationActive={false} />
+                            <Area type="monotone" dataKey="carters_pred" stroke="#00cc96" strokeWidth={2} strokeDasharray="5 5" fill="none" isAnimationActive={false} />
+                            <Area type="monotone" dataKey="purchasers_pred" stroke="#ff6692" strokeWidth={2} strokeDasharray="5 5" fill="none" isAnimationActive={false} />
                         </AreaChart>
                     </ResponsiveContainer>
                 </div>
