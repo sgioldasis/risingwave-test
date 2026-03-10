@@ -46,6 +46,7 @@ SCRIPTS = [
     ("4_run_ml_serving.sh", "🤖 ML Serving", "Start the ML model serving service (port 8001)"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
+    ("5_marimo_risingwave.sh", "🌊 RisingWave Notebook", "Interactive RisingWave Iceberg demo notebook"),
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
 ]
 
@@ -68,6 +69,7 @@ BACKGROUND_SERVICES_CONFIG = [
     {"script": "4_run_ml_serving.sh", "port": 8001},
     {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"},
     {"script": "5_spark_iceberg.sh", "port": 2718},
+    {"script": "5_marimo_risingwave.sh", "port": 2719},
 ]
 
 PRODUCER_LOG = PROJECT_ROOT / "producer.log"
@@ -549,7 +551,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <script>
         const scripts = {{ scripts|tojson }};
         const scriptMap = Object.fromEntries(scripts.map(s => [s[0], { file: s[0], name: s[1], desc: s[2] }]));
-        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh', '3_run_producer.sh', '5_spark_iceberg.sh'];
+        const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh', '3_run_producer.sh', '5_spark_iceberg.sh', '5_marimo_risingwave.sh'];
         let ws;
         let reconnectInterval;
         let activeTabs = new Map(); // scriptFile -> { element, outputElement, running }

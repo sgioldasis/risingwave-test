@@ -71,6 +71,7 @@ else
     fuser -k 8000/tcp 2>/dev/null || true
     fuser -k 8050/tcp 2>/dev/null || true
     fuser -k 2718/tcp 2>/dev/null || true
+    fuser -k 2719/tcp 2>/dev/null || true
 fi
 
 echo ""
@@ -102,6 +103,21 @@ if [ -f /tmp/marimo.pid ]; then
         echo "✅ Marimo stopped from PID file"
     fi
     rm -f /tmp/marimo.pid
+fi
+
+# Kill RisingWave marimo notebook
+if [ -f /tmp/marimo_risingwave.pid ]; then
+    MARIMO_RW_PID=$(cat /tmp/marimo_risingwave.pid)
+    if kill -0 $MARIMO_RW_PID 2>/dev/null; then
+        echo "Stopping RisingWave marimo from PID file (PID: $MARIMO_RW_PID)..."
+        kill $MARIMO_RW_PID 2>/dev/null || true
+        sleep 1
+        if kill -0 $MARIMO_RW_PID 2>/dev/null; then
+            kill -9 $MARIMO_RW_PID 2>/dev/null || true
+        fi
+        echo "✅ RisingWave marimo stopped from PID file"
+    fi
+    rm -f /tmp/marimo_risingwave.pid
 fi
 
 echo ""
