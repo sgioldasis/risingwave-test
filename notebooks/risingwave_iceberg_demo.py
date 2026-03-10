@@ -36,7 +36,7 @@ def _(iceberg_engine, mo, pd, text):
     # EDIT THIS QUERY to update Iceberg data
     # Then run this cell (Shift+Enter or click the run button)
 
-    country_name = 'Greek Republic'
+    country_name = 'Greece'
 
     # Execute UPDATE using SQLAlchemy connection (cleaner - uses same engine!)
     with iceberg_engine.connect() as conn:
@@ -70,7 +70,7 @@ def _(mo, pd, refresh_button, risingwave_engine, text, time):
     # Query RisingWave
     rw_df = pd.read_sql(
         text("""
-            SELECT *
+            SELECT window_start, country, country_name, viewers, carters, purchasers
             FROM funnel_summary_with_country
             ORDER BY window_start DESC
             LIMIT 50
