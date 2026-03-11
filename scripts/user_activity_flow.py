@@ -2,7 +2,7 @@
 # requires-python = ">=3.13"
 # dependencies = [
 #     "marimo>=0.10.0",
-#     "pyspark[connect]>=3.5.0,<4.0.0",
+#     "pyspark>=3.5.0,<4.0.0",
 #     "pandas>=2.0.0",
 #     "plotly>=5.0.0",
 #     "nbformat>=5.0.0",
@@ -57,15 +57,62 @@ def _(mo):
 
 @app.cell
 def _():
+    import os
+    # CRITICAL: Set environment variables BEFORE importing pyspark
+    # to prevent Spark Connect "Too large frame" protocol errors
+    os.environ.pop("SPARK_REMOTE", None)
+    os.environ.pop("SPARK_CONNECT_MODE_ENABLED", None)
+    # Bind Spark to localhost only to prevent external network interference
+    os.environ["SPARK_LOCAL_IP"] = "127.0.0.1"
+
     from pyspark.sql import SparkSession
 
     # Iceberg version - must match the runtime JAR version
     ICEBERG_VERSION = "1.6.1"
 
+    # Java 17 compatibility - extended flags for Spark/Hadoop security classes
+    java_opts = (
+        "-XX:+IgnoreUnrecognizedVMOptions "
+        "--add-opens=java.base/java.lang=ALL-UNNAMED "
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED "
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED "
+        "--add-opens=java.base/java.io=ALL-UNNAMED "
+        "--add-opens=java.base/java.net=ALL-UNNAMED "
+        "--add-opens=java.base/java.nio=ALL-UNNAMED "
+        "--add-opens=java.base/java.util=ALL-UNNAMED "
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED "
+        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED "
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED "
+        "--add-opens=java.base/sun.nio.fs=ALL-UNNAMED "
+        "--add-opens=java.base/sun.security.util=ALL-UNNAMED "
+        "--add-opens=java.base/sun.security.x509=ALL-UNNAMED "
+        "--add-opens=java.base/sun.security.pkcs=ALL-UNNAMED "
+        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED "
+        "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED "
+        "--add-opens=java.base/javax.security.auth=ALL-UNNAMED "
+        "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED "
+        "--add-opens=java.base/javax.security.auth.kerberos=ALL-UNNAMED "
+        "--add-opens=java.base/com.sun.security.auth=ALL-UNNAMED "
+        "--add-opens=java.base/com.sun.security.auth.module=ALL-UNNAMED "
+        "--add-opens=java.base/sun.net.util=ALL-UNNAMED "
+        "--add-opens=java.base/sun.net.dns=ALL-UNNAMED "
+        "--add-opens=java.management/sun.management=ALL-UNNAMED "
+        "-Djdk.reflect.useDirectMethodHandle=false"
+    )
+
     # Initialize Spark with Iceberg support
     spark = (
         SparkSession.builder
         .appName("UserActivityFlow")
+        .master("local[1]")
+        # Bind to localhost to prevent external network interference
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        .config("spark.driver.host", "localhost")
+        # Explicitly disable Spark Connect
+        .config("spark.sql.catalogImplementation", "in-memory")
+        # Java 17 compatibility
+        .config("spark.driver.extraJavaOptions", java_opts)
+        .config("spark.executor.extraJavaOptions", java_opts)
         # Add Iceberg packages (using Scala 2.12 which is standard for Spark 3.5)
         .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
         # Iceberg extensions

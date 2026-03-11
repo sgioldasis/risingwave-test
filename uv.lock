@@ -912,18 +912,6 @@ wheels = [
 ]
 
 [[package]]
-name = "googleapis-common-protos"
-version = "1.73.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/99/96/a0205167fa0154f4a542fd6925bdc63d039d88dab3588b875078107e6f06/googleapis_common_protos-1.73.0.tar.gz", hash = "sha256:778d07cd4fbeff84c6f7c72102f0daf98fa2bfd3fa8bea426edc545588da0b5a", size = 147323, upload-time = "2026-03-06T21:53:09.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/28/23eea8acd65972bbfe295ce3666b28ac510dfcb115fac089d3edb0feb00a/googleapis_common_protos-1.73.0-py3-none-any.whl", hash = "sha256:dfdaaa2e860f242046be561e6d6cb5c5f1541ae02cfbcb034371aadb2942b4e8", size = 297578, upload-time = "2026-03-06T21:52:33.933Z" },
-]
-
-[[package]]
 name = "gql"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1056,20 +1044,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8e/ac/8eb871f4e47b11abfe45497e6187a582ec680ccd7232706d228474a8c7a5/grpcio_health_checking-1.78.0.tar.gz", hash = "sha256:78526d5c60b9b99fd18954b89f86d70033c702e96ad6ccc9749baf16136979b3", size = 17008, upload-time = "2026-02-06T10:01:47.269Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/30/dbaf47e2210697e2923b49eb62a6a2c07d5ee55bb40cff1e6cc0c5bb22e1/grpcio_health_checking-1.78.0-py3-none-any.whl", hash = "sha256:309798c098c5de72a9bff7172d788fdf309d246d231db9955b32e7c1c773fbeb", size = 19010, upload-time = "2026-02-06T10:01:37.949Z" },
-]
-
-[[package]]
-name = "grpcio-status"
-version = "1.78.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "googleapis-common-protos" },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/cd/89ce482a931b543b92cdd9b2888805518c4620e0094409acb8c81dd4610a/grpcio_status-1.78.0.tar.gz", hash = "sha256:a34cfd28101bfea84b5aa0f936b4b423019e9213882907166af6b3bddc59e189", size = 13808, upload-time = "2026-02-06T10:01:48.034Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/8a/1241ec22c41028bddd4a052ae9369267b4475265ad0ce7140974548dc3fa/grpcio_status-1.78.0-py3-none-any.whl", hash = "sha256:b492b693d4bf27b47a6c32590701724f1d3b9444b36491878fb71f6208857f34", size = 14523, upload-time = "2026-02-06T10:01:32.584Z" },
 ]
 
 [[package]]
@@ -2345,22 +2319,12 @@ wheels = [
 
 [[package]]
 name = "pyspark"
-version = "3.5.1"
+version = "3.5.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "py4j" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/73/e5/c9eb78cc982dafb7b5834bc5c368fe596216c8b9f7c4b4ffa104c4d2ab8f/pyspark-3.5.1.tar.gz", hash = "sha256:dd6569e547365eadc4f887bf57f153e4d582a68c4b490de475d55b9981664910", size = 316955685, upload-time = "2024-02-26T02:41:49.644Z" }
-
-[package.optional-dependencies]
-connect = [
-    { name = "googleapis-common-protos" },
-    { name = "grpcio" },
-    { name = "grpcio-status" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-]
+sdist = { url = "https://files.pythonhosted.org/packages/80/5a/3806f44eb47387e8af803508cdd6bbc0df784febf4dc010700be04a1ff89/pyspark-3.5.8.tar.gz", hash = "sha256:54cca0767b21b40e3953ad1d30f8601c53abf9cbda763653289cdcfcac52313c", size = 317817299, upload-time = "2026-01-15T11:46:14.487Z" }
 
 [[package]]
 name = "python-dateutil"
@@ -2552,7 +2516,7 @@ dependencies = [
     { name = "psutil" },
     { name = "psycopg2-binary" },
     { name = "pyiceberg", extra = ["pyarrow"] },
-    { name = "pyspark", extra = ["connect"] },
+    { name = "pyspark" },
     { name = "s3fs" },
     { name = "scikit-learn" },
     { name = "sqlalchemy" },
@@ -2585,7 +2549,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "psycopg2-binary", specifier = ">=2.9.0" },
     { name = "pyiceberg", extras = ["pyarrow"], specifier = ">=0.8.0" },
-    { name = "pyspark", extras = ["connect"], specifier = ">=3.5.0,<4.0.0" },
+    { name = "pyspark", specifier = ">=3.5.0,<4.0.0" },
     { name = "s3fs", specifier = ">=2024.1.0" },
     { name = "scikit-learn", specifier = ">=1.3.0" },
     { name = "sqlalchemy", specifier = ">=2.0.46" },
