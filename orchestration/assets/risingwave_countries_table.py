@@ -20,8 +20,8 @@ def _get_trino_connection():
         host="trino",
         port=8080,
         user="trino",
-        catalog="iceberg",
-        schema="analytics",
+        catalog="datalake",
+        schema="public",
     )
 
 

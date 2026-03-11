@@ -179,9 +179,25 @@ if _needs_compile:
     else:
         print("dbt compile completed successfully")
 
+# Initialize DbtProject with explicit manifest path
 dbt_project = DbtProject(
     project_dir=str(dbt_PROJECT_PATH),
 )
+
+# Verify manifest was loaded correctly
+print(f"DbtProject initialized with manifest: {dbt_project.manifest_path}")
+if dbt_project.manifest_path.exists():
+    try:
+        with open(dbt_project.manifest_path) as f:
+            manifest_check = json.load(f)
+        nodes_count = len(manifest_check.get("nodes", {}))
+        print(f"Manifest loaded successfully with {nodes_count} nodes")
+        if nodes_count == 0:
+            print("WARNING: Manifest has 0 nodes, assets will not appear in Dagster UI")
+    except Exception as e:
+        print(f"ERROR reading manifest: {e}")
+else:
+    print(f"ERROR: Manifest not found at {dbt_project.manifest_path}")
 
 # Create translator instance
 custom_translator = CustomDagsterDbtTranslator()

@@ -11,7 +11,7 @@
     connector='iceberg',
     catalog_uri='http://lakekeeper:8181/catalog',
     warehouse_path='risingwave-warehouse',
-    database_name='analytics',
+    database_name='public',
     table_name='iceberg_countries',
     s3_endpoint='http://minio-0:9301',
     s3_access_key='hummockadmin',

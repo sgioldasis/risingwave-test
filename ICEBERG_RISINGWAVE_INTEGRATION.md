@@ -32,7 +32,7 @@ This document describes the data flow between Iceberg and RisingWave using Trino
 ### 2. Iceberg Table
 - **Catalog**: Lakekeeper REST Catalog (`http://lakekeeper:8181/catalog`)
 - **Warehouse**: `risingwave-warehouse` (not the S3 path!)
-- **Table**: `iceberg_countries` (in `analytics` schema/database)
+- **Table**: `iceberg_countries` (in `public` schema/database)
 
 ### 3. RisingWave Source
 - **Name**: `src_iceberg_countries` (native RisingWave SOURCE, created outside dbt)
@@ -50,7 +50,7 @@ This document describes the data flow between Iceberg and RisingWave using Trino
 1. **Write Path** (via Trino):
    ```bash
    # Update data in Iceberg
-   docker compose exec trino trino --catalog iceberg --schema analytics \
+   docker compose exec trino trino --catalog datalake --schema public \
      --execute "UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'"
    # Result: UPDATE: 1 row
    ```

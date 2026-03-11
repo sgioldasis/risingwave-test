@@ -17,7 +17,7 @@ Trino is configured with two catalogs:
 
 | Catalog | Connector | Description |
 |---------|-----------|-------------|
-| `iceberg` | Iceberg REST | Query Iceberg tables via Lakekeeper catalog |
+| `datalake` | Iceberg REST | Query Iceberg tables via Lakekeeper catalog |
 | `risingwave` | PostgreSQL | Query RisingWave via its PostgreSQL-compatible interface |
 
 ---
@@ -38,12 +38,12 @@ The `iceberg_countries` asset in the `datalake` group uses Trino to create and p
 
 #### Using Trino CLI (inside container)
 ```bash
-docker compose exec trino trino --catalog iceberg --schema analytics
+docker compose exec trino trino --catalog datalake --schema public
 ```
 
 #### Using psql-style client (trino-cli)
 ```bash
-docker run -it --rm --network risingwave-test_iceberg_net trinodb/trino:453 trino --server http://trino:8080 --catalog iceberg --schema analytics
+docker run -it --rm --network risingwave-test_iceberg_net trinodb/trino:453 trino --server http://trino:8080 --catalog datalake --schema public
 ```
 
 #### Using Local trino-cli (from devbox)
@@ -52,14 +52,14 @@ docker run -it --rm --network risingwave-test_iceberg_net trinodb/trino:453 trin
 trino --server http://localhost:9080
 
 # Interactive shell with specific catalog
-trino --server http://localhost:9080 --catalog iceberg --schema analytics
+trino --server http://localhost:9080 --catalog datalake --schema public
 
 # One-liner query
-trino --server http://localhost:9080 --catalog iceberg --schema analytics --execute "SELECT * FROM iceberg_countries"
+trino --server http://localhost:9080 --catalog datalake --schema public --execute "SELECT * FROM iceberg_countries"
 ```
 
 #### Using DBeaver/DataGrip
-- **JDBC URL**: `jdbc:trino://localhost:9080/iceberg/analytics`
+- **JDBC URL**: `jdbc:trino://localhost:9080/datalake/public`
 - **User**: `trino` (any username works, no auth required)
 - **Password**: (leave empty)
 
@@ -75,7 +75,7 @@ conn = connect(
 
 cur = conn.cursor()
 # Use fully qualified names to query any catalog
-cur.execute("SELECT * FROM iceberg.analytics.iceberg_countries")
+cur.execute("SELECT * FROM datalake.public.iceberg_countries")
 rows = cur.fetchall()
 ```
 
@@ -83,22 +83,22 @@ rows = cur.fetchall()
 
 ```sql
 -- List tables
-SHOW TABLES FROM iceberg.analytics;
+SHOW TABLES FROM datalake.public;
 
 -- Query data
-SELECT * FROM iceberg.analytics.iceberg_countries;
+SELECT * FROM datalake.public.iceberg_countries;
 
 -- Update data (works in Trino, not DuckDB!)
-UPDATE iceberg.analytics.iceberg_countries SET country_name = 'Greece Updated' WHERE country = 'GR';
+UPDATE datalake.public.iceberg_countries SET country_name = 'Greece Updated' WHERE country = 'GR';
 
 -- Delete data
-DELETE FROM iceberg.analytics.iceberg_countries WHERE country = 'CY';
+DELETE FROM datalake.public.iceberg_countries WHERE country = 'CY';
 
 -- Insert data
-INSERT INTO iceberg.analytics.iceberg_countries VALUES ('JP', 'Japan');
+INSERT INTO datalake.public.iceberg_countries VALUES ('JP', 'Japan');
 
 -- Create new table
-CREATE TABLE iceberg.analytics.new_table (
+CREATE TABLE datalake.public.new_table (
     id INTEGER,
     name VARCHAR
 ) WITH (
@@ -109,7 +109,7 @@ CREATE TABLE iceberg.analytics.new_table (
 
 ### Iceberg Catalog Configuration
 
-See [`trino/catalog/iceberg.properties`](catalog/iceberg.properties) for full configuration.
+See [`trino/catalog/datalake.properties`](catalog/datalake.properties) for full configuration.
 
 ---
 
@@ -186,7 +186,7 @@ SELECT
     f.carters,
     f.purchasers
 FROM risingwave.public.funnel_summary f
-JOIN iceberg.analytics.iceberg_countries c
+JOIN datalake.public.iceberg_countries c
     ON f.country = c.country;
 
 -- ❌ NOT WORKING: Joining two RisingWave views where one reads from Iceberg SOURCE
@@ -209,7 +209,7 @@ SELECT * FROM risingwave.public.funnel_summary_with_country;
 
 ```sql
 -- Find records that exist in Iceberg but not in RisingWave (rw_countries is a view)
-SELECT country, country_name FROM iceberg.analytics.iceberg_countries
+SELECT country, country_name FROM datalake.public.iceberg_countries
 EXCEPT
 SELECT country, country_name FROM risingwave.public.rw_countries;
 ```
@@ -224,10 +224,10 @@ SELECT country, country_name FROM risingwave.public.rw_countries WHERE country =
 -- Result: GR | Greece
 
 -- Step 2: Update the country name in Iceberg
-UPDATE iceberg.analytics.iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR';
+UPDATE datalake.public.iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR';
 
 -- Step 3: Verify the change in Iceberg
-SELECT country, country_name FROM iceberg.analytics.iceberg_countries WHERE country = 'GR';
+SELECT country, country_name FROM datalake.public.iceberg_countries WHERE country = 'GR';
 -- Result: GR | Hellas
 
 -- Step 4: Immediately check RisingWave - the change is reflected in real-time!
@@ -269,7 +269,7 @@ WHERE country = 'GR';
 
 ## Available Tables
 
-### Iceberg Catalog (`iceberg.analytics`)
+### Iceberg Catalog (`datalake.public`)
 | Table | Description |
 |-------|-------------|
 | `iceberg_countries` | Country data written via Trino |
@@ -322,5 +322,5 @@ JOIN iceberg.analytics.iceberg_countries c
 SELECT * FROM risingwave.public.rw_countries;
 
 -- Or query Iceberg directly
-SELECT * FROM iceberg.analytics.iceberg_countries;
+SELECT * FROM datalake.public.iceberg_countries;
 ```

@@ -23,16 +23,17 @@ showing how users move through different stages of the conversion funnel:
 
 import marimo
 
-__generated_with = "0.19.8"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-
     import marimo as mo
+    import plotly.graph_objects as go
+    import pandas as pd
 
-    return (mo,)
+    return (mo, go, pd)
 
 
 @app.cell(hide_code=True)
@@ -56,66 +57,153 @@ def _(mo):
 
 @app.cell
 def _():
-    import os
-
-    # MUST set this BEFORE importing pyspark to fix Java 17+ compatibility
-    os.environ['SPARK_LOCAL_IP'] = '127.0.0.1'
-    os.environ['PYSPARK_PYTHON'] = os.sys.executable
-    os.environ['PYSPARK_DRIVER_PYTHON'] = os.sys.executable
-
     from pyspark.sql import SparkSession
-    import pandas as pd
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from datetime import datetime
 
-    # Iceberg version compatible with Spark 3.5
-    ICEBERG_VERSION = "1.5.2"
+    # Iceberg version - must match the runtime JAR version
+    ICEBERG_VERSION = "1.6.1"
 
-    # Java 17+ compatibility flags
-    java_opts = (
-        "--add-opens=java.base/java.lang=ALL-UNNAMED "
-        "--add-opens=java.base/java.util=ALL-UNNAMED "
-        "--add-opens=java.base/java.security=ALL-UNNAMED "
-        "--add-opens=java.base/sun.security.action=ALL-UNNAMED "
-        "--add-opens=java.base/sun.net.util=ALL-UNNAMED "
-        "--add-opens=java.base/java.net=ALL-UNNAMED "
-        "--add-opens=java.base/java.nio=ALL-UNNAMED "
-        "--add-opens=java.base/java.io=ALL-UNNAMED "
-        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED "
-        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED "
-        "--enable-native-access=ALL-UNNAMED"
-    )
-
-    # Build Spark session with Iceberg and S3 (MinIO) support
-    spark = (SparkSession.builder
-        .appName("IcebergUserActivityFlow")
-        .config("spark.jars.packages",
-                f"org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{ICEBERG_VERSION},"
-                f"org.apache.iceberg:iceberg-aws:{ICEBERG_VERSION},"
-                f"org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
-        .config("spark.driver.extraJavaOptions", java_opts)
-        .config("spark.executor.extraJavaOptions", java_opts)
+    # Initialize Spark with Iceberg support
+    spark = (
+        SparkSession.builder
+        .appName("UserActivityFlow")
+        # Add Iceberg packages (using Scala 2.12 which is standard for Spark 3.5)
+        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
+        # Iceberg extensions
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        # Lakekeeper REST catalog configuration
         .config("spark.sql.catalog.lakekeeper", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.lakekeeper.type", "rest")
         .config("spark.sql.catalog.lakekeeper.uri", "http://127.0.0.1:8181/catalog")
         .config("spark.sql.catalog.lakekeeper.warehouse", "risingwave-warehouse")
         .config("spark.sql.catalog.lakekeeper.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        # S3/MinIO endpoint configuration
         .config("spark.sql.catalog.lakekeeper.s3.endpoint", "http://127.0.0.1:9301")
         .config("spark.sql.catalog.lakekeeper.s3.access-key-id", "hummockadmin")
         .config("spark.sql.catalog.lakekeeper.s3.secret-access-key", "hummockadmin")
         .config("spark.sql.catalog.lakekeeper.s3.path-style-access", "true")
-        .config("spark.sql.catalog.lakekeeper.s3.region", "us-east-1")
-        .config("spark.sql.defaultCatalog", "lakekeeper")
-        .getOrCreate())
+        # S3 Connection Stability Settings - AGGRESSIVE fix for "Connection reset" errors
+        # Connection timeouts (milliseconds) - INCREASED
+        .config("spark.sql.catalog.lakekeeper.s3.connection-timeout-ms", "60000")  # 60 seconds
+        .config("spark.sql.catalog.lakekeeper.s3.socket-timeout-ms", "60000")      # 60 seconds
+        # Connection pooling - INCREASED for high parallel reads
+        .config("spark.sql.catalog.lakekeeper.s3.connection-maximum-connections", "200")
+        # Retry configuration - AGGRESSIVE
+        .config("spark.sql.catalog.lakekeeper.s3.max-retries", "20")
+        .config("spark.sql.catalog.lakekeeper.s3.retry-mode", "adaptive")
+        # Disable SSL for local MinIO
+        .config("spark.sql.catalog.lakekeeper.s3.ssl-enabled", "false")
+        # Additional stability settings for Iceberg S3FileIO
+        .config("spark.sql.catalog.lakekeeper.s3.checksum-enabled", "false")
+        # AWS SDK v2 specific settings for Apache HTTP client
+        .config("spark.sql.catalog.lakekeeper.s3.apahce-http-client.connection-timeout", "60000")
+        .config("spark.sql.catalog.lakekeeper.s3.apache-http-client.socket-timeout", "60000")
+        # Spark S3A fallback settings (in case S3FileIO uses S3A internally)
+        .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.socket.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.connection.maximum", "200")
+        .config("spark.hadoop.fs.s3a.attempts.maximum", "20")
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.impl.disable.cache", "true")
+        # REDUCE parallelism to ease connection pressure on MinIO
+        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.default.parallelism", "4")
+        # Additional Spark SQL settings for stability
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        # Reduce caching to ensure fresh data reads
+        .config("spark.sql.files.openCostInBytes", "0")
+        .config("spark.sql.files.maxPartitionBytes", "134217728")
+        .getOrCreate()
+    )
 
     spark.sparkContext.setLogLevel("WARN")
-
-    print("✅ Spark session created successfully with Iceberg support")
+    print("✅ Spark session initialized with Iceberg support")
     print(f"   Spark version: {spark.version}")
-    print(f"   Catalog: lakekeeper (REST)")
-    return go, pd, spark
+    print("   S3 connection stability settings applied (AGGRESSIVE)")
+    print("   - Connection pool: 200")
+    print("   - Timeouts: 60s")
+    print("   - Max retries: 20")
+    print("   - Parallelism reduced to 4")
+    return (spark,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 🔧 Helper: Clear Spark Caches & Retry
+
+    Run this cell if you encounter "Connection reset" errors. It clears all cached DataFrames
+    and attempts a fresh connection to S3.
+    """)
+    return
+
+
+@app.cell
+@mo.capture_exception
+@mo.capture_stderr
+@mo.capture_stdout
+def _(spark):
+    import time
+
+    def clear_and_retry_query(query_fn, max_retries=3, retry_delay=2):
+        """
+        Clear Spark caches and retry a query function with exponential backoff.
+        Useful for recovering from S3 connection reset errors and stale data.
+        """
+        for attempt in range(max_retries):
+            try:
+                # Clear all cached DataFrames
+                spark.catalog.clearCache()
+                # Clear SQL cache
+                spark.sql("CLEAR CACHE")
+
+                # Refresh Iceberg table metadata to force fresh reads
+                for table in ['iceberg_funnel', 'iceberg_page_views', 'iceberg_cart_events', 'iceberg_purchases']:
+                    try:
+                        spark.sql(f"REFRESH TABLE lakekeeper.public.{table}")
+                    except:
+                        pass
+
+                # Small delay for cache propagation
+                time.sleep(0.5)
+
+                print(f"🧹 Cache cleared (attempt {attempt + 1}/{max_retries})")
+
+                # Execute the query function
+                result = query_fn()
+                print("✅ Query succeeded")
+                return result
+
+            except Exception as e:
+                error_msg = str(e)
+                if "Connection reset" in error_msg or "SdkClientException" in error_msg:
+                    print(f"⚠️  S3 connection error on attempt {attempt + 1}: {error_msg[:100]}...")
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        print(f"⏳ Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                    else:
+                        print("❌ Max retries exceeded")
+                        raise
+                else:
+                    # Not a connection error, re-raise immediately
+                    raise
+
+        return None
+
+    # Test the helper with a simple count query
+    def test_query():
+        return spark.sql("SELECT COUNT(*) as cnt FROM lakekeeper.public.iceberg_funnel").collect()
+
+    try:
+        result = clear_and_retry_query(test_query)
+        if result:
+            print(f"📊 Funnel table has {result[0]['cnt']:,} rows")
+    except Exception as e:
+        print(f"⚠️  Could not verify table: {e}")
+        print("   This is OK - the helper function is now available for other cells")
+
+    return (clear_and_retry_query,)
 
 
 @app.cell(hide_code=True)
@@ -159,16 +247,13 @@ def _(mo):
 
 @app.cell
 def _(spark):
-    # Quick status check - count rows in each table
+    # Quick status check - count rows in funnel table
     try:
-        page_count = spark.sql("SELECT COUNT(*) as cnt FROM lakekeeper.public.iceberg_page_views").collect()[0]["cnt"]
-        cart_count = spark.sql("SELECT COUNT(*) as cnt FROM lakekeeper.public.iceberg_cart_events").collect()[0]["cnt"]
-        purchase_count = spark.sql("SELECT COUNT(*) as cnt FROM lakekeeper.public.iceberg_purchases").collect()[0]["cnt"]
-        print(f"✅ Page views: {page_count:,} rows")
-        print(f"✅ Cart events: {cart_count:,} rows")
-        print(f"✅ Purchases: {purchase_count:,} rows")
+        funnel_count = spark.sql("SELECT COUNT(*) as cnt FROM lakekeeper.public.iceberg_funnel").collect()[0]["cnt"]
+        print(f"✅ Funnel table: {funnel_count:,} rows")
+        print(f"   Ready to visualize user activity flow!")
     except Exception as e:
-        print(f"⚠️  Could not query tables: {e}")
+        print(f"⚠️  Could not query funnel table: {e}")
     return
 
 
@@ -179,90 +264,61 @@ def _(mo):
 
     Below is a funnel chart showing how users flow through the conversion funnel.
     The width of each stage represents the number of users.
+
+    **Tip:** If you see "Connection reset" errors, the cells now automatically
+    retry with cache clearing. You can also run the "Clear Spark Caches & Retry"
+    cell above to manually reset connections.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ## 📊 Funnel Conversion Metrics
-
-    Detailed breakdown of user progression through the funnel.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(go, spark):
-    # Compute funnel metrics using same logic as DuckDB/RisingWave
-    # This ensures consistency across all tools
+def _(clear_and_retry_query, go, spark):
+    # Use pre-computed iceberg_funnel table for metrics
+    # Uses clear_and_retry_query helper to handle S3 connection issues
     try:
-        # Force Spark to refresh metadata caches to see new Iceberg snapshots
-        spark.sql("REFRESH TABLE lakekeeper.public.iceberg_page_views")
-        spark.sql("REFRESH TABLE lakekeeper.public.iceberg_cart_events")
-        spark.sql("REFRESH TABLE lakekeeper.public.iceberg_purchases")
+        def get_latest_funnel():
+            return spark.sql("""
+                SELECT
+                    window_start,
+                    viewers,
+                    carters,
+                    purchasers
+                FROM lakekeeper.public.iceberg_funnel
+                ORDER BY window_start DESC
+                LIMIT 1
+            """).collect()
 
-        # Get the latest event time from page views
-        funnel_latest_time_row = spark.sql("""
-            SELECT MAX(event_time) as latest_time FROM lakekeeper.public.iceberg_page_views
-        """).collect()
-        funnel_latest_time = funnel_latest_time_row[0]['latest_time'] if funnel_latest_time_row else None
-    except Exception:
-        funnel_latest_time = None
+        funnel_latest_row = clear_and_retry_query(get_latest_funnel, max_retries=2)
 
-    # Compute funnel metrics for the latest minute using proper JOIN logic
-    if funnel_latest_time:
-        # Format time label
-        try:
-            time_label = f"Latest minute: {funnel_latest_time.strftime('%Y-%m-%d %H:%M')}"
-        except (AttributeError, TypeError):
-            time_label = f"Latest minute: {str(funnel_latest_time)[:16]}"
+        if funnel_latest_row:
+            row = funnel_latest_row[0]
+            viewers = row['viewers']
+            carters = row['carters']
+            purchasers = row['purchasers']
+            window_start = row['window_start']
 
-        # Use same JOIN logic as DuckDB to compute funnel for latest minute
-        funnel_result = spark.sql(f"""
-            WITH page_events AS (
-                SELECT user_id, event_time
-                FROM lakekeeper.public.iceberg_page_views
-                WHERE event_time >= DATE_TRUNC('minute', TIMESTAMP '{funnel_latest_time}')
-                AND event_time < DATE_TRUNC('minute', TIMESTAMP '{funnel_latest_time}') + INTERVAL '1 minute'
-            ),
-            cart_events AS (
-                SELECT user_id, event_time
-                FROM lakekeeper.public.iceberg_cart_events
-                WHERE event_time >= DATE_TRUNC('minute', TIMESTAMP '{funnel_latest_time}')
-                AND event_time < DATE_TRUNC('minute', TIMESTAMP '{funnel_latest_time}') + INTERVAL '1 minute'
-            ),
-            purchase_events AS (
-                SELECT user_id, event_time
-                FROM lakekeeper.public.iceberg_purchases
-                WHERE event_time >= DATE_TRUNC('minute', TIMESTAMP '{funnel_latest_time}')
-                AND event_time < DATE_TRUNC('minute', TIMESTAMP '{funnel_latest_time}') + INTERVAL '1 minute'
-            )
-            SELECT
-                COUNT(DISTINCT p.user_id) as viewers,
-                COUNT(DISTINCT c.user_id) as carters,
-                COUNT(DISTINCT pur.user_id) as purchasers
-            FROM page_events p
-            LEFT JOIN cart_events c ON p.user_id = c.user_id
-            LEFT JOIN purchase_events pur ON p.user_id = pur.user_id
-        """).collect()[0]
+            # Format time label
+            try:
+                time_label = f"Latest minute: {window_start.strftime('%Y-%m-%d %H:%M')}"
+            except (AttributeError, TypeError):
+                time_label = f"Latest minute: {str(window_start)[:16]}"
 
-        viewers = funnel_result["viewers"]
-        carters = funnel_result["carters"]
-        purchasers = funnel_result["purchasers"]
+            # Calculate rates
+            view_to_cart_rate = (carters / viewers * 100) if viewers > 0 else 0
+            cart_to_buy_rate = (purchasers / carters * 100) if carters > 0 else 0
+            overall_conversion = (purchasers / viewers * 100) if viewers > 0 else 0
 
-        # Calculate rates
-        view_to_cart_rate = (carters / viewers * 100) if viewers > 0 else 0
-        cart_to_buy_rate = (purchasers / carters * 100) if carters > 0 else 0
-        overall_conversion = (purchasers / viewers * 100) if viewers > 0 else 0
-
-        funnel_data = {
-            "stages": ["Page Views", "Cart Events", "Purchases"],
-            "users": [viewers, carters, purchasers],
-            "rates": [100.0, view_to_cart_rate, cart_to_buy_rate],
-        }
-    else:
+            funnel_data = {
+                "stages": ["Page Views", "Cart Events", "Purchases"],
+                "users": [viewers, carters, purchasers],
+                "rates": [100.0, view_to_cart_rate, cart_to_buy_rate],
+            }
+        else:
+            time_label = "No data available"
+            funnel_data = None
+    except Exception as e:
+        print(f"Error querying iceberg_funnel: {e}")
         time_label = "No data available"
         funnel_data = None
 
@@ -316,72 +372,26 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(go, pd, spark):
-    # Run fresh query for time series data (self-contained for rerun)
-    # Use same logic as DuckDB and RisingWave funnel query
-    
-    # Force refresh again for this cell
-    spark.sql("REFRESH TABLE lakekeeper.public.iceberg_page_views")
-    spark.sql("REFRESH TABLE lakekeeper.public.iceberg_cart_events")
-    spark.sql("REFRESH TABLE lakekeeper.public.iceberg_purchases")
+def _(clear_and_retry_query, go, pd, spark):
+    # Use pre-computed iceberg_funnel table for time series data
+    # Uses clear_and_retry_query helper to handle S3 connection issues
 
-    # Get the latest event time to base our query on
-    ts_latest_time_row = spark.sql("""
-        SELECT MAX(event_time) as latest_time FROM lakekeeper.public.iceberg_page_views
-    """).collect()
-    ts_latest_time = ts_latest_time_row[0]['latest_time'] if ts_latest_time_row else None
-
-    if ts_latest_time:
-        # Query using same logic as DuckDB - last 30 minutes from latest data
-        # with proper LEFT JOINs matching RisingWave funnel
-        ts_data = spark.sql(f"""
-            WITH page_windows AS (
-                -- Create 1-minute tumbling windows from page views
-                SELECT
-                    DATE_TRUNC('minute', event_time) as window_start,
-                    DATE_TRUNC('minute', event_time) + INTERVAL '1 minute' as window_end,
-                    user_id
-                FROM lakekeeper.public.iceberg_page_views
-                WHERE event_time >= TIMESTAMP '{ts_latest_time}' - INTERVAL '30 minutes'
-            ),
-            cart_events AS (
-                SELECT event_time, user_id
-                FROM lakekeeper.public.iceberg_cart_events
-                WHERE event_time >= TIMESTAMP '{ts_latest_time}' - INTERVAL '30 minutes'
-            ),
-            purchase_events AS (
-                SELECT event_time, user_id
-                FROM lakekeeper.public.iceberg_purchases
-                WHERE event_time >= TIMESTAMP '{ts_latest_time}' - INTERVAL '30 minutes'
-            ),
-            funnel AS (
-                -- Match RisingWave's join logic: cart/purchase events between window_start and window_end
-                SELECT
-                    p.window_start,
-                    COUNT(DISTINCT p.user_id) as viewers,
-                    COUNT(DISTINCT c.user_id) as carters,
-                    COUNT(DISTINCT pur.user_id) as purchasers
-                FROM page_windows p
-                LEFT JOIN cart_events c
-                    ON p.user_id = c.user_id
-                    AND c.event_time >= p.window_start
-                    AND c.event_time <= p.window_end
-                LEFT JOIN purchase_events pur
-                    ON p.user_id = pur.user_id
-                    AND pur.event_time >= p.window_start
-                    AND pur.event_time <= p.window_end
-                GROUP BY p.window_start
-            )
+    def get_time_series_data():
+        return spark.sql("""
             SELECT
                 window_start,
                 viewers,
                 carters,
                 purchasers
-            FROM funnel
+            FROM lakekeeper.public.iceberg_funnel
+            WHERE window_start >= CURRENT_TIMESTAMP - INTERVAL '30 minutes'
             ORDER BY window_start
         """).toPandas()
-    else:
-        # Fallback to simple query if no data
+
+    ts_data = clear_and_retry_query(get_time_series_data, max_retries=2)
+
+    if ts_data is None or ts_data.empty:
+        # Fallback to empty DataFrame if no data
         ts_data = pd.DataFrame(columns=['window_start', 'viewers', 'carters', 'purchasers'])
 
     # Fill NaN values with 0
@@ -482,74 +492,19 @@ def _(mo):
     mo.md("""
     ## 📋 Sample Data Preview
 
-    Let's look at some sample data from each table.
+    Let's look at some sample data from the funnel table.
     """)
     return
 
 
 @app.cell
-def _(spark):
-    # Show sample data from page views
-    print("📄 Sample Page Views:")
-    spark.table("lakekeeper.public.iceberg_page_views").show(5, truncate=False)
-    return
+def _(clear_and_retry_query, spark):
+    print("📊 Sample Pre-computed Funnel:")
 
+    def get_sample_data():
+        return spark.table("lakekeeper.public.iceberg_funnel").show(5, truncate=False)
 
-@app.cell
-def _(spark):
-    # Show sample data from cart events
-    print("🛒 Sample Cart Events:")
-    spark.table("lakekeeper.public.iceberg_cart_events").show(5, truncate=False)
-    return
-
-
-@app.cell
-def _(spark):
-    # Show sample data from purchases
-    print("💳 Sample Purchases:")
-    spark.table("lakekeeper.public.iceberg_purchases").show(5, truncate=False)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ## 🔍 SQL Queries
-
-    You can also query the Iceberg tables directly using Spark SQL:
-    """)
-    return
-
-
-@app.cell
-def _(spark):
-    # Example SQL query
-    result = spark.sql("""
-        SELECT
-            'Page Views' as stage,
-            COUNT(*) as total_events,
-            COUNT(DISTINCT user_id) as unique_users
-        FROM lakekeeper.public.iceberg_page_views
-
-        UNION ALL
-
-        SELECT
-            'Cart Events' as stage,
-            COUNT(*) as total_events,
-            COUNT(DISTINCT user_id) as unique_users
-        FROM lakekeeper.public.iceberg_cart_events
-
-        UNION ALL
-
-        SELECT
-            'Purchases' as stage,
-            COUNT(*) as total_events,
-            COUNT(DISTINCT user_id) as unique_users
-        FROM lakekeeper.public.iceberg_purchases
-    """)
-
-    print("📊 Event Summary by Stage:")
-    result.show()
+    clear_and_retry_query(get_sample_data, max_retries=2)
     return
 
 
@@ -564,8 +519,11 @@ def _(mo):
     - ✅ Uses Spark SQL to query Iceberg tables
     - ✅ Connects to Lakekeeper REST catalog
     - ✅ Reads from MinIO S3 storage
-    - ✅ Computes funnel metrics
+    - ✅ Uses pre-computed `iceberg_funnel` table for metrics
     - ✅ Visualizes user flow with Plotly
+
+    **Tables Queried:**
+    - `iceberg_funnel` - Pre-computed funnel metrics
 
     **Catalog Configuration:**
     - **Type:** REST (Lakekeeper)

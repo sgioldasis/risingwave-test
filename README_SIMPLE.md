@@ -45,8 +45,8 @@ user_events  OK
 ```
 -->
 <!--
-### 1.2. Create the analytics Namespace in Lakekeeper
-NOTE: This step is no longer required. The analytics namespace is now created
+### 1.2. Create the public Namespace in Lakekeeper
+NOTE: This step is no longer required. The public namespace is now created
 automatically by the lakekeeper-bootstrap container during docker-compose startup.
 
 The following manual steps are kept for reference only:
@@ -55,10 +55,10 @@ The following manual steps are kept for reference only:
 # Get your unique Warehouse ID. This command queries the Lakekeeper management API.
 WAREHOUSE_ID=$(curl -s http://localhost:8181/management/v1/warehouse | jq -r '.warehouses[0]."warehouse-id"')
 
-# Use the Warehouse ID to create the analytics namespace.
+# Use the Warehouse ID to create the public namespace.
 curl -v -X POST \
   -H "Content-Type: application/json" \
-  -d '{"namespace": ["analytics"]}' \
+  -d '{"namespace": ["public"]}' \
   http://localhost:8181/catalog/v1/"${WAREHOUSE_ID}"/namespaces
 ```
 -->
@@ -114,7 +114,7 @@ CREATE SOURCE IF NOT EXISTS user_events_source (
 ) FORMAT PLAIN ENCODE JSON; -- Note: FORMAT clause is outside the WITH block for CREATE SOURCE
 
 -- 4. Create the target Iceberg table
--- This creates the final table in the 'analytics' namespace of your Lakekeeper catalog.
+-- This creates the final table in the 'public' namespace of your Lakekeeper catalog.
 CREATE TABLE IF NOT EXISTS user_events (
     user_id INT,
     event_type VARCHAR,

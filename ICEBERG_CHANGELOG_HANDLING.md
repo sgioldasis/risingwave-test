@@ -98,7 +98,7 @@ WITH (
     catalog.type = 'rest',
     catalog.uri = 'http://lakekeeper:8181/catalog',
     warehouse.path = 'risingwave-warehouse',
-    database.name = 'analytics',
+    database.name = 'public',
     table.name = 'iceberg_countries',
     s3.endpoint = 'http://minio-0:9301',
     s3.region = 'us-east-1',

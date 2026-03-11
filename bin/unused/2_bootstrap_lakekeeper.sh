@@ -66,17 +66,17 @@ if [ -z "$WAREHOUSE_ID" ]; then
 fi
 echo "Using warehouse ID: $WAREHOUSE_ID"
 
-echo "Creating analytics namespace..."
+echo "Creating public namespace..."
 sleep 2
 for attempt in 1 2 3 4 5; do
   http=$(curl -s -o /tmp/namespace.json -w "%{http_code}" -X POST \
     -H "Content-Type: application/json" \
-    -d '{"namespace": ["analytics"]}' \
+    -d '{"namespace": ["public"]}' \
     "http://lakekeeper:8181/catalog/v1/${WAREHOUSE_ID}/namespaces")
 
   case "$http" in
-    200|201) echo "✓ Successfully created analytics namespace!"; break ;;
-    400|409) echo "✓ Analytics namespace already exists; continuing..."; break ;;
+    200|201) echo "✓ Successfully created public namespace!"; break ;;
+    400|409) echo "✓ Public namespace already exists; continuing..."; break ;;
     *) echo "Namespace creation attempt $attempt failed (HTTP $http)"; \
        [ $attempt -eq 5 ] && { cat /tmp/namespace.json 2>/dev/null || true; exit 1; }; \
        sleep $((2 ** attempt)) ;;

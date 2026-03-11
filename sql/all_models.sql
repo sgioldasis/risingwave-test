@@ -103,62 +103,38 @@ SELECT
 FROM stats;
 
 -- ==========================================================
--- STEP 4: Create Iceberg Tables
+-- STEP 4: Create Iceberg Funnel Table
 -- ==========================================================
 
--- ----- Model: iceberg_cart_events -----
-CREATE TABLE IF NOT EXISTS iceberg_cart_events (
-    user_id INT,
-    item_id VARCHAR,
-    event_time TIMESTAMP
-) ENGINE = iceberg;
-
--- ----- Model: iceberg_page_views -----
-CREATE TABLE IF NOT EXISTS iceberg_page_views (
-    user_id INT,
-    page_id VARCHAR,
-    event_time TIMESTAMP
-) ENGINE = iceberg;
-
--- ----- Model: iceberg_purchases -----
-CREATE TABLE IF NOT EXISTS iceberg_purchases (
-    user_id INT,
-    amount NUMERIC,
-    event_time TIMESTAMP
+-- ----- Model: iceberg_funnel -----
+CREATE TABLE IF NOT EXISTS iceberg_funnel (
+    window_start TIMESTAMP,
+    window_end TIMESTAMP,
+    viewers BIGINT,
+    carters BIGINT,
+    purchasers BIGINT,
+    view_to_cart_rate DOUBLE,
+    cart_to_buy_rate DOUBLE,
+    PRIMARY KEY (window_start)
 ) ENGINE = iceberg;
 
 -- ==========================================================
--- STEP 5: Create Sinks to Iceberg
+-- STEP 5: Create Sink to Iceberg (Funnel Only)
 -- ==========================================================
 
--- ----- Model: sink_cart_events_to_iceberg -----
-CREATE SINK IF NOT EXISTS iceberg_cart_events_sink
-INTO iceberg_cart_events
-FROM src_cart
+-- ----- Model: sink_funnel_to_iceberg -----
+CREATE SINK IF NOT EXISTS iceberg_funnel_sink
+INTO iceberg_funnel
+FROM funnel
 WITH (
-    type = 'append-only',
-    commit_checkpoint_interval = 1,
-    sink_decouple = false
-);
-
--- ----- Model: sink_page_views_to_iceberg -----
-CREATE SINK IF NOT EXISTS iceberg_page_views_sink
-INTO iceberg_page_views
-FROM src_page
-WITH (
-    type = 'append-only',
-    commit_checkpoint_interval = 1,
-    sink_decouple = false
-);
-
--- ----- Model: sink_purchases_to_iceberg -----
-CREATE SINK IF NOT EXISTS iceberg_purchases_sink
-INTO iceberg_purchases
-FROM src_purchase
-WITH (
-    type = 'append-only',
-    commit_checkpoint_interval = 1,
-    sink_decouple = false
+    connector = 'iceberg',
+    type = 'upsert',
+    primary_key = 'window_start',
+    database.name = 'public',
+    table.name = 'iceberg_funnel',
+    connection = lakekeeper_catalog_conn,
+    create_table_if_not_exists = 'true',
+    commit_checkpoint_interval = 60
 );
 
 -- ==========================================================

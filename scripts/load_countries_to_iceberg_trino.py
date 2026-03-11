@@ -17,8 +17,8 @@ def get_trino_connection():
         host="localhost",
         port=9080,
         user="trino",
-        catalog="iceberg",
-        schema="analytics",
+        catalog="datalake",
+        schema="public",
     )
 
 
@@ -35,6 +35,11 @@ def load_csv_data(filepath: str) -> list[tuple]:
 def create_table(conn):
     """Create the iceberg_countries table if it doesn't exist."""
     cur = conn.cursor()
+    # Create schema if not exists
+    cur.execute("CREATE SCHEMA IF NOT EXISTS public")
+    conn.commit()
+    print("✓ Schema public created/verified")
+    # Create table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS iceberg_countries (
             country VARCHAR,
@@ -107,9 +112,9 @@ def main():
     print("\n" + "=" * 50)
     print(f"✓ Successfully loaded {count} countries to Iceberg!")
     print("\nYou can now query the data:")
-    print("  docker compose exec trino trino --catalog iceberg --schema analytics --execute 'SELECT * FROM iceberg_countries'")
+    print("  docker compose exec trino trino --catalog datalake --schema public --execute 'SELECT * FROM iceberg_countries'")
     print("\nOr update data (works with Trino, not DuckDB):")
-    print("  docker compose exec trino trino --catalog iceberg --schema analytics --execute \"UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'\"")
+    print("  docker compose exec trino trino --catalog datalake --schema public --execute \"UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'\"")
 
 
 if __name__ == "__main__":

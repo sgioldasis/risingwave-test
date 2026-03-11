@@ -26,7 +26,7 @@ def _():
 @app.cell
 def _(create_engine):
     # SQLAlchemy engines for clean DataFrame reads
-    iceberg_engine = create_engine("trino://trino@localhost:9080/iceberg/analytics")
+    iceberg_engine = create_engine("trino://trino@localhost:9080/datalake/public")
     risingwave_engine = create_engine("trino://trino@localhost:9080/risingwave/public")
     return iceberg_engine, risingwave_engine
 
@@ -36,7 +36,7 @@ def _(iceberg_engine, mo, pd, text):
     # EDIT THIS QUERY to update Iceberg data
     # Then run this cell (Shift+Enter or click the run button)
 
-    country_name = 'Greece'
+    country_name = 'Hellas'
 
     # Execute UPDATE using SQLAlchemy connection (cleaner - uses same engine!)
     with iceberg_engine.connect() as conn:

@@ -29,9 +29,6 @@ dbt/                              # dbt project folder
 │   ├── src_page.sql              # Page views source
 │   ├── src_purchase.sql          # Purchase events source
 │   ├── src_iceberg_countries.sql # Iceberg countries source
-│   ├── iceberg_page_views.sql    # Iceberg table for page views
-│   ├── iceberg_cart_events.sql   # Iceberg table for cart events
-│   ├── iceberg_purchases.sql     # Iceberg table for purchases
 │   ├── funnel.sql                # Conversion funnel materialized view
 │   ├── funnel_training.sql       # ML training data view
 │   ├── rw_countries.sql          # Countries view
@@ -345,7 +342,7 @@ The Dagster asset uses Trino to create and populate the `iceberg_countries` tabl
 ```python
 # Via Trino JDBC connection
 cur.execute("""
-    CREATE TABLE IF NOT EXISTS iceberg.analytics.iceberg_countries (
+    CREATE TABLE IF NOT EXISTS datalake.public.iceberg_countries (
         country VARCHAR,
         country_name VARCHAR,
         region VARCHAR
@@ -362,7 +359,7 @@ WITH (
     catalog.type = 'rest',
     catalog.uri = 'http://lakekeeper:8181/catalog',
     warehouse = 'risingwave-warehouse',
-    database.name = 'analytics',
+    database.name = 'public',
     table.name = 'iceberg_countries'
 )
 ```
@@ -411,7 +408,7 @@ When you update data in Iceberg via Trino:
 
 ```bash
 # Update via Trino
-docker compose exec trino trino --catalog iceberg --schema analytics \
+docker compose exec trino trino --catalog datalake --schema public \
   --execute "UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'"
 # Output: UPDATE: 1 row
 
@@ -447,7 +444,7 @@ psql -h localhost -p 4566 -d dev -U root \
 
 | Path | Use Case | Latency |
 |------|----------|---------|
-| Trino → Iceberg | Direct queries on Iceberg data | Immediate |
+| Trino → datalake | Direct queries on Iceberg data | Immediate |
 | Trino → Iceberg → RisingWave SOURCE | Real-time analytics with reference data | < 1 second |
 | RisingWave MV → funnel_summary_with_country | Enriched funnel analytics | Real-time |
 
@@ -613,16 +610,16 @@ uv run python scripts/load_countries_to_iceberg_trino.py
 ### Query via Trino CLI
 ```bash
 # Interactive shell
-trino --server http://localhost:9080 --catalog iceberg --schema analytics
+trino --server http://localhost:9080 --catalog datalake --schema public
 
 # One-liner query
-trino --server http://localhost:9080 --catalog iceberg --schema analytics \
+trino --server http://localhost:9080 --catalog datalake --schema public \
   --execute "SELECT * FROM iceberg_countries"
 ```
 
 ### Update Data via Trino
 ```bash
-docker compose exec trino trino --catalog iceberg --schema analytics \
+docker compose exec trino trino --catalog datalake --schema public \
   --execute "UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'"
 ```
 

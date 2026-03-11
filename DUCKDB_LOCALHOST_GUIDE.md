@@ -52,14 +52,14 @@ ATTACH 'risingwave-warehouse' AS lk (
 
 ### Step 5: Query the Table
 ```sql
--- List all tables in the analytics namespace
-SHOW TABLES FROM lk.analytics;
+-- List all tables in the public namespace
+SHOW TABLES FROM lk.public;
 
 -- Query the countries table
-SELECT * FROM lk.analytics.iceberg_countries ORDER BY country;
+SELECT * FROM lk.public.iceberg_countries ORDER BY country;
 
 -- Or use fully qualified name
-SELECT country, country_name FROM lk.analytics.iceberg_countries;
+SELECT country, country_name FROM lk.public.iceberg_countries;
 ```
 
 ## Complete Example (One Session)
@@ -91,7 +91,7 @@ ATTACH 'risingwave-warehouse' AS lk (
 );
 
 -- Query!
-SELECT * FROM lk.analytics.iceberg_countries ORDER BY country;
+SELECT * FROM lk.public.iceberg_countries ORDER BY country;
 ```
 
 ## Expected Output

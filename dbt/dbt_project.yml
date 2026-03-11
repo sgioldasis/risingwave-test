@@ -17,7 +17,7 @@ vars:
   # Iceberg configuration
   iceberg_catalog_uri: 'http://lakekeeper:8181/catalog/'
   iceberg_warehouse: 'risingwave-warehouse'
-  iceberg_namespace: 'analytics'
+  iceberg_namespace: 'public'
   s3_endpoint: 'http://minio-0:9301'
   s3_access_key: 'hummockadmin'
   s3_secret_key: 'hummockadmin'

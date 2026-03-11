@@ -37,10 +37,16 @@ def iceberg_countries(context: AssetExecutionContext):
             host="trino",
             port=8080,
             user="dagster",
-            catalog="iceberg",
-            schema="analytics",
+            catalog="datalake",
+            schema="public",
         )
         cur = conn.cursor()
+
+        # Create schema if not exists
+        context.log.info("Creating schema if not exists...")
+        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
+        conn.commit()
+        context.log.info("✓ Schema created/verified")
 
         # Create table
         context.log.info("Creating table...")
