@@ -56,6 +56,7 @@ const PredictionsTab = ({ funnelData }) => {
 
     // Format model version for display (v20260305_125613 -> "5 Mar 2026, 14:57:03" in local time)
     const formatModelVersionDisplay = (version) => {
+        if (version === 'online_learning') return 'Live';
         const date = parseModelVersion(version);
         if (!date) return version;
         const day = date.getDate();
@@ -371,9 +372,12 @@ const PredictionsTab = ({ funnelData }) => {
                                     <>
                                         <Sparkles size={14} className="text-purple-400" />
                                         <span>
-                                            {predictions.model_type === 'RandomForestRegressor' ? 'RandomForest' :
-                                             predictions.model_type === 'LinearRegression' ? 'Linear Regression' :
-                                             predictions.model_type}: {formatModelVersionDisplay(predictions.model_version)}
+                                            {predictions.model_type === 'RandomForestRegressor' ? `RandomForest: ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'LinearRegression' ? `Linear Regression: ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'river_kafka_online' ? `River Online (Kafka) [River]: ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'moving_average_fallback' ? `River Online (Kafka) [MA Fallback]: ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'river_risingwave_online' ? 'River Online (RisingWave): Live [Moving Average]' :
+                                             `${predictions.model_type}: ${formatModelVersionDisplay(predictions.model_version)}`}
                                         </span>
                                     </>
                                 )}

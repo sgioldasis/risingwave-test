@@ -275,10 +275,10 @@ class ModelPredictor:
             if len(rows) == 1:
                 return float(rows[0]['value'])
             
-            # Ultra-responsive weighting: almost entirely based on most recent window
+            # Maximum responsiveness: heavily favor most recent window
             # This allows predictions to track TPS spikes immediately
-            # Weights: 90% for most recent, 8% for middle, 2% for oldest
-            weights = [0.90, 0.08, 0.02]
+            # Weights: 95% for most recent, 4% for middle, 1% for oldest
+            weights = [0.95, 0.04, 0.01]
             weighted_sum = 0.0
             total_weight = 0.0
 
@@ -428,14 +428,14 @@ class ModelPredictor:
             else:
                 return None
             
-            # Calculate EMA with very high alpha for fast response
-            alpha = 0.95  # 95% weight on latest
+            # Calculate EMA with extreme alpha for fastest response
+            alpha = 0.98  # 98% weight on latest
             ema = values[0]
             for value in values[1:]:
                 ema = alpha * value + (1 - alpha) * ema
             
-            # Use 90% current value + 10% EMA for maximum responsiveness
-            blended = 0.90 * latest_value + 0.10 * ema
+            # Use 95% current value + 5% EMA for maximum responsiveness
+            blended = 0.95 * latest_value + 0.05 * ema
             
             # Scale to minute-level (20-second windows → multiply by 3)
             WINDOW_SECONDS = 20

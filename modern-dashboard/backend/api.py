@@ -552,20 +552,28 @@ async def get_next_predictions():
         model_version = "unknown"
         detailed_model_type = "unknown"
         is_heuristic = False
+        is_online_learning = False
         for metric in ['viewers', 'carters', 'purchasers']:
             metric_data = result.get(metric)
-            if metric_data and isinstance(metric_data, dict) and metric_data.get("model_version"):
-                model_version = metric_data.get("model_version")
+            if metric_data and isinstance(metric_data, dict):
                 # Get detailed model type from ML serving response
                 detailed_model_type = metric_data.get("model_type", "unknown")
+                model_version = metric_data.get("model_version", "unknown")
                 # Check if this is a heuristic/live prediction
                 if model_version in ['moving_average', 'heuristic', 'live_moving_average', 'unknown', None]:
                     is_heuristic = True
+                # Check for online learning models (including fallback when not ready yet)
+                if detailed_model_type in ['river_kafka_online', 'river_risingwave_online', 'moving_average_fallback']:
+                    is_online_learning = True
                 break
         
         # Handle model version display
         # If version looks like a timestamp (vYYYYMMDD_HHMMSS), it's from MinIO trained model
-        if model_version in ['moving_average', 'heuristic', 'live_moving_average', 'unknown', None]:
+        if is_online_learning:
+            # Online learning models - show as ML model
+            is_heuristic = False
+            model_version = "online_learning"
+        elif model_version in ['moving_average', 'heuristic', 'live_moving_average', 'unknown', None]:
             is_heuristic = True
             if detailed_model_type == "unknown":
                 detailed_model_type = "MovingAverage"

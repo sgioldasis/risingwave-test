@@ -1,24 +1,37 @@
 #!/bin/bash
-# Start ML Serving Service
+# Launcher script for ML Serving with River Online Learning (RisingWave source)
 
-PORT=${1:-8001}
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$(dirname "$0")/.."
 
-cd "$PROJECT_ROOT"
+# Activate virtual environment
+source .venv/bin/activate 2>/dev/null || true
 
-echo "🤖 Starting ML Serving Service on port $PORT..."
-
-# Check if MinIO is accessible
-echo "Checking MinIO connection..."
-if ! curl -s http://localhost:9301/minio/health/live > /dev/null 2>&1; then
-    echo "⚠️  Warning: MinIO may not be accessible at localhost:9301"
-    echo "   Models will be loaded once MinIO is available."
+# Parse parameters - if it looks like a port number (digits only), use it
+# Otherwise default to 8001
+if [[ "$1" =~ ^[0-9]+$ ]]; then
+    PORT=$1
+    # Validate port is in valid range (1024-65535)
+    if [[ "$PORT" -lt 1024 ]] || [[ "$PORT" -gt 65535 ]]; then
+        echo "⚠️  Invalid port: $PORT. Using default port 8001."
+        PORT=8001
+    fi
+else
+    PORT=8001
 fi
 
-# Run the serving service using uvicorn
-exec uvicorn ml.serving.main:app \
-    --host 0.0.0.0 \
-    --port "$PORT" \
-    --reload \
-    --reload-dir ml/serving \
-    --log-level info
+echo "🌊 Starting ML Serving with River Online Learning on port $PORT..."
+echo "📊 API docs: http://localhost:$PORT/docs"
+echo "🔧 Mode: Online Learning (RisingWave source)"
+echo "📡 Source: RisingWave funnel_training view"
+echo ""
+echo "Environment variables:"
+echo "  USE_ONLINE_LEARNING=true (required)"
+echo "  USE_KAFKA_SOURCE=false (using RisingWave polling)"
+echo "  CHECKPOINT_INTERVAL=60 (seconds between MinIO checkpoints)"
+echo ""
+
+# Set required environment variables
+export USE_ONLINE_LEARNING=true
+export USE_KAFKA_SOURCE=false
+
+exec uvicorn ml.serving.main:app --host 0.0.0.0 --port "$PORT" --reload

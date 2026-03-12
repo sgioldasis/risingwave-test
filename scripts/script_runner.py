@@ -43,7 +43,7 @@ SCRIPTS = [
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
-    ("4_run_ml_serving.sh", "🤖 ML Serving", "Start the ML model serving service (port 8001)"),
+    ("4_run_ml_serving.sh", "🤖 ML Serving", "Start ML serving with River online learning (port 8001)"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
     ("5_marimo_risingwave.sh", "🌊 RisingWave Notebook", "Interactive RisingWave Iceberg demo notebook"),
@@ -1056,7 +1056,43 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 // Check if script is already running
                 let tab = activeTabs.get(scriptFile);
                 if (isScriptRunning(scriptFile)) {
-                    // Create tab if it doesn't exist, then switch to it
+                    // For background scripts (like producer), clicking should restart with new params
+                    if (BACKGROUND_SCRIPTS.includes(scriptFile)) {
+                        // Show immediate feedback
+                        const scriptItem = document.getElementById(`script-${scriptFile}`);
+                        if (scriptItem) {
+                            scriptItem.style.opacity = '0.7';
+                        }
+                        
+                        // Clear the running status so it can be restarted
+                        backgroundScriptRunning.delete(scriptFile);
+                        
+                        // Remove running class from script item immediately
+                        if (scriptItem) {
+                            scriptItem.classList.remove('running');
+                            document.getElementById(`indicator-${scriptFile}`).style.display = 'none';
+                        }
+                        
+                        // Clear the tab output
+                        if (tab) {
+                            tab.outputElement.innerHTML = '<div style="color: var(--warning)">🔄 Restarting...</div>';
+                        }
+                        
+                        // Switch to tab and send run command (server will handle killing existing)
+                        if (!tab) {
+                            createTabForRunningBackground(scriptFile);
+                        } else {
+                            switchToTab(scriptFile);
+                        }
+                        ws.send(JSON.stringify({ action: 'run', script: scriptFile, params: params }));
+                        
+                        // Restore opacity after a moment
+                        setTimeout(() => {
+                            if (scriptItem) scriptItem.style.opacity = '';
+                        }, 300);
+                        return;
+                    }
+                    // For non-background scripts, just switch to the tab
                     if (!tab) {
                         createTabForRunningBackground(scriptFile);
                     } else {
@@ -1284,6 +1320,48 @@ async def run_script_in_background(script_file, ws, params=''):
     if script_file in running_processes:
         stop_script(script_file)
         # Wait a moment for cleanup
+        await asyncio.sleep(0.5)
+    
+    # Handle background services that are running externally (e.g., producer detected by pattern)
+    # This allows restarting them by clicking the button
+    bg_service = None
+    for service in BACKGROUND_SERVICES_CONFIG:
+        if service["script"] == script_file:
+            bg_service = service
+            break
+    
+    # Always check if the service is running (even if not in running_background_services)
+    # This handles the case where the service was started externally
+    if bg_service:
+        # Check if it's actually running (could be detected by port or pattern)
+        is_running = False
+        if "port" in bg_service:
+            is_running = await check_port_open(bg_service["port"])
+        elif "pattern" in bg_service:
+            is_running = check_process_running(bg_service["pattern"])
+        
+        await append_output(script_file, f"🔍 Checking if service is running: {is_running}", 'debug')
+        
+        if is_running:
+            await append_output(script_file, "🛑 Stopping running service for restart...", 'warning')
+            # For producer, kill the entire process tree including uv, bash, and python
+            if script_file == "3_run_producer.sh":
+                # kill_process_by_pattern now handles all related patterns internally
+                killed = await kill_process_by_pattern("scripts/producer.py")
+                await append_output(script_file, f"   Killed {killed} producer process(es)", 'info')
+            # Remove from tracking
+            if script_file in running_background_services:
+                running_background_services.remove(script_file)
+            # Mark as manually stopped to prevent immediate re-detection
+            manually_stopped_services.add(script_file)
+            await asyncio.sleep(1.0)  # Longer wait for producer cleanup
+    
+    # If starting ML serving, kill any process on port 8001 first
+    if script_file == "4_run_ml_serving.sh":
+        await append_output(script_file, "🔍 Checking for existing services on port 8001...", 'info')
+        killed = await kill_process_on_port(8001)
+        if killed:
+            await append_output(script_file, "🛑 Stopped existing service on port 8001", 'warning')
         await asyncio.sleep(0.5)
     
     # Clear previous output for this script
@@ -1584,6 +1662,127 @@ async def check_port_open(port):
         return True
     except:
         return False
+
+
+async def kill_process_on_port(port):
+    """Kill any process listening on the given port."""
+    try:
+        # Find PID using the port
+        result = subprocess.run(
+            ['lsof', '-ti', f':{port}'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        proc = psutil.Process(int(pid))
+                        proc.terminate()
+                        # Wait briefly for graceful termination
+                        try:
+                            proc.wait(timeout=2)
+                        except psutil.TimeoutExpired:
+                            proc.kill()
+                    except (psutil.NoSuchProcess, ValueError):
+                        pass
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def kill_process_by_pattern(pattern):
+    """Kill any process matching the given command line pattern and its children."""
+    import signal
+    try:
+        killed_pids = set()
+        
+        # Helper to check if process matches pattern
+        def matches_pattern(cmdline, pattern):
+            if not cmdline:
+                return False
+            cmd_str = ' '.join(cmdline)
+            # Check individual args and full command string
+            if pattern in cmd_str:
+                return True
+            for arg in cmdline:
+                if pattern in arg and not arg.endswith('.pyc'):
+                    return True
+            return False
+        
+        # First pass: collect all matching PIDs and their children
+        for proc in psutil.process_iter(['cmdline', 'pid']):
+            try:
+                if proc.pid == os.getpid():
+                    continue
+                cmdline = proc.info.get('cmdline')
+                if matches_pattern(cmdline, pattern):
+                    # Skip grep/ps commands
+                    if cmdline and ("grep" in cmdline[0] or "ps" in cmdline[0]):
+                        continue
+                    killed_pids.add(proc.pid)
+                    # Also add all children recursively
+                    try:
+                        for child in proc.children(recursive=True):
+                            killed_pids.add(child.pid)
+                    except psutil.NoSuchProcess:
+                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        # Special handling for producer - also look for uv, bash with 3_run_producer.sh
+        if "producer" in pattern.lower():
+            extra_patterns = ["3_run_producer.sh", "uv run", "tee producer.log"]
+            for extra_pattern in extra_patterns:
+                for proc in psutil.process_iter(['cmdline', 'pid']):
+                    try:
+                        if proc.pid == os.getpid():
+                            continue
+                        cmdline = proc.info.get('cmdline')
+                        if matches_pattern(cmdline, extra_pattern):
+                            if cmdline and ("grep" in cmdline[0] or "ps" in cmdline[0]):
+                                continue
+                            killed_pids.add(proc.pid)
+                            try:
+                                for child in proc.children(recursive=True):
+                                    killed_pids.add(child.pid)
+                            except psutil.NoSuchProcess:
+                                pass
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+        
+        print(f"Found {len(killed_pids)} processes to kill: {killed_pids}")
+        
+        # Kill all collected PIDs with SIGTERM first
+        for pid in list(killed_pids):
+            try:
+                proc = psutil.Process(pid)
+                proc.send_signal(signal.SIGTERM)
+                print(f"Sent SIGTERM to process {pid}")
+            except psutil.NoSuchProcess:
+                killed_pids.discard(pid)
+        
+        if killed_pids:
+            await asyncio.sleep(0.5)
+            # Force kill any remaining processes
+            for pid in list(killed_pids):
+                try:
+                    proc = psutil.Process(pid)
+                    if proc.is_running():
+                        proc.kill()
+                        print(f"Force killed process {pid}")
+                except psutil.NoSuchProcess:
+                    pass
+        
+        return len(killed_pids)
+    except Exception as e:
+        print(f"Error in kill_process_by_pattern: {e}")
+        import traceback
+        traceback.print_exc()
+        pass
+    return 0
 
 
 async def tail_log_file(script_file, log_path):
