@@ -2,6 +2,7 @@
 """Debug script to trace model loading issues."""
 
 import json
+import logging
 import os
 import sys
 
@@ -11,14 +12,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import boto3
 from botocore.exceptions import ClientError
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # MinIO configuration
 MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'http://localhost:9301')
 MINIO_ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'hummockadmin')
 MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'hummockadmin')
 BUCKET_NAME = "ml-models"
 
+
 def debug_model_loading():
-    print(f"=== Debugging Model Loading ===\n")
+    logger.info(f"=== Debugging Model Loading ===\n")
 
     try:
         s3_client = boto3.client(
@@ -32,55 +38,56 @@ def debug_model_loading():
         # Import and test the ModelLoader directly
         from ml.serving.model_loader import ModelLoader
 
-        print("Creating ModelLoader instance...")
+        logger.info("Creating ModelLoader instance...")
         loader = ModelLoader()
-        print(f"S3 client endpoint: {loader.s3_client._endpoint}")
-        print()
+        logger.info(f"S3 client endpoint: {loader.s3_client._endpoint}")
+        logger.info("")
 
         # Get manifest directly
-        print("=== Getting Manifest ===")
+        logger.info("=== Getting Manifest ===")
         manifest = loader._get_manifest()
         if manifest:
-            print(f"Manifest found:")
-            print(f"  Last updated: {manifest.get('last_updated')}")
-            print(f"  Latest versions: {manifest.get('latest_versions')}")
+            logger.info(f"Manifest found:")
+            logger.info(f"  Last updated: {manifest.get('last_updated')}")
+            logger.info(f"  Latest versions: {manifest.get('latest_versions')}")
         else:
-            print("❌ Manifest is None!")
-        print()
+            logger.error("❌ Manifest is None!")
+        logger.info("")
 
         # Try to load models
-        print("=== Loading Models ===")
+        logger.info("=== Loading Models ===")
         models = loader.load_latest_models()
-        print(f"Loaded {len(models)} models: {list(models.keys())}")
-        print()
+        logger.info(f"Loaded {len(models)} models: {list(models.keys())}")
+        logger.info("")
 
         # Try loading each model individually
         if manifest:
             for metric, version in manifest.get('latest_versions', {}).items():
-                print(f"\n--- Loading {metric} v{version} ---")
+                logger.info(f"\n--- Loading {metric} v{version} ---")
                 try:
                     model_data = loader._load_model(metric, version)
                     if model_data:
-                        print(f"  ✅ Loaded successfully")
-                        print(f"     Model type: {model_data.get('metadata', {}).get('model_type')}")
-                        print(f"     Version: {model_data.get('version')}")
+                        logger.info(f"  ✅ Loaded successfully")
+                        logger.info(f"     Model type: {model_data.get('metadata', {}).get('model_type')}")
+                        logger.info(f"     Version: {model_data.get('version')}")
                     else:
-                        print(f"  ❌ _load_model returned None")
+                        logger.error(f"  ❌ _load_model returned None")
                 except Exception as e:
-                    print(f"  ❌ Error: {e}")
+                    logger.error(f"  ❌ Error: {e}")
                     import traceback
                     traceback.print_exc()
 
         # Check for updates
-        print(f"\n=== Checking for Updates ===")
+        logger.info(f"\n=== Checking for Updates ===")
         has_update = loader.check_for_updates()
-        print(f"Updates available: {has_update}")
-        print(f"Cached ETag: {loader._cached_manifest_etag}")
+        logger.info(f"Updates available: {has_update}")
+        logger.info(f"Cached ETag: {loader._cached_manifest_etag}")
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.error(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     debug_model_loading()

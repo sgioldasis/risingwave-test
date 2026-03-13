@@ -1,5 +1,6 @@
 """Online learner with Kafka streaming and lag feature engineering."""
 
+import logging
 import os
 import time
 import threading
@@ -10,6 +11,8 @@ from typing import Dict, Any, Optional, Callable
 from .models import RiverModelManager
 from .kafka_streamer import KafkaDataStreamer
 from .checkpoints import CheckpointManager
+
+logger = logging.getLogger(__name__)
 
 
 class KafkaOnlineLearner:
@@ -167,7 +170,7 @@ class KafkaOnlineLearner:
                     try:
                         callback(metric, prediction)
                     except Exception as e:
-                        print(f"Prediction callback error: {e}")
+                        logger.error(f"Prediction callback error: {e}")
     
     def start(self) -> None:
         """Start the online learning service."""
@@ -175,11 +178,11 @@ class KafkaOnlineLearner:
             return
         
         # Try to load from checkpoint first
-        print("Attempting to load from checkpoint...")
+        logger.info("Attempting to load from checkpoint...")
         if self.checkpointer.load_checkpoint(self.models):
-            print("Checkpoint loaded successfully")
+            logger.info("Checkpoint loaded successfully")
         else:
-            print("No checkpoint found, starting fresh models")
+            logger.info("No checkpoint found, starting fresh models")
         
         self._running = True
         self._start_time = datetime.now(timezone.utc)
@@ -191,7 +194,7 @@ class KafkaOnlineLearner:
         self._checkpoint_thread = threading.Thread(target=self._checkpoint_loop, daemon=True)
         self._checkpoint_thread.start()
         
-        print(f"KafkaOnlineLearner started (checkpoint_interval={self.checkpoint_interval}s)")
+        logger.info(f"KafkaOnlineLearner started (checkpoint_interval={self.checkpoint_interval}s)")
     
     def stop(self) -> None:
         """Stop the online learning service."""
@@ -207,7 +210,7 @@ class KafkaOnlineLearner:
         # Final checkpoint
         self._save_checkpoint()
         
-        print("KafkaOnlineLearner stopped")
+        logger.info("KafkaOnlineLearner stopped")
     
     def _checkpoint_loop(self) -> None:
         """Background loop for periodic checkpointing."""

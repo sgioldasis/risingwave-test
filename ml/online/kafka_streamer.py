@@ -1,6 +1,7 @@
 """Kafka-based data streaming for River online learning."""
 
 import json
+import logging
 import os
 import threading
 import time
@@ -8,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Callable, Optional
 
 from confluent_kafka import Consumer, KafkaException
+
+logger = logging.getLogger(__name__)
 
 
 class KafkaDataStreamer:
@@ -53,7 +56,7 @@ class KafkaDataStreamer:
         self._running = True
         self._thread = threading.Thread(target=self._consume_loop, daemon=True)
         self._thread.start()
-        print(f"KafkaDataStreamer started (topic: {self.FUNNEL_TOPIC})")
+        logger.info(f"KafkaDataStreamer started (topic: {self.FUNNEL_TOPIC})")
     
     def stop(self) -> None:
         """Stop the Kafka consumer."""
@@ -62,10 +65,10 @@ class KafkaDataStreamer:
             try:
                 self.consumer.close()
             except Exception as e:
-                print(f"Error closing consumer: {e}")
+                logger.error(f"Error closing consumer: {e}")
         if self._thread:
             self._thread.join(timeout=5.0)
-        print("KafkaDataStreamer stopped")
+        logger.info("KafkaDataStreamer stopped")
     
     def _consume_loop(self) -> None:
         """Main consumption loop running in background thread."""
@@ -81,7 +84,7 @@ class KafkaDataStreamer:
                 self.consumer = Consumer(conf)
                 self.consumer.subscribe([self.FUNNEL_TOPIC])
                 
-                print(f"Connected to Kafka: {self.KAFKA_BOOTSTRAP_SERVERS}")
+                logger.info(f"Connected to Kafka: {self.KAFKA_BOOTSTRAP_SERVERS}")
                 
                 while self._running:
                     try:
@@ -89,7 +92,7 @@ class KafkaDataStreamer:
                         if msg is None:
                             continue
                         if msg.error():
-                            print(f"Consumer error: {msg.error()}")
+                            logger.error(f"Consumer error: {msg.error()}")
                             continue
                         
                         # Deserialize message
@@ -97,11 +100,11 @@ class KafkaDataStreamer:
                         self._process_message(data)
                             
                     except Exception as e:
-                        print(f"Error processing message: {e}")
+                        logger.error(f"Error processing message: {e}")
                         time.sleep(1)
                         
             except Exception as e:
-                print(f"Kafka connection error: {e}")
+                logger.error(f"Kafka connection error: {e}")
                 time.sleep(5)  # Wait before reconnecting
             finally:
                 if self.consumer:
@@ -143,10 +146,10 @@ class KafkaDataStreamer:
                     try:
                         callback(record)
                     except Exception as e:
-                        print(f"Callback error: {e}")
+                        logger.error(f"Callback error: {e}")
                         
         except Exception as e:
-            print(f"Error processing funnel data: {e}")
+            logger.error(f"Error processing funnel data: {e}")
     
     def _convert_to_record(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -213,7 +216,7 @@ class KafkaDataStreamer:
             return record
             
         except Exception as e:
-            print(f"Error converting record: {e}")
+            logger.error(f"Error converting record: {e}")
             return None
     
     def is_connected(self) -> bool:

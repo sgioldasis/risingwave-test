@@ -2,12 +2,17 @@
 
 import argparse
 import json
+import logging
 import random
 import sys
 import time
 from datetime import datetime, timezone
 
 from confluent_kafka import KafkaError, Producer
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def get_random_device():
@@ -36,9 +41,9 @@ def generate_message(user_id: int, schema_version: int) -> dict:
 def delivery_report(err, msg):
     """Callback for delivery reports."""
     if err is not None:
-        print(f"Delivery failed: {err}", file=sys.stderr)
+        logger.error(f"Delivery failed: {err}")
     else:
-        print(f"Delivered to {msg.topic()} [{msg.partition()}]")
+        logger.info(f"Delivered to {msg.topic()} [{msg.partition()}]")
 
 
 def main():
@@ -77,15 +82,15 @@ def main():
         }
         producer = Producer(conf)
 
-        print(f"Connecting to Kafka at {kafka_bootstrap_servers}...")
-        print(
-            f"Producing {args.count} message(s) of schema version {args.schema_version} to topic '{kafka_topic}'...\n"
+        logger.info(f"Connecting to Kafka at {kafka_bootstrap_servers}...")
+        logger.info(
+            f"Producing {args.count} message(s) of schema version {args.schema_version} to topic '{kafka_topic}'..."
         )
 
         for i in range(1, args.count + 1):
             # Pass the schema_version to the generate_message function
             message = generate_message(i, args.schema_version)
-            print(f"-> Sending: {message}")
+            logger.info(f"-> Sending: {message}")
 
             # Send the message to the topic
             producer.produce(
@@ -98,19 +103,18 @@ def main():
             # Optional: add a small delay between messages
             time.sleep(0.1)
 
-        print("\nAll messages sent. Flushing producer...")
+        logger.info("All messages sent. Flushing producer...")
         # Ensure all buffered messages are sent before exiting
         producer.flush()
-        print("Done.")
+        logger.info("Done.")
 
     except KafkaError as e:
-        print(
-            f"Error: Could not connect to Kafka. Is Redpanda running? Details: {e}",
-            file=sys.stderr,
+        logger.error(
+            f"Error: Could not connect to Kafka. Is Redpanda running? Details: {e}"
         )
         sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+        logger.error(f"An unexpected error occurred: {e}")
         sys.exit(1)
 
 

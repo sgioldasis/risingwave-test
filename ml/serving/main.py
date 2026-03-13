@@ -1,6 +1,7 @@
 """FastAPI application for ML Serving Service."""
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any
@@ -10,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .predictor import ModelPredictor
+
+logger = logging.getLogger(__name__)
 
 # Optional River online learning integrations
 try:
@@ -85,30 +88,30 @@ async def auto_reload_loop():
                 predictor = get_predictor()
                 updated = predictor.check_and_reload()
                 if updated:
-                    print(f"[{datetime.now(timezone.utc).isoformat()}] Batch models auto-reloaded")
+                    logger.info(f"[{datetime.now(timezone.utc).isoformat()}] Batch models auto-reloaded")
         except Exception as e:
-            print(f"Error in auto-reload: {e}")
+            logger.error(f"Error in auto-reload: {e}")
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize predictor on startup."""
     global _reload_task
-    print("Starting ML Serving Service...")
+    logger.info("Starting ML Serving Service...")
     
     if USE_ONLINE_LEARNING:
         source = "Kafka" if USE_KAFKA_SOURCE else "RisingWave"
-        print(f"🌊 Online learning mode enabled ({source})")
+        logger.info(f"🌊 Online learning mode enabled ({source})")
         # Initialize online predictor (starts the learner)
         get_online_predictor()
     else:
-        print("📦 Batch mode enabled")
+        logger.info("📦 Batch mode enabled")
         # Initialize batch predictor
         get_predictor()
         
         # Start auto-reload task
         _reload_task = asyncio.create_task(auto_reload_loop())
-        print(f"Auto-reload enabled (interval: {os.getenv('MODEL_RELOAD_INTERVAL_SECONDS', '60')}s)")
+        logger.info(f"Auto-reload enabled (interval: {os.getenv('MODEL_RELOAD_INTERVAL_SECONDS', '60')}s)")
 
 
 @app.on_event("shutdown")

@@ -22,6 +22,11 @@ showing how users move through different stages of the conversion funnel:
 """
 
 import marimo
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 __generated_with = "0.20.4"
 app = marimo.App(width="medium")
@@ -164,13 +169,13 @@ def _():
     )
 
     spark.sparkContext.setLogLevel("WARN")
-    print("✅ Spark session initialized with Iceberg support")
-    print(f"   Spark version: {spark.version}")
-    print("   S3 connection stability settings applied (AGGRESSIVE)")
-    print("   - Connection pool: 200")
-    print("   - Timeouts: 60s")
-    print("   - Max retries: 20")
-    print("   - Parallelism reduced to 4")
+    logger.info("✅ Spark session initialized with Iceberg support")
+    logger.info(f"   Spark version: {spark.version}")
+    logger.info("   S3 connection stability settings applied (AGGRESSIVE)")
+    logger.info("   - Connection pool: 200")
+    logger.info("   - Timeouts: 60s")
+    logger.info("   - Max retries: 20")
+    logger.info("   - Parallelism reduced to 4")
     return (spark,)
 
 
@@ -214,23 +219,23 @@ def _(spark):
                 # Small delay for cache propagation
                 time.sleep(0.5)
 
-                print(f"🧹 Cache cleared (attempt {attempt + 1}/{max_retries})")
+                logger.info(f"🧹 Cache cleared (attempt {attempt + 1}/{max_retries})")
 
                 # Execute the query function
                 result = query_fn()
-                print("✅ Query succeeded")
+                logger.info("✅ Query succeeded")
                 return result
 
             except Exception as e:
                 error_msg = str(e)
                 if "Connection reset" in error_msg or "SdkClientException" in error_msg:
-                    print(f"⚠️  S3 connection error on attempt {attempt + 1}: {error_msg[:100]}...")
+                    logger.warning(f"⚠️  S3 connection error on attempt {attempt + 1}: {error_msg[:100]}...")
                     if attempt < max_retries - 1:
                         wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                        print(f"⏳ Waiting {wait_time}s before retry...")
+                        logger.info(f"⏳ Waiting {wait_time}s before retry...")
                         time.sleep(wait_time)
                     else:
-                        print("❌ Max retries exceeded")
+                        logger.error("❌ Max retries exceeded")
                         raise
                 else:
                     # Not a connection error, re-raise immediately
@@ -245,10 +250,10 @@ def _(spark):
     try:
         result = clear_and_retry_query(test_query)
         if result:
-            print(f"📊 Funnel table has {result[0]['cnt']:,} rows")
+            logger.info(f"📊 Funnel table has {result[0]['cnt']:,} rows")
     except Exception as e:
-        print(f"⚠️  Could not verify table: {e}")
-        print("   This is OK - the helper function is now available for other cells")
+        logger.warning(f"⚠️  Could not verify table: {e}")
+        logger.info("   This is OK - the helper function is now available for other cells")
 
     return (clear_and_retry_query,)
 
@@ -265,20 +270,20 @@ def _(mo):
 def _(spark):
 
     # List available namespaces
-    print("🔍 Available namespaces:")
+    logger.info("🔍 Available namespaces:")
     namespaces = spark.sql("SHOW NAMESPACES").collect()
     for ns in namespaces:
-        print(f"  - {ns.namespace}")
+        logger.info(f"  - {ns.namespace}")
     return
 
 
 @app.cell
 def _(spark):
     # List tables in public namespace
-    print("📋 Tables in public namespace:")
+    logger.info("📋 Tables in public namespace:")
     tables = spark.sql("SHOW TABLES IN lakekeeper.public").collect()
     for t in tables:
-        print(f"  - {t.tableName}")
+        logger.info(f"  - {t.tableName}")
     return
 
 
@@ -297,10 +302,10 @@ def _(spark):
     # Quick status check - count rows in funnel table
     try:
         funnel_count = spark.sql("SELECT COUNT(*) as cnt FROM lakekeeper.public.iceberg_funnel").collect()[0]["cnt"]
-        print(f"✅ Funnel table: {funnel_count:,} rows")
-        print(f"   Ready to visualize user activity flow!")
+        logger.info(f"✅ Funnel table: {funnel_count:,} rows")
+        logger.info("   Ready to visualize user activity flow!")
     except Exception as e:
-        print(f"⚠️  Could not query funnel table: {e}")
+        logger.warning(f"⚠️  Could not query funnel table: {e}")
     return
 
 
@@ -365,7 +370,7 @@ def _(clear_and_retry_query, go, spark):
             time_label = "No data available"
             funnel_data = None
     except Exception as e:
-        print(f"Error querying iceberg_funnel: {e}")
+        logger.error(f"Error querying iceberg_funnel: {e}")
         time_label = "No data available"
         funnel_data = None
 
@@ -397,12 +402,12 @@ def _(clear_and_retry_query, go, spark):
         funnel_fig.show()
 
         # Print data freshness info below chart
-        print(f"\n📅 {time_label}")
-        print(f"   Viewers → Cart: {funnel_data['rates'][1]:.1f}%")
-        print(f"   Cart → Purchase: {funnel_data['rates'][2]:.1f}%")
+        logger.info(f"\n📅 {time_label}")
+        logger.info(f"   Viewers → Cart: {funnel_data['rates'][1]:.1f}%")
+        logger.info(f"   Cart → Purchase: {funnel_data['rates'][2]:.1f}%")
     else:
-        print(f"📅 {time_label}")
-        print("ℹ️  No data for the latest minute")
+        logger.info(f"📅 {time_label}")
+        logger.info("ℹ️  No data for the latest minute")
     return
 
 
@@ -525,12 +530,12 @@ def _(clear_and_retry_query, go, pd, spark):
         area_fig.show()
 
         # Also display a summary table
-        print(f"\n📊 Time Series Summary ({len(ts_data)} data points):")
-        print(f"   Time range: {time_range_str}")
-        print(f"   Aggregation: 1-minute buckets")
-        print(f"   Peak viewers: {int(ts_data['viewers'].max())} at {ts_data.loc[ts_data['viewers'].idxmax(), 'window_start'].strftime('%H:%M')}")
+        logger.info(f"\n📊 Time Series Summary ({len(ts_data)} data points):")
+        logger.info(f"   Time range: {time_range_str}")
+        logger.info(f"   Aggregation: 1-minute buckets")
+        logger.info(f"   Peak viewers: {int(ts_data['viewers'].max())} at {ts_data.loc[ts_data['viewers'].idxmax(), 'window_start'].strftime('%H:%M')}")
     else:
-        print("❌ No time series data available")
+        logger.error("❌ No time series data available")
     return
 
 
@@ -546,7 +551,7 @@ def _(mo):
 
 @app.cell
 def _(clear_and_retry_query, spark):
-    print("📊 Sample Pre-computed Funnel:")
+    logger.info("📊 Sample Pre-computed Funnel:")
 
     def get_sample_data():
         return spark.table("lakekeeper.public.iceberg_funnel").show(5, truncate=False)
@@ -586,8 +591,8 @@ def _(mo):
 @app.cell
 def _():
     # Keep the notebook running
-    print("✅ Notebook execution complete!")
-    print("   Spark session is still active.")
+    logger.info("✅ Notebook execution complete!")
+    logger.info("   Spark session is still active.")
     return
 
 

@@ -1,5 +1,6 @@
 """Data streaming from RisingWave for online learning."""
 
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -8,6 +9,8 @@ import threading
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+logger = logging.getLogger(__name__)
 
 
 class DataStreamer:
@@ -153,9 +156,9 @@ class DataStreamer:
             return records
             
         except Exception as e:
-            print(f"Error fetching new records: {e}")
+            logger.error(f"Error fetching new records: {e}")
             import traceback
-            print(traceback.format_exc())
+            logger.debug(traceback.format_exc())
             return []
     
     def add_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
@@ -175,14 +178,14 @@ class DataStreamer:
         self._running = True
         self._thread = threading.Thread(target=self._stream_loop, daemon=True)
         self._thread.start()
-        print(f"DataStreamer started with {self.poll_interval}s interval")
+        logger.info(f"DataStreamer started with {self.poll_interval}s interval")
     
     def stop_streaming(self) -> None:
         """Stop the background streaming thread."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=5.0)
-        print("DataStreamer stopped")
+        logger.info("DataStreamer stopped")
     
     def _stream_loop(self) -> None:
         """Main streaming loop running in background thread."""
@@ -192,18 +195,18 @@ class DataStreamer:
                 records = self.fetch_new_records()
                 if records:
                     if is_first_fetch:
-                        print(f"[Streamer] Initial fetch: {len(records)} records from RisingWave")
+                        logger.info(f"[Streamer] Initial fetch: {len(records)} records from RisingWave")
                         is_first_fetch = False
                     else:
-                        print(f"[Streamer] Fetched {len(records)} new records")
+                        logger.info(f"[Streamer] Fetched {len(records)} new records")
                     for record in records:
                         for callback in self._callbacks:
                             try:
                                 callback(record)
                             except Exception as e:
-                                print(f"Callback error: {e}")
+                                logger.error(f"Callback error: {e}")
             except Exception as e:
-                print(f"Streaming error: {e}")
+                logger.error(f"Streaming error: {e}")
             
             # Sleep until next poll
             time.sleep(self.poll_interval)

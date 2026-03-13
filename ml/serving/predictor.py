@@ -1,5 +1,6 @@
 """Model prediction with caching."""
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from .model_loader import ModelLoader
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,21 +68,21 @@ class ModelPredictor:
     
     def _load_models(self):
         """Load all models from MinIO."""
-        print("Loading models from MinIO...")
+        logger.info("Loading models from MinIO...")
         self.models = self.loader.load_latest_models()
         self.last_reload = datetime.now(timezone.utc).isoformat()
-        print(f"Loaded {len(self.models)} models")
+        logger.info(f"Loaded {len(self.models)} models")
     
     def reload_models(self) -> bool:
         """Force reload models from MinIO."""
-        print("Reloading models...")
+        logger.info("Reloading models...")
         self._load_models()
         return len(self.models) > 0
     
     def check_and_reload(self) -> bool:
         """Check for updates and reload if needed."""
         if self.loader.check_for_updates():
-            print("New models detected, reloading...")
+            logger.info("New models detected, reloading...")
             self._load_models()
             return True
         return False
@@ -181,7 +184,7 @@ class ModelPredictor:
                         
                         # Log significant TPS adjustments
                         if abs(tps_ratio - 1.0) > 0.2:
-                            print(f"[{metric}] TPS ratio: {tps_ratio:.2f}x, ML: {ml_prediction.value:.1f} -> Scaled: {scaled_prediction:.1f} -> Final: {blended_value:.1f}")
+                            logger.debug(f"[{metric}] TPS ratio: {tps_ratio:.2f}x, ML: {ml_prediction.value:.1f} -> Scaled: {scaled_prediction:.1f} -> Final: {blended_value:.1f}")
                         
                         return Prediction(
                             value=round(blended_value, 2),
@@ -189,7 +192,7 @@ class ModelPredictor:
                             model_version=ml_prediction.model_version
                         )
                 except Exception as e:
-                    print(f"ML prediction failed for {metric}, using moving average: {e}")
+                    logger.error(f"ML prediction failed for {metric}, using moving average: {e}")
         
         # Fall back to live moving average prediction
         if recent_avg > 0:
@@ -292,7 +295,7 @@ class ModelPredictor:
             return 0.0
             
         except Exception as e:
-            print(f"Warning: Failed to fetch recent average for {metric}: {e}")
+            logger.warning(f"Failed to fetch recent average for {metric}: {e}")
             return 0.0
     
     def _predict_rate_proportional(self, metric: str, features: Optional[Dict[str, float]] = None) -> Optional[float]:
@@ -361,14 +364,14 @@ class ModelPredictor:
             # Prediction = Rate_per_TPS × Current_TPS × Minute_Multiplier
             prediction = rate_per_tps * current_tps * MINUTE_MULTIPLIER
             
-            print(f"[RateProportional] {metric}: hist={historical_metric:.1f}/tps={historical_tps:.1f} "
+            logger.debug(f"[RateProportional] {metric}: hist={historical_metric:.1f}/tps={historical_tps:.1f} "
                   f"→ rate={rate_per_tps:.3f} × curr_tps={current_tps:.1f} × {MINUTE_MULTIPLIER:.1f} "
                   f"= {prediction:.1f}")
             
             return prediction
             
         except Exception as e:
-            print(f"Rate-Proportional prediction failed for {metric}: {e}")
+            logger.error(f"Rate-Proportional prediction failed for {metric}: {e}")
             return None
     
     def _predict_ema(self, metric: str, alpha: float = 0.7) -> Optional[float]:
@@ -442,13 +445,13 @@ class ModelPredictor:
             MINUTE_MULTIPLIER = 60.0 / WINDOW_SECONDS
             prediction = blended * MINUTE_MULTIPLIER
             
-            print(f"[EMA-Current] {metric}: values={values}, latest={latest_value:.1f}, "
+            logger.debug(f"[EMA-Current] {metric}: values={values}, latest={latest_value:.1f}, "
                   f"ema={ema:.1f}, blended={blended:.1f} → prediction={prediction:.1f}")
             
             return prediction
             
         except Exception as e:
-            print(f"EMA prediction failed for {metric}: {e}")
+            logger.error(f"EMA prediction failed for {metric}: {e}")
             return None
     
     def predict_all(self, features: Optional[Dict[str, float]] = None) -> Dict[str, Prediction]:
@@ -543,7 +546,7 @@ class ModelPredictor:
             return default_values
             
         except Exception as e:
-            print(f"Warning: Failed to fetch lag values from RisingWave: {e}")
+            logger.warning(f"Failed to fetch lag values from RisingWave: {e}")
             return default_values
     
     def _build_current_features(self) -> Dict[str, float]:

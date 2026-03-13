@@ -1,6 +1,7 @@
 """Model registry for storing and versioning ML models in MinIO."""
 
 import json
+import logging
 import os
 import pickle
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ from typing import Dict, List, Optional, Any
 
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
 
 
 class ModelVersion:
@@ -44,9 +47,9 @@ class ModelRegistry:
             # Bucket doesn't exist, create it
             try:
                 self.s3_client.create_bucket(Bucket=self.BUCKET_NAME)
-                print(f"Created bucket: {self.BUCKET_NAME}")
+                logger.info(f"Created bucket: {self.BUCKET_NAME}")
             except ClientError as e:
-                print(f"Error creating bucket: {e}")
+                logger.error(f"Error creating bucket: {e}")
     
     def _generate_version(self) -> str:
         """Generate version string from current timestamp: vYYYYMMDD_HHMMSS."""
@@ -136,7 +139,7 @@ class ModelRegistry:
         # Update global manifest
         self._update_manifest(metric, version, now)
         
-        print(f"Saved model for {metric} version {version}")
+        logger.info(f"Saved model for {metric} version {version}")
         return ModelVersion(metric, version, now, metadata)
     
     def _update_manifest(self, metric: str, version: str, trained_at: str):
@@ -212,7 +215,7 @@ class ModelRegistry:
             }
             
         except ClientError as e:
-            print(f"Error loading model for {metric}: {e}")
+            logger.error(f"Error loading model for {metric}: {e}")
             return None
     
     def list_versions(self, metric: str) -> List[ModelVersion]:
@@ -247,7 +250,7 @@ class ModelRegistry:
             versions.sort(key=lambda v: v.trained_at, reverse=True)
             
         except ClientError as e:
-            print(f"Error listing versions for {metric}: {e}")
+            logger.error(f"Error listing versions for {metric}: {e}")
         
         return versions
     

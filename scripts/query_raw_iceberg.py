@@ -6,7 +6,12 @@ Shows the latest 5 minutes of funnel data in descending order.
 """
 
 import duckdb
+import logging
 import sys
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Lakekeeper REST catalog configuration
 LAKEKEEPER_BASE = "http://127.0.0.1:8181"
@@ -71,13 +76,13 @@ def main():
         """).fetchall()
 
         if not results:
-            print("No data available in iceberg_funnel table")
+            logger.info("No data available in iceberg_funnel table")
             return
 
         # Print header
-        print("=" * 95)
-        print(f"{'Window Start':<20} {'Window End':<20} {'Viewers':>8} {'Carters':>8} {'Buyers':>8} {'V→C%':>6} {'C→B%':>6}")
-        print("-" * 95)
+        logger.info("=" * 95)
+        logger.info(f"{'Window Start':<20} {'Window End':<20} {'Viewers':>8} {'Carters':>8} {'Buyers':>8} {'V→C%':>6} {'C→B%':>6}")
+        logger.info("-" * 95)
 
         # Print rows
         for row in results:
@@ -89,12 +94,12 @@ def main():
             v2c = row[5] or 0
             c2b = row[6] or 0
 
-            print(f"{window_start:<20} {window_end:<20} {viewers:>8} {carters:>8} {purchasers:>8} {v2c:>6.1f} {c2b:>6.1f}")
+            logger.info(f"{window_start:<20} {window_end:<20} {viewers:>8} {carters:>8} {purchasers:>8} {v2c:>6.1f} {c2b:>6.1f}")
 
-        print("=" * 95)
+        logger.info("=" * 95)
 
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error: {e}")
         sys.exit(1)
 
 

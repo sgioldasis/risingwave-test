@@ -1,6 +1,7 @@
 """Checkpoint management for River models using MinIO."""
 
 import json
+import logging
 import os
 import pickle
 from datetime import datetime, timezone
@@ -8,6 +9,8 @@ from typing import Dict, Any, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
 
 
 class CheckpointManager:
@@ -32,9 +35,9 @@ class CheckpointManager:
         except ClientError:
             try:
                 self.s3_client.create_bucket(Bucket=self.BUCKET_NAME)
-                print(f"Created bucket: {self.BUCKET_NAME}")
+                logger.info(f"Created bucket: {self.BUCKET_NAME}")
             except ClientError as e:
-                print(f"Error creating bucket: {e}")
+                logger.error(f"Error creating bucket: {e}")
     
     def save_checkpoint(self, model_manager, stats: Dict[str, Any]) -> str:
         """
@@ -101,7 +104,7 @@ class CheckpointManager:
             Body=json.dumps(manifest, indent=2)
         )
         
-        print(f"Checkpoint saved: {version}")
+        logger.info(f"Checkpoint saved: {version}")
         return version
     
     def load_checkpoint(self, model_manager, version: Optional[str] = None) -> bool:
@@ -126,7 +129,7 @@ class CheckpointManager:
                     manifest = json.loads(response['Body'].read())
                     version = manifest['version']
                 except ClientError:
-                    print("No checkpoint manifest found, starting fresh")
+                    logger.info("No checkpoint manifest found, starting fresh")
                     return False
             
             # Load each model
@@ -146,7 +149,7 @@ class CheckpointManager:
                     expected_type = type(expected_model).__name__
                     
                     if loaded_type != expected_type:
-                        print(f"[Checkpoint Skip] {metric}: checkpoint has {loaded_type}, "
+                        logger.warning(f"[Checkpoint Skip] {metric}: checkpoint has {loaded_type}, "
                               f"expected {expected_type}. Starting fresh.")
                         continue
                     
@@ -161,16 +164,16 @@ class CheckpointManager:
                     metadata = json.loads(metadata_response['Body'].read())
                     model_manager.learning_counts[metric] = metadata.get('learning_count', 0)
                     
-                    print(f"Loaded {metric} model from checkpoint {version}")
+                    logger.info(f"Loaded {metric} model from checkpoint {version}")
                     
                 except ClientError:
-                    print(f"No checkpoint found for {metric} version {version}")
+                    logger.warning(f"No checkpoint found for {metric} version {version}")
                     continue
             
             return True
             
         except ClientError as e:
-            print(f"Failed to load checkpoint: {e}")
+            logger.error(f"Failed to load checkpoint: {e}")
             return False
     
     def list_checkpoints(self) -> list[Dict[str, Any]]:
@@ -199,7 +202,7 @@ class CheckpointManager:
             checkpoints.sort(key=lambda x: x['version'], reverse=True)
             
         except ClientError as e:
-            print(f"Error listing checkpoints: {e}")
+            logger.error(f"Error listing checkpoints: {e}")
         
         return checkpoints
     

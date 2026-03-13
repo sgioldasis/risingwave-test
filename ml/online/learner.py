@@ -1,5 +1,6 @@
 """Online learning service that continuously trains models from streaming data."""
 
+import logging
 import os
 import time
 import threading
@@ -9,6 +10,8 @@ from typing import Dict, Any, Optional, Callable
 from .models import RiverModelManager
 from .streamer import DataStreamer, record_to_features_target
 from .checkpoints import CheckpointManager
+
+logger = logging.getLogger(__name__)
 
 
 class OnlineLearner:
@@ -71,7 +74,7 @@ class OnlineLearner:
         if self._records_learned % 10 == 0:
             stats = self.models.get_all_stats()
             total_samples = sum(s.get('learning_count', 0) for s in stats.values())
-            print(f"[Learner] Learned {self._records_learned} records, total samples: {total_samples}")
+            logger.info(f"[Learner] Learned {self._records_learned} records, total samples: {total_samples}")
         
         # Trigger prediction callbacks for real-time updates
         for metric in targets:
@@ -81,7 +84,7 @@ class OnlineLearner:
                     try:
                         callback(metric, prediction)
                     except Exception as e:
-                        print(f"Prediction callback error: {e}")
+                        logger.error(f"Prediction callback error: {e}")
     
     def start(self) -> None:
         """Start the online learning service."""
@@ -89,11 +92,11 @@ class OnlineLearner:
             return
         
         # Try to load from checkpoint first
-        print("Attempting to load from checkpoint...")
+        logger.info("Attempting to load from checkpoint...")
         if self.checkpointer.load_checkpoint(self.models):
-            print("Checkpoint loaded successfully")
+            logger.info("Checkpoint loaded successfully")
         else:
-            print("No checkpoint found, starting fresh models")
+            logger.info("No checkpoint found, starting fresh models")
         
         self._running = True
         self._start_time = datetime.now(timezone.utc)
@@ -105,7 +108,7 @@ class OnlineLearner:
         self._thread = threading.Thread(target=self._checkpoint_loop, daemon=True)
         self._thread.start()
         
-        print(f"OnlineLearner started (poll={self.poll_interval}s, checkpoint={self.checkpoint_interval}s)")
+        logger.info(f"OnlineLearner started (poll={self.poll_interval}s, checkpoint={self.checkpoint_interval}s)")
     
     def stop(self) -> None:
         """Stop the online learning service."""
@@ -121,7 +124,7 @@ class OnlineLearner:
         # Final checkpoint
         self._save_checkpoint()
         
-        print("OnlineLearner stopped")
+        logger.info("OnlineLearner stopped")
     
     def _checkpoint_loop(self) -> None:
         """Background loop for periodic checkpointing."""

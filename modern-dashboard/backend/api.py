@@ -14,6 +14,8 @@ import httpx
 import os
 import re
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # ML Serving Service configuration
@@ -77,7 +79,7 @@ app.add_middleware(
 import os
 KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
 FUNNEL_TOPIC = 'funnel'
-print(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
+logger.info(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
 
 # In-memory cache for the latest funnel data
 latest_funnel_data = {
@@ -158,7 +160,7 @@ def kafka_consumer_loop():
                     if msg is None:
                         continue
                     if msg.error():
-                        print(f"Consumer error: {msg.error()}")
+                        logger.error(f"Consumer error: {msg.error()}")
                         continue
                     
                     # Deserialize message
@@ -193,11 +195,11 @@ def kafka_consumer_loop():
                     consumer.commit(msg)
                             
                 except Exception as e:
-                    print(f"Error processing Kafka message: {e}")
+                    logger.error(f"Error processing Kafka message: {e}")
                     time.sleep(1)
                     
         except Exception as e:
-            print(f"Kafka connection error: {e}")
+            logger.error(f"Kafka connection error: {e}")
             time.sleep(5)  # Wait before reconnecting
         finally:
             if consumer:
@@ -281,6 +283,7 @@ def get_funnel_data():
         sorted_data = sorted(minute_buckets.values(), key=lambda x: x.get('window_start') or '')
         return sorted_data
     except Exception as e:
+        logger.error(f"Error getting funnel data: {e}")
         return {
             "error": str(e),
             "data": [],
@@ -317,6 +320,7 @@ def get_stats():
             }
         }
     except Exception as e:
+        logger.error(f"Error getting stats: {e}")
         return {
             "latest": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
             "changes": {"viewers": 0, "carters": 0, "purchasers": 0, "view_to_cart_rate": 0, "cart_to_buy_rate": 0},
@@ -437,6 +441,7 @@ def stop_producer():
             parent.send_signal(signal.SIGTERM)
             return {"status": "stopping"}
         except Exception as e:
+            logger.error(f"Error stopping producer: {e}")
             return {"status": "error", "message": str(e)}
     return {"status": "not running"}
 
@@ -453,8 +458,8 @@ def get_producer_status():
                 # Read last 30 lines
                 logs = f.readlines()[-30:]
                 logs = [line.strip() for line in logs]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error reading producer log: {e}")
             
     return {
         "running": is_running,
@@ -469,6 +474,7 @@ def get_last_event_time():
         latest = latest_funnel_data
         return {"last_event_time": latest.get("window_end")}
     except Exception as e:
+        logger.error(f"Error getting last event time: {e}")
         return {"error": str(e), "last_event_time": None}
 
 

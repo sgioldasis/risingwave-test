@@ -5,9 +5,14 @@ Usage: python scripts/consume_funnel_from_kafka.py
 """
 
 import json
+import logging
 import sys
 
 from confluent_kafka import Consumer, KafkaException
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def consume_funnel():
@@ -22,9 +27,9 @@ def consume_funnel():
     consumer = Consumer(conf)
     consumer.subscribe(['funnel'])
 
-    print("Consuming from 'funnel' topic...")
-    print("Press Ctrl+C to stop")
-    print("-" * 60)
+    logger.info("Consuming from 'funnel' topic...")
+    logger.info("Press Ctrl+C to stop")
+    logger.info("-" * 60)
 
     try:
         while True:
@@ -32,22 +37,22 @@ def consume_funnel():
             if msg is None:
                 continue
             if msg.error():
-                print(f"Consumer error: {msg.error()}")
+                logger.error(f"Consumer error: {msg.error()}")
                 continue
 
             # Deserialize the message value
             data = json.loads(msg.value().decode('utf-8'))
 
-            print(f"\nReceived at {msg.timestamp()}:")
-            print(f"  Window: {data.get('window_start')} → {data.get('window_end')}")
-            print(f"  Viewers: {data.get('viewers')}")
-            print(f"  Carters: {data.get('carters')}")
-            print(f"  Purchasers: {data.get('purchasers')}")
-            print(f"  View→Cart Rate: {data.get('view_to_cart_rate')}")
-            print(f"  Cart→Buy Rate: {data.get('cart_to_buy_rate')}")
-            print("-" * 60)
+            logger.info(f"\nReceived at {msg.timestamp()}:")
+            logger.info(f"  Window: {data.get('window_start')} → {data.get('window_end')}")
+            logger.info(f"  Viewers: {data.get('viewers')}")
+            logger.info(f"  Carters: {data.get('carters')}")
+            logger.info(f"  Purchasers: {data.get('purchasers')}")
+            logger.info(f"  View→Cart Rate: {data.get('view_to_cart_rate')}")
+            logger.info(f"  Cart→Buy Rate: {data.get('cart_to_buy_rate')}")
+            logger.info("-" * 60)
     except KeyboardInterrupt:
-        print("\nStopping consumer...")
+        logger.info("\nStopping consumer...")
     finally:
         consumer.close()
 

@@ -5,10 +5,15 @@ This provides full SQL support including UPDATE/DELETE.
 """
 
 import csv
+import logging
 import os
 
 import trino
 from trino.dbapi import connect
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def get_trino_connection():
@@ -38,7 +43,7 @@ def create_table(conn):
     # Create schema if not exists
     cur.execute("CREATE SCHEMA IF NOT EXISTS public")
     conn.commit()
-    print("✓ Schema public created/verified")
+    logger.info("✓ Schema public created/verified")
     # Create table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS iceberg_countries (
@@ -47,7 +52,7 @@ def create_table(conn):
         )
     """)
     conn.commit()
-    print("✓ Table iceberg_countries created/verified")
+    logger.info("✓ Table iceberg_countries created/verified")
 
 
 def load_data(conn, countries: list[tuple]):
@@ -65,7 +70,7 @@ def load_data(conn, countries: list[tuple]):
         )
     
     conn.commit()
-    print(f"✓ Loaded {len(countries)} countries into Iceberg")
+    logger.info(f"✓ Loaded {len(countries)} countries into Iceberg")
 
 
 def verify_data(conn):
@@ -74,34 +79,34 @@ def verify_data(conn):
     cur.execute("SELECT country, country_name FROM iceberg_countries ORDER BY country")
     rows = cur.fetchall()
     
-    print(f"\nLoaded {len(rows)} countries:")
+    logger.info(f"\nLoaded {len(rows)} countries:")
     for row in rows:
-        print(f"  {row[0]} - {row[1]}")
+        logger.info(f"  {row[0]} - {row[1]}")
     
     return len(rows)
 
 
 def main():
-    print("Loading countries to Iceberg via Trino...")
-    print("-" * 50)
+    logger.info("Loading countries to Iceberg via Trino...")
+    logger.info("-" * 50)
     
     # Load data from CSV
     csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'countries.csv')
-    print(f"Loading countries from {csv_path}...")
+    logger.info(f"Loading countries from {csv_path}...")
     countries = load_csv_data(csv_path)
-    print(f"  Loaded {len(countries)} countries from CSV")
+    logger.info(f"  Loaded {len(countries)} countries from CSV")
     
     # Connect to Trino
-    print("\nConnecting to Trino...")
+    logger.info("\nConnecting to Trino...")
     conn = get_trino_connection()
-    print("  Connected to Trino at localhost:9080")
+    logger.info("  Connected to Trino at localhost:9080")
     
     # Create table
-    print("\nCreating table...")
+    logger.info("\nCreating table...")
     create_table(conn)
     
     # Load data
-    print("\nLoading data...")
+    logger.info("\nLoading data...")
     load_data(conn, countries)
     
     # Verify
@@ -109,12 +114,12 @@ def main():
     
     conn.close()
     
-    print("\n" + "=" * 50)
-    print(f"✓ Successfully loaded {count} countries to Iceberg!")
-    print("\nYou can now query the data:")
-    print("  docker compose exec trino trino --catalog datalake --schema public --execute 'SELECT * FROM iceberg_countries'")
-    print("\nOr update data (works with Trino, not DuckDB):")
-    print("  docker compose exec trino trino --catalog datalake --schema public --execute \"UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'\"")
+    logger.info("\n" + "=" * 50)
+    logger.info(f"✓ Successfully loaded {count} countries to Iceberg!")
+    logger.info("\nYou can now query the data:")
+    logger.info("  docker compose exec trino trino --catalog datalake --schema public --execute 'SELECT * FROM iceberg_countries'")
+    logger.info("\nOr update data (works with Trino, not DuckDB):")
+    logger.info("  docker compose exec trino trino --catalog datalake --schema public --execute \"UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'\"")
 
 
 if __name__ == "__main__":

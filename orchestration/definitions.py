@@ -1,4 +1,5 @@
 """Dagster definitions for the realtime funnel dbt project."""
+import logging
 import os
 import subprocess
 import json
@@ -19,6 +20,10 @@ from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTransl
 
 from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Note: RisingWave native Iceberg source is working via Trino-written tables
 # See ICEBERG_RISINGWAVE_INTEGRATION.md for details
@@ -77,7 +82,7 @@ def _ensure_valid_manifest():
     if needs_write:
         with open(manifest_path, 'w') as f:
             json.dump(manifest, f)
-        print(f"Validated/fixed manifest at {manifest_path}")
+        logger.info(f"Validated/fixed manifest at {manifest_path}")
 
 
 # Run validation immediately on module load
@@ -160,12 +165,12 @@ if _manifest_path.exists():
         
         if _has_child_map and _has_nodes and _has_real_models:
             _needs_compile = False
-            print(f"Valid manifest.json found with {len(_nodes)} models, skipping compile")
+            logger.info(f"Valid manifest.json found with {len(_nodes)} models, skipping compile")
     except Exception as e:
-        print(f"Error reading existing manifest: {e}, will recreate")
+        logger.warning(f"Error reading existing manifest: {e}, will recreate")
 
 if _needs_compile:
-    print("manifest.json not found or invalid, running dbt compile...")
+    logger.info("manifest.json not found or invalid, running dbt compile...")
     (_manifest_path.parent).mkdir(parents=True, exist_ok=True)
     
     _dbt_env = os.environ.copy()
@@ -184,9 +189,9 @@ if _needs_compile:
         env=_dbt_env
     )
     if result.returncode != 0:
-        print(f"Warning: dbt compile failed: {result.stderr}")
+        logger.warning(f"Warning: dbt compile failed: {result.stderr}")
     else:
-        print("dbt compile completed successfully")
+        logger.info("dbt compile completed successfully")
 
 # Initialize DbtProject with explicit manifest path
 dbt_project = DbtProject(
@@ -194,19 +199,19 @@ dbt_project = DbtProject(
 )
 
 # Verify manifest was loaded correctly
-print(f"DbtProject initialized with manifest: {dbt_project.manifest_path}")
+logger.info(f"DbtProject initialized with manifest: {dbt_project.manifest_path}")
 if dbt_project.manifest_path.exists():
     try:
         with open(dbt_project.manifest_path) as f:
             manifest_check = json.load(f)
         nodes_count = len(manifest_check.get("nodes", {}))
-        print(f"Manifest loaded successfully with {nodes_count} nodes")
+        logger.info(f"Manifest loaded successfully with {nodes_count} nodes")
         if nodes_count == 0:
-            print("WARNING: Manifest has 0 nodes, assets will not appear in Dagster UI")
+            logger.warning("WARNING: Manifest has 0 nodes, assets will not appear in Dagster UI")
     except Exception as e:
-        print(f"ERROR reading manifest: {e}")
+        logger.error(f"ERROR reading manifest: {e}")
 else:
-    print(f"ERROR: Manifest not found at {dbt_project.manifest_path}")
+    logger.error(f"ERROR: Manifest not found at {dbt_project.manifest_path}")
 
 # Create translator instance
 custom_translator = CustomDagsterDbtTranslator()

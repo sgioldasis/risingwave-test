@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Clear ML online learning checkpoints from MinIO."""
 
+import logging
 import os
 import sys
 
@@ -9,6 +10,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def clear_checkpoints():
@@ -28,13 +33,13 @@ def clear_checkpoints():
         response = s3_client.list_objects_v2(Bucket=bucket_name)
         
         if 'Contents' not in response:
-            print("No checkpoints found.")
+            logger.info("No checkpoints found.")
             return
         
         objects = response['Contents']
         
         if not objects:
-            print("No checkpoints found.")
+            logger.info("No checkpoints found.")
             return
         
         # Delete all objects
@@ -44,21 +49,21 @@ def clear_checkpoints():
             Delete={'Objects': delete_keys}
         )
         
-        print(f"Cleared {len(objects)} checkpoint objects from MinIO.")
+        logger.info(f"Cleared {len(objects)} checkpoint objects from MinIO.")
         
         # List what was deleted
         for obj in objects:
-            print(f"  - Deleted: {obj['Key']}")
+            logger.info(f"  - Deleted: {obj['Key']}")
             
     except ClientError as e:
         error_code = e.response['Error']['Code']
         if error_code == 'NoSuchBucket':
-            print("Checkpoint bucket doesn't exist yet.")
+            logger.info("Checkpoint bucket doesn't exist yet.")
         else:
-            print(f"Error clearing checkpoints: {e}")
+            logger.error(f"Error clearing checkpoints: {e}")
 
 
 if __name__ == "__main__":
-    print("Clearing ML online learning checkpoints...")
+    logger.info("Clearing ML online learning checkpoints...")
     clear_checkpoints()
-    print("\nDone! Restart ML Serving to start with fresh models.")
+    logger.info("\nDone! Restart ML Serving to start with fresh models.")

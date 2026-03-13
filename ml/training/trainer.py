@@ -1,5 +1,6 @@
 """ML model training logic."""
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -11,6 +12,8 @@ from sklearn.metrics import mean_absolute_error, r2_score
 
 from .data_fetcher import DataFetcher
 from .model_registry import ModelRegistry, ModelVersion
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -75,7 +78,7 @@ class ModelTrainer:
         # Check if we should skip due to no new data
         if skip_if_no_new_data and last_training_timestamp:
             if not self.data_fetcher.has_new_data(last_training_timestamp):
-                print("No new data since last training, skipping...")
+                logger.info("No new data since last training, skipping...")
                 return TrainingResults(
                     models={},
                     trained_at=datetime.now(timezone.utc).isoformat(),
@@ -84,11 +87,11 @@ class ModelTrainer:
                 )
         
         # Fetch training data
-        print(f"Fetching training data (last {minutes_back} minutes)...")
+        logger.info(f"Fetching training data (last {minutes_back} minutes)...")
         data = self.data_fetcher.fetch_training_data(minutes_back=minutes_back)
         
         if len(data) < 2:
-            print(f"Insufficient data for training: {len(data)} records (need at least 2)")
+            logger.warning(f"Insufficient data for training: {len(data)} records (need at least 2)")
             return TrainingResults(
                 models={},
                 trained_at=datetime.now(timezone.utc).isoformat(),
@@ -96,7 +99,7 @@ class ModelTrainer:
                 successful_models=0
             )
         
-        print(f"Training with {len(data)} records")
+        logger.info(f"Training with {len(data)} records")
         
         # Train a model for each metric
         results = {}
@@ -109,7 +112,7 @@ class ModelTrainer:
                 trained_count += 1
         
         trained_at = datetime.now(timezone.utc).isoformat()
-        print(f"Successfully trained {trained_count}/{len(self.METRICS)} models")
+        logger.info(f"Successfully trained {trained_count}/{len(self.METRICS)} models")
         
         return TrainingResults(
             models=results,
@@ -135,13 +138,13 @@ class ModelTrainer:
         """
         try:
             # Use Moving Average for all predictions - simpler and more responsive to TPS changes
-            print(f"Training {metric} with Moving Average (data-based)")
+            logger.info(f"Training {metric} with Moving Average (data-based)")
             return self._train_moving_average(data, metric)
             
         except Exception as e:
-            print(f"Error training {metric}: {e}")
+            logger.error(f"Error training {metric}: {e}")
             import traceback
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
     
     def _train_moving_average(
@@ -164,7 +167,7 @@ class ModelTrainer:
             # Calculate the moving average from the data
             values = [float(r[metric]) for r in data if r.get(metric) is not None]
             if not values:
-                print(f"No values for {metric} moving average")
+                logger.warning(f"No values for {metric} moving average")
                 return None
             
             moving_avg = sum(values) / len(values)
@@ -181,7 +184,7 @@ class ModelTrainer:
                 training_samples=len(values)
             )
             
-            print(f"Created moving average for {metric}: {moving_avg:.2f} (n={len(values)}), version={version.version}")
+            logger.info(f"Created moving average for {metric}: {moving_avg:.2f} (n={len(values)}), version={version.version}")
             
             return TrainingResult(
                 metric=metric,
@@ -193,7 +196,7 @@ class ModelTrainer:
             )
             
         except Exception as e:
-            print(f"Error creating moving average for {metric}: {e}")
+            logger.error(f"Error creating moving average for {metric}: {e}")
             return None
     
     def _prepare_features(

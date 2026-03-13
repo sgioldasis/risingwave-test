@@ -1,11 +1,14 @@
 """Data fetching from RisingWave for ML training."""
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+logger = logging.getLogger(__name__)
 
 
 class DataFetcher:
@@ -107,17 +110,17 @@ class DataFetcher:
             cursor.close()
             conn.close()
             
-            print(f"Fetched {len(data)} training records from RisingWave (last {minutes_back} minutes)")
+            logger.info(f"Fetched {len(data)} training records from RisingWave (last {minutes_back} minutes)")
             
             if len(data) < min_samples:
-                print(f"Warning: Only {len(data)} samples found (need at least {min_samples})")
+                logger.warning(f"Only {len(data)} samples found (need at least {min_samples})")
             
             return data
             
         except Exception as e:
-            print(f"Failed to fetch training data: {e}")
+            logger.error(f"Failed to fetch training data: {e}")
             import traceback
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return []
     
     def get_latest_data_timestamp(self) -> Optional[str]:
@@ -141,7 +144,7 @@ class DataFetcher:
             return None
             
         except Exception as e:
-            print(f"Error getting latest timestamp: {e}")
+            logger.error(f"Error getting latest timestamp: {e}")
             return None
     
     def has_new_data(self, since_timestamp: Optional[str]) -> bool:
