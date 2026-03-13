@@ -132,7 +132,7 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             new_spec = spec.replace_attributes(group_name="risingwave")
         elif "iceberg" in tags:
             # True Iceberg tables (not RisingWave objects targeting Iceberg)
-            new_spec = spec.replace_attributes(group_name="iceberg")
+            new_spec = spec.replace_attributes(group_name="datalake")
         else:
             # Default to risingwave group
             new_spec = spec.replace_attributes(group_name="risingwave")

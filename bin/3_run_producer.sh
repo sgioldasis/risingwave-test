@@ -7,6 +7,5 @@ TPS=${1:-1}
 echo "=== Starting Producer with $TPS TPS ==="
 echo ""
 
-# Run the producer and pipe output to producer.log
-# Use -u for unbuffered output to ensure tee catches updates immediately
-PYTHONUNBUFFERED=1 uv run python -u scripts/producer.py --tps "$TPS" 2>&1 | tee producer.log
+# Run the producer directly (script_runner handles output capture)
+PYTHONUNBUFFERED=1 uv run python scripts/producer.py --tps "$TPS"

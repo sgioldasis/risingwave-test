@@ -18,7 +18,7 @@ def load_csv_data(filepath: str) -> list[tuple]:
 
 @asset(
     name="iceberg_countries",
-    group_name="iceberg",
+    group_name="datalake",
     description="Create and populate Iceberg countries table using Trino",
 )
 def iceberg_countries(context: AssetExecutionContext):

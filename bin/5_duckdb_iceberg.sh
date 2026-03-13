@@ -2,7 +2,7 @@
 
 # Query funnel analytics from Iceberg tables via DuckDB
 #
-# This script runs query_raw_iceberg.py to fetch and display
+# This script runs duckdb_query_iceberg.py to fetch and display
 # funnel analytics (viewers, carters, purchasers) from Iceberg.
 #
 # Usage:
@@ -24,4 +24,4 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 # Run the query script with any provided arguments
-python3 scripts/query_raw_iceberg.py "$@"
+python3 scripts/duckdb_query_iceberg.py "$@"

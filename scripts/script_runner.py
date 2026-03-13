@@ -72,9 +72,6 @@ BACKGROUND_SERVICES_CONFIG = [
     {"script": "5_marimo_risingwave.sh", "port": 2719},
 ]
 
-PRODUCER_LOG = PROJECT_ROOT / "producer.log"
-
-
 # HTML Template
 HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
@@ -879,7 +876,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             let currentBg = null;
             let bold = false;
             
-            const parts = text.split(/(\x1B\[[0-9;]*m)/g);
+            const parts = text.split(/(\x1B\\[[0-9;]*m)/g);
             
             for (const part of parts) {
                 if (part.startsWith('\x1B[') && part.endsWith('m')) {
@@ -925,7 +922,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
 
         function linkify(text) {
-            const urlRegex = /(https?:\/\/[^\s$.?#].[^\s]*)/gi;
+            const urlRegex = /(https?:\\/\\/[^\\s$.?#].[^\\s]*)/gi;
             return text.replace(urlRegex, (url) => {
                 let displayUrl = url;
                 // Basic cleanup for trailing punctuation
@@ -1344,25 +1341,46 @@ async def run_script_in_background(script_file, ws, params=''):
         
         if is_running:
             await append_output(script_file, "🛑 Stopping running service for restart...", 'warning')
-            # For producer, kill the entire process tree including uv, bash, and python
+            # Handle different service types
             if script_file == "3_run_producer.sh":
                 # kill_process_by_pattern now handles all related patterns internally
                 killed = await kill_process_by_pattern("scripts/producer.py")
                 await append_output(script_file, f"   Killed {killed} producer process(es)", 'info')
+            elif "port" in bg_service:
+                # For port-based services (dashboard, ML serving, etc.)
+                killed = await kill_process_on_port(bg_service["port"])
+                if killed:
+                    await append_output(script_file, f"   Stopped service on port {bg_service['port']}", 'info')
+            elif "pattern" in bg_service:
+                # For pattern-based services
+                killed = await kill_process_by_pattern(bg_service["pattern"])
+                await append_output(script_file, f"   Killed {killed} process(es)", 'info')
+            
             # Remove from tracking
             if script_file in running_background_services:
                 running_background_services.remove(script_file)
             # Mark as manually stopped to prevent immediate re-detection
             manually_stopped_services.add(script_file)
-            await asyncio.sleep(1.0)  # Longer wait for producer cleanup
-    
-    # If starting ML serving, kill any process on port 8001 first
-    if script_file == "4_run_ml_serving.sh":
-        await append_output(script_file, "🔍 Checking for existing services on port 8001...", 'info')
-        killed = await kill_process_on_port(8001)
-        if killed:
-            await append_output(script_file, "🛑 Stopped existing service on port 8001", 'warning')
-        await asyncio.sleep(0.5)
+            
+            # Wait for process to actually terminate with timeout
+            wait_start = asyncio.get_event_loop().time()
+            timeout = 10.0  # 10 second timeout
+            while True:
+                # Check if still running (port or pattern based)
+                if "port" in bg_service:
+                    still_running = await check_port_open(bg_service["port"])
+                elif "pattern" in bg_service:
+                    still_running = check_process_running(bg_service["pattern"])
+                else:
+                    break  # No way to check, assume stopped
+                    
+                if not still_running:
+                    await append_output(script_file, "✅ Service stopped successfully", 'info')
+                    break
+                if asyncio.get_event_loop().time() - wait_start > timeout:
+                    await append_output(script_file, "⚠️ Timeout waiting for service to stop, proceeding anyway", 'warning')
+                    break
+                await asyncio.sleep(0.5)
     
     # Clear previous output for this script
     with output_lock:
@@ -1734,7 +1752,7 @@ async def kill_process_by_pattern(pattern):
         
         # Special handling for producer - also look for uv, bash with 3_run_producer.sh
         if "producer" in pattern.lower():
-            extra_patterns = ["3_run_producer.sh", "uv run", "tee producer.log"]
+            extra_patterns = ["3_run_producer.sh", "uv run"]
             for extra_pattern in extra_patterns:
                 for proc in psutil.process_iter(['cmdline', 'pid']):
                     try:
@@ -1883,24 +1901,13 @@ async def check_external_services():
                                 "script": script_name,
                                 "status": "running"
                             })
-                            
-                            # Start tailing if it's the producer and we didn't start it
-                            if script_name == "3_run_producer.sh" and script_name not in running_processes:
-                                if script_name in tailing_tasks:
-                                    tailing_tasks[script_name].cancel()
-                                tailing_tasks[script_name] = asyncio.create_task(tail_log_file(script_name, PRODUCER_LOG))
                 else:
                     # Service is NOT running - reset consecutive check counter
                     consecutive_checks[script_name] = 0
                     if script_name in running_background_services:
                         print(f"Service {script_name} has STOPPED")
                         running_background_services.remove(script_name)
-                        
-                        # Cancel tailing task if exists
-                        if script_name in tailing_tasks:
-                            tailing_tasks[script_name].cancel()
-                            del tailing_tasks[script_name]
-                        
+
                         # Explicitly notify clients it has stopped
                         # AND set a cooldown even for spontaneous stops to prevent flappy re-discovery
                         last_stop_time[script_name] = time.time()

@@ -115,4 +115,4 @@ Watch for these patterns in logs:
 ## Related Files
 
 - `scripts/user_activity_flow.py` - Main notebook with fixes
-- `scripts/query_raw_iceberg.py` - DuckDB alternative
+- `scripts/duckdb_query_iceberg.py` - DuckDB alternative

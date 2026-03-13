@@ -1,5 +1,10 @@
+#!/usr/bin/env python3
+"""
+Kafka Event Producer for RisingWave Demo
+
+Generates synthetic events (page views, cart events, purchases) and sends them to Kafka.
+"""
 import json
-import logging
 import time
 import random
 import argparse
@@ -7,10 +12,6 @@ import sys
 from datetime import datetime, timezone
 
 from confluent_kafka import Producer, KafkaException
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 TOPICS = ['page_views', 'cart_events', 'purchases']
 
@@ -22,7 +23,7 @@ def get_timestamp():
 def delivery_report(err, msg):
     """Callback for delivery reports."""
     if err:
-        logger.error(f'Delivery failed: {err}')
+        print(f'Delivery failed: {err}')
 
 
 def main():
@@ -32,7 +33,7 @@ def main():
 
     bootstrap_servers = 'localhost:19092'
 
-    logger.info("Starting producer pre-flight checks...")
+    print("Starting producer pre-flight checks...")
 
     # 1. Connect and Check Kafka Connectivity
     try:
@@ -43,11 +44,11 @@ def main():
         }
         producer = Producer(conf)
     except KafkaException as e:
-        logger.error(f"❌ Error: Could not connect to Kafka at {bootstrap_servers}.")
-        logger.error(f"👉 Please make sure services are started with './bin/1_up.sh'")
+        print(f"❌ Error: Could not connect to Kafka at {bootstrap_servers}.")
+        print(f"👉 Please make sure services are started with './bin/1_up.sh'")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"❌ Error: Unexpected error connecting to Kafka: {str(e)}")
+        print(f"❌ Error: Unexpected error connecting to Kafka: {str(e)}")
         sys.exit(1)
 
     # 2. Check Topic Availability
@@ -58,15 +59,15 @@ def main():
         
         for topic in TOPICS:
             if topic not in available_topics:
-                logger.error(f"❌ Error: Required topic '{topic}' does not exist.")
-                logger.error(f"👉 Please make sure initialization scripts have run (e.g., './bin/3_run_dbt.sh')")
+                print(f"❌ Error: Required topic '{topic}' does not exist.")
+                print(f"👉 Please make sure initialization scripts have run (e.g., './bin/3_run_dbt.sh')")
                 sys.exit(1)
     except Exception as e:
-        logger.error(f"❌ Error checking topics: {e}")
+        print(f"❌ Error checking topics: {e}")
         sys.exit(1)
 
-    logger.info(f"✅ Pre-flight checks passed. Kafka is reachable and all topics exist.")
-    logger.info(f"Starting data generation at {args.tps} TPS... Press Ctrl+C to stop.")
+    print(f"✅ Pre-flight checks passed. Kafka is reachable and all topics exist.")
+    print(f"Starting data generation at {args.tps} TPS... Press Ctrl+C to stop.")
 
     interval = 1.0 / args.tps if args.tps > 0 else 0
     
@@ -86,7 +87,7 @@ def main():
             # Check if it's time to report (every second)
             if current_loop_time - last_report_time >= 1.0:
                 total_count = views_count + carts_count + purchases_count
-                logger.info(f"[{get_timestamp()}] Views: {views_count}, Carts: {carts_count}, Purchases: {purchases_count}, Total: {total_count}")
+                print(f"[{get_timestamp()}] Views: {views_count}, Carts: {carts_count}, Purchases: {purchases_count}, Total: {total_count}")
                 # Reset counters
                 views_count = 0
                 carts_count = 0
@@ -157,7 +158,7 @@ def main():
                 time.sleep(0.1)
 
     except KeyboardInterrupt:
-        logger.info("Stopping data generation.")
+        print("Stopping data generation.")
         producer.flush()
 
 

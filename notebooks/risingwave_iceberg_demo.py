@@ -36,7 +36,7 @@ def _(iceberg_engine, mo, pd, text):
     # EDIT THIS QUERY to update Iceberg data
     # Then run this cell (Shift+Enter or click the run button)
 
-    country_name = 'Greece'
+    country_name = 'Hellas'
 
     # Execute UPDATE using SQLAlchemy connection (cleaner - uses same engine!)
     with iceberg_engine.connect() as conn:

@@ -1,14 +1,54 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-    BarChart, Bar, Cell, ReferenceLine, Legend
+    Legend
 } from 'recharts';
 import {
-    Brain, TrendingUp, TrendingDown, Activity, Clock,
-    Target, BarChart3, Zap, AlertCircle, CheckCircle2,
-    Calculator, Sparkles
+    Brain, Users, ShoppingCart, CreditCard,
+    Clock, AlertCircle, CheckCircle2, Calculator, Sparkles
 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+
+// KPICard Component (same style as Dashboard)
+const KPICard = ({ label, actual, predicted, icon, gradient }) => (
+    <motion.div
+        className="glass-card"
+        style={{
+            flex: 1,
+            minWidth: 0,
+            padding: '0.75rem 1rem'
+        }}
+        whileHover={{
+            y: -4,
+            boxShadow: '0 12px 30px rgba(0,0,0,0.5), 0 0 15px rgba(99, 110, 250, 0.2)'
+        }}
+        transition={{ type: 'spring', stiffness: 300 }}
+    >
+        <div className="flex justify-between items-start mb-1">
+            <div className={`p-1.5 rounded-lg bg-white/5`}>
+                {React.cloneElement(icon, { size: 16 })}
+            </div>
+        </div>
+        <div className="kpi-label">{label}</div>
+        <div className="kpi-value" style={{ fontSize: '1.4rem' }}>
+            <AnimatePresence mode="wait">
+                <motion.span
+                    key={actual}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                >
+                    {typeof actual === 'number' ? Math.round(actual).toLocaleString() : actual}
+                </motion.span>
+            </AnimatePresence>
+        </div>
+        {predicted !== undefined && predicted !== null && (
+            <div style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.7)', marginTop: '0.25rem', fontWeight: 500 }}>
+                Predicted: {typeof predicted === 'number' ? Math.round(predicted).toLocaleString() : predicted}
+            </div>
+        )}
+    </motion.div>
+);
 
 const PredictionsTab = ({ funnelData }) => {
     const [predictions, setPredictions] = useState(null);
@@ -275,11 +315,6 @@ const PredictionsTab = ({ funnelData }) => {
     };
 
 
-    const calculateChange = (predicted, actual) => {
-        if (!actual || actual === 0) return 0;
-        return ((predicted - actual) / actual) * 100;
-    };
-
     if (loading) {
         return (
             <div className="flex items-center justify-center h-[400px]">
@@ -307,16 +342,18 @@ const PredictionsTab = ({ funnelData }) => {
         );
     }
 
-    const latest = predictions?.last_actual || {};
-    const next = predictions || {};
+    // Use funnelData for actual values (refreshes continually like Dashboard)
+    // funnelData is [{ window_start: '...', viewers: X, carters: Y, purchasers: Z }, ...]
+    const latestActual = funnelData?.[funnelData?.length - 1] || {};
+    const latest = {
+        viewers: latestActual?.viewers || 0,
+        carters: latestActual?.carters || 0,
+        purchasers: latestActual?.purchasers || 0
+    };
     
-    // Use time-adjusted predictions for comparison if available
-    const adjusted = timeAdjustedPredictions || next;
-    
-    // Calculate predicted changes (using time-adjusted for fair comparison)
-    const viewersChange = calculateChange(adjusted.viewers, latest.viewers);
-    const cartersChange = calculateChange(adjusted.carters, latest.carters);
-    const purchasersChange = calculateChange(adjusted.purchasers, latest.purchasers);
+    // Use effective predictions with fallback to previous (same logic as chart)
+    const hasValidPreds = predictions && !predictions.error && predictions.timestamp;
+    const effectivePreds = hasValidPreds ? predictions : prevPredictionsRef.current;
 
     return (
         <motion.div
@@ -325,19 +362,11 @@ const PredictionsTab = ({ funnelData }) => {
             className="space-y-6"
         >
             {/* Header with Model Status */}
-            <div className="flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                    <Brain size={28} className="text-purple-400" />
-                    <div>
+            <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-col">
+                    <div className="flex items-center gap-2">
+                        <Brain size={24} className="text-purple-400 relative -top-[1px]" />
                         <h2 className="text-xl font-semibold">ML Predictions</h2>
-                        <div className="flex items-center gap-4 mt-1">
-                            {modelStatus?.models && (
-                                <div className="flex items-center gap-2 text-sm text-gray-400">
-                                    <CheckCircle2 size={14} className={modelStatus.total_models > 0 ? "text-green-400" : "text-gray-400"} />
-                                    <span>{modelStatus.total_models || 0} of {Object.keys(modelStatus.models).length} models trained</span>
-                                </div>
-                            )}
-                        </div>
                     </div>
                 </div>
                 <div className="flex items-center gap-4">
@@ -470,195 +499,29 @@ const PredictionsTab = ({ funnelData }) => {
                 </div>
             </div>
 
-            {/* Minute Progress Bar */}
-            {minuteProgress && (
-                <div className="glass-card p-3">
-                    <div className="flex justify-between items-center text-sm mb-2">
-                        <span className="text-gray-400">Current Minute Progress</span>
-                        <span className="text-purple-400 font-mono">
-                            {minuteProgress.progress_percent}% ({minuteProgress.elapsed_seconds}s / 60s)
-                        </span>
-                    </div>
-                    <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <motion.div
-                            className="h-full bg-gradient-to-r from-purple-500 to-blue-500"
-                            initial={{ width: 0 }}
-                            animate={{ width: `${minuteProgress.progress_percent}%` }}
-                            transition={{ duration: 0.5 }}
-                        />
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                        Predictions are prorated based on elapsed time for fair comparison
-                    </p>
-                </div>
-            )}
-
-            {/* Prediction Cards */}
-            <div className="grid grid-cols-3 gap-4">
-                <PredictionCard
-                    label="Predicted Viewers"
-                    value={adjusted.viewers}
-                    fullValue={next.viewers}
-                    change={viewersChange}
+            {/* Prediction Cards - KPICard Style */}
+            <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
+                <KPICard
+                    label="Viewers"
                     actual={latest.viewers}
-                    color="#636efa"
-                    icon={<Activity size={20} />}
-                    isTimeAdjusted={!!timeAdjustedPredictions}
+                    predicted={effectivePreds?.viewers}
+                    icon={<Users />}
+                    gradient="gradient-viewers"
                 />
-                <PredictionCard
-                    label="Predicted Carters"
-                    value={adjusted.carters}
-                    fullValue={next.carters}
-                    change={cartersChange}
+                <KPICard
+                    label="Carters"
                     actual={latest.carters}
-                    color="#00cc96"
-                    icon={<Target size={20} />}
-                    isTimeAdjusted={!!timeAdjustedPredictions}
+                    predicted={effectivePreds?.carters}
+                    icon={<ShoppingCart />}
+                    gradient="gradient-carters"
                 />
-                <PredictionCard
-                    label="Predicted Purchasers"
-                    value={adjusted.purchasers}
-                    fullValue={next.purchasers}
-                    change={purchasersChange}
+                <KPICard
+                    label="Purchasers"
                     actual={latest.purchasers}
-                    color="#ff6692"
-                    icon={<Zap size={20} />}
-                    isTimeAdjusted={!!timeAdjustedPredictions}
+                    predicted={effectivePreds?.purchasers}
+                    icon={<CreditCard />}
+                    gradient="gradient-purchasers"
                 />
-            </div>
-
-            {/* Secondary Charts Row */}
-            <div className="grid grid-cols-2 gap-6">
-                {/* Conversion Rate Predictions */}
-                <div className="glass-card">
-                    <h3 className="text-lg font-semibold mb-4">Predicted Conversion Rates</h3>
-                    <div className="h-[250px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={[
-                                {
-                                    name: 'View → Cart',
-                                    actual: (latest.view_to_cart_rate || 0) * 100,
-                                    predicted: (next.view_to_cart_rate || 0) * 100
-                                },
-                                {
-                                    name: 'Cart → Buy',
-                                    actual: (latest.cart_to_buy_rate || 0) * 100,
-                                    predicted: (next.cart_to_buy_rate || 0) * 100
-                                }
-                            ]}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                                <XAxis
-                                    dataKey="name"
-                                    tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }}
-                                    axisLine={false}
-                                    tickLine={false}
-                                />
-                                <YAxis
-                                    tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 10 }}
-                                    tickFormatter={(v) => `${v.toFixed(0)}%`}
-                                    axisLine={false}
-                                    tickLine={false}
-                                />
-                                <Tooltip
-                                    contentStyle={{
-                                        background: '#1a1d29',
-                                        border: '1px solid rgba(255,255,255,0.1)',
-                                        borderRadius: '12px'
-                                    }}
-                                    formatter={(v) => [`${v.toFixed(2)}%`]}
-                                />
-                                <Bar dataKey="actual" name="Actual" fill="#636efa" radius={[4, 4, 0, 0]} />
-                                <Bar dataKey="predicted" name="Predicted" fill="#a855f7" radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                    <div className="mt-4 text-center text-sm text-gray-400">
-                        Comparison of actual vs predicted conversion rates
-                    </div>
-                </div>
-
-                {/* Model Status */}
-                <div className="glass-card">
-                    <h3 className="text-lg font-semibold mb-4">Model Status</h3>
-                    <div className="space-y-3">
-                        {modelStatus?.models && Object.entries(modelStatus.models).map(([name, info]) => (
-                            <div
-                                key={name}
-                                className="flex items-center justify-between p-3 bg-white/5 rounded-lg"
-                            >
-                                <div className="flex items-center gap-2">
-                                    <div className={`w-2 h-2 rounded-full ${
-                                        info.trained ? 'bg-green-400' :
-                                        info.scaler_trained ? 'bg-yellow-400 animate-pulse' :
-                                        'bg-red-400'
-                                    }`} />
-                                    <span className="text-sm font-medium">
-                                        {name}
-                                    </span>
-                                </div>
-                                <span className={`text-xs px-2 py-1 rounded ${
-                                    info.trained ? 'bg-green-400/20 text-green-400' :
-                                    info.scaler_trained ? 'bg-yellow-400/20 text-yellow-400' :
-                                    'bg-red-400/20 text-red-400'
-                                }`}>
-                                    {info.trained ? 'trained' : info.scaler_trained ? 'training' : 'untrained'}
-                                </span>
-                            </div>
-                        ))}
-                    </div>
-                    <div className="mt-4 pt-4 border-t border-white/10">
-                        <div className="flex items-center gap-2 text-sm text-gray-400">
-                            <BarChart3 size={16} />
-                            <span>Engine: scikit-learn</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-gray-400 mt-1">
-                            <Target size={16} />
-                            <span>Model: RandomForest/LinearRegression</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </motion.div>
-    );
-};
-
-// Prediction Card Component
-const PredictionCard = ({ label, value, fullValue, change, actual, color, icon, isTimeAdjusted }) => {
-    const isPositive = change >= 0;
-    const changeColor = isPositive ? 'text-green-400' : 'text-red-400';
-    const TrendIcon = isPositive ? TrendingUp : TrendingDown;
-
-    return (
-        <motion.div
-            whileHover={{ scale: 1.02 }}
-            className="glass-card p-5 relative overflow-hidden"
-        >
-            <div
-                className="absolute top-0 left-0 w-1 h-full"
-                style={{ background: color }}
-            />
-            <div className="flex justify-between items-start mb-3">
-                <span className="text-sm text-gray-400">{label}</span>
-                <div className="p-2 rounded-lg" style={{ background: `${color}20` }}>
-                    {React.cloneElement(icon, { style: { color } })}
-                </div>
-            </div>
-            <div className="text-2xl font-bold mb-1">
-                {value !== null && value !== undefined ? Math.round(value) : '—'}
-            </div>
-            {isTimeAdjusted && fullValue && (
-                <div className="text-xs text-gray-500 mb-1">
-                    Full minute: ~{Math.round(fullValue)}
-                </div>
-            )}
-            <div className="flex items-center gap-2">
-                <span className={`text-sm flex items-center gap-1 ${changeColor}`}>
-                    <TrendIcon size={14} />
-                    {change > 0 ? '+' : ''}{change.toFixed(1)}%
-                </span>
-                <span className="text-xs text-gray-500">
-                    vs actual {actual || 0}
-                </span>
             </div>
         </motion.div>
     );
