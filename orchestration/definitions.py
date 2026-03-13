@@ -111,16 +111,25 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
                     elif isinstance(asset_key, list):
                         asset_deps.append(AssetKey(asset_key))
         
-        # If the model has 'iceberg' tag, add it as a kind and group
+        # Check materialization type
+        materialized = config.get("materialized", "")
+        
+        # If the model has 'iceberg' tag, add it as a kind
         if "iceberg" in tags:
             kinds = set(spec.kinds) if spec.kinds else set()
             kinds.add("iceberg")
-            new_spec = spec.replace_attributes(
-                kinds=frozenset(kinds),
-                group_name="datalake"
-            )
+            spec = spec.replace_attributes(kinds=frozenset(kinds))
+        
+        # Assign group based on where the model runs (not its target)
+        # Models materialized as sinks, materialized_views, or tables in RisingWave
+        # go to the "risingwave" group, even if they target Iceberg
+        if materialized in ["sink", "materialized_view", "view", "table"]:
+            new_spec = spec.replace_attributes(group_name="risingwave")
+        elif "iceberg" in tags:
+            # True Iceberg tables (not RisingWave objects targeting Iceberg)
+            new_spec = spec.replace_attributes(group_name="iceberg")
         else:
-            # Set group to "risingwave" for non-iceberg models
+            # Default to risingwave group
             new_spec = spec.replace_attributes(group_name="risingwave")
         
         # Add explicit deps if specified in meta

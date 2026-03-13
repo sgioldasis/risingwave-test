@@ -4,29 +4,41 @@ Test script to consume funnel data from Kafka topic.
 Usage: python scripts/consume_funnel_from_kafka.py
 """
 
-from kafka import KafkaConsumer
 import json
 import sys
 
+from confluent_kafka import Consumer, KafkaException
+
+
 def consume_funnel():
     """Consume funnel data from Kafka and print to console."""
-    consumer = KafkaConsumer(
-        'funnel',
-        bootstrap_servers=['localhost:19092'],  # External port for host access
-        value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        auto_offset_reset='latest',
-        enable_auto_commit=True,
-        group_id='test-consumer'
-    )
-    
+    conf = {
+        'bootstrap.servers': 'localhost:19092',
+        'group.id': 'test-consumer',
+        'auto.offset.reset': 'latest',
+        'enable.auto.commit': True,
+    }
+
+    consumer = Consumer(conf)
+    consumer.subscribe(['funnel'])
+
     print("Consuming from 'funnel' topic...")
     print("Press Ctrl+C to stop")
     print("-" * 60)
-    
+
     try:
-        for message in consumer:
-            data = message.value
-            print(f"\nReceived at {message.timestamp}:")
+        while True:
+            msg = consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print(f"Consumer error: {msg.error()}")
+                continue
+
+            # Deserialize the message value
+            data = json.loads(msg.value().decode('utf-8'))
+
+            print(f"\nReceived at {msg.timestamp()}:")
             print(f"  Window: {data.get('window_start')} → {data.get('window_end')}")
             print(f"  Viewers: {data.get('viewers')}")
             print(f"  Carters: {data.get('carters')}")
@@ -38,6 +50,7 @@ def consume_funnel():
         print("\nStopping consumer...")
     finally:
         consumer.close()
+
 
 if __name__ == "__main__":
     consume_funnel()

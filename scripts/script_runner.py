@@ -38,16 +38,16 @@ BIN_DIR = PROJECT_ROOT / "bin"
 SCRIPTS = [
     ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies"),
     ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
-    ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
-    ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
-    ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
-    ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
     ("4_run_ml_serving.sh", "🤖 ML Serving", "Start ML serving with River online learning (port 8001)"),
+    ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
     ("5_marimo_risingwave.sh", "🌊 RisingWave Notebook", "Interactive RisingWave Iceberg demo notebook"),
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
+    ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
+    ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
+    ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
 ]
 
 # Global state - track per-script

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
-from kafka import KafkaConsumer, KafkaProducer
+from confluent_kafka import Consumer, KafkaException
 from datetime import datetime, timedelta, timezone
 import json
 import threading
@@ -75,7 +75,7 @@ app.add_middleware(
 
 # Kafka configuration - use localhost when running outside Docker
 import os
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092').split(',')
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
 FUNNEL_TOPIC = 'funnel'
 print(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
 
@@ -143,48 +143,54 @@ def kafka_consumer_loop():
     consumer = None
     while consumer_running:
         try:
-            consumer = KafkaConsumer(
-                FUNNEL_TOPIC,
-                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                key_deserializer=lambda m: m.decode('utf-8') if m else None,
-                auto_offset_reset='earliest',
-                enable_auto_commit=False,
-                consumer_timeout_ms=1000
-            )
+            conf = {
+                'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+                'group.id': 'dashboard-consumer',
+                'auto.offset.reset': 'earliest',
+                'enable.auto.commit': False,
+            }
+            consumer = Consumer(conf)
+            consumer.subscribe([FUNNEL_TOPIC])
             
             while consumer_running:
                 try:
-                    for message in consumer:
-                        if not consumer_running:
-                            break
-                        
-                        data = message.value
-                        
-                        # Parse timestamps
-                        if 'window_start' in data:
-                            data['window_start'] = parse_timestamp(data['window_start'])
-                        if 'window_end' in data:
-                            data['window_end'] = parse_timestamp(data['window_end'])
-                        
-                        # Store previous data before updating
-                        previous_funnel_data = latest_funnel_data.copy()
-                        
-                        # Update latest data
-                        latest_funnel_data.update({
-                            "window_start": data.get('window_start'),
-                            "window_end": data.get('window_end'),
-                            "viewers": int(data.get('viewers', 0)),
-                            "carters": int(data.get('carters', 0)),
-                            "purchasers": int(data.get('purchasers', 0)),
-                            "view_to_cart_rate": float(data.get('view_to_cart_rate', 0.0)),
-                            "cart_to_buy_rate": float(data.get('cart_to_buy_rate', 0.0))
-                        })
-                        
-                        # Add to history
-                        funnel_data_history.insert(0, latest_funnel_data.copy())
-                        if len(funnel_data_history) > MAX_HISTORY_SIZE:
-                            funnel_data_history.pop()
+                    msg = consumer.poll(timeout=1.0)
+                    if msg is None:
+                        continue
+                    if msg.error():
+                        print(f"Consumer error: {msg.error()}")
+                        continue
+                    
+                    # Deserialize message
+                    data = json.loads(msg.value().decode('utf-8'))
+                    
+                    # Parse timestamps
+                    if 'window_start' in data:
+                        data['window_start'] = parse_timestamp(data['window_start'])
+                    if 'window_end' in data:
+                        data['window_end'] = parse_timestamp(data['window_end'])
+                    
+                    # Store previous data before updating
+                    previous_funnel_data = latest_funnel_data.copy()
+                    
+                    # Update latest data
+                    latest_funnel_data.update({
+                        "window_start": data.get('window_start'),
+                        "window_end": data.get('window_end'),
+                        "viewers": int(data.get('viewers', 0)),
+                        "carters": int(data.get('carters', 0)),
+                        "purchasers": int(data.get('purchasers', 0)),
+                        "view_to_cart_rate": float(data.get('view_to_cart_rate', 0.0)),
+                        "cart_to_buy_rate": float(data.get('cart_to_buy_rate', 0.0))
+                    })
+                    
+                    # Add to history
+                    funnel_data_history.insert(0, latest_funnel_data.copy())
+                    if len(funnel_data_history) > MAX_HISTORY_SIZE:
+                        funnel_data_history.pop()
+                    
+                    # Manually commit offset
+                    consumer.commit(msg)
                             
                 except Exception as e:
                     print(f"Error processing Kafka message: {e}")

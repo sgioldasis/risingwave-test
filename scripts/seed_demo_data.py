@@ -166,15 +166,21 @@ def create_kafka_events_for_history(minutes=60, tps=100):
     Alternative: Generate high-volume Kafka events to quickly build history.
     This is more realistic since it flows through the actual pipeline.
     """
-    from kafka import KafkaProducer
+    from confluent_kafka import Producer
     import time
     
     logger.info(f"Generating {minutes} minutes worth of data at {tps} TPS...")
     
-    producer = KafkaProducer(
-        bootstrap_servers=['localhost:19092'],
-        value_serializer=lambda x: json.dumps(x).encode('utf-8')
-    )
+    def delivery_report(err, msg):
+        """Callback for delivery reports."""
+        if err:
+            logger.error(f"Delivery failed: {err}")
+    
+    conf = {
+        'bootstrap.servers': 'localhost:19092',
+        'client.id': 'seed-demo-data',
+    }
+    producer = Producer(conf)
     
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(minutes=minutes)
@@ -197,33 +203,45 @@ def create_kafka_events_for_history(minutes=60, tps=100):
         for _ in range(base_viewers):
             user_id = random.randint(1, 100000)
             viewer_ids.append(user_id)
-            producer.send('page_views', value={
-                "user_id": user_id,
-                "page_id": f"page_{random.randint(1, 100)}",
-                "event_time": timestamp_str
-            })
+            producer.produce(
+                'page_views',
+                value=json.dumps({
+                    "user_id": user_id,
+                    "page_id": f"page_{random.randint(1, 100)}",
+                    "event_time": timestamp_str
+                }).encode('utf-8'),
+                callback=delivery_report
+            )
         
         # Generate cart events only from users who viewed
         # Sample carters from the viewer pool to ensure carters <= viewers
         actual_carters = min(base_carters, len(viewer_ids))
         cart_user_ids = random.sample(viewer_ids, actual_carters) if viewer_ids else []
         for user_id in cart_user_ids:
-            producer.send('cart_events', value={
-                "user_id": user_id,
-                "item_id": f"item_{random.randint(100, 1000)}",
-                "event_time": timestamp_str
-            })
+            producer.produce(
+                'cart_events',
+                value=json.dumps({
+                    "user_id": user_id,
+                    "item_id": f"item_{random.randint(100, 1000)}",
+                    "event_time": timestamp_str
+                }).encode('utf-8'),
+                callback=delivery_report
+            )
         
         # Generate purchase events only from users who carted
         # Sample purchasers from the carter pool to ensure purchasers <= carters
         actual_purchasers = min(base_purchasers, len(cart_user_ids))
         purchase_user_ids = random.sample(cart_user_ids, actual_purchasers) if cart_user_ids else []
         for user_id in purchase_user_ids:
-            producer.send('purchases', value={
-                "user_id": user_id,
-                "amount": round(random.uniform(10, 500), 2),
-                "event_time": timestamp_str
-            })
+            producer.produce(
+                'purchases',
+                value=json.dumps({
+                    "user_id": user_id,
+                    "amount": round(random.uniform(10, 500), 2),
+                    "event_time": timestamp_str
+                }).encode('utf-8'),
+                callback=delivery_report
+            )
         
         if (minute_offset + 1) % 10 == 0:
             logger.info(f"Generated {minute_offset + 1}/{minutes} minutes of data")

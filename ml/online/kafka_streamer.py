@@ -7,14 +7,14 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Callable, Optional
 
-from kafka import KafkaConsumer
+from confluent_kafka import Consumer, KafkaException
 
 
 class KafkaDataStreamer:
     """Streams training data from Kafka funnel topic for incremental learning."""
     
     # Kafka configuration
-    KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092').split(',')
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
     FUNNEL_TOPIC = 'funnel'
     
     def __init__(self, auto_start: bool = False):
@@ -24,7 +24,7 @@ class KafkaDataStreamer:
         Args:
             auto_start: Whether to start consuming immediately
         """
-        self.consumer: Optional[KafkaConsumer] = None
+        self.consumer: Optional[Consumer] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._callbacks: list[Callable[[Dict[str, Any]], None]] = []
@@ -69,27 +69,32 @@ class KafkaDataStreamer:
     
     def _consume_loop(self) -> None:
         """Main consumption loop running in background thread."""
+        conf = {
+            'bootstrap.servers': self.KAFKA_BOOTSTRAP_SERVERS,
+            'group.id': 'river-online-learning',
+            'auto.offset.reset': 'latest',
+            'enable.auto.commit': True,
+        }
+        
         while self._running:
             try:
-                self.consumer = KafkaConsumer(
-                    self.FUNNEL_TOPIC,
-                    bootstrap_servers=self.KAFKA_BOOTSTRAP_SERVERS,
-                    value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                    auto_offset_reset='latest',  # Start from latest for real-time
-                    enable_auto_commit=True,
-                    group_id='river-online-learning',
-                    consumer_timeout_ms=1000
-                )
+                self.consumer = Consumer(conf)
+                self.consumer.subscribe([self.FUNNEL_TOPIC])
                 
                 print(f"Connected to Kafka: {self.KAFKA_BOOTSTRAP_SERVERS}")
                 
                 while self._running:
                     try:
-                        for message in self.consumer:
-                            if not self._running:
-                                break
-                            
-                            self._process_message(message.value)
+                        msg = self.consumer.poll(timeout=1.0)
+                        if msg is None:
+                            continue
+                        if msg.error():
+                            print(f"Consumer error: {msg.error()}")
+                            continue
+                        
+                        # Deserialize message
+                        data = json.loads(msg.value().decode('utf-8'))
+                        self._process_message(data)
                             
                     except Exception as e:
                         print(f"Error processing message: {e}")
@@ -213,4 +218,4 @@ class KafkaDataStreamer:
     
     def is_connected(self) -> bool:
         """Check if connected to Kafka."""
-        return self.consumer is not None and self._running
+        return self.consumer is not None

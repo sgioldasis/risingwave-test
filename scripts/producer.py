@@ -4,32 +4,40 @@ import random
 import argparse
 import sys
 from datetime import datetime, timezone
-from kafka import KafkaProducer
+
+from confluent_kafka import Producer, KafkaException
 
 TOPICS = ['page_views', 'cart_events', 'purchases']
 
+
 def get_timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def delivery_report(err, msg):
+    """Callback for delivery reports."""
+    if err:
+        print(f'Delivery failed: {err}', file=sys.stderr, flush=True)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Kafka Event Producer with configurable TPS")
     parser.add_argument("--tps", type=float, default=1.0, help="Transactions per second (default: 1.0)")
     args = parser.parse_args()
 
-    TOPICS = ['page_views', 'cart_events', 'purchases']
-    bootstrap_servers = ['localhost:19092']
+    bootstrap_servers = 'localhost:19092'
 
     print(f"Starting producer pre-flight checks...", flush=True)
 
     # 1. Connect and Check Kafka Connectivity
     try:
-        from kafka.errors import NoBrokersAvailable
-        producer = KafkaProducer(
-            bootstrap_servers=bootstrap_servers,
-            value_serializer=lambda x: json.dumps(x).encode('utf-8'),
-            request_timeout_ms=5000
-        )
-    except NoBrokersAvailable:
+        conf = {
+            'bootstrap.servers': bootstrap_servers,
+            'client.id': 'event-producer',
+            'request.timeout.ms': 5000,
+        }
+        producer = Producer(conf)
+    except KafkaException as e:
         print(f"❌ Error: Could not connect to Kafka at {bootstrap_servers}.", file=sys.stderr, flush=True)
         print(f"👉 Please make sure services are started with './bin/1_up.sh'", file=sys.stderr, flush=True)
         sys.exit(1)
@@ -38,12 +46,19 @@ def main():
         sys.exit(1)
 
     # 2. Check Topic Availability
-    for topic in TOPICS:
-        if producer.partitions_for(topic) is None:
-            print(f"❌ Error: Required topic '{topic}' does not exist.", file=sys.stderr, flush=True)
-            print(f"👉 Please make sure initialization scripts have run (e.g., './bin/3_run_dbt.sh')", file=sys.stderr, flush=True)
-            producer.close()
-            sys.exit(1)
+    # Get metadata to check available topics
+    try:
+        metadata = producer.list_topics(timeout=5)
+        available_topics = [t.topic for t in iter(metadata.topics.values())]
+        
+        for topic in TOPICS:
+            if topic not in available_topics:
+                print(f"❌ Error: Required topic '{topic}' does not exist.", file=sys.stderr, flush=True)
+                print(f"👉 Please make sure initialization scripts have run (e.g., './bin/3_run_dbt.sh')", file=sys.stderr, flush=True)
+                sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error checking topics: {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
     print(f"✅ Pre-flight checks passed. Kafka is reachable and all topics exist.", flush=True)
     print(f"Starting data generation at {args.tps} TPS... Press Ctrl+C to stop.", flush=True)
@@ -84,7 +99,11 @@ def main():
                     "page_id": f"page_{random.randint(1, 100)}",
                     "event_time": event_time_str
                 }
-                producer.send('page_views', value=view_data)
+                producer.produce(
+                    'page_views',
+                    value=json.dumps(view_data).encode('utf-8'),
+                    callback=delivery_report
+                )
                 views_count += 1
 
                 # 2. Add to Cart (Medium volume)
@@ -96,7 +115,11 @@ def main():
                         "item_id": f"item_{random.randint(100, 1000)}",
                         "event_time": event_time_str
                     }
-                    producer.send('cart_events', value=cart_data)
+                    producer.produce(
+                        'cart_events',
+                        value=json.dumps(cart_data).encode('utf-8'),
+                        callback=delivery_report
+                    )
                     carts_count += 1
                     cart_created = True
 
@@ -108,8 +131,15 @@ def main():
                         "amount": round(random.uniform(10, 500), 2),
                         "event_time": event_time_str
                     }
-                    producer.send('purchases', value=purchase_data)
+                    producer.produce(
+                        'purchases',
+                        value=json.dumps(purchase_data).encode('utf-8'),
+                        callback=delivery_report
+                    )
                     purchases_count += 1
+
+                # Poll for delivery reports
+                producer.poll(0)
 
                 # Control execution rate using target time for precise TPS
                 target_time += interval
@@ -123,7 +153,8 @@ def main():
 
     except KeyboardInterrupt:
         print("\nStopping data generation.", flush=True)
-        producer.close()
+        producer.flush()
+
 
 if __name__ == "__main__":
     main()
