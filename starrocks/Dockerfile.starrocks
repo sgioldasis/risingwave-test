@@ -1,0 +1,9 @@
+FROM starrocks/allin1-ubuntu:3.2-latest
+
+# Install PostgreSQL JDBC driver (allin1 uses /data/deploy/starrocks path)
+RUN mkdir -p /data/deploy/starrocks/fe/lib && \
+    curl -L -o /data/deploy/starrocks/fe/lib/postgresql-42.7.3.jar \
+    https://jdbc.postgresql.org/download/postgresql-42.7.3.jar
+
+# Keep the original entrypoint
+ENTRYPOINT ["/data/deploy/entrypoint.sh"]

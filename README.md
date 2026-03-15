@@ -12,6 +12,7 @@ This project demonstrates a real-time e-commerce conversion funnel using RisingW
 | **Apache Iceberg** | Open table format for data lake storage |
 | **Lakekeeper** | Iceberg REST catalog |
 | **Trino** | Distributed SQL query engine for Iceberg and RisingWave |
+| **StarRocks** | Federated analytics engine (Iceberg + RisingWave) |
 | **Dagster** | Data orchestration for dbt models and ML training |
 | **MinIO** | S3-compatible object storage for models and data |
 | **FastAPI** | Backend API for dashboard and ML serving |
@@ -82,8 +83,12 @@ sql/                              # Compiled SQL files
 
 trino/                            # Trino configuration
 └ catalog/
-    ├── iceberg.properties        # Iceberg catalog config
-    └── risingwave.properties     # RisingWave catalog config
+    ├── datalake.properties       # Iceberg catalog config
+    ├── risingwave.properties     # RisingWave catalog config
+    └── starrocks.properties      # StarRocks catalog config
+
+sql/                              # SQL initialization scripts
+└ starrocks_init.sql              # StarRocks catalog setup
 ```
 
 ## Key Use Cases
@@ -540,8 +545,10 @@ From project **root** folder, run the following commands in order:
 # OR
 ./bin/4_run_modern.sh         # Modern React dashboard (port 4000)
 
-# 5. Query Iceberg tables (optional)
+# 5. Query data via different tools (optional)
+./bin/5_starrocks_query.sh    # Federated queries via StarRocks (Iceberg + RisingWave)
 ./bin/5_duckdb_iceberg.sh     # Query via DuckDB CLI
+./bin/5_spark_iceberg.sh      # Interactive Spark notebook
 ./bin/5_spark_iceberg.sh      # Interactive Spark notebook
 
 # 6. When finished, stop all services and clean up volumes
@@ -568,6 +575,7 @@ This starts a web application at [http://localhost:4001](http://localhost:4001) 
 | Service | URL | Description |
 |---------|-----|-------------|
 | RisingWave Console | http://localhost:5691 | Stream processing dashboard |
+| StarRocks Web UI | http://localhost:8030 | Federated analytics (MySQL: localhost:9030) |
 | Redpanda Console | http://localhost:9090 | Kafka topic management |
 | Lakekeeper UI | http://localhost:8181 | Iceberg catalog management |
 | MinIO Console | http://localhost:9301 | S3 storage (login: hummockadmin/hummockadmin) |
@@ -653,6 +661,7 @@ The `funnel` materialized view provides real-time metrics:
 | `./bin/4_run_dashboard.sh` | Legacy dashboard (port 8050) |
 | `./bin/4_run_modern.sh` | Modern React dashboard (port 4000) |
 | `./bin/4_run_ml_serving.sh` | ML serving API (port 8001) |
+| `./bin/5_starrocks_query.sh` | Federated queries (Iceberg + RisingWave) |
 | `./bin/5_duckdb_iceberg.sh` | Query Iceberg tables via DuckDB |
 | `./bin/5_spark_iceberg.sh` | Interactive Spark notebook |
 | `./bin/6_down.sh` | Stop all services and cleanup |
@@ -733,6 +742,16 @@ curl http://localhost:8001/health
 ### Dagster Schedule Not Running
 
 Check Dagster UI at http://localhost:3000 for job status. Set `ML_TRAINING_MODE=realtime` for 20-second sensor instead of 5-minute cron.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [`README.md`](README.md) | This file - quick start and overview |
+| [`STARROCKS_INTEGRATION.md`](STARROCKS_INTEGRATION.md) | StarRocks federated analytics guide |
+| [`ICEBERG_RISINGWAVE_INTEGRATION.md`](ICEBERG_RISINGWAVE_INTEGRATION.md) | Iceberg ↔ RisingWave data flow |
+| [`KAFKA_SINK_SETUP.md`](KAFKA_SINK_SETUP.md) | Kafka sink configuration |
+| [`trino/README.md`](trino/README.md) | Trino SQL query engine guide |
 
 ## Stopping the Project
 

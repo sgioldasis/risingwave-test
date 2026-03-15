@@ -1,0 +1,9 @@
+FROM starrocks/cn-ubuntu:3.2-latest
+
+# Install PostgreSQL JDBC driver in shared JDBC directory
+RUN mkdir -p /opt/starrocks/cn/lib/jdbc && \
+    curl -L -o /opt/starrocks/cn/lib/jdbc/postgresql-42.7.3.jar \
+    https://jdbc.postgresql.org/download/postgresql-42.7.3.jar
+
+# Keep the original entrypoint
+ENTRYPOINT ["/opt/starrocks/cn/bin/start_cn.sh"]

@@ -1,0 +1,10 @@
+FROM starrocks/fe-ubuntu:3.2-latest
+
+# Install PostgreSQL JDBC driver in shared JDBC directory
+RUN mkdir -p /opt/starrocks/fe/lib/jdbc && \
+    curl -L -o /opt/starrocks/fe/lib/jdbc/postgresql-42.7.3.jar \
+    https://jdbc.postgresql.org/download/postgresql-42.7.3.jar
+
+# Keep the original entrypoint
+ENTRYPOINT ["/opt/starrocks/fe/bin/start_fe.sh"]
+CMD ["--host_type", "FQDN"]

@@ -587,7 +587,126 @@ services:
     container_name: trino
     restart: always
 
+  # StarRocks Services
+  starrocks-fe:
+    image: starrocks/fe-ubuntu:3.2-latest
+    hostname: starrocks-fe
+    container_name: starrocks-fe
+    command: /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
+    ports:
+      - "9030:9030"  # Query port (MySQL protocol)
+      - "8030:8030"  # HTTP API
+      - "9020:9020"  # Thrift RPC
+    environment:
+      - STARROCKS_HOME=/opt/starrocks
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8030/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    volumes:
+      - starrocks-fe:/opt/starrocks/fe/meta
+    networks:
+      - iceberg_net
+    restart: always
+
+  starrocks-be:
+    image: starrocks/be-ubuntu:3.2-latest
+    hostname: starrocks-be
+    container_name: starrocks-be
+    command: /opt/starrocks/be/bin/start_be.sh
+    ports:
+      - "8040:8040"  # BE HTTP port
+    environment:
+      - STARROCKS_HOME=/opt/starrocks
+      - FE_LEADER_HOST=starrocks-fe
+    depends_on:
+      starrocks-fe:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8040/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - starrocks-be:/opt/starrocks/be/storage
+    networks:
+      - iceberg_net
+    restart: always
+
+  # StarRocks initialization service
+  starrocks-init:
+    image: arey/mysql-client:latest
+    container_name: starrocks-init
+    restart: "no"
+    depends_on:
+      starrocks-fe:
+        condition: service_healthy
+      starrocks-be:
+        condition: service_healthy
+    volumes:
+      - "./sql/starrocks_init.sql:/init.sql:ro"
+    networks:
+      - iceberg_net
+    entrypoint: |
+      sh -c '
+        set -e
+        echo "Waiting for StarRocks to be fully ready..."
+        sleep 30
+        
+        # Register BE with FE
+        echo "Registering Backend Node..."
+        mysql -hstarrocks-fe -P9030 -uroot -e "ALTER SYSTEM ADD BACKEND \"starrocks-be:9050\";" 2>/dev/null || echo "Note: BE may already be registered"
+        
+        sleep 10
+        
+        # Create Iceberg catalog connection
+        echo "Creating Iceberg catalog..."
+        mysql -hstarrocks-fe -P9030 -uroot -e "
+          CREATE EXTERNAL CATALOG iceberg_catalog
+          PROPERTIES (
+            \"type\" = \"iceberg\",
+            \"iceberg.catalog.type\" = \"rest\",
+            \"iceberg.catalog.uri\" = \"http://lakekeeper:8181/catalog\",
+            \"iceberg.catalog.warehouse\" = \"risingwave-warehouse\",
+            \"aws.s3.enable_path_style_access\" = \"true\",
+            \"aws.s3.endpoint\" = \"http://minio-0:9301\",
+            \"aws.s3.access_key\" = \"hummockadmin\",
+            \"aws.s3.secret_key\" = \"hummockadmin\",
+            \"aws.s3.region\" = \"us-east-1\"
+          );
+        " 2>/dev/null || echo "Note: Iceberg catalog may already exist"
+        
+        # Create RisingWave external catalog (via PostgreSQL connector)
+        echo "Creating RisingWave catalog..."
+        mysql -hstarrocks-fe -P9030 -uroot -e "
+          CREATE EXTERNAL CATALOG risingwave_catalog
+          PROPERTIES (
+            \"type\" = \"jdbc\",
+            \"user\" = \"root\",
+            \"password\" = \"\",
+            \"jdbc_uri\" = \"jdbc:postgresql://frontend-node-0:4566/dev\",
+            \"driver_class\" = \"org.postgresql.Driver\",
+            \"driver_url\" = \"file:///opt/starrocks/fe/lib/postgresql-42.4.4.jar\"
+          );
+        " 2>/dev/null || echo "Note: RisingWave catalog may already exist"
+        
+        # Run additional initialization SQL if provided
+        if [ -f /init.sql ]; then
+          echo "Running initialization SQL..."
+          mysql -hstarrocks-fe -P9030 -uroot < /init.sql
+        fi
+        
+        echo "StarRocks initialization completed!"
+      '
+
 volumes:
+  starrocks-fe:
+    external: false
+  starrocks-be:
+    external: false
   postgres-0:
     external: false
   minio-0:
