@@ -8,11 +8,11 @@ import json
 import threading
 import time
 import uvicorn
+import os
+import re
 import asyncio
 import logging
 import httpx
-import os
-import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 # ML Serving Service configuration
 ML_SERVING_URL = os.environ.get("ML_SERVING_URL", "http://localhost:8001")
+
+# Global event for notifying SSE clients of new data
+data_updated_event = asyncio.Event()
+main_loop = None
 
 async def call_ml_serving(endpoint: str, method: str = "GET", json_data: dict = None) -> dict:
     """Call the ML serving service."""
@@ -50,8 +54,9 @@ async def call_ml_serving(endpoint: str, method: str = "GET", json_data: dict = 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
-    global kafka_consumer_thread, consumer_running
+    global kafka_consumer_thread, consumer_running, main_loop
     # Startup
+    main_loop = asyncio.get_running_loop()
     consumer_running = True
     kafka_consumer_thread = threading.Thread(target=kafka_consumer_loop, daemon=True)
     kafka_consumer_thread.start()
@@ -193,6 +198,10 @@ def kafka_consumer_loop():
                     
                     # Manually commit offset
                     consumer.commit(msg)
+                    
+                    # Notify SSE clients that new data is available
+                    if main_loop:
+                        main_loop.call_soon_threadsafe(data_updated_event.set)
                             
                 except Exception as e:
                     logger.error(f"Error processing Kafka message: {e}")
@@ -371,8 +380,13 @@ async def funnel_stream():
                     # Send heartbeat comment to keep connection alive
                     yield ":heartbeat\n\n"
                 
-                # Check every 100ms for new data
-                await asyncio.sleep(0.1)
+                # Wait for next update notice or timeout (for heartbeat)
+                try:
+                    await asyncio.wait_for(data_updated_event.wait(), timeout=15.0)
+                    data_updated_event.clear()
+                except asyncio.TimeoutError:
+                    # Just continue and send heartbeat
+                    pass
                 
             except Exception as e:
                 logger.error(f"Error in SSE stream: {e}")
