@@ -16,7 +16,8 @@ This project demonstrates a real-time e-commerce conversion funnel using RisingW
 | **MinIO** | S3-compatible object storage for models and data |
 | **FastAPI** | Backend API for dashboard and ML serving |
 | **React** | Modern frontend dashboard |
-| **scikit-learn** | ML model training (RandomForest, LinearRegression) |
+| **River** | Real-time incremental ML library for online learning |
+| **scikit-learn** | Batch ML model training (fallback) |
 | **DuckDB** | Local analytics on Iceberg data |
 | **Spark** | Interactive notebook for data analysis |
 
@@ -44,14 +45,23 @@ dbt/                              # dbt project folder
 └ ...
 
 ml/                               # Machine Learning modules
-├── training/                     # ML training module
+├── online/                       # River online learning module
+│   ├── models.py                 # River model definitions
+│   ├── streamer.py               # RisingWave data polling
+│   ├── kafka_streamer.py         # Kafka direct consumer
+│   ├── learner.py                # Online learning service
+│   ├── kafka_learner.py          # Kafka-based learning
+│   └── checkpoints.py            # MinIO checkpointing
+├── training/                     # Batch ML training module (fallback)
 │   ├── trainer.py                # Core training logic
 │   ├── model_registry.py         # MinIO-based model storage
 │   └── data_fetcher.py           # RisingWave data fetching
 └ serving/                        # ML serving module
     ├── main.py                   # FastAPI serving application
     ├── model_loader.py           # Model loading with hot-reload
-    └── predictor.py              # Prediction logic with caching
+    ├── predictor.py              # Batch prediction logic
+    ├── river_predictor.py        # River online predictor
+    └── kafka_river_predictor.py  # Kafka-based River predictor
 
 modern-dashboard/                 # Modern React dashboard
 ├── backend/
@@ -161,119 +171,173 @@ This sink publishes every update from the `funnel_summary` materialized view to 
 
 ---
 
-### Use Case 2: ML Training & Serving
+### Use Case 2: ML Training & Serving with River Online Learning
 
-ML models are trained on funnel data using Dagster orchestration, stored in MinIO, and served via a dedicated FastAPI service. The modern dashboard integrates predictions through its backend.
+The project supports **two modes** of ML predictions:
 
-#### Architecture
+1. **Online Learning (River)** - Real-time incremental learning from streaming data
+2. **Batch Training (scikit-learn)** - Traditional batch retraining via Dagster
+
+The default mode uses **River's incremental learning** for instant model updates as new data arrives.
+
+#### Architecture: Online Learning Mode (Default)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              TRAINING PIPELINE                               │
-│  ┌──────────────┐     ┌──────────────────────────────┐     ┌──────────────┐ │
-│  │   Dagster    │────▶│      ML Training             │────▶│    MinIO     │ │
-│  │   Sensor     │     │      (trainer)               │     │  (ml-models  │ │
-│  │  (20s/demo)  │     │  Reads funnel_training MV    │     │   bucket)    │ │
-│  └──────────────┘     └──────────────────────────────┘     └──────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                       │
-                                       │ Models stored with version
-                                       │ format: vYYYYMMDD_HHMMSS
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              SERVING PIPELINE                                │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                 │
-│  │    ML        │◀────│  ModelLoader │◀────│    MinIO     │                 │
-│  │   Serving    │     │ (hot-reload) │     │  (ml-models  │                 │
-│  │  (port 8001) │     │              │     │   bucket)    │                 │
-│  └──────┬───────┘     └──────────────┘     └──────────────┘                 │
-│         │                                                                   │
-│         │ GET /predict                                                      │
-│         │ GET /predict/{metric}                                             │
-│         │ GET /models                                                       │
-│         ▼                                                                   │
-│  ┌──────────────┐                                                           │
-│  │   Dashboard  │     ┌──────────────┐     ┌──────────────┐                 │
-│  │   Backend    │────▶│   Frontend   │────▶│  Predictions │                 │
-│  │  (port 8000) │     │  (port 4000) │     │     Tab      │                 │
-│  └──────────────┘     └──────────────┘     └──────────────┘                 │
-│       Proxies                                                               │
-│       /api/predictions/*                                                    │
+│                         ONLINE LEARNING PIPELINE                             │
+│                                                                              │
+│  ┌──────────────┐     ┌─────────────────┐     ┌──────────────────────────┐ │
+│  │   RisingWave │────▶│  ml/online/     │────▶│         MinIO            │ │
+│  │  funnel_data │     │  River Models   │     │   (checkpoints)          │ │
+│  │              │     │                 │     │                          │ │
+│  │              │     │  - learn_one()  │     │  Periodic model state    │ │
+│  │              │     │  - predict_one()│     │  snapshots               │ │
+│  └──────────────┘     └─────────────────┘     └──────────────────────────┘ │
+│                            │                                                 │
+│              ┌─────────────┼─────────────┐                                   │
+│              ▼             ▼             ▼                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    ml/serving/main.py                                │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │   │
+│  │  │ RiverPredictor│  │ FastAPI      │  │ GET /predict             │  │   │
+│  │  │ (real-time)  │──▶│ (port 8001)  │──▶│ GET /online/status       │  │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+#### Architecture: Kafka-Based Online Learning (Alternative)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         KAFKA ONLINE LEARNING                                │
+│                                                                              │
+│  ┌──────────────┐     ┌─────────────────┐     ┌──────────────────────────┐ │
+│  │ Kafka Topic  │────▶│ ml/online/      │────▶│         MinIO            │ │
+│  │  (funnel)    │     │ kafka_learner   │     │   (checkpoints)          │ │
+│  │              │     │                 │     │                          │ │
+│  │              │     │ - Direct Kafka  │     │                          │ │
+│  │              │     │   consumer      │     │                          │ │
+│  │              │     │ - Local lag     │     │                          │ │
+│  │              │     │   features      │     │                          │ │
+│  └──────────────┘     └─────────────────┘     └──────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### ML Mode Comparison
+
+| Feature | Online Learning (River) | Batch Training (sklearn) |
+|---------|------------------------|--------------------------|
+| **Training Latency** | Instant (per-record) | 20s - 5min cycles |
+| **Adaptability** | Immediate to concept drift | Slow adaptation |
+| **Resource Usage** | Low (incremental) | High (retrain from scratch) |
+| **Model Freshness** | Always current | Stale between cycles |
+| **Source** | RisingWave poll or Kafka | Dagster-scheduled batches |
+| **Persistence** | MinIO checkpoints | Full model versions |
 
 #### Components
 
-**1. Dagster ML Training** ([`orchestration/definitions.py`](orchestration/definitions.py))
-```python
-@asset(
-    group_name="ml",
-    deps=[AssetKey(["public", "funnel_training"])],
-)
-def ml_trained_models(context: AssetExecutionContext):
-    """Asset that trains ML models and saves them to MinIO."""
-    trainer = ModelTrainer()
-    results = trainer.train_all_metrics(minutes_back=1)
-    ...
+**1. Online Learning Module** ([`ml/online/`](ml/online/))
 
-# Realtime demo sensor (20 seconds)
-@sensor(
-    job=ml_training_job,
-    minimum_interval_seconds=20,
-    default_status=DefaultSensorStatus.STOPPED,
-)
-def ml_training_sensor_realtime(context):
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return RunRequest(run_key=f"ml_training_{timestamp}")
-```
-- **Training Data**: Fetches last 1 minute from `funnel_training` materialized view
-- **Models**: Trains 5 models (viewers, carters, purchasers, view_to_cart_rate, cart_to_buy_rate)
-- **Algorithms**: RandomForestRegressor (for 10+ samples) or LinearRegression (fallback)
-- **Schedule**: 
-  - Production: 5-minute cron schedule
-  - Demo: 20-second sensor (set `ML_TRAINING_MODE=realtime`)
-- **Storage**: Models saved to MinIO `ml-models` bucket with versioning
+- **RiverModelManager** ([`models.py`](ml/online/models.py)): Manages incremental models using River library
+  - Uses `Rolling Mean` for count metrics (viewers, carters, purchasers)
+  - Uses `HoeffdingTreeRegressor` for rate predictions
+  - Tracks MAE and R² metrics during learning
+
+- **OnlineLearner** ([`learner.py`](ml/online/learner.py)): Continuous learning service
+  ```python
+  # Polls RisingWave every N seconds
+  learner = OnlineLearner(poll_interval=5.0, checkpoint_interval=60.0)
+  learner.start()  # Background thread
+  ```
+  - Polls `funnel_training` view for new records
+  - Calls `learn_one()` for incremental updates
+  - Periodic MinIO checkpoints
+
+- **KafkaOnlineLearner** ([`kafka_learner.py`](ml/online/kafka_learner.py)): Direct Kafka consumer
+  - Consumes from `funnel` topic directly
+  - Computes lag features locally
+  - Lower latency than RisingWave polling
+
+- **CheckpointManager** ([`checkpoints.py`](ml/online/checkpoints.py)): MinIO-based persistence
+  - Saves model state every 60 seconds (configurable)
+  - Automatic recovery on restart
 
 **2. ML Serving Service** ([`ml/serving/main.py`](ml/serving/main.py))
-- **Port**: 8001
-- **ModelLoader**: Loads models from MinIO with ETag-based change detection (hot-reload)
-- **ModelPredictor**: Caches predictions for 10 seconds, calculates confidence scores
-- **Endpoints**:
-  - `GET /predict` - Get predictions for all metrics
-  - `GET /predict/{metric}` - Get prediction for specific metric
-  - `GET /models` - Get model status with version timestamps
-  - `POST /reload` - Force model reload
-  - `GET /health` - Health check
 
-**3. Dashboard Integration** ([`modern-dashboard/backend/api.py`](modern-dashboard/backend/api.py))
+- **Port**: 8001
+- **Mode Selection** (via environment variables):
+  ```bash
+  # Online learning from RisingWave (default mode)
+  USE_ONLINE_LEARNING=true ./bin/4_run_ml_serving.sh
+  
+  # Kafka-based online learning
+  USE_ONLINE_LEARNING=true USE_KAFKA_SOURCE=true ./bin/4_run_ml_serving.sh
+  
+  # Batch mode (legacy)
+  ./bin/4_run_ml_serving.sh  # USE_ONLINE_LEARNING defaults to false
+  ```
+
+- **RiverPredictor** ([`river_predictor.py`](ml/serving/river_predictor.py)):
+  - Real-time predictions from continuously updated models
+  - Uses RisingWave's moving average for fastest adaptation
+  - Tracks samples learned per metric
+
+- **KafkaRiverPredictor** ([`kafka_river_predictor.py`](ml/serving/kafka_river_predictor.py)):
+  - Kafka-based online learning with local feature computation
+  - Near real-time latency (milliseconds)
+
+**3. Batch Training (Fallback)** ([`ml/training/`](ml/training/))
+
+- Still available for production scenarios preferring batch training
+- Dagster-scheduled with MinIO model storage
+- ModelLoader with hot-reload via ETag detection
+
+**4. Dashboard Integration** ([`modern-dashboard/backend/api.py`](modern-dashboard/backend/api.py))
+
 ```python
 # ML Serving Service configuration
 ML_SERVING_URL = os.environ.get("ML_SERVING_URL", "http://localhost:8001")
-
-async def call_ml_serving(endpoint: str, method: str = "GET", json_data: dict = None) -> dict:
-    """Call the ML serving service."""
-    url = f"{ML_SERVING_URL}{endpoint}"
-    ...
 
 @app.get("/api/predictions/next")
 async def get_next_predictions():
     """Proxy to ML serving for next-minute predictions."""
     return await call_ml_serving("/predict")
 ```
-- The dashboard backend acts as a **proxy** to the ML serving service
-- Frontend calls `/api/predictions/next` → Dashboard backend calls `http://localhost:8001/predict`
-- This design allows the frontend to use a single backend connection for both funnel data and predictions
 
-**4. Frontend Predictions Tab** ([`modern-dashboard/frontend/src/components/PredictionsTab.jsx`](modern-dashboard/frontend/src/components/PredictionsTab.jsx))
-- Real-time prediction cards for all 5 metrics
-- Predictions vs Actuals comparison chart
-- Model status monitoring
-- Auto-trains models on first prediction request if not already trained
+- Backend proxies prediction requests to ML serving
+- Frontend displays predictions with model type indicators (`river_online`, `river_risingwave_online`)
+- Shows samples learned per metric for transparency
 
-#### How Predictions Flow
-1. **Training**: Dagster sensor triggers every 20s → Fetches data from RisingWave → Trains models → Saves to MinIO
-2. **Serving**: ML serving service polls MinIO for model changes → Loads new models automatically
-3. **Consumption**: Frontend requests predictions → Dashboard backend proxies to ML serving → Returns predictions with confidence scores
+#### How Predictions Flow (Online Mode)
+
+1. **Data Source**: RisingWave aggregates events → `funnel_training` MV (or Kafka topic)
+2. **Learning**: OnlineLearner polls/consumes → `learn_one()` updates models incrementally
+3. **Checkpointing**: Model state saved to MinIO every 60 seconds
+4. **Prediction**: RiverPredictor uses latest model state + RisingWave MA for predictions
+5. **Dashboard**: Frontend shows real-time predictions with confidence scores
+
+#### API Endpoints
+
+| Endpoint | Description | Mode |
+|----------|-------------|------|
+| `GET /health` | Health check with mode indicator | All |
+| `GET /predict` | Get predictions for all metrics | All |
+| `GET /predict/{metric}` | Get prediction for specific metric | All |
+| `GET /models` | Model status and statistics | All |
+| `GET /online/status` | Detailed online learning stats | Online only |
+| `POST /learn` | Manual trigger for learning | Online only |
+| `POST /reload` | Force model reload | Batch only |
+
+#### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `USE_ONLINE_LEARNING` | `false` | Enable River online learning |
+| `USE_KAFKA_SOURCE` | `false` | Use Kafka instead of RisingWave polling |
+| `ONLINE_LEARNING_INTERVAL` | `5` | Seconds between data polls |
+| `CHECKPOINT_INTERVAL` | `60` | Seconds between MinIO checkpoints |
+| `ML_SERVING_PORT` | `8001` | API server port |
 
 ---
 
@@ -578,27 +642,82 @@ This starts a web application at [http://localhost:4001](http://localhost:4001) 
 ## ML Predictions Usage
 
 ### Start ML Serving
+
+The project supports multiple serving modes via different scripts:
+
 ```bash
+# Online Learning with River (recommended for demos)
+./bin/4_run_ml_online.sh
+
+# ML Serving with configurable mode via environment variables
+USE_ONLINE_LEARNING=true ./bin/4_run_ml_serving.sh
+
+# Batch mode (legacy scikit-learn training)
 ./bin/4_run_ml_serving.sh
 ```
 
-### Get Predictions
+### Environment Variables
+
 ```bash
-# Get all predictions
+# Enable online learning mode
+export USE_ONLINE_LEARNING=true
+
+# Use Kafka as data source instead of RisingWave polling
+export USE_KAFKA_SOURCE=true
+
+# Configure poll/checkpoint intervals
+export ONLINE_LEARNING_INTERVAL=5      # Seconds between data fetches
+export CHECKPOINT_INTERVAL=60          # Seconds between MinIO checkpoints
+```
+
+### Get Predictions
+
+```bash
+# Get all predictions (works in all modes)
 curl http://localhost:8001/predict
 
-# Get specific metric prediction
+# Example online learning response:
+# {
+#   "predicted_at": "2026-03-12T10:30:00Z",
+#   "timestamp": "2026-03-12T10:31:00Z",
+#   "mode": "online",
+#   "viewers": {
+#     "value": 1523.5,
+#     "confidence": 0.87,
+#     "model_type": "river_risingwave_online",
+#     "samples_learned": 156
+#   }
+# }
+
+# Get prediction for specific metric
 curl http://localhost:8001/predict/viewers
 
 # Check model status
 curl http://localhost:8001/models
 
-# Force model reload
+# Online learning specific: get detailed status
+curl http://localhost:8001/online/status
+
+# Batch mode only: force model reload
 curl -X POST http://localhost:8001/reload
 ```
 
-### Train Models via Dagster
-Training runs automatically via Dagster schedule (5-minute cron or 20-second sensor in realtime mode). Or trigger manually via Dagster UI.
+### Verify Mode
+
+```bash
+# Check which mode is active
+curl http://localhost:8001/health
+
+# Response shows mode and source:
+# {
+#   "healthy": true,
+#   "mode": "online",
+#   "source": "risingwave"  # or "kafka"
+# }
+```
+
+### Train Models via Dagster (Batch Mode Only)
+Training runs automatically via Dagster schedule (5-minute cron or 20-second sensor in realtime mode) when using batch mode. Or trigger manually via Dagster UI.
 
 ## Trino Usage Examples
 
@@ -652,7 +771,8 @@ The `funnel` materialized view provides real-time metrics:
 | `./bin/3_run_producer.sh` | Generate test events |
 | `./bin/4_run_dashboard.sh` | Legacy dashboard (port 8050) |
 | `./bin/4_run_modern.sh` | Modern React dashboard (port 4000) |
-| `./bin/4_run_ml_serving.sh` | ML serving API (port 8001) |
+| `./bin/4_run_ml_serving.sh` | ML serving API - batch mode (port 8001) |
+| `./bin/4_run_ml_online.sh` | ML serving API - online learning mode (port 8001) |
 | `./bin/5_duckdb_iceberg.sh` | Query Iceberg tables via DuckDB |
 | `./bin/5_spark_iceberg.sh` | Interactive Spark notebook |
 | `./bin/6_down.sh` | Stop all services and cleanup |
@@ -698,10 +818,15 @@ RisingWave
     │                                     DuckDB Queries
     │                                     Spark Notebook
     └──→ (View) funnel_training → ML Training → MinIO Models
-                                                 ↓
-                                          ML Serving API
-                                                 ↓
-                                          Dashboard Predictions
+                                        ↓           ↓
+                                  Batch Models  Checkpoints
+                                        └───────────┬───┘
+                                                    ↓
+                                           ML Serving API
+                                              ↓        ↓
+                                       Online Mode  Batch Mode
+                                              ↓        ↓
+                                       Dashboard Predictions
 ```
 
 Data flows from the producer through Kafka to RisingWave, where it's processed in multiple ways:
@@ -709,7 +834,9 @@ Data flows from the producer through Kafka to RisingWave, where it's processed i
 2. **Kafka sink** for the modern dashboard backend
 3. **Persistent storage** via Iceberg sinks for analysis with DuckDB/Spark
 4. **ML training** via the `funnel_training` view, with models stored in MinIO
-5. **Predictions** served via FastAPI and displayed in the dashboard
+   - **Online Learning**: River models update incrementally with checkpoints to MinIO
+   - **Batch Training**: Dagster-scheduled retraining with full model versions
+5. **Predictions** served via FastAPI (online or batch mode) and displayed in the dashboard
 
 ## Troubleshooting
 
@@ -725,14 +852,25 @@ The producer now requires manual start via dashboard controls. Sources use `scan
 
 ### ML Serving Connection
 
-If predictions fail, ensure the ML serving service is running:
+If predictions fail, ensure the ML serving service is running and check the mode:
 ```bash
+# Check health and mode (online vs batch)
 curl http://localhost:8001/health
+
+# For online learning, check detailed status
+curl http://localhost:8001/online/status
 ```
+
+**Common issues:**
+- **Online mode**: Check that `USE_ONLINE_LEARNING=true` was set when starting
+- **No predictions yet**: Online learning needs a few records before making predictions (check `samples_learned` in response)
+- **Checkpoint loading**: If checkpoint restore fails, models start fresh
 
 ### Dagster Schedule Not Running
 
 Check Dagster UI at http://localhost:3000 for job status. Set `ML_TRAINING_MODE=realtime` for 20-second sensor instead of 5-minute cron.
+
+**Note**: Dagster training is only used for **batch mode**. Online learning does not use Dagster.
 
 ## Stopping the Project
 
