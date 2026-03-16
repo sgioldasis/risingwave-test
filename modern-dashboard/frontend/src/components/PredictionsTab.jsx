@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
     Brain, Users, ShoppingCart, CreditCard,
-    Clock, AlertCircle, CheckCircle2, Calculator, Sparkles
+    AlertCircle, CheckCircle2, Calculator, Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -372,26 +372,14 @@ const PredictionsTab = ({ funnelData }) => {
                 <div className="flex items-center gap-4">
 
                     <div className="flex flex-col items-end gap-1">
-                        <div className="flex items-center gap-3">
-                            <div className="refresh-badge flex items-center gap-2">
-                                {isRefreshing && (
-                                    <motion.div
-                                        animate={{ rotate: 360 }}
-                                        transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                                    >
-                                        <Clock size={14} className="text-purple-400" />
-                                    </motion.div>
-                                )}
-                                {!isRefreshing && <Clock size={14} />}
-                                <span>Predicted: {predictions?.predicted_at ? formatTimestamp(predictions.predicted_at) : '-'}</span>
-                            </div>
-                        </div>
+                        {/* Single Combined Model Type Badge */}
                         {predictions?.model_type && (
                             <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''} ${predictions.is_heuristic ? 'heuristic' : 'ml-model'}`}>
                                 {predictions.is_heuristic ? (
                                     <>
                                         <Calculator size={14} className="text-amber-400" />
                                         <span className="text-amber-400">
+                                            {predictions.mode === 'online' ? `Online Learning (${predictions.source}): ` : `Batch Model (${predictions.source}): `}
                                             {predictions.model_version === 'rate_proportional' ? 'Rate-Proportional' :
                                              predictions.model_version === 'ema' ? 'EMA' :
                                              `Moving Average${predictions.model_version && predictions.model_version !== 'heuristic' && predictions.model_version !== 'live' && predictions.model_version !== 'live_moving_average' && predictions.model_version !== 'moving_average' ? `: ${formatModelVersionDisplay(predictions.model_version)}` : ' (Live)'}`}
@@ -401,12 +389,12 @@ const PredictionsTab = ({ funnelData }) => {
                                     <>
                                         <Sparkles size={14} className="text-purple-400" />
                                         <span>
-                                            {predictions.model_type === 'RandomForestRegressor' ? `RandomForest: ${formatModelVersionDisplay(predictions.model_version)}` :
-                                             predictions.model_type === 'LinearRegression' ? `Linear Regression: ${formatModelVersionDisplay(predictions.model_version)}` :
-                                             predictions.model_type === 'river_kafka_online' ? `River Online (Kafka) [River]: ${formatModelVersionDisplay(predictions.model_version)}` :
-                                             predictions.model_type === 'moving_average_fallback' ? `River Online (Kafka) [MA Fallback]: ${formatModelVersionDisplay(predictions.model_version)}` :
-                                             predictions.model_type === 'river_risingwave_online' ? 'River Online (RisingWave): Live [Moving Average]' :
-                                             `${predictions.model_type}: ${formatModelVersionDisplay(predictions.model_version)}`}
+                                            {predictions.model_type === 'RandomForestRegressor' ? `Batch Model (${predictions.source}): RandomForest - ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'LinearRegression' ? `Batch Model (${predictions.source}): Linear Regression - ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'river_kafka_online' ? `Online Learning (${predictions.source}): River Online (Kafka) - ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'moving_average_fallback' ? `Online Learning (${predictions.source}): River Online (Kafka) [MA Fallback] - ${formatModelVersionDisplay(predictions.model_version)}` :
+                                             predictions.model_type === 'river_risingwave_online' ? `Online Learning (${predictions.source}): River Online (RisingWave) - Live [Moving Average]` :
+                                             `${predictions.mode === 'online' ? 'Online Learning' : 'Batch Model'} (${predictions.source}): ${predictions.model_type} - ${formatModelVersionDisplay(predictions.model_version)}`}
                                         </span>
                                     </>
                                 )}

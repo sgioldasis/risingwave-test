@@ -47,10 +47,15 @@ _predictor: Optional[ModelPredictor] = None
 _river_predictor: Optional['RiverModelPredictor'] = None
 _kafka_river_predictor: Optional['KafkaRiverModelPredictor'] = None
 _reload_task: Optional[asyncio.Task] = None
+_mode_check_task: Optional[asyncio.Task] = None
 
-# Configuration
-USE_ONLINE_LEARNING = os.getenv('USE_ONLINE_LEARNING', 'false').lower() == 'true'
-USE_KAFKA_SOURCE = os.getenv('USE_KAFKA_SOURCE', 'false').lower() == 'true'
+# Configuration - dynamic mode detection
+_current_mode: str = "online"  # "online" or "batch"
+_mode_switch_history: list = []  # Track mode switches for logging
+
+# Optional environment variable overrides (for backward compatibility)
+_FORCE_ONLINE = os.getenv('USE_ONLINE_LEARNING', '').lower() == 'true'
+_FORCE_KAFKA = os.getenv('USE_KAFKA_SOURCE', '').lower() == 'true'
 
 
 def get_predictor() -> ModelPredictor:
@@ -65,7 +70,7 @@ def get_online_predictor() -> Optional[Any]:
     """Get or create the appropriate online learning predictor."""
     global _river_predictor, _kafka_river_predictor
     
-    if USE_KAFKA_SOURCE and KAFKA_RIVER_AVAILABLE:
+    if _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
         if _kafka_river_predictor is None:
             _kafka_river_predictor = get_kafka_river_predictor(auto_start=True)
         return _kafka_river_predictor
@@ -83,8 +88,8 @@ async def auto_reload_loop():
     while True:
         try:
             await asyncio.sleep(reload_interval)
-            # Only check batch models if not using online learning
-            if not USE_ONLINE_LEARNING:
+            # Only reload batch models when in batch mode
+            if _current_mode == "batch":
                 predictor = get_predictor()
                 updated = predictor.check_and_reload()
                 if updated:
@@ -93,36 +98,107 @@ async def auto_reload_loop():
             logger.error(f"Error in auto-reload: {e}")
 
 
+async def mode_detection_loop():
+    """
+    Background task to detect batch models and switch modes dynamically.
+    
+    Checks MinIO every 30 seconds for batch models:
+    - If batch models found -> switch to batch mode
+    - If no batch models -> stay in online mode
+    """
+    global _current_mode, _mode_switch_history
+    check_interval = int(os.getenv('MODE_CHECK_INTERVAL_SECONDS', '30'))
+    
+    # Initialize model loader for checking
+    from .model_loader import ModelLoader
+    loader = ModelLoader()
+    
+    while True:
+        try:
+            await asyncio.sleep(check_interval)
+            
+            has_batch = loader.has_batch_models()
+            previous_mode = _current_mode
+            
+            if has_batch and _current_mode != "batch":
+                # Switch to batch mode
+                _current_mode = "batch"
+                _mode_switch_history.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "from": previous_mode,
+                    "to": "batch",
+                    "reason": "Batch models detected in MinIO"
+                })
+                logger.info(f"🔄 Mode switched: {previous_mode} -> batch (Batch models detected)")
+                
+                # Initialize batch predictor if not already done
+                get_predictor()
+                
+            elif not has_batch and _current_mode != "online":
+                # Switch to online mode
+                _current_mode = "online"
+                _mode_switch_history.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "from": previous_mode,
+                    "to": "online",
+                    "reason": "No batch models available"
+                })
+                logger.info(f"🔄 Mode switched: {previous_mode} -> online (No batch models)")
+                
+                # Initialize online predictor if not already done
+                get_online_predictor()
+                
+        except Exception as e:
+            logger.error(f"Error in mode detection: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize predictor on startup."""
-    global _reload_task
+    """Initialize predictor on startup with dynamic mode detection."""
+    global _reload_task, _mode_check_task, _current_mode
     logger.info("Starting ML Serving Service...")
     
-    if USE_ONLINE_LEARNING:
-        source = "Kafka" if USE_KAFKA_SOURCE else "RisingWave"
-        logger.info(f"🌊 Online learning mode enabled ({source})")
-        # Initialize online predictor (starts the learner)
-        get_online_predictor()
-    else:
-        logger.info("📦 Batch mode enabled")
+    # Check for batch models on startup to determine initial mode
+    from .model_loader import ModelLoader
+    loader = ModelLoader()
+    has_batch = loader.has_batch_models()
+    
+    if has_batch:
+        _current_mode = "batch"
+        logger.info("📦 Batch mode enabled (batch models detected)")
         # Initialize batch predictor
         get_predictor()
-        
-        # Start auto-reload task
+        # Start auto-reload task for batch models
         _reload_task = asyncio.create_task(auto_reload_loop())
         logger.info(f"Auto-reload enabled (interval: {os.getenv('MODEL_RELOAD_INTERVAL_SECONDS', '60')}s)")
+    else:
+        _current_mode = "online"
+        source = "Kafka" if (_FORCE_KAFKA and KAFKA_RIVER_AVAILABLE) else "RisingWave"
+        logger.info(f"🌊 Online learning mode enabled ({source}) - no batch models found")
+        # Initialize online predictor (starts the learner)
+        get_online_predictor()
+    
+    # Start mode detection background task (checks for batch models every 30s)
+    _mode_check_task = asyncio.create_task(mode_detection_loop())
+    logger.info("Mode detection enabled (interval: 30s)")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    global _reload_task, _river_predictor, _kafka_river_predictor
+    global _reload_task, _mode_check_task, _river_predictor, _kafka_river_predictor
     
     if _reload_task:
         _reload_task.cancel()
         try:
             await _reload_task
+        except asyncio.CancelledError:
+            pass
+    
+    if _mode_check_task:
+        _mode_check_task.cancel()
+        try:
+            await _mode_check_task
         except asyncio.CancelledError:
             pass
     
@@ -168,24 +244,32 @@ class OnlineLearnRequest(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    mode = "online" if USE_ONLINE_LEARNING else "batch"
-    source = "kafka" if USE_KAFKA_SOURCE else "risingwave" if USE_ONLINE_LEARNING else "none"
+    global _current_mode
+    
+    # Determine source based on current mode
+    if _current_mode == "batch":
+        source = "minio"
+    elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
+        source = "kafka"
+    else:
+        source = "risingwave"
     
     result = {
         "healthy": True,
         "service": "ml-serving",
-        "mode": mode,
+        "mode": _current_mode,
         "source": source,
         "river_available": RIVER_AVAILABLE,
         "kafka_river_available": KAFKA_RIVER_AVAILABLE,
+        "mode_switches": len(_mode_switch_history),
         "checked_at": datetime.now(timezone.utc).isoformat()
     }
     
-    if USE_ONLINE_LEARNING:
+    if _current_mode == "online":
         online_pred = get_online_predictor()
         if online_pred:
             result["online_ready"] = online_pred.is_ready()
-            if USE_KAFKA_SOURCE:
+            if source == "kafka":
                 result["kafka_connected"] = online_pred.is_kafka_connected()
     else:
         predictor = get_predictor()
@@ -198,17 +282,23 @@ async def health_check():
 
 @app.get("/predict", response_model=PredictionResponse)
 async def predict_all():
-    """Get predictions for all metrics."""
+    """Get predictions for all metrics using dynamically selected mode."""
+    global _current_mode
     predicted_at = datetime.now(timezone.utc).isoformat()
     next_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0) + timedelta(minutes=1)
     
-    mode = "online" if USE_ONLINE_LEARNING else "batch"
-    source = "kafka" if USE_KAFKA_SOURCE else "risingwave" if USE_ONLINE_LEARNING else "minio"
+    # Determine source based on current mode and availability
+    if _current_mode == "batch":
+        source = "minio"
+    elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
+        source = "kafka"
+    else:
+        source = "risingwave"
     
     result = {
         "predicted_at": predicted_at,
         "timestamp": next_minute.isoformat(),
-        "mode": mode,
+        "mode": _current_mode,
         "source": source,
         "viewers": None,
         "carters": None,
@@ -217,8 +307,8 @@ async def predict_all():
         "cart_to_buy_rate": None
     }
     
-    # Use online learning if enabled
-    if USE_ONLINE_LEARNING:
+    # Use online learning if in online mode
+    if _current_mode == "online":
         online_pred = get_online_predictor()
         if online_pred:
             predictions = online_pred.predict_all()
@@ -230,11 +320,11 @@ async def predict_all():
                     "samples_learned": pred.samples_learned
                 }
                 # Add Kafka connection status if using Kafka
-                if USE_KAFKA_SOURCE and hasattr(pred, 'kafka_connected'):
+                if source == "kafka" and hasattr(pred, 'kafka_connected'):
                     result[metric]["kafka_connected"] = pred.kafka_connected
         return result
     
-    # Fall back to batch prediction
+    # Use batch prediction
     predictor = get_predictor()
     predictor.check_and_reload()
     predictions = predictor.predict_all()
@@ -260,7 +350,8 @@ async def predict_all():
 
 @app.get("/predict/{metric}")
 async def predict_metric(metric: str):
-    """Get prediction for a specific metric."""
+    """Get prediction for a specific metric using dynamically selected mode."""
+    global _current_mode
     
     # Validate metric
     valid_metrics = ['viewers', 'carters', 'purchasers', 'view_to_cart_rate', 'cart_to_buy_rate']
@@ -269,8 +360,16 @@ async def predict_metric(metric: str):
     
     predicted_at = datetime.now(timezone.utc).isoformat()
     
-    # Use online learning if enabled
-    if USE_ONLINE_LEARNING:
+    # Determine source based on current mode
+    if _current_mode == "batch":
+        source = "minio"
+    elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
+        source = "kafka"
+    else:
+        source = "risingwave"
+    
+    # Use online learning if in online mode
+    if _current_mode == "online":
         online_pred = get_online_predictor()
         if online_pred:
             prediction = online_pred.predict(metric)
@@ -281,13 +380,15 @@ async def predict_metric(metric: str):
                     "confidence": prediction.confidence,
                     "model_type": prediction.model_type,
                     "samples_learned": prediction.samples_learned,
+                    "mode": _current_mode,
+                    "source": source,
                     "predicted_at": predicted_at
                 }
-                if USE_KAFKA_SOURCE and hasattr(prediction, 'kafka_connected'):
+                if source == "kafka" and hasattr(prediction, 'kafka_connected'):
                     response["kafka_connected"] = prediction.kafka_connected
                 return response
     
-    # Fall back to batch prediction
+    # Use batch prediction
     predictor = get_predictor()
     predictor.check_and_reload()
     prediction = predictor.predict(metric)
@@ -300,17 +401,26 @@ async def predict_metric(metric: str):
         "value": prediction.value,
         "confidence": prediction.confidence,
         "model_version": prediction.model_version,
+        "mode": _current_mode,
+        "source": source,
         "predicted_at": predicted_at
     }
 
 
 @app.get("/models", response_model=ModelStatusResponse)
 async def get_models():
-    """Get status of all loaded models."""
-    mode = "online" if USE_ONLINE_LEARNING else "batch"
-    source = "kafka" if USE_KAFKA_SOURCE else "risingwave" if USE_ONLINE_LEARNING else "minio"
+    """Get status of all loaded models using dynamically selected mode."""
+    global _current_mode
     
-    if USE_ONLINE_LEARNING:
+    # Determine source based on current mode
+    if _current_mode == "batch":
+        source = "minio"
+    elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
+        source = "kafka"
+    else:
+        source = "risingwave"
+    
+    if _current_mode == "online":
         online_pred = get_online_predictor()
         if online_pred:
             status = online_pred.get_status()
@@ -327,7 +437,7 @@ async def get_models():
                 }
             
             return {
-                "mode": mode,
+                "mode": _current_mode,
                 "source": source,
                 "models": models_dict,
                 "online_stats": {
@@ -357,7 +467,7 @@ async def get_models():
         }
     
     return {
-        "mode": mode,
+        "mode": _current_mode,
         "source": source,
         "models": status_dict,
         "online_stats": None,
@@ -369,12 +479,22 @@ async def get_models():
 @app.post("/reload")
 async def reload_models():
     """Force reload models (batch mode only)."""
-    if USE_ONLINE_LEARNING:
+    global _current_mode
+    
+    # Determine source for response
+    if _current_mode == "batch":
+        source = "minio"
+    elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
+        source = "kafka"
+    else:
+        source = "risingwave"
+    
+    if _current_mode == "online":
         return {
             "success": True,
             "message": "Online learning mode - models update continuously, no reload needed",
-            "mode": "online",
-            "source": "kafka" if USE_KAFKA_SOURCE else "risingwave"
+            "mode": _current_mode,
+            "source": source
         }
     
     predictor = get_predictor()
@@ -384,6 +504,8 @@ async def reload_models():
         return {
             "success": True,
             "message": f"Reloaded {len(predictor.models)} models",
+            "mode": _current_mode,
+            "source": source,
             "reloaded_at": predictor.last_reload
         }
     else:
@@ -396,10 +518,20 @@ async def manual_learn(request: OnlineLearnRequest):
     Manually trigger learning from features and targets.
     Only available in online learning mode with RisingWave source.
     """
-    if not USE_ONLINE_LEARNING or USE_KAFKA_SOURCE:
+    global _current_mode
+    
+    # Determine source
+    if _current_mode == "batch":
+        source = "minio"
+    elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
+        source = "kafka"
+    else:
+        source = "risingwave"
+    
+    if _current_mode != "online" or source == "kafka":
         raise HTTPException(
             status_code=400,
-            detail="Manual learning only available when USE_ONLINE_LEARNING=true and USE_KAFKA_SOURCE=false"
+            detail="Manual learning only available in online mode with RisingWave source"
         )
     
     if not RIVER_AVAILABLE:
@@ -414,6 +546,8 @@ async def manual_learn(request: OnlineLearnRequest):
     return {
         "success": True,
         "message": "Learning triggered",
+        "mode": _current_mode,
+        "source": source,
         "features": request.features,
         "targets": request.targets
     }
@@ -422,8 +556,10 @@ async def manual_learn(request: OnlineLearnRequest):
 @app.get("/online/status")
 async def online_learning_status():
     """Get detailed online learning status."""
-    if not USE_ONLINE_LEARNING:
-        raise HTTPException(status_code=400, detail="Online learning not enabled")
+    global _current_mode
+    
+    if _current_mode != "online":
+        raise HTTPException(status_code=400, detail="Online learning not enabled (currently in batch mode)")
     
     online_pred = get_online_predictor()
     if not online_pred:

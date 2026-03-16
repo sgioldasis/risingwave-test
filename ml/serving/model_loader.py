@@ -167,3 +167,22 @@ class ModelLoader:
     def get_manifest(self) -> Optional[Dict[str, Any]]:
         """Get the current manifest."""
         return self._get_manifest()
+    
+    def has_batch_models(self) -> bool:
+        """
+        Check if batch models are available in MinIO.
+        
+        Returns:
+            True if manifest.json exists and has valid model entries
+        """
+        try:
+            manifest = self._get_manifest()
+            if not manifest:
+                return False
+            
+            latest_versions = manifest.get("latest_versions", {})
+            # Check if we have at least one model
+            return len(latest_versions) > 0
+            
+        except Exception:
+            return False

@@ -618,12 +618,15 @@ async def get_next_predictions():
             detailed_model_type = "MovingAverage"
         
         # Build response with flat structure for frontend compatibility
+        # Include mode and source from ML serving for mode indicator badge
         predictions = {
             "predicted_at": result.get("predicted_at", datetime.now(timezone.utc).isoformat()),
             "timestamp": result.get("timestamp", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()),
             "model_version": model_version,
             "model_type": detailed_model_type,  # Detailed type: RandomForestRegressor, LinearRegression, MovingAverage
-            "is_heuristic": is_heuristic
+            "is_heuristic": is_heuristic,
+            "mode": result.get("mode", "unknown"),  # "online" or "batch"
+            "source": result.get("source", "unknown")  # "minio", "risingwave", or "kafka"
         }
         
         # Add predictions for each metric at the root level
