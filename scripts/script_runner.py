@@ -1380,6 +1380,7 @@ async def run_script_in_background(script_file, ws, params=''):
                 if asyncio.get_event_loop().time() - wait_start > timeout:
                     await append_output(script_file, "⚠️ Timeout waiting for service to stop, proceeding anyway", 'warning')
                     break
+                await append_output(script_file, "   Still waiting for process to terminate...", 'info')
                 await asyncio.sleep(0.5)
     
     # Clear previous output for this script
@@ -1752,7 +1753,8 @@ async def kill_process_by_pattern(pattern):
         
         # Special handling for producer - also look for uv, bash with 3_run_producer.sh
         if "producer" in pattern.lower():
-            extra_patterns = ["3_run_producer.sh", "uv run"]
+            # Be more specific: match "uv run python scripts/producer.py" not just "uv run"
+            extra_patterns = ["3_run_producer.sh", "uv run python scripts/producer"]
             for extra_pattern in extra_patterns:
                 for proc in psutil.process_iter(['cmdline', 'pid']):
                     try:
@@ -1793,6 +1795,9 @@ async def kill_process_by_pattern(pattern):
                         print(f"Force killed process {pid}")
                 except psutil.NoSuchProcess:
                     pass
+            
+            # Wait a bit longer for processes to fully terminate and be reaped
+            await asyncio.sleep(0.5)
         
         return len(killed_pids)
     except Exception as e:
