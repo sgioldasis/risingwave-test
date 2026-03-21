@@ -1,5 +1,5 @@
 x-image: &image
-  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.6.0}
+  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.0}
 
 x-lakekeeper-image: &lakekeeper-image
   image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
@@ -178,11 +178,11 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - bash -c '> /dev/tcp/127.0.0.1/4566; exit $?;'
+        - bash -c 'printf "GET / HTTP/1.1\n\n" > /dev/tcp/127.0.0.1/4566; exit $$?;'
       interval: 5s
       timeout: 10s
-      retries: 10
-      start_period: 60s
+      retries: 15
+      start_period: 120s
     restart: always
     deploy:
       resources:
@@ -524,9 +524,12 @@ services:
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
     depends_on:
-      - frontend-node-0
-      - redpanda
-      - lakekeeper
+      frontend-node-0:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      lakekeeper:
+        condition: service_started
     networks:
       - iceberg_net
     container_name: dagster-webserver
@@ -561,7 +564,10 @@ services:
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
     depends_on:
-      - dagster-webserver
+      dagster-webserver:
+        condition: service_started
+      frontend-node-0:
+        condition: service_healthy
     networks:
       - iceberg_net
     container_name: dagster-daemon
