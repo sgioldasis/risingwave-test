@@ -14,6 +14,9 @@ models:
     +schema: public
 
 vars:
+  # Kafka configuration
+  kafka_bootstrap_servers: 'redpanda:9092'
+
   # Iceberg configuration
   iceberg_catalog_uri: 'http://lakekeeper:8181/catalog/'
   iceberg_warehouse: 'risingwave-warehouse'
@@ -24,7 +27,9 @@ vars:
   s3_region: 'us-east-1'
 
 # Model execution order:
-# 1. src_*.sql (sources) - Kafka sources
-# 2. funnel.sql (materialized_view) - Funnel aggregation
-# 3. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
-# 4. funnel_to_iceberg_sink.sql (sink) - Sink to Iceberg
+# 1. src_*.sql (sources) - Kafka sources (append-only, non-modifiable)
+# 2. tbl_*.sql (kafka_table) - Kafka tables (modifiable with PRIMARY KEY)
+# 3. funnel.sql (materialized_view) - Funnel aggregation from sources
+# 4. funnel_from_tables.sql (materialized_view) - Funnel aggregation from tables (modifiable)
+# 5. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
+# 6. funnel_to_iceberg_sink.sql (sink) - Sink to Iceberg
