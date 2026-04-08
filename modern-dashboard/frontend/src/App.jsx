@@ -195,7 +195,7 @@ const App = () => {
                     <img src="/kaizengaming-logo.png" alt="Kaizen Gaming Logo" className="h-8 w-8 rounded-lg shadow-lg" style={{ height: '32px', width: '32px', objectFit: 'cover' }} />
                     <span className="brand gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800 }}>Kaizen Gaming</span>
                     <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>|</span>
-                    <span style={{ fontSize: '1.1rem', opacity: 0.8, fontWeight: 600, letterSpacing: '-0.01em' }}>Real-time Dashboard</span>
+                    <span style={{ fontSize: '1.1rem', opacity: 0.8, fontWeight: 600, letterSpacing: '-0.01em' }}>Real-time</span>
                 </div>
 
                 <div className="header-center">
@@ -260,22 +260,6 @@ const App = () => {
                         Predictions
                         <Brain size={14} className="ml-1 opacity-70" />
                     </button>
-                    <div className="flex gap-2 ml-2 items-center">
-                        <button
-                            onClick={startProducer}
-                            className="btn-primary btn-compact"
-                            disabled={producerStatus.running}
-                        >
-                            Start
-                        </button>
-                        <button
-                            onClick={stopProducer}
-                            className="btn-secondary btn-compact"
-                            disabled={!producerStatus.running}
-                        >
-                            Stop
-                        </button>
-                    </div>
                 </nav>
                 </div>
 
@@ -286,14 +270,18 @@ const App = () => {
                             background: producerStatus.running ? 'rgba(0, 204, 150, 0.1)' : 'rgba(239, 68, 68, 0.1)',
                             borderColor: producerStatus.running ? 'rgba(0, 204, 150, 0.2)' : 'rgba(239, 68, 68, 0.2)',
                             color: producerStatus.running ? '#00cc96' : '#ef4444',
-                            marginRight: '0.75rem'
+                            marginRight: '0.75rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px'
                         }}
                     >
                         <span
                             className={`w-2 h-2 rounded-full ${producerStatus.running ? 'animate-pulse' : ''}`}
                             style={{ background: producerStatus.running ? '#00cc96' : '#ef4444' }}
                         />
-                        Status: {producerStatus.running ? 'Running' : 'Stopped'}
+                        Producer: {producerStatus.running ? 'Running' : 'Stopped'}
                     </div>
                     <div className="refresh-badge">
                         <Clock size={14} />
