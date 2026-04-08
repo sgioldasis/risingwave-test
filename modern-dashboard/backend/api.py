@@ -1,9 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from confluent_kafka import Consumer, KafkaException
 from datetime import datetime, timedelta, timezone
+from sqlalchemy import create_engine, text
+from typing import Optional
 import json
 import threading
 import time
@@ -85,6 +87,11 @@ import os
 KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
 FUNNEL_TOPIC = 'funnel'
 logger.info(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
+
+# RisingWave database configuration via SQLAlchemy
+RISINGWAVE_URL = os.getenv('RISINGWAVE_URL', 'postgresql://root:root@localhost:4566/dev')
+funnel_engine = create_engine(RISINGWAVE_URL, connect_args={"connect_timeout": 5})
+logger.info(f"[RisingWave] Connected to: {RISINGWAVE_URL.replace('root:root', '***:***')}")
 
 # In-memory cache for the latest funnel data
 latest_funnel_data = {
@@ -892,6 +899,125 @@ async def get_predictions_comparison():
             "time_adjusted_predictions": None,
             "recent_actuals": [],
             "comparison_available": False,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+
+# =============================================================================
+# Query Endpoints - SQLAlchemy RisingWave Integration
+# =============================================================================
+
+@app.get("/api/query/funnel")
+def query_funnel_data(
+    start_time: str = Query(..., description="Start time in ISO format"),
+    end_time: str = Query(..., description="End time in ISO format")
+):
+    """
+    Query funnel_summary table directly from RisingWave using SQLAlchemy.
+    
+    Returns per-minute records from the pre-aggregated 1-minute windows.
+    """
+    try:
+        with funnel_engine.connect() as conn:
+            query = text("""
+                SELECT
+                    window_start,
+                    window_end,
+                    viewers,
+                    carters,
+                    purchasers,
+                    view_to_cart_rate,
+                    cart_to_buy_rate
+                FROM funnel_summary
+                WHERE window_start >= :start_time
+                  AND window_end <= :end_time
+                ORDER BY window_start DESC
+                LIMIT 1000
+            """)
+            
+            result = conn.execute(query, {
+                "start_time": start_time,
+                "end_time": end_time
+            })
+            
+            records = []
+            for row in result:
+                records.append({
+                    "window_start": row.window_start.isoformat() if row.window_start else None,
+                    "window_end": row.window_end.isoformat() if row.window_end else None,
+                    "viewers": int(row.viewers),
+                    "carters": int(row.carters),
+                    "purchasers": int(row.purchasers),
+                    "view_to_cart_rate": float(row.view_to_cart_rate) if row.view_to_cart_rate else 0.0,
+                    "cart_to_buy_rate": float(row.cart_to_buy_rate) if row.cart_to_buy_rate else 0.0
+                })
+            
+            return {
+                "data": records,
+                "count": len(records),
+                "query": {
+                    "start_time": start_time,
+                    "end_time": end_time
+                },
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Error querying funnel data: {e}")
+        return {
+            "error": str(e),
+            "data": [],
+            "count": 0,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+
+@app.get("/api/query/funnel/aggregate")
+def query_funnel_aggregate(
+    start_time: str = Query(..., description="Start time in ISO format"),
+    end_time: str = Query(..., description="End time in ISO format")
+):
+    """
+    Query aggregated funnel data from RisingWave using SQLAlchemy.
+    
+    Returns sum of viewers, carters, and purchasers for the specified time range
+    from the per-minute funnel_summary table.
+    """
+    try:
+        with funnel_engine.connect() as conn:
+            query = text("""
+                SELECT
+                    COALESCE(SUM(viewers), 0) as total_viewers,
+                    COALESCE(SUM(carters), 0) as total_carters,
+                    COALESCE(SUM(purchasers), 0) as total_purchasers,
+                    COUNT(*) as record_count
+                FROM funnel_summary
+                WHERE window_start >= :start_time
+                  AND window_end <= :end_time
+            """)
+            
+            result = conn.execute(query, {
+                "start_time": start_time,
+                "end_time": end_time
+            }).fetchone()
+            
+            return {
+                "data": {
+                    "total_viewers": int(result.total_viewers),
+                    "total_carters": int(result.total_carters),
+                    "total_purchasers": int(result.total_purchasers),
+                    "record_count": int(result.record_count)
+                },
+                "query": {
+                    "start_time": start_time,
+                    "end_time": end_time
+                },
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Error querying funnel aggregate: {e}")
+        return {
+            "error": str(e),
+            "data": None,
             "generated_at": datetime.now(timezone.utc).isoformat()
         }
 

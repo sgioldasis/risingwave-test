@@ -565,3 +565,160 @@ header {
     text-align: center;
     width: 100%;
 }
+
+/* Queries Tab Table Styling */
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+table th {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+table td {
+    vertical-align: middle;
+}
+
+/* Custom scrollbar for table container */
+.overflow-x-auto::-webkit-scrollbar {
+    height: 8px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* Native date/time input wrapper */
+.input-with-picker {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+/* Native date input - styled to show only calendar icon */
+.native-date-input {
+    height: 42px;
+    width: 150px;
+    padding: 0 0.5rem 0 0.75rem;
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.875rem;
+    font-weight: 500;
+    font-family: inherit;
+    outline: none;
+    transition: all 0.2s ease;
+    color-scheme: dark;
+    cursor: text;
+}
+
+.native-date-input:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.native-date-input:focus {
+    border-color: rgba(99, 110, 250, 0.5);
+    box-shadow: 0 2px 12px rgba(99, 110, 250, 0.15);
+}
+
+/* Native time input */
+.native-time-input {
+    height: 42px;
+    width: 100px;
+    padding: 0 0.5rem 0 0.75rem;
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.875rem;
+    font-weight: 500;
+    font-family: inherit;
+    outline: none;
+    transition: all 0.2s ease;
+    color-scheme: dark;
+    cursor: text;
+}
+
+.native-time-input:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.native-time-input:focus {
+    border-color: rgba(99, 110, 250, 0.5);
+    box-shadow: 0 2px 12px rgba(99, 110, 250, 0.15);
+}
+
+/* Hide the calendar/clock icon in WebKit browsers and show our own */
+.native-date-input::-webkit-calendar-picker-indicator,
+.native-time-input::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    opacity: 0.6;
+    cursor: pointer;
+}
+
+.native-date-input::-webkit-calendar-picker-indicator:hover,
+.native-time-input::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}
+
+/* Queries Tab Table Styles */
+.query-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.query-table th {
+    background: rgba(99, 110, 250, 0.1);
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.9);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.query-table td {
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.query-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.query-table .num-cell {
+    font-family: 'Courier New', monospace;
+    font-weight: 500;
+    text-align: right;
+}
+
+/* Spacing utilities for query controls */
+.gap-2 {
+    gap: 0.5rem;
+}
+
+.gap-3 {
+    gap: 0.75rem;
+}
+
+.gap-4 {
+    gap: 1rem;
+}

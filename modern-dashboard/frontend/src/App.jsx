@@ -6,11 +6,12 @@ import {
 } from 'recharts';
 import {
     TrendingUp, TrendingDown, Users, ShoppingCart, CreditCard,
-    Activity, Zap, Clock, Maximize2, MoreHorizontal, Brain
+    Activity, Zap, Clock, Maximize2, MoreHorizontal, Brain, Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import PureCSSFunnel from './components/PureCSSFunnel';
 import PredictionsTab from './components/PredictionsTab';
+import QueriesTab from './components/QueriesTab';
 
 const isWebGLAvailable = () => {
     try {
@@ -229,6 +230,21 @@ const App = () => {
                         <span className={`ml-2 w-2 h-2 rounded-full ${producerStatus.running ? 'bg-[#00cc96] animate-pulse' : 'bg-white/20'}`} />
                     </button>
                     <button
+                        onClick={() => setActiveTab('queries')}
+                        className={`tab-item ${activeTab === 'queries' ? 'active' : ''}`}
+                    >
+                        {activeTab === 'queries' && (
+                            <motion.div
+                                layoutId="activeTab"
+                                className="tab-active-pill"
+                                style={{ position: 'absolute', inset: '4px', zIndex: -1 }}
+                                transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                            />
+                        )}
+                        Queries
+                        <Search size={14} className="ml-1 opacity-70" />
+                    </button>
+                    <button
                         onClick={() => setActiveTab('predictions')}
                         className={`tab-item ${activeTab === 'predictions' ? 'active' : ''}`}
                         disabled={!predictionsEnabled}
@@ -289,6 +305,8 @@ const App = () => {
             <AnimatePresence mode="wait">
                 {activeTab === 'predictions' ? (
                         <PredictionsTab funnelData={data} />
+                    ) : activeTab === 'queries' ? (
+                        <QueriesTab />
                     ) : activeTab === 'dashboard' ? (
                     <motion.div
                         key="dashboard"
