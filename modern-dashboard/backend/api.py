@@ -913,9 +913,9 @@ def query_funnel_data(
     end_time: str = Query(..., description="End time in ISO format")
 ):
     """
-    Query funnel_summary table directly from RisingWave using SQLAlchemy.
+    Query funnel_summary_with_country view directly from RisingWave using SQLAlchemy.
     
-    Returns per-minute records from the pre-aggregated 1-minute windows.
+    Returns per-minute records with country breakdown from the pre-aggregated 1-minute windows.
     """
     try:
         with funnel_engine.connect() as conn:
@@ -923,15 +923,17 @@ def query_funnel_data(
                 SELECT
                     window_start,
                     window_end,
+                    country,
+                    country_name,
                     viewers,
                     carters,
                     purchasers,
                     view_to_cart_rate,
                     cart_to_buy_rate
-                FROM funnel_summary
+                FROM funnel_summary_with_country
                 WHERE window_start >= :start_time
                   AND window_end <= :end_time
-                ORDER BY window_start DESC
+                ORDER BY window_start DESC, country
                 LIMIT 1000
             """)
             
@@ -945,6 +947,8 @@ def query_funnel_data(
                 records.append({
                     "window_start": row.window_start.isoformat() if row.window_start else None,
                     "window_end": row.window_end.isoformat() if row.window_end else None,
+                    "country": row.country,
+                    "country_name": row.country_name,
                     "viewers": int(row.viewers),
                     "carters": int(row.carters),
                     "purchasers": int(row.purchasers),
@@ -989,8 +993,9 @@ def query_funnel_aggregate(
                     COALESCE(SUM(viewers), 0) as total_viewers,
                     COALESCE(SUM(carters), 0) as total_carters,
                     COALESCE(SUM(purchasers), 0) as total_purchasers,
-                    COUNT(*) as record_count
-                FROM funnel_summary
+                    COUNT(*) as record_count,
+                    COUNT(DISTINCT country) as country_count
+                FROM funnel_summary_with_country
                 WHERE window_start >= :start_time
                   AND window_end <= :end_time
             """)
@@ -1005,7 +1010,8 @@ def query_funnel_aggregate(
                     "total_viewers": int(result.total_viewers),
                     "total_carters": int(result.total_carters),
                     "total_purchasers": int(result.total_purchasers),
-                    "record_count": int(result.record_count)
+                    "record_count": int(result.record_count),
+                    "country_count": int(result.country_count)
                 },
                 "query": {
                     "start_time": start_time,

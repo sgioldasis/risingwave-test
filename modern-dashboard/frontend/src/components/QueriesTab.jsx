@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Database, Users, ShoppingCart, CreditCard, BarChart3, Calendar, Clock } from 'lucide-react';
+import { Search, Database, Users, ShoppingCart, CreditCard, BarChart3, Calendar, Clock, Globe } from 'lucide-react';
 
 const DateTimeInput = ({ value, onChange }) => {
     const dateInputRef = useRef(null);
@@ -270,7 +270,8 @@ const QueriesTab = () => {
         total_viewers: 0,
         total_carters: 0,
         total_purchasers: 0,
-        record_count: 0
+        record_count: 0,
+        country_count: 0
     });
     const [loading, setLoading] = useState(false);
     const [hasQueried, setHasQueried] = useState(false);
@@ -300,7 +301,8 @@ const QueriesTab = () => {
                 total_viewers: 0,
                 total_carters: 0,
                 total_purchasers: 0,
-                record_count: 0
+                record_count: 0,
+                country_count: 0
             });
             setHasQueried(true);
         } catch (err) {
@@ -341,8 +343,8 @@ const QueriesTab = () => {
                     fontWeight: 600
                 }}
             >
-                <Database size={20} />
-                <span>Query Funnel Data</span>
+                <Globe size={20} />
+                <span>Query Funnel Data by Country</span>
             </motion.div>
 
             {/* Time Range Selector Card */}
@@ -452,6 +454,12 @@ const QueriesTab = () => {
                         icon={BarChart3}
                         color="#8B5CF6"
                     />
+                    <KPICard
+                        label="Countries"
+                        value={aggregates.country_count || 0}
+                        icon={Globe}
+                        color="#F59E0B"
+                    />
             </motion.div>
 
             {/* Results Table */}
@@ -481,8 +489,8 @@ const QueriesTab = () => {
                         color: 'rgba(255, 255, 255, 0.9)',
                         fontWeight: 600
                     }}>
-                        <Database size={18} />
-                        <span>Individual Records</span>
+                        <Globe size={18} />
+                        <span>Records by Country</span>
                     </div>
                     {hasQueried && results.length > 0 && (
                         <span style={{
@@ -525,6 +533,15 @@ const QueriesTab = () => {
                                         letterSpacing: '0.05em',
                                         fontWeight: 500
                                     }}>Window Start</th>
+                                    <th style={{
+                                        padding: '0.875rem 1.5rem',
+                                        textAlign: 'left',
+                                        fontSize: '0.75rem',
+                                        color: '#F59E0B',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.05em',
+                                        fontWeight: 500
+                                    }}>Country</th>
                                     <th style={{
                                         padding: '0.875rem 1.5rem',
                                         textAlign: 'right',
@@ -571,6 +588,13 @@ const QueriesTab = () => {
                                             color: 'rgba(255, 255, 255, 0.8)'
                                         }}>
                                             {formatTimestamp(row.window_start)}
+                                        </td>
+                                        <td style={{
+                                            padding: '0.875rem 1.5rem',
+                                            fontSize: '0.875rem',
+                                            color: '#F59E0B'
+                                        }}>
+                                            {row.country_name || row.country || '-'}
                                         </td>
                                         <td style={{
                                             padding: '0.875rem 1.5rem',
