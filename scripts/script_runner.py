@@ -62,6 +62,9 @@ connected_websockets = set()
 completion_seq = 0 # To track completion messages
 manually_stopped_services = set()  # script_file -> set of services explicitly stopped by user
 
+# Scripts that should never show "running" indicator (fire-and-forget scripts)
+NO_RUNNING_INDICATOR_SCRIPTS = {'show_links.sh'}
+
 # Background services with their ports for the external services checker
 BACKGROUND_SERVICES_CONFIG = [
     {"script": "4_run_dashboard.sh", "port": 8050},
@@ -549,6 +552,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         const scripts = {{ scripts|tojson }};
         const scriptMap = Object.fromEntries(scripts.map(s => [s[0], { file: s[0], name: s[1], desc: s[2] }]));
         const BACKGROUND_SCRIPTS = ['4_run_dashboard.sh', '4_run_modern.sh', '3_run_producer.sh', '5_spark_iceberg.sh', '5_marimo_risingwave.sh'];
+        const NO_RUNNING_INDICATOR_SCRIPTS = new Set(['show_links.sh']);
         let ws;
         let reconnectInterval;
         let activeTabs = new Map(); // scriptFile -> { element, outputElement, running }
@@ -936,6 +940,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
         
         function updateStatus(scriptFile, status) {
+            // Skip scripts that should never show running indicator
+            if (NO_RUNNING_INDICATOR_SCRIPTS.has(scriptFile)) {
+                return;
+            }
+            
             const tab = activeTabs.get(scriptFile);
             const scriptItem = document.getElementById(`script-${scriptFile}`);
             

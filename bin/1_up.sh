@@ -5,6 +5,12 @@
 
 set -e
 
+echo "=== Pre-flight: Upgrading all local packages to latest versions ==="
+# Use uv sync --upgrade to update uv.lock and install latest versions
+devbox run uv sync --upgrade
+echo "✅ Local packages upgraded"
+
+echo ""
 echo "=== Pre-flight: Cleaning up any existing Dagster state ==="
 # Stop and remove Dagster containers first to release the volume
 # This is necessary because Docker won't remove a volume that's in use
@@ -26,10 +32,6 @@ echo ""
 docker compose up --build -d
 
 echo ""
-echo "Installing Python dependencies with uv..."
-uv sync
-
-echo ""
 echo "Checking modern dashboard dependencies..."
 if [ ! -d "modern-dashboard/frontend/node_modules" ]; then
     echo "node_modules not found. Installing frontend dependencies..."
@@ -41,6 +43,6 @@ fi
 
 echo ""
 echo "✅ Docker Compose services started successfully!"
-echo "✅ Python dependencies installed with uv sync"
+echo "✅ All packages upgraded to latest versions with uv sync --upgrade"
 echo "✅ Dagster started with fresh storage (no Alembic conflicts)"
 echo "You can now run your dbt models and applications."

@@ -24,22 +24,27 @@ RUN useradd -m -u 1000 -s /bin/bash dagster && \
 # Install uv for fast Python package management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy project files needed for dependency installation
+# Copy pyproject.toml and uv.lock first for dependency resolution layer caching
 COPY pyproject.toml uv.lock ./
 
-# Create virtual environment and install dependencies using uv
-# Uses cache mount for uv cache to speed up rebuilds
-# Cache is invalidated only when pyproject.toml or uv.lock changes
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv /opt/dagster-venv && \
-    uv pip install --python /opt/dagster-venv/bin/python --cache-dir /root/.cache/uv -e .
-
-# Copy and set up entrypoint script (must be done as root)
+# Copy entrypoint script (must be done as root before switching user)
 COPY docker-entrypoint-dagster.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint-dagster.sh
 
-# Copy the rest of the project with proper ownership
+# Create virtual environment with pip
+RUN uv venv /opt/dagster-venv --seed
+
+# Copy the full project (needed for editable install)
 COPY --chown=dagster:dagster . .
+
+# Install dependencies using uv pip with --upgrade to get latest versions
+# Uses cache mount to speed up rebuilds while still fetching latest versions
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /opt/dagster-venv/bin/python --upgrade -r pyproject.toml
+
+# Note: This project is NOT installed as a package.
+# Instead, we use PYTHONPATH to include the workspace root.
+# This allows imports like 'from ml.online.models import ...' to work.
 
 # Ensure dagster_storage directory exists and is owned by dagster user
 RUN mkdir -p dagster_storage/logs && chown -R dagster:dagster /workspace

@@ -37,10 +37,12 @@ mkdir -p /workspace/dagster_storage/logs
 RUNS_DB="/workspace/dagster_storage/runs.db"
 EVENT_LOGS_DB="/workspace/dagster_storage/event_logs.db"
 SCHEDULES_DB="/workspace/dagster_storage/schedules.db"
+RUNS_DIR="/workspace/dagster_storage/runs"
+SCHEDULES_DIR="/workspace/dagster_storage/schedules"
 
-if [ -f "$RUNS_DB" ] || [ -f "$EVENT_LOGS_DB" ] || [ -f "$SCHEDULES_DB" ]; then
+if [ -f "$RUNS_DB" ] || [ -f "$EVENT_LOGS_DB" ] || [ -f "$SCHEDULES_DB" ] || [ -d "$RUNS_DIR" ] || [ -d "$SCHEDULES_DIR" ]; then
     echo "Removing existing Dagster databases to ensure clean state..."
-    rm -f "$RUNS_DB" "$EVENT_LOGS_DB" "$SCHEDULES_DB"
+    rm -rf "$RUNS_DB" "$EVENT_LOGS_DB" "$SCHEDULES_DB" "$RUNS_DIR" "$SCHEDULES_DIR"
     echo "✅ Cleaned up existing Dagster databases"
 fi
 
