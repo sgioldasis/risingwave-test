@@ -6,12 +6,13 @@ import {
 } from 'recharts';
 import {
     TrendingUp, TrendingDown, Users, ShoppingCart, CreditCard,
-    Activity, Zap, Clock, Maximize2, MoreHorizontal, Brain, Search
+    Activity, Zap, Clock, Maximize2, MoreHorizontal, Brain, Search, Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import PureCSSFunnel from './components/PureCSSFunnel';
 import PredictionsTab from './components/PredictionsTab';
 import QueriesTab from './components/QueriesTab';
+import EnrichedFunnelTab from './components/EnrichedFunnelTab';
 
 const isWebGLAvailable = () => {
     try {
@@ -195,7 +196,7 @@ const App = () => {
                     <img src="/kaizengaming-logo.png" alt="Kaizen Gaming Logo" className="h-8 w-8 rounded-lg shadow-lg" style={{ height: '32px', width: '32px', objectFit: 'cover' }} />
                     <span className="brand gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800 }}>Kaizen Gaming</span>
                     <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>|</span>
-                    <span style={{ fontSize: '1.1rem', opacity: 0.8, fontWeight: 600, letterSpacing: '-0.01em' }}>Real-time</span>
+                    <span style={{ fontSize: '1.1rem', opacity: 0.8, fontWeight: 600, letterSpacing: '-0.01em', marginRight: '1rem' }}>Real-time</span>
                 </div>
 
                 <div className="header-center">
@@ -242,7 +243,22 @@ const App = () => {
                             />
                         )}
                         Queries
-                        <Search size={14} className="ml-1 opacity-70" />
+                        <Search size={14} className="ml-2 opacity-70" />
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('enriched')}
+                        className={`tab-item ${activeTab === 'enriched' ? 'active' : ''}`}
+                    >
+                        {activeTab === 'enriched' && (
+                            <motion.div
+                                layoutId="activeTab"
+                                className="tab-active-pill"
+                                style={{ position: 'absolute', inset: '4px', zIndex: -1 }}
+                                transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                            />
+                        )}
+                        UDF Enriched
+                        <Sparkles size={14} className="ml-2 opacity-70" />
                     </button>
                     <button
                         onClick={() => setActiveTab('predictions')}
@@ -258,7 +274,7 @@ const App = () => {
                             />
                         )}
                         Predictions
-                        <Brain size={14} className="ml-1 opacity-70" />
+                        <Brain size={14} className="ml-2 opacity-70" />
                     </button>
                 </nav>
                 </div>
@@ -295,6 +311,8 @@ const App = () => {
                         <PredictionsTab funnelData={data} />
                     ) : activeTab === 'queries' ? (
                         <QueriesTab />
+                    ) : activeTab === 'enriched' ? (
+                        <EnrichedFunnelTab />
                     ) : activeTab === 'dashboard' ? (
                     <motion.div
                         key="dashboard"

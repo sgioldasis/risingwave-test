@@ -20,6 +20,7 @@ from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTransl
 
 from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
+from .assets.risingwave_udfs import risingwave_python_udfs
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -356,6 +357,8 @@ defs = Definitions(
     assets=[
         # Yield iceberg_countries first (dependency of dbt assets)
         iceberg_countries,
+        # Create Python UDFs before dbt models run
+        risingwave_python_udfs,
         realtime_funnel_dbt_assets,
         ml_trained_models,
     ],

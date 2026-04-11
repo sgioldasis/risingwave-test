@@ -27,9 +27,11 @@ vars:
   s3_region: 'us-east-1'
 
 # Model execution order:
-# 1. src_*.sql (sources) - Kafka sources (append-only, non-modifiable)
-# 2. tbl_*.sql (kafka_table) - Kafka tables (modifiable with PRIMARY KEY)
-# 3. funnel.sql (materialized_view) - Funnel aggregation from sources
-# 4. funnel_from_tables.sql (materialized_view) - Funnel aggregation from tables (modifiable)
-# 5. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
-# 6. funnel_to_iceberg_sink.sql (sink) - Sink to Iceberg
+# 1. 0_setup_udfs (creates Python UDFs before other models use them)
+# 3. src_*.sql (sources) - Kafka sources (append-only, non-modifiable)
+# 3. tbl_*.sql (kafka_table) - Kafka tables (modifiable with PRIMARY KEY)
+# 4. funnel.sql (materialized_view) - Funnel aggregation from sources
+# 5. funnel_enriched.sql (materialized_view) - Enriched funnel with Python UDFs
+# 6. funnel_from_tables.sql (materialized_view) - Funnel aggregation from tables (modifiable)
+# 7. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
+# 8. funnel_to_iceberg_sink.sql (sink) - Sink to Iceberg

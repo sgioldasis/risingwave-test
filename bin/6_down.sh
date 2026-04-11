@@ -314,6 +314,29 @@ echo ""
 
 docker compose down --volumes
 
+# Explicitly remove ALL volumes to ensure clean state
+echo ""
+echo "=== Cleaning up ALL persistent volumes ==="
+docker volume rm -f dagster-storage 2>/dev/null || true
+docker volume rm -f postgres-0 2>/dev/null || true
+docker volume rm -f minio-0 2>/dev/null || true
+docker volume rm -f lakekeeper-db 2>/dev/null || true
+docker volume rm -f redpanda-data 2>/dev/null || true
+
+# Prune all dangling volumes
+docker volume prune -f 2>/dev/null || true
+
+echo "✅ All volumes cleaned up"
+
+# Run fix_alembic script to ensure clean state for next startup
+echo ""
+echo "=== Running Alembic cleanup ==="
+if [ -f "bin/fix_alembic.sh" ]; then
+    bash bin/fix_alembic.sh
+else
+    echo "fix_alembic.sh not found, skipping additional cleanup"
+fi
+
 echo ""
 echo "=== Cleaning up dbt directories on host ==="
 echo "Using temporary Docker container to remove root-owned files..."

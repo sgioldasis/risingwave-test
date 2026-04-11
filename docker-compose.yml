@@ -1,5 +1,5 @@
 x-image: &image
-  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.0}
+  image: ${RW_IMAGE:-risingwavelabs/risingwave:latest}
 
 x-lakekeeper-image: &lakekeeper-image
   image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
@@ -501,6 +501,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dagster
+    entrypoint: ["/usr/local/bin/docker-entrypoint-dagster.sh"]
     command: ["dagster-webserver", "-m", "orchestration.definitions", "--host", "0.0.0.0", "--port", "3000"]
     ports:
       - "3000:3000"
@@ -520,6 +521,7 @@ services:
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
       - "./data:/workspace/data:ro"
+      - "./scripts:/workspace/scripts:ro"
       - "dagster-storage:/workspace/dagster_storage"
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
@@ -545,6 +547,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dagster
+    entrypoint: ["/usr/local/bin/docker-entrypoint-dagster.sh"]
     command: ["dagster-daemon", "run", "-m", "orchestration.definitions"]
     environment:
       - DAGSTER_HOME=/workspace
@@ -560,6 +563,7 @@ services:
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
       - "./data:/workspace/data:ro"
+      - "./scripts:/workspace/scripts:ro"
       - "dagster-storage:/workspace/dagster_storage"
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"

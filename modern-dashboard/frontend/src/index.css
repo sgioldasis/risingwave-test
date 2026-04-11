@@ -197,6 +197,7 @@ header {
     justify-content: center;
     align-items: center;
     flex: 1 1 auto;
+    margin: 0 1.5rem;
 }
 
 .header-right {
@@ -205,6 +206,7 @@ header {
     align-items: center;
     gap: 0.75rem;
     flex: 0 0 auto;
+    margin-left: 1.5rem;
 }
 
 /* Modern Tabs - Centered */
@@ -214,11 +216,11 @@ header {
     border-radius: 14px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
-    gap: 4px;
+    gap: 2px;
 }
 
 .tab-item {
-    padding: 10px 32px;
+    padding: 10px 20px;
     border-radius: 12px;
     font-size: 0.9rem;
     font-weight: 800;
@@ -234,6 +236,7 @@ header {
     align-items: center;
     justify-content: center;
     min-width: 140px;
+    white-space: nowrap;
 }
 
 .tab-item.active {

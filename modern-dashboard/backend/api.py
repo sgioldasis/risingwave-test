@@ -1028,5 +1028,120 @@ def query_funnel_aggregate(
         }
 
 
+@app.get("/api/funnel/enriched")
+def get_enriched_funnel_data(
+    limit: int = Query(100, description="Number of records to return")
+):
+    """
+    Query funnel_enriched view from RisingWave with UDF-enhanced metrics.
+    
+    Returns funnel data with Python UDF categorizations:
+    - view_to_cart_category: conversion_category(view_to_cart_rate)
+    - cart_to_buy_category: conversion_category(cart_to_buy_rate)
+    - funnel_score: calculate_funnel_score(viewers, carters, purchasers)
+    - view_to_cart_emoji: format_rate_with_emoji(view_to_cart_rate)
+    - cart_to_buy_emoji: format_rate_with_emoji(cart_to_buy_rate)
+    - funnel_health: overall funnel health indicator
+    """
+    try:
+        with funnel_engine.connect() as conn:
+            query = text("""
+                SELECT
+                    window_start,
+                    window_end,
+                    viewers,
+                    carters,
+                    purchasers,
+                    view_to_cart_rate,
+                    cart_to_buy_rate,
+                    view_to_cart_category,
+                    cart_to_buy_category,
+                    funnel_score,
+                    view_to_cart_emoji,
+                    cart_to_buy_emoji,
+                    funnel_health
+                FROM funnel_enriched
+                ORDER BY window_start DESC
+                LIMIT :limit
+            """)
+            
+            result = conn.execute(query, {"limit": limit})
+            
+            records = []
+            for row in result:
+                records.append({
+                    "window_start": row.window_start.isoformat() if row.window_start else None,
+                    "window_end": row.window_end.isoformat() if row.window_end else None,
+                    "viewers": int(row.viewers) if row.viewers else 0,
+                    "carters": int(row.carters) if row.carters else 0,
+                    "purchasers": int(row.purchasers) if row.purchasers else 0,
+                    "view_to_cart_rate": float(row.view_to_cart_rate) if row.view_to_cart_rate else 0.0,
+                    "cart_to_buy_rate": float(row.cart_to_buy_rate) if row.cart_to_buy_rate else 0.0,
+                    "view_to_cart_category": row.view_to_cart_category,
+                    "cart_to_buy_category": row.cart_to_buy_category,
+                    "funnel_score": float(row.funnel_score) if row.funnel_score else 0.0,
+                    "view_to_cart_emoji": row.view_to_cart_emoji,
+                    "cart_to_buy_emoji": row.cart_to_buy_emoji,
+                    "funnel_health": row.funnel_health
+                })
+            
+            return {
+                "data": records,
+                "count": len(records),
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Error querying enriched funnel data: {e}")
+        return {
+            "error": str(e),
+            "data": [],
+            "count": 0,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+
+@app.get("/api/funnel/health")
+def get_funnel_health():
+    """
+    Get current funnel health summary from UDF-enhanced data.
+    """
+    try:
+        with funnel_engine.connect() as conn:
+            query = text("""
+                SELECT
+                    funnel_health,
+                    COUNT(*) as count,
+                    AVG(funnel_score) as avg_score,
+                    AVG(view_to_cart_rate) as avg_view_to_cart,
+                    AVG(cart_to_buy_rate) as avg_cart_to_buy
+                FROM funnel_enriched
+                WHERE window_start >= NOW() - INTERVAL '5 minutes'
+                GROUP BY funnel_health
+            """)
+            
+            result = conn.execute(query)
+            
+            health_summary = {}
+            for row in result:
+                health_summary[row.funnel_health] = {
+                    "count": int(row.count),
+                    "avg_score": float(row.avg_score) if row.avg_score else 0.0,
+                    "avg_view_to_cart_rate": float(row.avg_view_to_cart) if row.avg_view_to_cart else 0.0,
+                    "avg_cart_to_buy_rate": float(row.avg_cart_to_buy) if row.avg_cart_to_buy else 0.0
+                }
+            
+            return {
+                "health_summary": health_summary,
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Error querying funnel health: {e}")
+        return {
+            "error": str(e),
+            "health_summary": {},
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

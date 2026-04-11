@@ -15,6 +15,7 @@ from pathlib import Path
 DAGSTER_STORAGE = Path("./dagster_storage")
 RUNS_DB = DAGSTER_STORAGE / "runs.db"
 EVENT_LOGS_DB = DAGSTER_STORAGE / "event_logs.db"
+SCHEDULES_DB = DAGSTER_STORAGE / "schedules.db"
 
 
 def check_database_exists(db_path: Path) -> bool:
@@ -82,6 +83,7 @@ def main():
         DAGSTER_STORAGE = Path("/workspace/dagster_storage")
         RUNS_DB = DAGSTER_STORAGE / "runs.db"
         EVENT_LOGS_DB = DAGSTER_STORAGE / "event_logs.db"
+        SCHEDULES_DB = DAGSTER_STORAGE / "schedules.db"
         print("Detected Docker environment")
     else:
         print("Detected local environment")
@@ -94,6 +96,8 @@ def main():
         databases.append(RUNS_DB)
     if check_database_exists(EVENT_LOGS_DB):
         databases.append(EVENT_LOGS_DB)
+    if check_database_exists(SCHEDULES_DB):
+        databases.append(SCHEDULES_DB)
     
     if not databases:
         print("No Dagster SQLite databases found.")
