@@ -700,7 +700,7 @@ dagster job execute -j postgres_sink_job
 ./bin/5_duckdb_iceberg.sh     # Query via DuckDB CLI
 ./bin/5_spark_iceberg.sh      # Interactive Spark notebook
 
-# 7. When finished, stop all services and clean up (includes dropping local PostgreSQL tables)
+# 7. When finished, stop all services and clean up (includes dropping local PostgreSQL tables and producer logs)
 ./bin/6_down.sh
 ```
 
@@ -897,7 +897,7 @@ The `funnel` materialized view provides real-time metrics:
 | `./bin/4_run_ml_online.sh` | ML serving API - online learning mode (port 8001) |
 | `./bin/5_duckdb_iceberg.sh` | Query Iceberg tables via DuckDB |
 | `./bin/5_spark_iceberg.sh` | Interactive Spark notebook |
-| `./bin/6_down.sh` | Stop all services, cleanup, and drop local PostgreSQL tables |
+| `./bin/6_down.sh` | Stop all services, cleanup, drop local PostgreSQL tables, and delete producer logs |
 
 ## Modern Dashboard (React)
 
@@ -1038,6 +1038,7 @@ This will:
 - Stop all Docker Compose services (RisingWave, Kafka, Iceberg, etc.)
 - Stop the producer, dashboards, and ML serving
 - **Drop all tables in local PostgreSQL** (funnel_summary_with_country, etc.)
-- Clean up log files
+- **Delete producer log files** (producer.log, producer_direct.log)
+- Clean up other log files (backend.log, frontend.log)
 
-⚠️ **Note**: The local PostgreSQL data is cleared when stopping to ensure a fresh start on next run.
+⚠️ **Note**: The local PostgreSQL data and producer logs are cleared when stopping to ensure a fresh start on next run.

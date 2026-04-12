@@ -399,6 +399,19 @@ if [ -f "frontend.log" ]; then
     echo "✅ frontend.log removed"
 fi
 
+# Remove producer log files
+if [ -f "producer.log" ]; then
+    echo "Removing producer.log..."
+    rm -f "producer.log"
+    echo "✅ producer.log removed"
+fi
+
+if [ -f "producer_direct.log" ]; then
+    echo "Removing producer_direct.log..."
+    rm -f "producer_direct.log"
+    echo "✅ producer_direct.log removed"
+fi
+
 echo ""
 echo "=== Dropping All Local PostgreSQL Tables ==="
 echo ""
@@ -433,7 +446,7 @@ echo "✅ ML serving stopped"
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
 echo "✅ All local PostgreSQL tables dropped"
-echo "✅ Log files (backend.log, frontend.log) cleaned up"
+echo "✅ Log files (backend.log, frontend.log, producer.log, producer_direct.log) cleaned up"
 
 # Only show warning if directories still exist
 if [ -d "dbt/target" ] || [ -d "dbt/logs" ]; then
