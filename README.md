@@ -2,6 +2,48 @@
 
 This project demonstrates a real-time e-commerce conversion funnel using RisingWave, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. It tracks user behavior through page views, cart events, and purchases to calculate conversion rates in real-time with predictive analytics.
 
+## Prerequisites
+
+### Required Software
+
+| Software | Purpose | Installation |
+|----------|---------|--------------|
+| **Devbox** | Reproducible development environment | [Install Devbox](https://www.jetify.com/docs/devbox/quickstart/) |
+| **Docker** | Container runtime for services | [Install Docker](https://docs.docker.com/get-docker/) |
+| **Docker Compose** | Multi-container orchestration | Included with Docker Desktop |
+
+> **📝 Note:** If you have **DBT Fusion** installed, first uninstall it before proceeding:
+> ```bash
+> dbtf system uninstall
+> ```
+
+### Setup Steps
+
+1. **Install Devbox** (if not already installed):
+   ```bash
+   # macOS/Linux
+   curl -fsSL https://get.jetify.com/devbox | bash
+   ```
+
+2. **Install Docker** (if not already installed):
+   - **macOS**:
+     - [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/) (official)
+     - [OrbStack](https://orbstack.dev/) (faster, lighter alternative - recommended)
+   - **Linux**: [Docker Engine](https://docs.docker.com/engine/install/)
+   - **Windows**: [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+
+3. **Start Development Environment**:
+   ```bash
+   # Clone/navigate to the project folder
+   cd risingwave-test
+   
+   # Enter devbox shell (auto-installs all dependencies)
+   devbox shell
+
+   # Start the script runner
+   bin/0_script_runner.sh
+   ```
+
 ## Technologies Used
 
 | Technology | Purpose |
@@ -659,11 +701,34 @@ SSE provides push-based updates from backend to frontend:
 
 ## Prerequisites
 
-1. **Development Environment**: Run `devbox shell` from main project folder (`risingwave-test`)
+### Required Software
 
-2. **DBT Fusion**: If you have dbt-fusion installed, first uninstall it:
+| Software | Purpose | Installation |
+|----------|---------|--------------|
+| **Devbox** | Reproducible development environment | [Install Devbox](https://www.jetify.com/docs/devbox/quickstart/) |
+| **Docker** | Container runtime for services | [Install Docker](https://docs.docker.com/get-docker/) |
+| **Docker Compose** | Multi-container orchestration | Included with Docker Desktop |
+
+### Setup Steps
+
+1. **Install Devbox** (if not already installed):
    ```bash
-   dbtf system uninstall
+   # macOS/Linux
+   curl -fsSL https://get.jetify.com/devbox | bash
+   ```
+
+2. **Install Docker** (if not already installed):
+   - **macOS**: [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
+   - **Linux**: [Docker Engine](https://docs.docker.com/engine/install/)
+   - **Windows**: [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+
+3. **Start Development Environment**:
+   ```bash
+   # Clone/navigate to the project folder
+   cd risingwave-test
+   
+   # Enter devbox shell (auto-installs all dependencies)
+   devbox shell
    ```
 
 ## Quick Start
