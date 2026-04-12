@@ -593,15 +593,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dbt"
-version = "1.0.0.40.16"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "setuptools" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9f/95/bb2677483c0668487ac0b533c6d3c2f6d4d66a2816673234e76f06fad924/dbt-1.0.0.40.16.tar.gz", hash = "sha256:a382654d9d74d5e92e59d994d45e52ee47f74534519344b4468b1f1e36d4250c", size = 3335, upload-time = "2026-04-10T14:19:10.357Z" }
-
-[[package]]
 name = "dbt-adapters"
 version = "1.22.10"
 source = { registry = "https://pypi.org/simple" }
@@ -2589,7 +2580,6 @@ dependencies = [
     { name = "dagster-webserver" },
     { name = "dash" },
     { name = "dash-bootstrap-components" },
-    { name = "dbt" },
     { name = "dbt-core" },
     { name = "dbt-risingwave" },
     { name = "duckdb" },
@@ -2621,9 +2611,8 @@ requires-dist = [
     { name = "dagster-webserver", specifier = ">=1.10.0" },
     { name = "dash", specifier = ">=3.4.0" },
     { name = "dash-bootstrap-components", specifier = ">=1.4.0" },
-    { name = "dbt", specifier = ">=1.0.0.40.14" },
-    { name = "dbt-core", specifier = ">=1.10.19" },
-    { name = "dbt-risingwave", specifier = ">=1.10.0" },
+    { name = "dbt-core", specifier = ">=1.11.8" },
+    { name = "dbt-risingwave", specifier = ">=1.11.4" },
     { name = "duckdb", specifier = ">=1.2.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },

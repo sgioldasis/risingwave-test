@@ -400,9 +400,39 @@ if [ -f "frontend.log" ]; then
 fi
 
 echo ""
+echo "=== Dropping All Local PostgreSQL Tables ==="
+echo ""
+
+# Drop all tables in local PostgreSQL (devbox postgres)
+if command -v psql &> /dev/null; then
+    # Check if PostgreSQL is running
+    if pg_ctl status -D .devbox/var/lib/postgres > /dev/null 2>&1 || psql -h localhost -p 5432 -U postgres -c "SELECT 1" > /dev/null 2>&1; then
+        echo "Dropping all tables in local PostgreSQL..."
+        
+        # Get list of all tables and drop them
+        psql -h localhost -p 5432 -U postgres -d postgres -t -c "
+            SELECT 'DROP TABLE IF EXISTS ' || tablename || ' CASCADE;'
+            FROM pg_tables
+            WHERE schemaname = 'public';
+        " 2>/dev/null | psql -h localhost -p 5432 -U postgres -d postgres 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            echo "✅ All local PostgreSQL tables dropped"
+        else
+            echo "⚠️  Some tables may not have been dropped"
+        fi
+    else
+        echo "⚠️  Local PostgreSQL is not running - skipping table cleanup"
+    fi
+else
+    echo "⚠️  psql not found - skipping PostgreSQL table cleanup"
+fi
+
+echo ""
 echo "✅ ML serving stopped"
 echo "✅ Dashboard stopped"
 echo "✅ Docker Compose services stopped and volumes cleaned up"
+echo "✅ All local PostgreSQL tables dropped"
 echo "✅ Log files (backend.log, frontend.log) cleaned up"
 
 # Only show warning if directories still exist
