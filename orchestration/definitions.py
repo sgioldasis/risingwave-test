@@ -15,12 +15,14 @@ from dagster import (
     RunRequest,
     DefaultSensorStatus,
     AssetKey,
+    AssetSelection,
 )
 from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTranslator
 
 from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
+from .assets.postgres_sink_setup import postgres_funnel_table
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -267,6 +269,14 @@ dbt_build_job = define_asset_job(
     description="Build all dbt models for the realtime funnel project",
 )
 
+# Job to setup PostgreSQL sink table and create the sink
+# First creates the postgres table, then runs dbt (which creates the sink)
+postgres_sink_job = define_asset_job(
+    name="postgres_sink_job",
+    selection=AssetSelection.assets(postgres_funnel_table) | AssetSelection.assets(realtime_funnel_dbt_assets),
+    description="Create PostgreSQL table and RisingWave sink for funnel data",
+)
+
 # Define schedules - run every 5 minutes
 dbt_build_schedule = ScheduleDefinition(
     job=dbt_build_job,
@@ -359,6 +369,8 @@ defs = Definitions(
         iceberg_countries,
         # Create Python UDFs before dbt models run
         risingwave_python_udfs,
+        # Create PostgreSQL table for RisingWave sink
+        postgres_funnel_table,
         realtime_funnel_dbt_assets,
         ml_trained_models,
     ],
@@ -366,6 +378,7 @@ defs = Definitions(
         dbt_build_job,
         ml_training_job,
         iceberg_countries_job,
+        postgres_sink_job,
     ],
     schedules=[dbt_build_schedule, ml_training_schedule],
     sensors=[ml_training_sensor_realtime],

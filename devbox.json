@@ -29,8 +29,13 @@
 
       "# --- PostgreSQL (one-time init + background start) ---",
       "mkdir -p .devbox/var/log",
-      "if [ ! -d .devbox/var/lib/postgres/base ]; then initdb -D .devbox/var/lib/postgres; fi",
-      "pg_ctl status -D .devbox/var/lib/postgres > /dev/null 2>&1 || pg_ctl -D .devbox/var/lib/postgres -l .devbox/var/log/postgres.log -o '-c unix_socket_directories=/tmp' -w start > /dev/null 2>&1 &",
+      "if [ ! -d .devbox/var/lib/postgres/base ]; then initdb --pgdata=.devbox/var/lib/postgres --username=postgres --auth=trust; fi",
+      "# Ensure PostgreSQL listens on TCP for Docker connections",
+      "grep -q '^listen_addresses' .devbox/var/lib/postgres/postgresql.conf || echo \"listen_addresses = '*'\" >> .devbox/var/lib/postgres/postgresql.conf",
+      "# Allow trust connections from Docker network (must be BEFORE other host rules)",
+      "grep -q 'host all all 0.0.0.0/0 trust' .devbox/var/lib/postgres/pg_hba.conf || (echo 'host all all 0.0.0.0/0 trust' | cat - .devbox/var/lib/postgres/pg_hba.conf > /tmp/pg_hba.tmp && mv /tmp/pg_hba.tmp .devbox/var/lib/postgres/pg_hba.conf)",
+      "# Restart if running to apply config changes, otherwise start",
+      "pg_ctl status -D .devbox/var/lib/postgres > /dev/null 2>&1 && pg_ctl restart -D .devbox/var/lib/postgres -l .devbox/var/log/postgres.log -w > /dev/null 2>&1 || pg_ctl -D .devbox/var/lib/postgres -l .devbox/var/log/postgres.log -o '-c unix_socket_directories=/tmp' -w start > /dev/null 2>&1 &",
 
       "# Show activation status",
       "# echo \"✅ Devbox ready (Python: $(which python))\""
