@@ -594,6 +594,9 @@ services:
       - minio-0
     networks:
       - iceberg_net
+    # Enable host.docker.internal resolution for accessing host's PostgreSQL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     container_name: trino
     restart: always
 

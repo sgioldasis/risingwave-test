@@ -13,6 +13,7 @@ This project demonstrates a real-time e-commerce conversion funnel using RisingW
 | **Lakekeeper** | Iceberg REST catalog |
 | **Trino** | Distributed SQL query engine for Iceberg and RisingWave |
 | **Dagster** | Data orchestration for dbt models and ML training |
+| **PostgreSQL** | Local database for external access to funnel data |
 | **MinIO** | S3-compatible object storage for models and data |
 | **FastAPI** | Backend API for dashboard and ML serving |
 | **React** | Modern frontend dashboard |
@@ -33,8 +34,10 @@ dbt/                              # dbt project folder
 │   ├── funnel.sql                # Conversion funnel materialized view
 │   ├── funnel_training.sql       # ML training data view
 │   ├── rw_countries.sql          # Countries view
+│   ├── funnel_summary_with_country.sql  # Enriched funnel view
 │   ├── sink_funnel_to_kafka.sql  # Kafka sink for dashboard
-│   └── sink_funnel_to_iceberg.sql # Iceberg sink for persistence
+│   ├── sink_funnel_to_iceberg.sql # Iceberg sink for persistence
+│   └── sink_funnel_to_postgres.sql # PostgreSQL sink for external access
 ├── macros/                       # dbt macros
 │   ├── create_iceberg_connection.sql
 │   ├── sync_from_iceberg_via_trino.sql
@@ -79,7 +82,8 @@ orchestration/                    # Dagster orchestration
 ├── definitions.py                # Dagster assets and jobs
 ├── assets/
 │   ├── iceberg_countries.py      # Trino-based Iceberg asset
-│   └── risingwave_countries_table.py
+│   ├── risingwave_udfs.py        # RisingWave Python UDFs
+│   └── postgres_sink_setup.py    # PostgreSQL sink table setup
 
 scripts/                          # Python utility scripts
 ├── producer.py                   # Event generation
@@ -92,8 +96,9 @@ sql/                              # Compiled SQL files
 
 trino/                            # Trino configuration
 └ catalog/
-    ├── iceberg.properties        # Iceberg catalog config
-    └── risingwave.properties     # RisingWave catalog config
+    ├── datalake.properties       # Iceberg catalog config
+    ├── risingwave.properties     # RisingWave catalog config
+    └── postgres.properties       # Local PostgreSQL catalog config
 ```
 
 ## Key Use Cases
@@ -514,6 +519,87 @@ psql -h localhost -p 4566 -d dev -U root \
 
 ---
 
+### Use Case 4: PostgreSQL Sink for External Access
+
+This use case demonstrates how to export real-time funnel data from RisingWave to a local PostgreSQL database, enabling external tools like DBeaver, Tableau, or other BI tools to query the data without direct access to RisingWave.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         POSTGRESQL SINK PIPELINE                             │
+│                                                                              │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌────────────────────────┐ │
+│  │   Dagster Asset │────▶│   PostgreSQL    │────▶│   DBeaver/BI Tools     │ │
+│  │ postgres_funnel │     │   (local)       │     │   (port 5432)          │ │
+│  │ _table          │     │                 │     │                        │ │
+│  └─────────────────┘     └────────┬────────┘     └────────────────────────┘ │
+│                                   │                                          │
+│                                   │ JDBC Sink                                │
+│                                   ▼                                          │
+│  ┌─────────────────┐     ┌─────────────────┐                                │
+│  │  funnel_summary │────▶│  RisingWave     │                                │
+│  │  _with_country  │     │  JDBC Sink      │                                │
+│  │  (view)         │     │  (upsert)       │                                │
+│  └─────────────────┘     └─────────────────┘                                │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Components
+
+**1. Dagster Asset** ([`orchestration/assets/postgres_sink_setup.py`](orchestration/assets/postgres_sink_setup.py))
+Creates the target table in your local PostgreSQL before the sink is created:
+```python
+@asset(group_name="postgres")
+def postgres_funnel_table(context: AssetExecutionContext) -> str:
+    # Creates funnel_summary_with_country table in PostgreSQL
+    # Runs before the dbt sink model
+```
+
+**2. DBT Sink Model** ([`dbt/models/sink_funnel_to_postgres.sql`](dbt/models/sink_funnel_to_postgres.sql))
+Creates the JDBC sink from RisingWave to PostgreSQL:
+```sql
+CREATE SINK IF NOT EXISTS funnel_postgres_sink
+FROM funnel_summary_with_country
+WITH (
+    connector = 'jdbc',
+    jdbc.url = 'jdbc:postgresql://host.docker.internal:5432/postgres',
+    user = '{{ env_var("USER", "postgres") }}',
+    password = '',
+    table.name = 'funnel_summary_with_country',
+    type = 'upsert',
+    primary_key = 'window_start,country'
+)
+```
+
+#### Setup
+
+1. **PostgreSQL is auto-started** by devbox (see [`devbox.json`](devbox.json))
+2. **Run the Dagster job** to create table and sink:
+   ```bash
+   dagster job execute -j postgres_sink_job
+   ```
+
+#### DBeaver Connection
+
+| Setting | Value |
+|---------|-------|
+| **Host** | `localhost` |
+| **Port** | `5432` |
+| **Database** | `postgres` |
+| **Username** | Your system username (or `postgres` if reinitialized) |
+| **Password** | *(empty)* |
+
+#### Key Features
+
+1. **✅ Real-time Sync**: Data flows from RisingWave to PostgreSQL in real-time via JDBC
+2. **✅ Upsert Semantics**: Uses `window_start,country` as primary key for idempotent writes
+3. **✅ External Access**: Query from any PostgreSQL-compatible tool
+4. **✅ Dagster Orchestrated**: Table creation and sink deployment managed as assets
+
+---
+
 ### Implementation: Server-Sent Events (SSE)
 
 The modern dashboard uses **Server-Sent Events (SSE)** for real-time updates between the React frontend and FastAPI backend. SSE provides true push-based updates, eliminating the inefficiencies of HTTP polling.
@@ -596,19 +682,25 @@ From project **root** folder, run the following commands in order:
 # OR run the compiled SQL directly via psql (no Jinja compilation needed)
 ./bin/3_run_psql.sh
 
-# 3. (Optional) Start ML serving service for predictions
+# 3. (Optional) Create PostgreSQL sink for external access
+#    This creates the funnel_summary_with_country table in local PostgreSQL
+#    and sets up a RisingWave JDBC sink for real-time data sync
+dagster job execute -j postgres_sink_job
+# Connect via DBeaver: localhost:5432/postgres (no password)
+
+# 4. (Optional) Start ML serving service for predictions
 ./bin/4_run_ml_serving.sh
 
-# 4. Start dashboard for real-time monitoring (choose one)
+# 5. Start dashboard for real-time monitoring (choose one)
 ./bin/4_run_dashboard.sh      # Legacy dashboard (port 8050)
 # OR
 ./bin/4_run_modern.sh         # Modern React dashboard (port 4000)
 
-# 5. Query Iceberg tables (optional)
+# 6. Query Iceberg tables (optional)
 ./bin/5_duckdb_iceberg.sh     # Query via DuckDB CLI
 ./bin/5_spark_iceberg.sh      # Interactive Spark notebook
 
-# 6. When finished, stop all services and clean up volumes
+# 7. When finished, stop all services and clean up volumes
 ./bin/6_down.sh
 ```
 
@@ -638,6 +730,7 @@ This starts a web application at [http://localhost:4001](http://localhost:4001) 
 | Dagster UI | http://localhost:3000 | Pipeline orchestration |
 | ML Serving API | http://localhost:8001/docs | ML predictions API |
 | Modern Dashboard | http://localhost:4000 | React frontend |
+| PostgreSQL | `localhost:5432` | Local database (connect via DBeaver/psql) |
 
 ## ML Predictions Usage
 
@@ -746,6 +839,35 @@ docker compose exec trino trino --catalog datalake --schema public \
 ```bash
 psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM rw_countries WHERE country = 'GR'"
 ```
+
+### Query Local PostgreSQL via Trino
+
+Trino has a `postgres` catalog configured to access your local PostgreSQL database (the one started by devbox). This allows you to query the funnel data that was sinked from RisingWave:
+
+```bash
+# Query the sinked funnel data via Trino
+trino --server http://localhost:9080 --catalog postgres --schema public \
+  --execute "SELECT * FROM funnel_summary_with_country ORDER BY window_start DESC LIMIT 10"
+
+# Join RisingWave data with PostgreSQL data (federated query)
+trino --server http://localhost:9080 \
+  --catalog risingwave --schema public \
+  --execute "
+    SELECT
+      r.country,
+      r.viewers as rw_viewers,
+      p.viewers as pg_viewers
+    FROM risingwave.public.funnel_summary r
+    JOIN postgres.public.funnel_summary_with_country p
+      ON r.window_start = p.window_start AND r.country = p.country
+    LIMIT 5
+  "
+```
+
+**Note**: The `postgres` catalog uses `host.docker.internal:5432` to connect to your host's PostgreSQL. This requires:
+1. devbox shell to be running (PostgreSQL runs inside it)
+2. The Trino container has `extra_hosts` configured for `host.docker.internal`
+
 
 ## Understanding the Funnel
 
@@ -871,6 +993,38 @@ curl http://localhost:8001/online/status
 Check Dagster UI at http://localhost:3000 for job status. Set `ML_TRAINING_MODE=realtime` for 20-second sensor instead of 5-minute cron.
 
 **Note**: Dagster training is only used for **batch mode**. Online learning does not use Dagster.
+
+### PostgreSQL Sink Connection Issues
+
+If the `postgres_sink_job` fails with connection errors:
+
+**Error: "role 'dagster' does not exist"**
+- Your PostgreSQL was initialized with your system username, not `postgres`
+- Option 1: Create the postgres user: `createuser -s postgres`
+- Option 2: Reinitialize PostgreSQL:
+  ```bash
+  exit
+  rm -rf .devbox/var/lib/postgres
+  devbox shell  # Will recreate with postgres user
+  ```
+
+**Error: "Connection refused"**
+- Ensure PostgreSQL is listening on TCP (configured in `devbox.json`)
+- Check PostgreSQL status: `pg_ctl status -D .devbox/var/lib/postgres`
+- View logs: `cat .devbox/var/log/postgres.log`
+
+**Error: "host.docker.internal" resolution fails**
+- On macOS, this should work automatically
+- If not, add to `/etc/hosts`: `127.0.0.1 host.docker.internal`
+
+### DBeaver Cannot Connect to PostgreSQL
+
+| Issue | Solution |
+|-------|----------|
+| Connection refused | Ensure devbox shell is running (PostgreSQL runs inside it) |
+| Authentication failed | Use your system username or `postgres` (if reinitialized) |
+| No password | Leave password field empty - PostgreSQL uses trust auth |
+
 
 ## Stopping the Project
 
