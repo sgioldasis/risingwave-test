@@ -48,7 +48,10 @@
     padding: 0 10px 30px;
     max-height: calc(100vh - 120px);
     cursor: grab;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
+  .svg-wrap::-webkit-scrollbar { display: none; }
   .svg-wrap:active, .svg-wrap.grabbing {
     cursor: grabbing;
   }
@@ -66,7 +69,7 @@
 </head>
 <body>
 
-<h1>Real-Time Streaming Analytics Architecture</h1>
+<h1>Real-Time Streaming Architecture</h1>
 
 <div id="archTooltip" class="arch-tooltip"></div>
 <div class="svg-wrap">
@@ -82,7 +85,7 @@ const COL_GAP = 56, ROW_GAP = 12, NODE_W = 250, NODE_H = 50;
 const PAD_X = 40, PAD_Y = 38, COL_HDR = 22;
 
 const C = {
-  kafka:'#e74c3c', rw:'#3b82f6', rwmv:'#6366f1', ice:'#06b6d4',
+  kafka:'#e74c3c', rw:'#3b82f6', rwmv:'#9ca3af', ice:'#06b6d4',
   py:'#f59e0b', api:'#10b981', fe:'#a855f7', ml:'#ec4899',
   pg:'#336791', trino:'#dd00a1', minio:'#c72c48', dag:'#4f46e5',
 };
@@ -106,7 +109,8 @@ const L = {
 function bdg(text,fg,bg){ return `<tspan dx="5" style="font-size:7.5px;font-weight:700;fill:${fg};"> ${text}</tspan>`; }
 const B = {
   KAFKA: bdg('KAFKA',C.kafka),  RW: bdg('RW',C.rw),  'RW MV': bdg('RW',C.rwmv),
-  ICE: bdg('ICE',C.ice), PG: bdg('PG',C.pg), MINIO: bdg('MINIO',C.minio),
+  ICE: bdg('ICE',C.ice), ICEBERG: bdg('ICEBERG',C.ice), PG: bdg('PG',C.pg), MINIO: bdg('MINIO',C.minio),
+  PYTHON: bdg('PYTHON',C.py),
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -127,7 +131,7 @@ const NODES = [
   { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_page',                  sub:'RW source (append)',   b:'RW' },
   { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_cart',                  sub:'RW source (append)',   b:'RW' },
   { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_purchase',              sub:'RW source (append)',   b:'RW' },
-  { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.rw,    lbl:'src_iceberg_countries',     sub:'Iceberg → RW source',  b:'ICE' },
+  { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.rw,    lbl:'src_iceberg_countries',     sub:'Iceberg → RW source',  b:'ICEBERG' },
 
   // COL 3 – Funnel join/aggregate
   { id:'mv-summary',      col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_summary',            sub:'MV · 1 min tumble',    b:'RW MV', tip:'1-minute window aggregation. Main source for sinks.' },
@@ -140,21 +144,21 @@ const NODES = [
   // COL 5 – Views, UDFs, kafka sink, iceberg MV
   { id:'sink-kafka',      col:6, type:'data', c:C.kafka,  logo:L.rw,    lbl:'funnel_kafka_sink',         sub:'RW sink → Kafka topic', b:'KAFKA' },
   { id:'v-country',       col:4, type:'data', c:C.rw,     logo:L.rw,    lbl:'funnel_summary_with_country',sub:'View · + country join', b:'RW' },
-  { id:'udf',             col:3, type:'app',  c:C.py,     logo:L.rw,    lbl:'Python UDFs',               sub:'conversion, score, emoji…', rowOff:-1 },
+  { id:'udf',             col:3, type:'app',  c:C.py,     logo:L.rw,    lbl:'Python UDFs',               sub:'conversion, score, emoji…', b:'PYTHON', rowOff:-1 },
   { id:'v-enriched',      col:5, type:'data', c:C.rw,     logo:L.rw,    lbl:'funnel_enriched',           sub:'View · + Python UDFs',  b:'RW', tip:'UDF columns: conversion_category, funnel_score, rate_emoji, funnel_health.', rowOff:2 },
   { id:'mv-ice',          col:5, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_for_iceberg',        sub:'MV · DOUBLE cast',     b:'RW MV', rowOff:3 },
 
   // COL 6 – Sinks and output
   { id:'t-funnel',        col:7, type:'data', c:C.kafka,  logo:L.kafka, lbl:'funnel',                     sub:'Kafka topic',            b:'KAFKA', tip:'Consumed by dashboard backend as SSE.' },
   { id:'sink-pg',         col:6, type:'data', c:C.pg,     logo:L.rw,    lbl:'funnel_postgres_sink',      sub:'RW sink → PostgreSQL',   b:'PG', rowOff:2 },
-  { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICE', rowOff:2 },
+  { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICEBERG', rowOff:2 },
 
   // COL 7 – ML training/online, external stores
   { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Online Learning',           sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
   { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'ML Training',               sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
-  { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'OLAP · MinIO',           b:'ICE',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
+  { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'Table - MinIO',           b:'ICEBERG',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
   { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },
-  { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Dimension · MinIO',      b:'ICE', lane:'ice' },
+  { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Table - MinIO',      b:'ICEBERG', lane:'ice' },
 
   // COL 8 – ML serving
   { id:'ml-serving',      col:6, type:'app',  c:C.ml,     logo:L.ml,    lbl:'ML Serving',                sub:'FastAPI · port 8001',   tip:'Dual-mode: batch + online. Auto-reload 60s.', lane:'ml' },
@@ -209,13 +213,13 @@ const EDGES = [
   ['v-country','api-query',C.rw],
   // API → Frontend tabs (matching reordered positions)
   ['api-stream','tab-dashboard',C.kafka,'PUSH (SSE)'],
-  ['tab-queries','api-query','#4ade80','PULL'], ['tab-predictions','api-predict','#60a5fa','POLL'],
-  ['tab-enriched','api-enriched','#60a5fa','POLL'],
+  ['api-query','tab-queries','#4ade80','PULL'], ['api-predict','tab-predictions','#60a5fa','POLL'],
+  ['api-enriched','tab-enriched','#60a5fa','POLL'],
 ];
 
 const COL_LABELS = [
   'Producer','Kafka Topics','Sources','',
-  'Realtime Processing, Storage & Serving','','Sinks','External Storage',
+  'Realtime Processing, Storage & Serving','','Sinks','OTHER STORAGE',
   'Backend','Frontend',
 ];
 
