@@ -404,8 +404,8 @@ EDGES.forEach(([fid,tid,color,label],ei) => {
   if(label){
     const mx=(x1+x2)/2, my=(y1+y2)/2;
     const lw = label.length * 5 + 10;
-    S += `<rect x="${mx-lw/2}" y="${my-8}" width="${lw}" height="14" rx="3" fill="#1a1d27" stroke="${color}" stroke-width=".8" opacity=".85"/>`;
-    S += `<text x="${mx}" y="${my+3}" fill="${color}" font-size="8" font-weight="700" text-anchor="middle" opacity=".9">${label}</text>`;
+    S += `<rect x="${mx-lw/2}" y="${my-8}" width="${lw}" height="14" rx="3" fill="#1a1d27" stroke="${color}" stroke-width=".8" opacity=".85" class="edge-label" data-from="${fid}" data-to="${tid}"/>`;
+    S += `<text x="${mx}" y="${my+3}" fill="${color}" font-size="8" font-weight="700" text-anchor="middle" opacity=".9" class="edge-label" data-from="${fid}" data-to="${tid}">${label}</text>`;
   }
 });
 
@@ -490,6 +490,14 @@ function highlightNode(nodeId) {
       el.setAttribute('opacity','.35');
     }
   });
+  svg.querySelectorAll('.edge-label').forEach(el => {
+    const f = el.dataset.from, t = el.dataset.to;
+    if(connected.has(f) && connected.has(t)){
+      el.setAttribute('opacity', el.tagName==='rect' ? '.85' : '.9');
+    } else {
+      el.setAttribute('opacity','.15');
+    }
+  });
   // Dim text associated with non-connected nodes
   svg.querySelectorAll('text[data-nid]').forEach(el => {
     el.setAttribute('opacity', connected.has(el.dataset.nid) ? '1' : '.15');
@@ -508,6 +516,9 @@ function clearHighlight() {
   edgeEls.forEach(el => {
     el.setAttribute('stroke-width','1.6');
     el.setAttribute('opacity','.72');
+  });
+  svg.querySelectorAll('.edge-label').forEach(el => {
+    el.setAttribute('opacity', el.tagName==='rect' ? '.85' : '.9');
   });
   svg.querySelectorAll('text[data-nid]').forEach(el => el.setAttribute('opacity','1'));
   svg.querySelectorAll('foreignObject[data-nid]').forEach(el => el.setAttribute('opacity','1'));
