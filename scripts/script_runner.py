@@ -926,7 +926,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
 
         function linkify(text) {
-            const urlRegex = /(https?:\\/\\/[^\\s$.?#].[^\\s]*)/gi;
+            const urlRegex = /((?:https?|file):\\/\\/[^\\s$.?#].[^\\s]*)/gi;
             return text.replace(urlRegex, (url) => {
                 let displayUrl = url;
                 // Basic cleanup for trailing punctuation
@@ -1946,12 +1946,32 @@ async def serve_logo(request):
     return web.Response(text="Logo not found", status=404)
 
 
+async def serve_docs(request):
+    """Serve static files from the docs directory."""
+    file_path = request.match_info.get('path', '')
+    docs_dir = PROJECT_ROOT / 'docs'
+    full_path = docs_dir / file_path
+    
+    # Security check: ensure path is within docs directory
+    try:
+        full_path.resolve().relative_to(docs_dir.resolve())
+    except ValueError:
+        return web.Response(status=403, text="Access denied")
+    
+    if not full_path.exists() or not full_path.is_file():
+        return web.Response(status=404, text="File not found")
+    
+    content_type = 'text/html' if full_path.suffix == '.html' else 'text/plain'
+    return web.FileResponse(full_path, headers={'Content-Type': content_type})
+
+
 async def main():
     """Start the web server."""
     app = web.Application()
     app.router.add_get('/', index)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/logo.png', serve_logo)
+    app.router.add_get('/docs/{path}', serve_docs)
     
     # Start background process checker
     asyncio.create_task(check_running_processes())

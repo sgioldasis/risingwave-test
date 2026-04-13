@@ -9,6 +9,7 @@ echo ""
 
 echo "📊 Dashboards & UIs"
 echo "────────────────────────────────────────────────────────────────"
+echo "  🏗️ Architecture Diagram   http://localhost:4001/docs/architecture.html"
 echo "  🔷 Dagster UI             http://localhost:3000"
 echo "  🎨 Modern Dashboard      http://localhost:4000"
 echo "  🌊 RisingWave Dashboard   http://localhost:5691"
