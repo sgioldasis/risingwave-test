@@ -153,7 +153,7 @@ const NODES = [
   { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Online Learning',           sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
   { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'ML Training',               sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
   { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'OLAP · MinIO',           b:'ICE',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
-  { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_with_country',       sub:'PostgreSQL table',       b:'PG', lane:'pg' },
+  { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },
   { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Dimension · MinIO',      b:'ICE', lane:'ice' },
 
   // COL 8 – ML serving
@@ -214,7 +214,7 @@ const EDGES = [
 
 const COL_LABELS = [
   'Producer','Kafka Topics','Sources','',
-  'Realtime Processing & Serving','','Sinks','External Storage',
+  'Realtime Processing, Storage & Serving','','Sinks','External Storage',
   'Backend','Frontend',
 ];
 
@@ -364,6 +364,7 @@ COL_LABELS.forEach((label,c) => {
 
 // column separators
 for(let c=1;c<numCols;c++){
+  if(c===4 || c===5) continue; // skip dashed lines left/right of "Realtime Processing, Storage & Serving"
   const lx = colX[c]-COL_GAP/2;
   S += `<line x1="${lx}" y1="${PAD_Y-4}" x2="${lx}" y2="${totalHReal-PAD_Y+4}" stroke="#1e2130" stroke-width="1" stroke-dasharray="4,6"/>`;
 }
