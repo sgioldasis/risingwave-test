@@ -132,6 +132,8 @@ services:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
     container_name: compute-node-0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         - CMD-SHELL
@@ -175,6 +177,8 @@ services:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
     container_name: frontend-node-0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         - CMD-SHELL
@@ -534,6 +538,8 @@ services:
         condition: service_started
     networks:
       - iceberg_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     container_name: dagster-webserver
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
@@ -574,6 +580,8 @@ services:
         condition: service_healthy
     networks:
       - iceberg_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     container_name: dagster-daemon
     restart: always
 
@@ -594,7 +602,6 @@ services:
       - minio-0
     networks:
       - iceberg_net
-    # Enable host.docker.internal resolution for accessing host's PostgreSQL
     extra_hosts:
       - "host.docker.internal:host-gateway"
     container_name: trino

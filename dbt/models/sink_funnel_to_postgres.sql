@@ -21,11 +21,13 @@
 
 -- This sink exports funnel_summary_with_country data to local PostgreSQL
 -- Requires the target table to exist in PostgreSQL before running dbt
+-- Note: RisingWave's JDBC connector doesn't read /etc/hosts, so we use
+-- HOST_POSTGRES_URL env var with the gateway IP instead of host.docker.internal
 CREATE SINK IF NOT EXISTS funnel_postgres_sink
 FROM {{ ref('funnel_summary_with_country') }}
 WITH (
     connector = 'jdbc',
-    jdbc.url = 'jdbc:postgresql://host.docker.internal:5432/postgres',
+    jdbc.url = '{{ env_var("HOST_POSTGRES_URL", "jdbc:postgresql://host.docker.internal:5432/postgres") }}',
     user = '{{ env_var("USER", "postgres") }}',
     password = '',
     table.name = 'funnel_summary_with_country',

@@ -567,8 +567,8 @@ async def get_next_predictions():
     Returns predicted values for viewers, carters, purchasers,
     and conversion rates for the upcoming minute.
     
-    Note: ML models predict for 20-second windows. We scale up by 3x
-    to provide minute-level predictions that match the dashboard aggregation.
+    ML serving reads from funnel_summary (1-minute windows) so values are
+    already at minute-level granularity - no scaling needed.
     """
     try:
         result = await call_ml_serving("/predict")
@@ -637,19 +637,14 @@ async def get_next_predictions():
         }
         
         # Add predictions for each metric at the root level
-        # ML models predict for 20-second windows, scale up by 3x for minute-level display
+        # ML serving now reads from funnel_summary (1-minute windows) - no scaling needed
         # ML serving returns format: {"viewers": {"value": x, "confidence": y, ...}, ...}
-        WINDOW_SCALE = 3  # 3 x 20-second windows = 1 minute
         metrics = ['viewers', 'carters', 'purchasers', 'view_to_cart_rate', 'cart_to_buy_rate']
         for metric in metrics:
             metric_data = result.get(metric)
             if metric_data and isinstance(metric_data, dict):
                 raw_value = metric_data.get("value")
-                # Scale up absolute counts (viewers, carters, purchasers) but not rates
-                if raw_value is not None and metric in ['viewers', 'carters', 'purchasers']:
-                    predictions[metric] = raw_value * WINDOW_SCALE
-                else:
-                    predictions[metric] = raw_value
+                predictions[metric] = raw_value
                 predictions[f"{metric}_confidence"] = metric_data.get("confidence", 0)
             else:
                 predictions[metric] = None

@@ -30,6 +30,8 @@
       "# --- PostgreSQL (one-time init + background start) ---",
       "mkdir -p .devbox/var/log",
       "if [ ! -d .devbox/var/lib/postgres/base ]; then initdb --pgdata=.devbox/var/lib/postgres --username=postgres --auth=trust; fi",
+      "# Ensure postgres role exists (for clusters initialized before --username=postgres was added)",
+      "pg_ctl status -D .devbox/var/lib/postgres > /dev/null 2>&1 || pg_ctl -D .devbox/var/lib/postgres -l .devbox/var/log/postgres.log -o '-c unix_socket_directories=/tmp' -w start > /dev/null 2>&1; psql -h localhost -U $(whoami) -d postgres -tc \"SELECT 1 FROM pg_roles WHERE rolname='postgres'\" 2>/dev/null | grep -q 1 || psql -h localhost -U $(whoami) -d postgres -c 'CREATE ROLE postgres WITH LOGIN SUPERUSER' 2>/dev/null || true",
       "# Ensure PostgreSQL listens on TCP for Docker connections",
       "grep -q '^listen_addresses' .devbox/var/lib/postgres/postgresql.conf || echo \"listen_addresses = '*'\" >> .devbox/var/lib/postgres/postgresql.conf",
       "# Allow trust connections from Docker network (must be BEFORE other host rules)",

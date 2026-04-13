@@ -38,7 +38,7 @@ def get_postgres_connection():
     if in_docker:
         # When inside Docker container, use host.docker.internal to reach host's PostgreSQL
         host = os.getenv("POSTGRES_HOST", "host.docker.internal")
-        # In Docker, default to 'postgres' user since container user won't exist on host PG
+        # In Docker, default to 'postgres' user since devbox initdb uses --username=postgres
         user = os.getenv("POSTGRES_USER", "postgres")
     else:
         # When running directly on host

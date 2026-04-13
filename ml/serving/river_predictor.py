@@ -149,47 +149,46 @@ class RiverModelPredictor:
             conn = self._get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            # Fetch last 9 windows (3 minutes of 20-second windows)
+            # Fetch last 3 windows (3 minutes of 1-minute windows)
             cursor.execute("""
                 SELECT viewers, carters, purchasers
-                FROM funnel_training
+                FROM funnel_summary
                 WHERE window_end < NOW()
                 ORDER BY window_start DESC
-                LIMIT 9
+                LIMIT 3
             """)
             
             rows = cursor.fetchall()
             cursor.close()
             conn.close()
             
-            # Extract lag values (every 3rd window = 1 minute apart)
+            # With 1-minute windows, consecutive rows are already 1 minute apart
             if len(rows) >= 1:
                 defaults['viewers_lag_1'] = float(rows[0]['viewers'])
                 defaults['carters_lag_1'] = float(rows[0]['carters'])
                 defaults['purchasers_lag_1'] = float(rows[0]['purchasers'])
             
-            if len(rows) >= 4:
-                defaults['viewers_lag_2'] = float(rows[3]['viewers'])
-                defaults['carters_lag_2'] = float(rows[3]['carters'])
-                defaults['purchasers_lag_2'] = float(rows[3]['purchasers'])
-            
-            if len(rows) >= 7:
-                defaults['viewers_lag_3'] = float(rows[6]['viewers'])
-                defaults['carters_lag_3'] = float(rows[6]['carters'])
-                defaults['purchasers_lag_3'] = float(rows[6]['purchasers'])
-            
-            # Calculate TPS
             if len(rows) >= 2:
-                tps_v = abs(float(rows[0]['viewers']) - float(rows[1]['viewers'])) / 20.0
-                tps_c = abs(float(rows[0]['carters']) - float(rows[1]['carters'])) / 20.0
+                defaults['viewers_lag_2'] = float(rows[1]['viewers'])
+                defaults['carters_lag_2'] = float(rows[1]['carters'])
+                defaults['purchasers_lag_2'] = float(rows[1]['purchasers'])
+            
+            if len(rows) >= 3:
+                defaults['viewers_lag_3'] = float(rows[2]['viewers'])
+                defaults['carters_lag_3'] = float(rows[2]['carters'])
+                defaults['purchasers_lag_3'] = float(rows[2]['purchasers'])
+            
+            # Calculate TPS from 1-minute windows
+            if len(rows) >= 2:
+                tps_v = abs(float(rows[0]['viewers']) - float(rows[1]['viewers'])) / 60.0
+                tps_c = abs(float(rows[0]['carters']) - float(rows[1]['carters'])) / 60.0
                 defaults['tps_viewers'] = tps_v
                 defaults['tps_carters'] = tps_c
                 
-                if len(rows) >= 4:
+                if len(rows) >= 3:
                     change_1 = abs(float(rows[0]['viewers']) - float(rows[1]['viewers']))
                     change_2 = abs(float(rows[1]['viewers']) - float(rows[2]['viewers']))
-                    change_3 = abs(float(rows[2]['viewers']) - float(rows[3]['viewers']))
-                    defaults['tps_smoothed'] = (change_1 + change_2 + change_3) / 60.0
+                    defaults['tps_smoothed'] = (change_1 + change_2) / 120.0
                 else:
                     defaults['tps_smoothed'] = tps_v
             
@@ -199,22 +198,28 @@ class RiverModelPredictor:
             print(f"Warning: Failed to fetch lag values: {e}")
             return defaults
     
-    def _fetch_moving_average(self, metric: str, window: int = 3) -> Optional[float]:
-        """Fetch weighted moving average from RisingWave as fallback.
+    def _fetch_moving_average(self, metric: str, history: int = 2) -> Optional[float]:
+        """Predict using rate-based extrapolation from the in-progress window.
         
-        Uses heavy weighting on the most recent value for responsiveness.
+        Core idea: measure the current event rate (events / elapsed seconds)
+        from the in-progress window and project to 60 seconds. This adapts
+        instantly to TPS changes.
+        
+        At the start of a new minute (< 5s elapsed), blends with the last
+        completed window for stability until enough data accumulates.
         """
         try:
             conn = self._get_db_connection()
             cursor = conn.cursor()
             
             cursor.execute(f"""
-                SELECT {metric}
-                FROM funnel_training
-                WHERE window_end < NOW() AND {metric} IS NOT NULL
+                SELECT {metric},
+                       EXTRACT(EPOCH FROM (NOW() - window_start)) as elapsed_seconds
+                FROM funnel_summary
+                WHERE {metric} IS NOT NULL
                 ORDER BY window_start DESC
-                LIMIT %s
-            """, (window,))
+                LIMIT 2
+            """)
             
             rows = cursor.fetchall()
             cursor.close()
@@ -223,18 +228,33 @@ class RiverModelPredictor:
             if not rows:
                 return None
             
-            values = [float(row[0]) for row in rows if row[0] is not None]
-            if not values:
-                return None
+            current_value = float(rows[0][0])
+            elapsed = float(rows[0][1]) if rows[0][1] else 60.0
             
-            if len(values) == 1:
-                return values[0]
-            elif len(values) == 2:
-                # 90% weight on latest, 10% on previous
-                return values[0] * 0.9 + values[1] * 0.1
+            if elapsed >= 60.0:
+                # Current row is a completed window — just return it
+                return current_value
+            
+            # In-progress window: extrapolate current rate to full minute
+            if elapsed >= 5.0:
+                # Enough data to extrapolate reliably
+                projected = current_value * (60.0 / elapsed)
             else:
-                # 85% latest, 10% middle, 5% oldest
-                return values[0] * 0.85 + values[1] * 0.10 + values[2] * 0.05
+                # Very start of minute: not enough data to extrapolate
+                # Use last completed window as baseline
+                if len(rows) >= 2:
+                    last_completed = float(rows[1][0])
+                    if elapsed > 0:
+                        projected = current_value * (60.0 / elapsed)
+                        # Blend: ramp from 100% historical to 100% projected over 5 seconds
+                        blend = elapsed / 5.0
+                        projected = projected * blend + last_completed * (1.0 - blend)
+                    else:
+                        projected = last_completed
+                else:
+                    projected = current_value
+            
+            return projected
             
         except Exception as e:
             print(f"Error fetching moving average: {e}")

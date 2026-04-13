@@ -46,5 +46,19 @@ if [ -f "$RUNS_DB" ] || [ -f "$EVENT_LOGS_DB" ] || [ -f "$SCHEDULES_DB" ] || [ -
     echo "✅ Cleaned up existing Dagster databases"
 fi
 
+# Resolve HOST_POSTGRES_URL for RisingWave JDBC sink
+# RisingWave's embedded connector doesn't read /etc/hosts, so host.docker.internal
+# won't resolve. We resolve the IP here and pass it as an env var for dbt.
+if [ -z "$HOST_POSTGRES_URL" ]; then
+    HOST_IP=$(getent hosts host.docker.internal | awk '{print $1}')
+    if [ -n "$HOST_IP" ]; then
+        export HOST_POSTGRES_URL="jdbc:postgresql://${HOST_IP}:5432/postgres"
+        echo "Resolved HOST_POSTGRES_URL=${HOST_POSTGRES_URL}"
+    else
+        echo "WARNING: Could not resolve host.docker.internal, using default"
+        export HOST_POSTGRES_URL="jdbc:postgresql://host.docker.internal:5432/postgres"
+    fi
+fi
+
 # Start the requested command
 exec "$@"

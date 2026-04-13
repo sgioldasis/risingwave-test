@@ -31,16 +31,9 @@ const KPICard = ({ label, actual, predicted, icon, gradient }) => (
         </div>
         <div className="kpi-label">{label}</div>
         <div className="kpi-value" style={{ fontSize: '1.4rem' }}>
-            <AnimatePresence mode="wait">
-                <motion.span
-                    key={actual}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                >
-                    {typeof actual === 'number' ? Math.round(actual).toLocaleString() : actual}
-                </motion.span>
-            </AnimatePresence>
+            <span>
+                {typeof actual === 'number' ? Math.round(actual).toLocaleString() : actual}
+            </span>
         </div>
         {predicted !== undefined && predicted !== null && (
             <div style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.7)', marginTop: '0.25rem', fontWeight: 500 }}>
@@ -153,12 +146,8 @@ const PredictionsTab = ({ funnelData }) => {
                 setMinuteProgress(compareData.current_minute_progress);
             }
             
-            // Flash the model type badge on every prediction update (every 20 seconds)
-            // This indicates fresh prediction data has been received
             const newModelType = nextData.model_type;
             if (newModelType) {
-                setModelVersionFlash(true);
-                setTimeout(() => setModelVersionFlash(false), 1000);
                 setLastModelType(newModelType);
             }
             
@@ -191,8 +180,8 @@ const PredictionsTab = ({ funnelData }) => {
         // Initial fetch
         fetchPredictions();
 
-        // Set up interval to refresh every 20 seconds for predictions
-        const interval = setInterval(fetchPredictions, 20000);
+        // Refresh every 1 second - in-progress window extrapolation updates continuously
+        const interval = setInterval(fetchPredictions, 1000);
         // Store interval ID on window to clear it later
         window._predictionInterval = interval;
 
@@ -374,7 +363,7 @@ const PredictionsTab = ({ funnelData }) => {
                     <div className="flex flex-col items-end gap-1">
                         {/* Single Combined Model Type Badge */}
                         {predictions?.model_type && (
-                            <div className={`refresh-badge ${modelVersionFlash ? 'flash' : ''} ${predictions.is_heuristic ? 'heuristic' : 'ml-model'}`}>
+                            <div className={`refresh-badge ${predictions.is_heuristic ? 'heuristic' : 'ml-model'}`}>
                                 {predictions.is_heuristic ? (
                                     <>
                                         <Calculator size={14} className="text-amber-400" />
@@ -382,7 +371,7 @@ const PredictionsTab = ({ funnelData }) => {
                                             {predictions.mode === 'online' ? `Online Learning (${predictions.source}): ` : `Batch Model (${predictions.source}): `}
                                             {predictions.model_version === 'rate_proportional' ? 'Rate-Proportional' :
                                              predictions.model_version === 'ema' ? 'EMA' :
-                                             `Moving Average${predictions.model_version && predictions.model_version !== 'heuristic' && predictions.model_version !== 'live' && predictions.model_version !== 'live_moving_average' && predictions.model_version !== 'moving_average' ? `: ${formatModelVersionDisplay(predictions.model_version)}` : ' (Live)'}`}
+                                             'Rate Extrapolation (Live)'}
                                         </span>
                                     </>
                                 ) : (
@@ -393,7 +382,7 @@ const PredictionsTab = ({ funnelData }) => {
                                              predictions.model_type === 'LinearRegression' ? `Batch Model (${predictions.source}): Linear Regression - ${formatModelVersionDisplay(predictions.model_version)}` :
                                              predictions.model_type === 'river_kafka_online' ? `Online Learning (${predictions.source}): River Online (Kafka) - ${formatModelVersionDisplay(predictions.model_version)}` :
                                              predictions.model_type === 'moving_average_fallback' ? `Online Learning (${predictions.source}): River Online (Kafka) [MA Fallback] - ${formatModelVersionDisplay(predictions.model_version)}` :
-                                             predictions.model_type === 'river_risingwave_online' ? `Online Learning (${predictions.source}): River Online (RisingWave) - Live [Moving Average]` :
+                                             predictions.model_type === 'river_risingwave_online' ? `Online Learning (${predictions.source}): Rate Extrapolation (Live)` :
                                              `${predictions.mode === 'online' ? 'Online Learning' : 'Batch Model'} (${predictions.source}): ${predictions.model_type} - ${formatModelVersionDisplay(predictions.model_version)}`}
                                         </span>
                                     </>
