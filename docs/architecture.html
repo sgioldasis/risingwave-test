@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RisingWave Real-Time Analytics — Architecture</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card-bg: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4ed;
+    --text-dim: #8b8fa3;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow: auto;
+  }
+  h1 {
+    text-align: center;
+    padding: 22px 20px 4px;
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.82rem;
+    padding-bottom: 14px;
+  }
+  .legend {
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: 18px; padding: 0 20px 16px; font-size: 0.74rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 18px; height: 18px; border: 2px solid; flex-shrink: 0;
+  }
+  .legend-swatch.app-shape { border-radius: 6px; }
+  .legend-swatch.data-shape { border-radius: 50%; }
+  .svg-wrap {
+    width: 100%; overflow-x: auto; overflow-y: auto;
+    padding: 0 10px 30px;
+  }
+  #archSvg { display: block; }
+  .arch-tooltip {
+    position: fixed; display: none;
+    background: #252836; border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px;
+    font-size: 0.74rem; color: var(--text);
+    z-index: 1000; max-width: 300px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.6);
+    line-height: 1.55; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<h1>Real-Time Streaming Analytics Architecture</h1>
+
+<div id="archTooltip" class="arch-tooltip"></div>
+<div class="svg-wrap">
+  <svg id="archSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  ARCHITECTURE DIAGRAM – SVG, pure data-flow left→right
+// ═══════════════════════════════════════════════════════════
+
+const COL_GAP = 56, ROW_GAP = 12, NODE_W = 210, NODE_H = 50;
+const PAD_X = 40, PAD_Y = 38, COL_HDR = 22;
+
+const C = {
+  kafka:'#e74c3c', rw:'#3b82f6', rwmv:'#6366f1', ice:'#06b6d4',
+  py:'#f59e0b', api:'#10b981', fe:'#a855f7', ml:'#ec4899',
+  pg:'#336791', trino:'#dd00a1', minio:'#c72c48', dag:'#4f46e5',
+};
+
+/* ── tiny SVG logo templates ─────────────────────────────── */
+const L = {
+  kafka:  c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M15.1 7.8a2.7 2.7 0 00-2.3 1.3l-1.7-1a4.1 4.1 0 00.1-1A4.2 4.2 0 007 2.9a4.2 4.2 0 00-4.2 4.2A4.2 4.2 0 007 11.3a4.1 4.1 0 002.7-1l1.7 1a2.7 2.7 0 000 1.4l-1.7 1A4.2 4.2 0 007 12.7a4.2 4.2 0 00-4.2 4.2A4.2 4.2 0 007 21.1a4.2 4.2 0 004.2-4.2c0-.3 0-.6-.1-1l1.7-1a2.7 2.7 0 002.3 1.3 2.7 2.7 0 000-5.4 2.7 2.7 0 00-2.3 1.3l-1.7-1c.1-.3.1-.6.1-1s0-.6-.1-1l1.7-1a2.7 2.7 0 002.3 1.3 2.7 2.7 0 000-5.4z"/></svg>`,
+  rw:     c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H8l4-10v6h3l-4 10v-6z"/></svg>`,
+  ice:    c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M12 2l-8 18h16L12 2zm0 4l5.3 12H6.7L12 6z"/></svg>`,
+  py:     c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M12 0C5.96 0 6.3 2.6 6.3 2.6l.01 2.68h5.8v.8H3.88S0 5.62 0 11.74s3.38 5.9 3.38 5.9h2.02v-2.84s-.11-3.38 3.33-3.38h5.73s3.22.05 3.22-3.11V3.57S18.22 0 12 0zM8.8 2.1a1.05 1.05 0 110 2.1 1.05 1.05 0 010-2.1z"/><path d="M12 24c6.04 0 5.7-2.6 5.7-2.6l-.01-2.68h-5.8v-.8h8.23S24 18.38 24 12.26s-3.38-5.9-3.38-5.9h-2.02v2.84s.11 3.38-3.33 3.38H9.54s-3.22-.05-3.22 3.11v4.73S5.78 24 12 24zm3.2-2.1a1.05 1.05 0 110-2.1 1.05 1.05 0 010 2.1z"/></svg>`,
+  pg:     c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M17.13 0a10 10 0 00-2.76.4A11 11 0 0012.6.26C11.42.24 10.42.52 9.59 1 8.23.51 6.66.23 5.18.34 2.81.53 1 1.67.37 3.78c-.58 1.97-.26 4.24.64 6.9.9 2.66 2.38 5.67 4.2 8.24.91 1.29 1.94 2.52 3.14 3.27 1.08.67 2.39.96 3.62.39a2.96 2.96 0 001.62-.99h.74c.52.88 1.13 1.44 1.82 1.72.86.34 1.72.18 2.39-.26 1.15-.76 1.93-2.18 2.53-3.84.48-1.33.8-2.82 1.06-4.28.79-.24 1.39-.63 1.79-1.16.56-.75.6-1.63.4-2.39-.19-.72-.6-1.43-1.06-2.04l-.1-.13c.07-.93-.01-1.77-.21-2.52-.25-.96-.67-1.78-1.27-2.38C20.96 3.76 19.26.08 17.13 0z"/></svg>`,
+  ml:     c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`,
+  api:    c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm-8 2.5c2.8 0 5 2.2 5 5h-2c0-1.7-1.3-3-3-3s-3 1.3-3 3H7c0-2.8 2.2-5 5-5z"/></svg>`,
+  fe:     c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>`,
+  trino:  c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 3c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.14-7-7 3.14-7 7-7z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  minio:  c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><circle cx="12" cy="12" r="10"/></svg>`,
+  dag:    c => `<svg viewBox="0 0 24 24" width="15" height="15" fill="${c}"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18L19.34 8 12 11.82 4.66 8 12 4.18z"/></svg>`,
+};
+
+/* badge text */
+function bdg(text,fg,bg){ return `<tspan style="font-size:7.5px;font-weight:700;fill:${fg};"> ${text}</tspan>`; }
+const B = {
+  KAFKA: bdg('KAFKA',C.kafka),  RW: bdg('RW',C.rw),  'RW MV': bdg('RW MV',C.rwmv),
+  ICE: bdg('ICE',C.ice), PG: bdg('PG',C.pg), MINIO: bdg('MINIO',C.minio),
+};
+
+// ═══════════════════════════════════════════════════════════
+//  NODES – positioned by column, rendering data flow L→R
+//  type: 'app' = rounded-rect, 'data' = pill/stadium
+// ═══════════════════════════════════════════════════════════
+
+const NODES = [
+  // COL 0 – Producer (far left)
+  { id:'producer',        col:0, type:'app',  c:C.py,    logo:L.py,    lbl:'producer.py',               sub:'Python · configurable TPS',     tip:'Generates page_views, cart_events, purchases and pushes to Kafka.' },
+
+  // COL 1 – Kafka input topics
+  { id:'t-page',          col:1, type:'data', c:C.kafka,  logo:L.kafka, lbl:'page_views',                sub:'Kafka topic',          b:'KAFKA' },
+  { id:'t-cart',          col:1, type:'data', c:C.kafka,  logo:L.kafka, lbl:'cart_events',               sub:'Kafka topic',          b:'KAFKA' },
+  { id:'t-purchase',      col:1, type:'data', c:C.kafka,  logo:L.kafka, lbl:'purchases',                 sub:'Kafka topic',          b:'KAFKA' },
+
+  // COL 2 – RW Sources
+  { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_page',                  sub:'RW source (append)',   b:'RW' },
+  { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_cart',                  sub:'RW source (append)',   b:'RW' },
+  { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_purchase',              sub:'RW source (append)',   b:'RW' },
+  { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.ice,   lbl:'src_iceberg_countries',     sub:'Iceberg → RW source',  b:'ICE' },
+
+  // COL 3 – Funnel join/aggregate
+  { id:'mv-summary',      col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_summary',            sub:'MV · 1 min tumble',    b:'RW MV', tip:'1-minute window aggregation. Main source for sinks.' },
+  { id:'v-countries',     col:3, type:'data', c:C.rw,     logo:L.rw,    lbl:'rw_countries',              sub:'View · country snapshot',b:'RW' },
+
+  // COL 4 – Downstream of funnel (summary, training, countries view)
+  { id:'mv-funnel',       col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel',                    sub:'MV · 20 s tumble',     b:'RW MV', tip:'Joins src_page/cart/purchase in 20s tumbling windows → viewers, carters, purchasers, rates.', rowOff:2 },
+  { id:'mv-training',     col:4, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_training',           sub:'MV · + time & lag feats',b:'RW MV',tip:'+ hour, minute, day_of_week, lag_1..3 for ML.', rowOff:4 },
+
+  // COL 5 – Views, UDFs, kafka sink, iceberg MV
+  { id:'sink-kafka',      col:6, type:'data', c:C.kafka,  logo:L.kafka, lbl:'funnel_kafka_sink',         sub:'RW sink → Kafka topic', b:'KAFKA' },
+  { id:'v-country',       col:4, type:'data', c:C.rw,     logo:L.rw,    lbl:'funnel_summary_with_country',sub:'View · + country join', b:'RW' },
+  { id:'udf',             col:3, type:'app',  c:C.py,     logo:L.py,    lbl:'Python UDFs (×5)',          sub:'conversion, score, emoji…', rowOff:-1 },
+  { id:'v-enriched',      col:5, type:'data', c:C.rw,     logo:L.rw,    lbl:'funnel_enriched',           sub:'View · + Python UDFs',  b:'RW', tip:'UDF columns: conversion_category, funnel_score, rate_emoji, funnel_health.', rowOff:2 },
+  { id:'mv-ice',          col:5, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_for_iceberg',        sub:'MV · DOUBLE cast',     b:'RW MV', rowOff:3 },
+
+  // COL 6 – Sinks and output
+  { id:'t-funnel',        col:7, type:'data', c:C.kafka,  logo:L.kafka, lbl:'funnel (topic)',             sub:'Aggregated output',      b:'KAFKA', tip:'Consumed by dashboard backend as SSE.' },
+  { id:'sink-pg',         col:6, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_postgres_sink',      sub:'RW sink → PostgreSQL',   b:'PG', rowOff:2 },
+  { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICE', rowOff:2 },
+
+  // COL 7 – ML training/online, external stores
+  { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Online Learning',           sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
+  { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'ML Training',               sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
+  { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'OLAP · MinIO',           b:'ICE',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
+  { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_with_country',       sub:'PostgreSQL table',       b:'PG', lane:'pg' },
+  { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Dimension · MinIO',      b:'ICE', lane:'ice' },
+
+  // COL 8 – ML serving
+  { id:'ml-serving',      col:6, type:'app',  c:C.ml,     logo:L.ml,    lbl:'ML Serving',                sub:'FastAPI · port 8001',   tip:'Dual-mode: batch + online. Auto-reload 60s.', lane:'ml' },
+
+  // COL 9 – Backend API endpoints
+  { id:'api-stream',      col:8, type:'app',  c:C.api,    logo:L.api,   lbl:'/api/funnel/stream',        sub:'SSE real-time' },
+  { id:'api-query',       col:8, type:'app',  c:C.api,    logo:L.api,   lbl:'/api/query/funnel',         sub:'Historical data' },
+  { id:'api-enriched',    col:8, type:'app',  c:C.api,    logo:L.api,   lbl:'/api/funnel/enriched',      sub:'UDF metrics' },
+  { id:'api-predict',     col:8, type:'app',  c:C.api,    logo:L.api,   lbl:'/api/predictions/*',        sub:'ML predictions', lane:'ml' },
+
+  // COL 10 – Frontend tabs (far right, matching API order)
+  { id:'tab-dashboard',   col:9, type:'app',  c:C.fe,     logo:L.fe,    lbl:'📊 Dashboard Tab',          sub:'Real-time funnel metrics', tip:'Live funnel viz, Recharts, SSE, producer controls.' },
+  { id:'tab-queries',     col:9, type:'app',  c:C.fe,     logo:L.fe,    lbl:'🔍 Queries Tab',            sub:'Historical query UI',      tip:'Time-range select, per-min records, aggregates.' },
+  { id:'tab-enriched',    col:9, type:'app',  c:C.fe,     logo:L.fe,    lbl:'✨ Enriched Funnel Tab',     sub:'UDF-enriched analytics',   tip:'category, score, emoji, health from Python UDFs.' },
+  { id:'tab-predictions', col:9, type:'app',  c:C.fe,     logo:L.fe,    lbl:'🔮 Predictions Tab',        sub:'ML predictions & compare', tip:'Next-min predictions, actual vs predicted, history.', lane:'ml' },
+];
+
+// ═══════════════════════════════════════════════════════════
+//  EDGES – [source, target, colour]
+// ═══════════════════════════════════════════════════════════
+const EDGES = [
+  // Producer → Kafka
+  ['producer','t-page',C.py], ['producer','t-cart',C.py], ['producer','t-purchase',C.py],
+  // Kafka → RW sources
+  ['t-page','src-page',C.kafka], ['t-cart','src-cart',C.kafka], ['t-purchase','src-purchase',C.kafka],
+  // Sources → funnel MV
+  ['src-page','mv-funnel',C.rw], ['src-cart','mv-funnel',C.rw], ['src-purchase','mv-funnel',C.rw],
+  // funnel → downstream MVs
+  ['mv-funnel','mv-training',C.rwmv],
+  // summary reads from sources directly
+  ['src-page','mv-summary',C.rw], ['src-cart','mv-summary',C.rw], ['src-purchase','mv-summary',C.rw],
+  // summary → further
+  ['mv-summary','mv-ice',C.rwmv], ['mv-summary','v-country',C.rwmv],
+  // countries
+  ['src-ice-country','v-countries',C.ice], ['v-countries','v-country',C.rw],
+  // enriched
+  ['v-country','v-enriched',C.rw], ['udf','v-enriched',C.py],
+  // MVs → sinks
+  ['mv-summary','sink-kafka',C.rwmv], ['mv-ice','sink-iceberg',C.ice], ['v-country','sink-pg',C.pg],
+  // sinks → external
+  ['sink-kafka','t-funnel',C.kafka], ['sink-iceberg','ice-funnel',C.ice], ['sink-pg','pg-table',C.pg],
+  // Iceberg countries reference
+  ['ice-countries','src-ice-country',C.ice],
+  // external → consumers
+  ['t-funnel','api-stream',C.kafka],
+  // ML flow
+  ['mv-training','ml-train',C.ml], ['mv-summary','ml-online',C.ml],
+  ['ml-train','ml-serving',C.ml], ['ml-online','ml-serving',C.ml],
+  ['ml-serving','api-predict',C.ml],
+  // RW direct → API
+  ['v-enriched','api-enriched',C.rw],
+  ['v-country','api-query',C.rw],
+  // API → Frontend tabs (matching reordered positions)
+  ['api-stream','tab-dashboard',C.fe,'PUSH'], ['api-query','tab-queries',C.fe,'PULL'],
+  ['api-predict','tab-predictions',C.fe], ['api-enriched','tab-enriched',C.fe,'PULL'],
+];
+
+const COL_LABELS = [
+  'Producer','Kafka Topics','Sources','',
+  'Realtime Processing & Serving','','Sinks','External Storage',
+  'Backend','Frontend',
+];
+
+// ═══════════════════════════════════════════════════════════
+//  LAYOUT – Three horizontal lanes: Main, ML, Iceberg/External
+// ═══════════════════════════════════════════════════════════
+const LANE_GAP = 60; // vertical gap between lanes
+const numCols = COL_LABELS.length;
+const LANE_NAMES = ['main','ml','pg','ice'];
+const LANE_LABELS = { ml:'ML Pipeline', pg:'PostgreSQL', ice:'Datalake / Iceberg' };
+const LANE_COLORS = { ml:C.ml, pg:C.pg, ice:C.ice };
+
+// Split nodes into lanes per column
+const lanes = {};
+LANE_NAMES.forEach(l => { lanes[l] = Array.from({length:numCols},()=>[]); });
+NODES.forEach(n => lanes[n.lane||'main'][n.col].push(n));
+
+const colX = [];
+let cx = PAD_X;
+for(let c=0;c<numCols;c++){ colX.push(cx); cx += NODE_W + COL_GAP; }
+const totalW = cx - COL_GAP + PAD_X;
+
+// Compute height for each lane
+function laneColH(laneNodes, includeHdr) {
+  return laneNodes.map(ns => ns.length ? (includeHdr?COL_HDR:0) + ns.length*NODE_H + Math.max(0,ns.length-1)*ROW_GAP : 0);
+}
+const mainColH = laneColH(lanes.main, true);
+const mlColH   = laneColH(lanes.ml,   false);
+const pgColH   = laneColH(lanes.pg,   false);
+const iceColH  = laneColH(lanes.ice,  false);
+const maxMainH = Math.max(...mainColH, 0);
+const maxMlH   = Math.max(...mlColH, 0);
+const maxPgH   = Math.max(...pgColH, 0);
+const maxIceH  = Math.max(...iceColH, 0);
+
+// Vertical zone positions
+const mainY0 = PAD_Y;
+const mainEnd = mainY0 + maxMainH;
+const mlY0 = maxMlH > 0 ? mainEnd + LANE_GAP : mainEnd;
+const mlEnd = mlY0 + maxMlH;
+const NARROW_GAP = 50;
+const pgY0 = maxPgH > 0 ? mlEnd + NARROW_GAP : mlEnd;
+const pgEnd = pgY0 + maxPgH;
+const iceY0 = maxIceH > 0 ? pgEnd + NARROW_GAP : pgEnd;
+const iceEnd = iceY0 + maxIceH;
+const totalH = iceEnd + PAD_Y;
+
+const nodeMap = {};
+
+// Position main lane nodes (top-aligned so row 0 nodes form a straight line)
+let actualMainEnd = mainEnd;
+lanes.main.forEach((nodes,c) => {
+  const y0 = mainY0 + COL_HDR;
+  nodes.forEach((n,i) => {
+    n.x = colX[c] + (n.xOff||0);
+    n.y = y0 + i*(NODE_H+ROW_GAP) + (n.rowOff||0)*(NODE_H+ROW_GAP);
+    actualMainEnd = Math.max(actualMainEnd, n.y + NODE_H);
+    nodeMap[n.id] = n;
+  });
+});
+
+// Recalculate lane positions based on actual main lane bottom
+const mlY0Real = maxMlH > 0 ? actualMainEnd + LANE_GAP : actualMainEnd;
+const mlEndReal = mlY0Real + maxMlH;
+const pgY0Real = maxPgH > 0 ? mlEndReal + NARROW_GAP : mlEndReal;
+const pgEndReal = pgY0Real + maxPgH;
+const iceY0Real = maxIceH > 0 ? pgEndReal + NARROW_GAP : pgEndReal;
+const iceEndReal = iceY0Real + maxIceH;
+
+// Position ML lane nodes
+lanes.ml.forEach((nodes,c) => {
+  const h = mlColH[c];
+  const y0 = mlY0Real + (maxMlH - h)/2;
+  nodes.forEach((n,i) => {
+    n.x = colX[c];
+    n.y = y0 + i*(NODE_H+ROW_GAP);
+    nodeMap[n.id] = n;
+  });
+});
+// Position PG lane nodes
+lanes.pg.forEach((nodes,c) => {
+  const h = pgColH[c];
+  const y0 = pgY0Real + (maxPgH - h)/2;
+  nodes.forEach((n,i) => {
+    n.x = colX[c];
+    n.y = y0 + i*(NODE_H+ROW_GAP);
+    nodeMap[n.id] = n;
+  });
+});
+// Position ice lane nodes
+lanes.ice.forEach((nodes,c) => {
+  const h = iceColH[c];
+  const y0 = iceY0Real + (maxIceH - h)/2;
+  nodes.forEach((n,i) => {
+    n.x = colX[c];
+    n.y = y0 + i*(NODE_H+ROW_GAP);
+    nodeMap[n.id] = n;
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+//  RENDER SVG
+// ═══════════════════════════════════════════════════════════
+const svg = document.getElementById('archSvg');
+const totalHReal = iceEndReal + PAD_Y;
+svg.setAttribute('width', totalW);
+svg.setAttribute('height', totalHReal);
+svg.setAttribute('viewBox',`0 0 ${totalW} ${totalHReal}`);
+
+let S = '';
+
+// arrowhead
+S += `<defs><marker id="ah" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="rgba(100,110,200,.55)"/></marker></defs>`;
+
+// RisingWave background highlight (cols 2–6)
+{
+  const rwX = colX[2] - COL_GAP/2 + 2;
+  const rwW = (colX[6] + NODE_W + COL_GAP/2 - 2) - rwX;
+  const rwPad = 8;
+  const rwTop = PAD_Y - rwPad - 12;
+  const rwBottom = mlY0Real - LANE_GAP/2 - 12;
+  S += `<rect x="${rwX}" y="${rwTop}" width="${rwW}" height="${rwBottom - rwTop}" rx="12" fill="${C.rw}12" stroke="${C.rw}30" stroke-width="1"/>`;
+  S += `<text x="${rwX + 8}" y="${PAD_Y - rwPad + 2}" fill="${C.rw}" font-size="9" font-weight="600" letter-spacing=".06em" opacity=".45" style="text-transform:uppercase">RisingWave</text>`;
+}
+
+// column labels – position at top of whichever lane has content
+COL_LABELS.forEach((label,c) => {
+  const lx = colX[c]+NODE_W/2;
+  let ly;
+  if(lanes.main[c].length) {
+    ly = mainY0 + 14;
+  } else if(lanes.ml[c].length) {
+    const h = mlColH[c];
+    ly = mlY0Real + (maxMlH - h)/2 - 6;
+  } else if(lanes.pg[c].length) {
+    const h = pgColH[c];
+    ly = pgY0Real + (maxPgH - h)/2 - 6;
+  } else if(lanes.ice[c].length) {
+    const h = iceColH[c];
+    ly = iceY0Real + (maxIceH - h)/2 - 6;
+  } else {
+    ly = mainY0 + 14;
+  }
+  S += `<text x="${lx}" y="${ly}" text-anchor="middle" fill="#6b7280" font-size="10" font-weight="700" letter-spacing=".06em" style="text-transform:uppercase">${label}</text>`;
+});
+
+// column separators
+for(let c=1;c<numCols;c++){
+  const lx = colX[c]-COL_GAP/2;
+  S += `<line x1="${lx}" y1="${PAD_Y-4}" x2="${lx}" y2="${totalHReal-PAD_Y+4}" stroke="#1e2130" stroke-width="1" stroke-dasharray="4,6"/>`;
+}
+
+// lane separators & labels
+function drawLaneSep(yStart, label, color) {
+  const sepY = yStart - NARROW_GAP/2;
+  S += `<line x1="${PAD_X}" y1="${sepY}" x2="${totalW-PAD_X}" y2="${sepY}" stroke="${color}33" stroke-width="1" stroke-dasharray="6,4"/>`;
+  S += `<text x="${PAD_X+6}" y="${sepY-6}" fill="${color}" font-size="10" font-weight="600" letter-spacing=".05em" opacity=".7" style="text-transform:uppercase">${label}</text>`;
+}
+if(maxMlH > 0)  drawLaneSep(mlY0Real,  LANE_LABELS.ml,  LANE_COLORS.ml);
+if(maxPgH > 0)  drawLaneSep(pgY0Real,  LANE_LABELS.pg,  LANE_COLORS.pg);
+if(maxIceH > 0) drawLaneSep(iceY0Real, LANE_LABELS.ice, LANE_COLORS.ice);
+
+// edges – render with data attributes for hover highlighting
+EDGES.forEach(([fid,tid,color,label],ei) => {
+  const f=nodeMap[fid], t=nodeMap[tid];
+  if(!f||!t) return;
+  let x1,y1,x2,y2;
+  if(f.col<t.col){
+    x1=f.x+NODE_W; y1=f.y+NODE_H/2; x2=t.x; y2=t.y+NODE_H/2;
+  } else if(f.col>t.col){
+    x1=f.x; y1=f.y+NODE_H/2; x2=t.x+NODE_W; y2=t.y+NODE_H/2;
+  } else {
+    x1=f.x+NODE_W/2; y1=f.y+NODE_H; x2=t.x+NODE_W/2; y2=t.y;
+  }
+  const dx=Math.abs(x2-x1), cpx=Math.max(dx*.3,18);
+  const dirX=x2>x1?1:-1;
+  S += `<path d="M${x1},${y1} C${x1+cpx*dirX},${y1} ${x2-cpx*dirX},${y2} ${x2},${y2}" stroke="${color}" stroke-width="1.4" fill="none" opacity=".38" marker-end="url(#ah)" class="edge" data-from="${fid}" data-to="${tid}" data-color="${color}"/>`;
+  if(label){
+    const mx=(x1+x2)/2, my=(y1+y2)/2;
+    const lw = label.length * 5 + 10;
+    S += `<rect x="${mx-lw/2}" y="${my-8}" width="${lw}" height="14" rx="3" fill="#1a1d27" stroke="${color}" stroke-width=".8" opacity=".85"/>`;
+    S += `<text x="${mx}" y="${my+3}" fill="${color}" font-size="8" font-weight="700" text-anchor="middle" opacity=".9">${label}</text>`;
+  }
+});
+
+// nodes
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function mix(h1,h2,t){
+  const p=s=>[parseInt(s.slice(1,3),16),parseInt(s.slice(3,5),16),parseInt(s.slice(5,7),16)];
+  const[a,b]=[p(h1),p(h2)];
+  return '#'+a.map((v,i)=>Math.round(v*(1-t)+b[i]*t).toString(16).padStart(2,'0')).join('');
+}
+
+NODES.forEach(n => {
+  const isData = n.type==='data';
+  const rx = isData ? NODE_H/2 : 10;
+  const bc = mix(n.c,'#2a2d3a',.45);
+
+  // bg
+  S += `<rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="${rx}" fill="#1a1d27" stroke="${bc}" stroke-width="1.5" class="nr" data-id="${n.id}"/>`;
+  // accent bar
+  const bx = n.x+(isData?10:1);
+  S += `<rect x="${bx}" y="${n.y+NODE_H*.18}" width="3" height="${NODE_H*.64}" rx="2" fill="${n.c}"/>`;
+  // logo
+  S += `<foreignObject x="${n.x+16}" y="${n.y+10}" width="17" height="17" data-nid="${n.id}">${n.logo(n.c)}</foreignObject>`;
+  // label + badge
+  const badgeStr = n.b ? (B[n.b]||'') : '';
+  S += `<text x="${n.x+37}" y="${n.y+21}" fill="#e1e4ed" font-size="11.5" font-weight="600" data-nid="${n.id}">${esc(n.lbl)}${badgeStr}</text>`;
+  // sub
+  S += `<text x="${n.x+37}" y="${n.y+36}" fill="#8b8fa3" font-size="9.5" data-nid="${n.id}">${esc(n.sub)}</text>`;
+  // hover target
+  S += `<rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="${rx}" fill="transparent" class="nh" data-id="${n.id}" style="cursor:default"/>`;
+});
+
+svg.innerHTML = S;
+
+// ═══════════════════════════════════════════════════════════
+//  HOVER HIGHLIGHTING – trace upstream & downstream
+// ═══════════════════════════════════════════════════════════
+
+// Build adjacency lists
+const downstream = {}, upstream = {}; // nodeId → Set of nodeIds
+NODES.forEach(n => { downstream[n.id] = new Set(); upstream[n.id] = new Set(); });
+EDGES.forEach(([f,t]) => { if(downstream[f] && upstream[t]){ downstream[f].add(t); upstream[t].add(f); }});
+
+// BFS to collect all connected nodes in a direction
+function traceAll(startId) {
+  const visited = new Set([startId]);
+  // trace downstream
+  let queue = [...downstream[startId] || []];
+  while(queue.length){ const id=queue.shift(); if(!visited.has(id)){ visited.add(id); for(const next of downstream[id]||[]) queue.push(next); }}
+  // trace upstream
+  queue = [...upstream[startId] || []];
+  while(queue.length){ const id=queue.shift(); if(!visited.has(id)){ visited.add(id); for(const prev of upstream[id]||[]) queue.push(prev); }}
+  return visited;
+}
+
+// Collect all edge elements and node elements
+const edgeEls = svg.querySelectorAll('.edge');
+const nodeRects = svg.querySelectorAll('.nr');
+const nodeHovers = svg.querySelectorAll('.nh');
+
+function highlightNode(nodeId) {
+  const connected = traceAll(nodeId);
+  // Dim all nodes
+  nodeRects.forEach(el => {
+    if(connected.has(el.dataset.id)){
+      el.setAttribute('stroke-width','2.5');
+      el.style.filter = 'drop-shadow(0 0 6px rgba(140,150,255,.35))';
+      el.setAttribute('opacity','1');
+    } else {
+      el.setAttribute('opacity','.2');
+      el.style.filter = '';
+    }
+  });
+  // Dim/bold edges
+  edgeEls.forEach(el => {
+    const f = el.dataset.from, t = el.dataset.to;
+    if(connected.has(f) && connected.has(t)){
+      el.setAttribute('stroke-width','2.8');
+      el.setAttribute('opacity','.85');
+    } else {
+      el.setAttribute('stroke-width','1');
+      el.setAttribute('opacity','.08');
+    }
+  });
+  // Dim text associated with non-connected nodes
+  svg.querySelectorAll('text[data-nid]').forEach(el => {
+    el.setAttribute('opacity', connected.has(el.dataset.nid) ? '1' : '.15');
+  });
+  svg.querySelectorAll('foreignObject[data-nid]').forEach(el => {
+    el.setAttribute('opacity', connected.has(el.dataset.nid) ? '1' : '.15');
+  });
+}
+
+function clearHighlight() {
+  nodeRects.forEach(el => {
+    el.setAttribute('stroke-width','1.5');
+    el.setAttribute('opacity','1');
+    el.style.filter = '';
+  });
+  edgeEls.forEach(el => {
+    el.setAttribute('stroke-width','1.4');
+    el.setAttribute('opacity','.38');
+  });
+  svg.querySelectorAll('text[data-nid]').forEach(el => el.setAttribute('opacity','1'));
+  svg.querySelectorAll('foreignObject[data-nid]').forEach(el => el.setAttribute('opacity','1'));
+}
+
+// tooltip + highlight
+const tip = document.getElementById('archTooltip');
+const tipMap = {}; NODES.forEach(n=>{ if(n.tip) tipMap[n.id]=n.tip; });
+nodeHovers.forEach(el => {
+  el.addEventListener('mouseenter', () => {
+    const id = el.dataset.id;
+    highlightNode(id);
+    const t = tipMap[id]; if(t){ tip.textContent = t; tip.style.display='block'; }
+  });
+  el.addEventListener('mousemove', e => {
+    tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY-10)+'px';
+  });
+  el.addEventListener('mouseleave', () => {
+    clearHighlight();
+    tip.style.display='none';
+  });
+});
+</script>
+</body>
+</html>
