@@ -204,7 +204,7 @@ const EDGES = [
   ['v-country','api-query',C.rw],
   // API → Frontend tabs (matching reordered positions)
   ['api-stream','tab-dashboard',C.fe,'PUSH'], ['api-query','tab-queries',C.fe,'PULL'],
-  ['api-predict','tab-predictions',C.fe], ['api-enriched','tab-enriched',C.fe,'PULL'],
+  ['api-predict','tab-predictions',C.fe,'POLL'], ['api-enriched','tab-enriched',C.fe,'POLL'],
 ];
 
 const COL_LABELS = [
