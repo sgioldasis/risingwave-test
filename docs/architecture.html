@@ -426,7 +426,7 @@ NODES.forEach(n => {
   S += `<rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="${rx}" fill="#1a1d27" stroke="${bc}" stroke-width="1.5" class="nr" data-id="${n.id}"/>`;
   // accent bar
   const bx = n.x+(isData?10:1);
-  S += `<rect x="${bx}" y="${n.y+NODE_H*.18}" width="3" height="${NODE_H*.64}" rx="2" fill="${n.c}"/>`;
+  S += `<rect x="${bx}" y="${n.y+NODE_H*.18}" width="3" height="${NODE_H*.64}" rx="2" fill="${n.c}" data-nid="${n.id}"/>`;
   // logo
   S += `<foreignObject x="${n.x+16}" y="${n.y+10}" width="17" height="17" data-nid="${n.id}">${n.logo(n.c)}</foreignObject>`;
   // label + badge
@@ -498,11 +498,15 @@ function highlightNode(nodeId) {
       el.setAttribute('opacity','.15');
     }
   });
-  // Dim text associated with non-connected nodes
+  // Dim text/elements associated with non-connected nodes
   svg.querySelectorAll('text[data-nid]').forEach(el => {
     el.setAttribute('opacity', connected.has(el.dataset.nid) ? '1' : '.15');
   });
   svg.querySelectorAll('foreignObject[data-nid]').forEach(el => {
+    el.setAttribute('opacity', connected.has(el.dataset.nid) ? '1' : '.15');
+  });
+  svg.querySelectorAll('rect[data-nid]').forEach(el => {
+    if(el.classList.contains('nr') || el.classList.contains('nh')) return;
     el.setAttribute('opacity', connected.has(el.dataset.nid) ? '1' : '.15');
   });
 }
@@ -522,6 +526,10 @@ function clearHighlight() {
   });
   svg.querySelectorAll('text[data-nid]').forEach(el => el.setAttribute('opacity','1'));
   svg.querySelectorAll('foreignObject[data-nid]').forEach(el => el.setAttribute('opacity','1'));
+  svg.querySelectorAll('rect[data-nid]').forEach(el => {
+    if(el.classList.contains('nr') || el.classList.contains('nh')) return;
+    el.setAttribute('opacity','1');
+  });
 }
 
 // tooltip + highlight
