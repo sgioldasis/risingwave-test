@@ -208,8 +208,9 @@ const EDGES = [
   ['v-enriched','api-enriched',C.rw],
   ['v-country','api-query',C.rw],
   // API → Frontend tabs (matching reordered positions)
-  ['api-stream','tab-dashboard',C.fe,'PUSH'], ['api-query','tab-queries',C.fe,'PULL'],
-  ['api-predict','tab-predictions',C.fe,'POLL'], ['api-enriched','tab-enriched',C.fe,'POLL'],
+  ['api-stream','tab-dashboard',C.kafka,'PUSH (SSE)'],
+  ['tab-queries','api-query','#4ade80','PULL'], ['tab-predictions','api-predict','#60a5fa','POLL'],
+  ['tab-enriched','api-enriched','#60a5fa','POLL'],
 ];
 
 const COL_LABELS = [
@@ -235,7 +236,9 @@ NODES.forEach(n => lanes[n.lane||'main'][n.col].push(n));
 const colX = [];
 let cx = PAD_X;
 for(let c=0;c<numCols;c++){ colX.push(cx); cx += NODE_W + COL_GAP; }
-const totalW = cx - COL_GAP + PAD_X;
+// Add extra space between backend (col 8) and frontend (col 9)
+for(let c=9;c<numCols;c++){ colX[c] += 60; }
+const totalW = cx - COL_GAP + PAD_X + 60;
 
 // Compute height for each lane
 function laneColH(laneNodes, includeHdr) {
@@ -327,8 +330,7 @@ svg.setAttribute('viewBox',`0 0 ${totalW} ${totalHReal}`);
 
 let S = '';
 
-// arrowhead
-S += `<defs><marker id="ah" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="rgba(100,110,200,.55)"/></marker></defs>`;
+
 
 // RisingWave background highlight (cols 2–6)
 {
@@ -338,7 +340,7 @@ S += `<defs><marker id="ah" markerWidth="7" markerHeight="5" refX="6" refY="2.5"
   const rwTop = PAD_Y - rwPad - 12;
   const rwBottom = mlY0Real - LANE_GAP/2 - 12;
   S += `<rect x="${rwX}" y="${rwTop}" width="${rwW}" height="${rwBottom - rwTop}" rx="12" fill="#93c5fd40" stroke="#3b82f680" stroke-width="1.5"/>`;
-  S += `<text x="${rwX + 8}" y="${PAD_Y - rwPad + 2}" fill="#60a5fa" font-size="9" font-weight="600" letter-spacing=".06em" opacity=".8" style="text-transform:uppercase">RisingWave</text>`;
+  S += `<text x="${rwX + rwW/2}" y="${PAD_Y - rwPad + 2}" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">RisingWave</text>`;
 }
 
 // column labels – position at top of whichever lane has content
@@ -373,7 +375,7 @@ for(let c=1;c<numCols;c++){
 function drawLaneSep(yStart, label, color) {
   const sepY = yStart - NARROW_GAP/2;
   S += `<line x1="${PAD_X}" y1="${sepY}" x2="${totalW-PAD_X}" y2="${sepY}" stroke="${color}" stroke-width="1.5" stroke-dasharray="6,4"/>`;
-  S += `<text x="${PAD_X+6}" y="${sepY+16}" fill="${color}" font-size="10" font-weight="700" letter-spacing=".08em" style="text-transform:uppercase">${label}</text>`;
+  S += `<text x="${colX[5]}" y="${sepY+16}" text-anchor="start" fill="${color}" font-size="10" font-weight="700" letter-spacing=".08em" style="text-transform:uppercase">${label}</text>`;
 }
 if(maxMlH > 0)  drawLaneSep(mlY0Real,  LANE_LABELS.ml,  LANE_COLORS.ml);
 if(maxPgH > 0)  drawLaneSep(pgY0Real,  LANE_LABELS.pg,  LANE_COLORS.pg);
@@ -391,9 +393,10 @@ EDGES.forEach(([fid,tid,color,label],ei) => {
   } else {
     x1=f.x+NODE_W/2; y1=f.y+NODE_H; x2=t.x+NODE_W/2; y2=t.y;
   }
-  const dx=Math.abs(x2-x1), cpx=Math.max(dx*.3,18);
+  const dx=Math.abs(x2-x1), cpx=Math.max(dx*.18,10);
   const dirX=x2>x1?1:-1;
-  S += `<path d="M${x1},${y1} C${x1+cpx*dirX},${y1} ${x2-cpx*dirX},${y2} ${x2},${y2}" stroke="${color}" stroke-width="1.4" fill="none" opacity=".38" marker-end="url(#ah)" class="edge" data-from="${fid}" data-to="${tid}" data-color="${color}"/>`;
+  const arrow = `M${x2},${y2} L${x2-5*dirX},${y2-3} M${x2},${y2} L${x2-5*dirX},${y2+3}`;
+  S += `<path d="M${x1},${y1} C${x1+cpx*dirX},${y1} ${x2-cpx*dirX},${y2} ${x2},${y2} ${arrow}" stroke="${color}" stroke-width="1.6" fill="none" opacity=".72" class="edge" data-from="${fid}" data-to="${tid}" data-color="${color}"/>`;
   if(label){
     const mx=(x1+x2)/2, my=(y1+y2)/2;
     const lw = label.length * 5 + 10;
@@ -472,15 +475,15 @@ function highlightNode(nodeId) {
       el.style.filter = '';
     }
   });
-  // Dim/bold edges
+  // Bold connected edges, keep others visible
   edgeEls.forEach(el => {
     const f = el.dataset.from, t = el.dataset.to;
     if(connected.has(f) && connected.has(t)){
       el.setAttribute('stroke-width','2.8');
-      el.setAttribute('opacity','.85');
+      el.setAttribute('opacity','.95');
     } else {
-      el.setAttribute('stroke-width','1');
-      el.setAttribute('opacity','.08');
+      el.setAttribute('stroke-width','1.2');
+      el.setAttribute('opacity','.35');
     }
   });
   // Dim text associated with non-connected nodes
@@ -499,8 +502,8 @@ function clearHighlight() {
     el.style.filter = '';
   });
   edgeEls.forEach(el => {
-    el.setAttribute('stroke-width','1.4');
-    el.setAttribute('opacity','.38');
+    el.setAttribute('stroke-width','1.6');
+    el.setAttribute('opacity','.72');
   });
   svg.querySelectorAll('text[data-nid]').forEach(el => el.setAttribute('opacity','1'));
   svg.querySelectorAll('foreignObject[data-nid]').forEach(el => el.setAttribute('opacity','1'));
