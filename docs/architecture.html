@@ -154,8 +154,8 @@ const NODES = [
   { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICEBERG', rowOff:2 },
 
   // COL 7 – ML training/online, external stores
-  { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Online Learning',           sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
-  { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'ML Training',               sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
+  { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Real-Time Learning',        sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
+  { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Batch Training',            sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
   { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'Table - MinIO',           b:'ICEBERG',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
   { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },
   { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Table - MinIO',      b:'ICEBERG', lane:'ice' },
@@ -342,9 +342,29 @@ let S = '';
   const rwW = (colX[6] + NODE_W + COL_GAP/2 - 2) - rwX;
   const rwPad = 8;
   const rwTop = PAD_Y - rwPad - 12;
-  const rwBottom = mlY0Real - LANE_GAP/2 - 12;
+  const rwBottom = mlY0Real - LANE_GAP/2 - 24;
   S += `<rect x="${rwX}" y="${rwTop}" width="${rwW}" height="${rwBottom - rwTop}" rx="12" fill="#93c5fd40" stroke="#3b82f680" stroke-width="1.5"/>`;
   S += `<text x="${rwX + rwW/2}" y="${PAD_Y - rwPad + 2}" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">RisingWave</text>`;
+}
+
+// ML Pipeline background highlight (cols 5–6 in ML lane: Real-Time Learning, ML Training, ML Serving)
+{
+  const mlBoxX = colX[5] - COL_GAP/2 + 2;
+  const mlBoxW = (colX[6] + NODE_W + COL_GAP/2 - 2) - mlBoxX;
+  const mlBoxPad = 10;
+  const mlBoxTop = mlY0Real - mlBoxPad - 28;
+  const mlBoxBottom = mlEndReal + mlBoxPad;
+  S += `<rect x="${mlBoxX}" y="${mlBoxTop}" width="${mlBoxW}" height="${mlBoxBottom - mlBoxTop}" rx="12" fill="#ec489940" stroke="#ec489980" stroke-width="1.5"/>`;
+  S += `<text x="${mlBoxX + mlBoxW/2}" y="${mlBoxTop + 14}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">ML Application</text>`;
+  // Vertical dashed separator between Training (col 5) and Serving (col 6)
+  const mlSepX = colX[6] - COL_GAP/2;
+  S += `<line x1="${mlSepX}" y1="${mlBoxTop}" x2="${mlSepX}" y2="${mlBoxBottom}" stroke="#ec489960" stroke-width="1" stroke-dasharray="4,6"/>`;
+  // Subheadings
+  const trainCenterX = (mlBoxX + mlSepX) / 2;
+  const serveCenterX = (mlSepX + mlBoxX + mlBoxW) / 2;
+  const subHeadY = mlBoxTop + 26;
+  S += `<text x="${trainCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Training</text>`;
+  S += `<text x="${serveCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Serving</text>`;
 }
 
 // Web Application background highlight (cols 8–9: Backend + Frontend, including ML predictions)
@@ -379,20 +399,24 @@ COL_LABELS.forEach((label,c) => {
   S += `<text x="${lx}" y="${ly}" text-anchor="middle" fill="#6b7280" font-size="10" font-weight="700" letter-spacing=".06em" style="text-transform:uppercase">${label}</text>`;
 });
 
-// column separators
-for(let c=1;c<numCols;c++){
-  if(c===4 || c===5) continue; // skip dashed lines left/right of "Realtime Processing, Storage & Serving"
-  const lx = colX[c]-COL_GAP/2;
-  S += `<line x1="${lx}" y1="${PAD_Y-4}" x2="${lx}" y2="${totalHReal-PAD_Y+4}" stroke="#1e2130" stroke-width="1" stroke-dasharray="4,6"/>`;
+// column separators (only within RisingWave box, cols 3–6)
+{
+  const rwSepTop = PAD_Y - 8 - 12;
+  const rwSepBottom = mlY0Real - LANE_GAP/2 - 12;
+  for(let c=3;c<=6;c++){
+    if(c===4 || c===5) continue;
+    const lx = colX[c]-COL_GAP/2;
+    S += `<line x1="${lx}" y1="${rwSepTop}" x2="${lx}" y2="${rwSepBottom}" stroke="#1e2130" stroke-width="1" stroke-dasharray="4,6"/>`;
+  }
 }
 
 // lane separators & labels
-function drawLaneSep(yStart, label, color) {
+function drawLaneSep(yStart, label, color, skipLabel) {
   const sepY = yStart - NARROW_GAP/2;
   S += `<line x1="${PAD_X}" y1="${sepY}" x2="${totalW-PAD_X}" y2="${sepY}" stroke="${color}" stroke-width="1.5" stroke-dasharray="6,4"/>`;
-  S += `<text x="${colX[5]}" y="${sepY+16}" text-anchor="start" fill="${color}" font-size="10" font-weight="700" letter-spacing=".08em" style="text-transform:uppercase">${label}</text>`;
+  if(!skipLabel) S += `<text x="${colX[5]}" y="${sepY+16}" text-anchor="start" fill="${color}" font-size="10" font-weight="700" letter-spacing=".08em" style="text-transform:uppercase">${label}</text>`;
 }
-if(maxMlH > 0)  drawLaneSep(mlY0Real,  LANE_LABELS.ml,  LANE_COLORS.ml);
+// ML lane separator removed — ML Pipeline box serves as visual boundary
 if(maxPgH > 0)  drawLaneSep(pgY0Real,  LANE_LABELS.pg,  LANE_COLORS.pg);
 if(maxIceH > 0) drawLaneSep(iceY0Real, LANE_LABELS.ice, LANE_COLORS.ice);
 
