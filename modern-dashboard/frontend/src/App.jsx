@@ -257,7 +257,7 @@ const App = () => {
                                 transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
                             />
                         )}
-                        UDF Enriched
+                        Analytics
                         <Sparkles size={14} className="ml-2 opacity-70" />
                     </button>
                     <button
