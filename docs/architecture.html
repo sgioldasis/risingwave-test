@@ -120,7 +120,7 @@ const B = {
 
 const NODES = [
   // COL 0 – Producer (far left)
-  { id:'producer',        col:0, type:'app',  c:C.py,    logo:L.py,    lbl:'producer.py',               sub:'Python · configurable TPS',     tip:'Generates page_views, cart_events, purchases and pushes to Kafka.' },
+  { id:'producer',        col:0, type:'app',  c:C.py,    logo:L.py,    lbl:'producer.py',               sub:'Python · configurable TPS',     tip:'Generates page_views, cart_events, purchases and pushes to Kafka.', rowOff:1 },
 
   // COL 1 – Kafka input topics
   { id:'t-page',          col:1, type:'data', c:C.kafka,  logo:L.kafka, lbl:'page_views',                sub:'Kafka topic',          b:'KAFKA' },
@@ -218,7 +218,7 @@ const EDGES = [
 ];
 
 const COL_LABELS = [
-  'Producer','','Sources','',
+  '','','Sources','',
   'Realtime Processing, Storage & Serving','','Sinks','',
   'Backend','Frontend',
 ];
@@ -345,20 +345,26 @@ let S = '';
   const rwBottom = mlY0Real - LANE_GAP/2 - 24;
   S += `<rect x="${rwX}" y="${rwTop}" width="${rwW}" height="${rwBottom - rwTop}" rx="12" fill="#93c5fd40" stroke="#3b82f680" stroke-width="1.5"/>`;
   S += `<text x="${rwX + rwW/2}" y="${PAD_Y - rwPad + 2}" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">RisingWave</text>`;
+
+  // Producer Application box (col 0) — same height as RisingWave box
+  const prodX = colX[0] - COL_GAP/2 + 2;
+  const prodW = (colX[0] + NODE_W + COL_GAP/2 - 2) - prodX;
+  S += `<rect x="${prodX}" y="${rwTop}" width="${prodW}" height="${rwBottom - rwTop}" rx="12" fill="#fdba7440" stroke="#f59e0b80" stroke-width="1.5"/>`;
+  S += `<text x="${prodX + prodW/2}" y="${PAD_Y - rwPad + 2}" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Producer Application</text>`;
 }
 
 // Kafka Topics / Storage Layer heading (col 1)
 {
   const ktX = colX[1] + NODE_W/2;
   const ktY = PAD_Y - 8 + 2;
-  S += `<text x="${ktX}" y="${ktY}" text-anchor="middle" fill="#eab308" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Storage Layer</text>`;
+  S += `<text x="${ktX}" y="${ktY}" text-anchor="middle" fill="#a855f7" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Storage Layer</text>`;
 }
 
 // Other Storage heading (col 7)
 {
   const osX = colX[7] + NODE_W/2;
   const osY = PAD_Y - 8 + 2;
-  S += `<text x="${osX}" y="${osY}" text-anchor="middle" fill="#eab308" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Storage Layer</text>`;
+  S += `<text x="${osX}" y="${osY}" text-anchor="middle" fill="#a855f7" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Storage Layer</text>`;
 }
 
 
@@ -380,7 +386,7 @@ let S = '';
   const serveCenterX = (mlSepX + mlBoxX + mlBoxW) / 2;
   const subHeadY = mlBoxTop + 26;
   S += `<text x="${trainCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Training</text>`;
-  S += `<text x="${serveCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Serving</text>`;
+  S += `<text x="${serveCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Inference</text>`;
 }
 
 // Web Application background highlight (cols 8–9: Backend + Frontend, including ML predictions)
