@@ -347,6 +347,17 @@ let S = '';
   S += `<text x="${rwX + rwW/2}" y="${PAD_Y - rwPad + 2}" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">RisingWave</text>`;
 }
 
+// Web Application background highlight (cols 8–9: Backend + Frontend, including ML predictions)
+{
+  const appX = colX[8] - COL_GAP/2 + 2;
+  const appW = (colX[9] + NODE_W + COL_GAP/2 - 2) - appX;
+  const appPad = 8;
+  const appTop = PAD_Y - appPad - 12;
+  const appBottom = mlEndReal + appPad + 12;
+  S += `<rect x="${appX}" y="${appTop}" width="${appW}" height="${appBottom - appTop}" rx="12" fill="#fdba7440" stroke="#f59e0b80" stroke-width="1.5"/>`;
+  S += `<text x="${appX + appW/2}" y="${PAD_Y - appPad + 2}" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Web Application</text>`;
+}
+
 // column labels – position at top of whichever lane has content
 COL_LABELS.forEach((label,c) => {
   const lx = colX[c]+NODE_W/2;
