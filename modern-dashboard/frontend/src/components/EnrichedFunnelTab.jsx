@@ -1,12 +1,39 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { TrendingUp, TrendingDown, Activity, BarChart3 } from 'lucide-react';
+
+const FlashValue = ({ children, token, textColor = 'inherit' }) => (
+    <motion.span
+        key={token || 'stable'}
+        initial={{ backgroundColor: 'rgba(250, 204, 21, 0)', color: textColor, scale: 1 }}
+        animate={
+            token
+                ? {
+                    backgroundColor: ['rgba(250, 204, 21, 0)', 'rgba(250, 204, 21, 0.28)', 'rgba(250, 204, 21, 0)'],
+                    color: [textColor, '#ffffff', textColor],
+                    scale: [1, 1.04, 1]
+                }
+                : {
+                    backgroundColor: 'rgba(250, 204, 21, 0)',
+                    color: textColor,
+                    scale: 1
+                }
+        }
+        transition={{ duration: 0.35, ease: 'easeOut' }}
+        style={{ display: 'inline-block', borderRadius: '0.35rem', padding: '0 0.2rem' }}
+    >
+        {children}
+    </motion.span>
+);
 
 const EnrichedFunnelTab = () => {
     const [data, setData] = useState([]);
     const [health, setHealth] = useState({});
+    const [flashTokens, setFlashTokens] = useState({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const prevDataRef = useRef([]);
+    const prevHealthRef = useRef({});
 
     const fetchEnrichedData = async () => {
         try {
@@ -17,16 +44,51 @@ const EnrichedFunnelTab = () => {
             
             const dataJson = await dataRes.json();
             const healthJson = await healthRes.json();
+            const nextFlashTokens = {};
             
             if (dataJson.error) {
                 setError(dataJson.error);
             } else {
-                setData(dataJson.data || []);
+                const nextData = dataJson.data || [];
+
+                if (prevDataRef.current.length > 0) {
+                    const prevByWindow = new Map(prevDataRef.current.map((row) => [row.window_start, row]));
+                    nextData.forEach((row) => {
+                        const prevRow = prevByWindow.get(row.window_start);
+                        ['viewers', 'carters', 'purchasers', 'funnel_score', 'view_to_cart_rate', 'cart_to_buy_rate'].forEach((field) => {
+                            if (!prevRow || prevRow[field] !== row[field]) {
+                                nextFlashTokens[`row:${row.window_start}:${field}`] = Date.now();
+                            }
+                        });
+                    });
+                }
+
+                setData(nextData);
+                prevDataRef.current = nextData;
                 setError(null);
             }
             
             if (healthJson.health_summary) {
-                setHealth(healthJson.health_summary);
+                const nextHealth = healthJson.health_summary;
+                if (Object.keys(prevHealthRef.current).length > 0) {
+                    ['weak', 'moderate', 'strong'].forEach((key) => {
+                        const prevValue = prevHealthRef.current[key] || { count: 0, avg_score: 0 };
+                        const nextValue = nextHealth[key] || { count: 0, avg_score: 0 };
+                        if (prevValue.count !== nextValue.count) {
+                            nextFlashTokens[`health:${key}:count`] = Date.now();
+                        }
+                        if (prevValue.avg_score !== nextValue.avg_score) {
+                            nextFlashTokens[`health:${key}:avg_score`] = Date.now();
+                        }
+                    });
+                }
+
+                setHealth(nextHealth);
+                prevHealthRef.current = nextHealth;
+            }
+
+            if (Object.keys(nextFlashTokens).length > 0) {
+                setFlashTokens((prev) => ({ ...prev, ...nextFlashTokens }));
             }
         } catch (err) {
             setError(err.message);
@@ -188,7 +250,12 @@ const EnrichedFunnelTab = () => {
                                         fontWeight: 600,
                                         color: 'rgba(255, 255, 255, 0.9)'
                                     }}>
-                                        {value.count}
+                                        <FlashValue
+                                            token={flashTokens[`health:${key}:count`]}
+                                            textColor={'rgba(255, 255, 255, 0.9)'}
+                                        >
+                                            {value.count}
+                                        </FlashValue>
                                     </div>
                                     
                                     <div style={{
@@ -196,7 +263,13 @@ const EnrichedFunnelTab = () => {
                                         marginTop: '0.25rem',
                                         color: 'rgba(255, 255, 255, 0.4)'
                                     }}>
-                                        Avg: {(value.avg_score * 100).toFixed(1)}%
+                                        Avg:{' '}
+                                        <FlashValue
+                                            token={flashTokens[`health:${key}:avg_score`]}
+                                            textColor={'rgba(255, 255, 255, 0.4)'}
+                                        >
+                                            {(value.avg_score * 100).toFixed(1)}%
+                                        </FlashValue>
                                     </div>
                                 </motion.div>
                             );
@@ -357,30 +430,32 @@ const EnrichedFunnelTab = () => {
                                             fontSize: '0.875rem',
                                             color: '#636efa',
                                             fontWeight: 500
-                                        }}>{row.viewers?.toLocaleString() || 0}</td>
+                                        }}>
+                                            <FlashValue token={flashTokens[`row:${row.window_start}:viewers`]} textColor={'#636efa'}>
+                                                {row.viewers?.toLocaleString() || 0}
+                                            </FlashValue>
+                                        </td>
                                         <td style={{
                                             padding: '0.875rem 1.5rem',
                                             textAlign: 'right',
                                             fontSize: '0.875rem',
                                             color: '#00cc96',
                                             fontWeight: 500
-                                        }}>{row.carters?.toLocaleString() || 0}</td>
+                                        }}>
+                                            <FlashValue token={flashTokens[`row:${row.window_start}:carters`]} textColor={'#00cc96'}>
+                                                {row.carters?.toLocaleString() || 0}
+                                            </FlashValue>
+                                        </td>
                                         <td style={{
                                             padding: '0.875rem 1.5rem',
                                             textAlign: 'right',
                                             fontSize: '0.875rem',
                                             color: '#ff6692',
                                             fontWeight: 500
-                                        }}>{row.purchasers?.toLocaleString() || 0}</td>
-                                        <td style={{
-                                            padding: '0.875rem 1.5rem',
-                                            textAlign: 'center',
-                                            fontSize: '0.875rem',
-                                            color: 'rgba(255, 255, 255, 0.8)'
                                         }}>
-                                            <span style={{ whiteSpace: 'nowrap' }}>
-                                                {row.view_to_cart_emoji}
-                                            </span>
+                                            <FlashValue token={flashTokens[`row:${row.window_start}:purchasers`]} textColor={'#ff6692'}>
+                                                {row.purchasers?.toLocaleString() || 0}
+                                            </FlashValue>
                                         </td>
                                         <td style={{
                                             padding: '0.875rem 1.5rem',
@@ -388,9 +463,23 @@ const EnrichedFunnelTab = () => {
                                             fontSize: '0.875rem',
                                             color: 'rgba(255, 255, 255, 0.8)'
                                         }}>
-                                            <span style={{ whiteSpace: 'nowrap' }}>
-                                                {row.cart_to_buy_emoji}
-                                            </span>
+                                            <FlashValue token={flashTokens[`row:${row.window_start}:view_to_cart_rate`]} textColor={'rgba(255, 255, 255, 0.8)'}>
+                                                <span style={{ whiteSpace: 'nowrap' }}>
+                                                    {row.view_to_cart_emoji}
+                                                </span>
+                                            </FlashValue>
+                                        </td>
+                                        <td style={{
+                                            padding: '0.875rem 1.5rem',
+                                            textAlign: 'center',
+                                            fontSize: '0.875rem',
+                                            color: 'rgba(255, 255, 255, 0.8)'
+                                        }}>
+                                            <FlashValue token={flashTokens[`row:${row.window_start}:cart_to_buy_rate`]} textColor={'rgba(255, 255, 255, 0.8)'}>
+                                                <span style={{ whiteSpace: 'nowrap' }}>
+                                                    {row.cart_to_buy_emoji}
+                                                </span>
+                                            </FlashValue>
                                         </td>
                                         <td style={{
                                             padding: '0.875rem 1.5rem',
@@ -399,7 +488,9 @@ const EnrichedFunnelTab = () => {
                                             color: 'rgba(255, 255, 255, 0.8)',
                                             fontFamily: 'monospace'
                                         }}>
-                                            {(row.funnel_score * 100).toFixed(1)}%
+                                            <FlashValue token={flashTokens[`row:${row.window_start}:funnel_score`]} textColor={'rgba(255, 255, 255, 0.8)'}>
+                                                {(row.funnel_score * 100).toFixed(1)}%
+                                            </FlashValue>
                                         </td>
                                         <td style={{ padding: '0.875rem 1.5rem', textAlign: 'center' }}>
                                             <span

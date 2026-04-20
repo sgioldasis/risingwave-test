@@ -1103,14 +1103,40 @@ def get_funnel_health():
     try:
         with funnel_engine.connect() as conn:
             query = text("""
+                WITH minute_latest AS (
+                    SELECT
+                        date_trunc('minute', window_start) AS minute_bucket,
+                        window_start,
+                        funnel_health,
+                        funnel_score,
+                        view_to_cart_rate,
+                        cart_to_buy_rate,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY date_trunc('minute', window_start)
+                            ORDER BY window_start DESC
+                        ) AS rn
+                    FROM funnel_enriched
+                    WHERE window_start >= NOW() - INTERVAL '15 minutes'
+                ),
+                latest_5_minutes AS (
+                    SELECT
+                        minute_bucket,
+                        funnel_health,
+                        funnel_score,
+                        view_to_cart_rate,
+                        cart_to_buy_rate
+                    FROM minute_latest
+                    WHERE rn = 1
+                    ORDER BY minute_bucket DESC
+                    LIMIT 5
+                )
                 SELECT
                     funnel_health,
-                    COUNT(*) as count,
-                    AVG(funnel_score) as avg_score,
-                    AVG(view_to_cart_rate) as avg_view_to_cart,
-                    AVG(cart_to_buy_rate) as avg_cart_to_buy
-                FROM funnel_enriched
-                WHERE window_start >= NOW() - INTERVAL '5 minutes'
+                    COUNT(*) AS count,
+                    AVG(funnel_score) AS avg_score,
+                    AVG(view_to_cart_rate) AS avg_view_to_cart,
+                    AVG(cart_to_buy_rate) AS avg_cart_to_buy
+                FROM latest_5_minutes
                 GROUP BY funnel_health
             """)
             
