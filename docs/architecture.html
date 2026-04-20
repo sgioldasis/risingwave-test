@@ -55,7 +55,7 @@
   .svg-wrap:active, .svg-wrap.grabbing {
     cursor: grabbing;
   }
-  #archSvg { display: block; }
+  #archSvg { display: block; margin: 0 auto; }
   .arch-tooltip {
     position: fixed; display: none;
     background: #252836; border: 1px solid var(--border);
@@ -228,7 +228,7 @@ const COL_LABELS = [
 // ═══════════════════════════════════════════════════════════
 const LANE_GAP = 60; // vertical gap between lanes
 const numCols = COL_LABELS.length;
-const LANE_NAMES = ['main','ml','pg','ice'];
+const LANE_NAMES = ['main','ml','ice','pg'];
 const LANE_LABELS = { ml:'ML Pipeline', pg:'PostgreSQL', ice:'Datalake / Iceberg' };
 const LANE_COLORS = { ml:C.ml, pg:C.pg, ice:C.ice };
 
@@ -263,11 +263,11 @@ const mainEnd = mainY0 + maxMainH;
 const mlY0 = maxMlH > 0 ? mainEnd + LANE_GAP : mainEnd;
 const mlEnd = mlY0 + maxMlH;
 const NARROW_GAP = 50;
-const pgY0 = maxPgH > 0 ? mlEnd + NARROW_GAP : mlEnd;
-const pgEnd = pgY0 + maxPgH;
-const iceY0 = maxIceH > 0 ? pgEnd + NARROW_GAP : pgEnd;
+const iceY0 = maxIceH > 0 ? mlEnd + NARROW_GAP : mlEnd;
 const iceEnd = iceY0 + maxIceH;
-const totalH = iceEnd + PAD_Y;
+const pgY0 = maxPgH > 0 ? iceEnd + NARROW_GAP : iceEnd;
+const pgEnd = pgY0 + maxPgH;
+const totalH = pgEnd + PAD_Y;
 
 const nodeMap = {};
 
@@ -286,10 +286,10 @@ lanes.main.forEach((nodes,c) => {
 // Recalculate lane positions based on actual main lane bottom
 const mlY0Real = maxMlH > 0 ? actualMainEnd + LANE_GAP : actualMainEnd;
 const mlEndReal = mlY0Real + maxMlH;
-const pgY0Real = maxPgH > 0 ? mlEndReal + NARROW_GAP : mlEndReal;
-const pgEndReal = pgY0Real + maxPgH;
-const iceY0Real = maxIceH > 0 ? pgEndReal + NARROW_GAP : pgEndReal;
+const iceY0Real = maxIceH > 0 ? mlEndReal + NARROW_GAP : mlEndReal;
 const iceEndReal = iceY0Real + maxIceH;
+const pgY0Real = maxPgH > 0 ? iceEndReal + NARROW_GAP : iceEndReal;
+const pgEndReal = pgY0Real + maxPgH;
 
 // Position ML lane nodes
 lanes.ml.forEach((nodes,c) => {
@@ -327,7 +327,7 @@ lanes.ice.forEach((nodes,c) => {
 // ═══════════════════════════════════════════════════════════
 const svg = document.getElementById('archSvg');
 const wrapper = document.querySelector('.svg-wrap');
-const totalHReal = iceEndReal + PAD_Y;
+const totalHReal = pgEndReal + PAD_Y;
 svg.setAttribute('width', totalW);
 svg.setAttribute('height', totalHReal);
 svg.setAttribute('viewBox',`0 0 ${totalW} ${totalHReal}`);
@@ -417,8 +417,8 @@ function drawLaneSep(yStart, label, color, skipLabel) {
   if(!skipLabel) S += `<text x="${colX[5]}" y="${sepY+16}" text-anchor="start" fill="${color}" font-size="10" font-weight="700" letter-spacing=".08em" style="text-transform:uppercase">${label}</text>`;
 }
 // ML lane separator removed — ML Pipeline box serves as visual boundary
-if(maxPgH > 0)  drawLaneSep(pgY0Real,  LANE_LABELS.pg,  LANE_COLORS.pg);
 if(maxIceH > 0) drawLaneSep(iceY0Real, LANE_LABELS.ice, LANE_COLORS.ice);
+if(maxPgH > 0)  drawLaneSep(pgY0Real,  LANE_LABELS.pg,  LANE_COLORS.pg);
 
 // edges – render with data attributes for hover highlighting
 EDGES.forEach(([fid,tid,color,label],ei) => {
