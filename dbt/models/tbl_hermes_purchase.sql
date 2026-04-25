@@ -1,41 +1,41 @@
 {{ config(
     materialized='kafka_table',
-    topic='cart_events',
+    topic='purchases',
     primary_key='user_id',
     bootstrap_servers='redpanda:9092',
     scan_startup_mode='earliest'
 ) }}
 
 {#
-  Kafka Table: Cart Events (Modifiable)
+  Kafka Table: Purchases (Modifiable)
 
-  Unlike src_cart (which is a CREATE SOURCE), this table:
+  Unlike src_purchase (which is a CREATE SOURCE), this table:
   - Stores data internally in RisingWave
   - Supports UPDATE and DELETE operations
   - Has PRIMARY KEY for upserts on duplicate user_id
 
   Demo Operations:
-    -- Update a user's cart item
-    UPDATE hermes_cart
-    SET item_id = 'premium-widget', event_time = NOW()
-    WHERE user_id = 123;
+    -- Correct a purchase amount
+    UPDATE tbl_hermes_purchase
+    SET amount = 99.99
+    WHERE user_id = 123 AND amount = 999.99;
 
-    -- Delete a user's cart
-    DELETE FROM hermes_cart WHERE user_id = 456;
+    -- Refund/delete a purchase
+    DELETE FROM tbl_hermes_purchase WHERE user_id = 456;
 
-    -- Insert a new cart event
-    INSERT INTO hermes_cart (user_id, item_id, event_time)
-    VALUES (999, 'demo-item', NOW());
+    -- Add a manual purchase
+    INSERT INTO tbl_hermes_purchase (user_id, amount, event_time)
+    VALUES (888, 150.00, NOW());
 #}
 
 CREATE TABLE IF NOT EXISTS {{ this }} (
     user_id int,
-    item_id varchar,
+    amount DOUBLE,
     event_time timestamptz,
     PRIMARY KEY (user_id)
 ) WITH (
     connector = 'kafka',
-    topic = 'cart_events',
+    topic = 'purchases',
     properties.bootstrap.server = 'redpanda:9092',
     scan.startup.mode = 'earliest'
 ) FORMAT PLAIN ENCODE JSON

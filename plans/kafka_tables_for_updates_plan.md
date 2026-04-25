@@ -67,7 +67,7 @@ Add RisingWave Kafka TABLE models alongside existing SOURCE models to enable UPD
 
 ### 2. New Table Models
 
-#### `dbt/models/hermes_cart.sql`
+#### `dbt/models/tbl_hermes_cart.sql`
 ```sql
 {{ config(
     materialized='kafka_table',
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS {{ this }} (
 ) FORMAT PLAIN ENCODE JSON
 ```
 
-#### `dbt/models/hermes_page.sql`
+#### `dbt/models/tbl_hermes_page.sql`
 ```sql
 {{ config(
     materialized='kafka_table',
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS {{ this }} (
 ) FORMAT PLAIN ENCODE JSON
 ```
 
-#### `dbt/models/hermes_purchase.sql`
+#### `dbt/models/tbl_hermes_purchase.sql`
 ```sql
 {{ config(
     materialized='kafka_table',
@@ -149,11 +149,11 @@ WITH stats AS (
         count(distinct p.user_id) as viewers,
         count(distinct c.user_id) as carters,
         count(distinct pur.user_id) as purchasers
-    FROM TUMBLE({{ ref('hermes_page') }}, event_time, INTERVAL '20 SECOND') p
-    LEFT JOIN {{ ref('hermes_cart') }} c
+    FROM TUMBLE({{ ref('tbl_hermes_page') }}, event_time, INTERVAL '20 SECOND') p
+    LEFT JOIN {{ ref('tbl_hermes_cart') }} c
         ON p.user_id = c.user_id
         AND c.event_time BETWEEN p.window_start AND p.window_end
-    LEFT JOIN {{ ref('hermes_purchase') }} pur
+    LEFT JOIN {{ ref('tbl_hermes_purchase') }} pur
         ON p.user_id = pur.user_id
         AND pur.event_time BETWEEN p.window_start AND p.window_end
     GROUP BY window_start, window_end
@@ -172,28 +172,28 @@ FROM stats
 
 ### 4. Demo SQL: UPDATE/DELETE Operations
 
-#### `dbt/models/demo_operations.sql` (ephemeral model with documentation)
+#### `docs/DEMO_OPERATIONS_SQL.md` (documentation)
 ```sql
 -- This model provides documentation and example SQL for demo operations
 -- Run these manually via psql or a SQL client
 
 /*
 -- Example 1: Update a user's cart item
-UPDATE hermes_cart 
+UPDATE tbl_hermes_cart 
 SET item_id = 'premium-widget', event_time = NOW() 
 WHERE user_id = 123;
 
 -- Example 2: Delete a specific user from page views
-DELETE FROM hermes_page 
+DELETE FROM tbl_hermes_page 
 WHERE user_id = 456;
 
 -- Example 3: Update purchase amount
-UPDATE hermes_purchase 
+UPDATE tbl_hermes_purchase 
 SET amount = 99.99, event_time = NOW() 
 WHERE user_id = 789;
 
 -- Example 4: Insert a new record directly
-INSERT INTO hermes_cart (user_id, item_id, event_time) 
+INSERT INTO tbl_hermes_cart (user_id, item_id, event_time) 
 VALUES (999, 'demo-item', NOW());
 
 -- Example 5: View the effects on the funnel
@@ -281,9 +281,9 @@ flowchart TB
     end
     
     subgraph Tables["Modifiable Tables"]
-        T1[hermes_page]
-        T2[hermes_cart]
-        T3[hermes_purchase]
+        T1[tbl_hermes_page]
+        T2[tbl_hermes_cart]
+        T3[tbl_hermes_purchase]
     end
     
     subgraph MVs["Materialized Views"]
@@ -327,7 +327,7 @@ flowchart TB
 ### Scenario 1: Correct Erroneous Data
 ```sql
 -- A purchase was recorded with wrong amount
-UPDATE hermes_purchase 
+UPDATE tbl_hermes_purchase 
 SET amount = 150.00 
 WHERE user_id = 123 AND amount = 1500.00;
 
@@ -337,26 +337,26 @@ WHERE user_id = 123 AND amount = 1500.00;
 ### Scenario 2: Remove Test Data
 ```sql
 -- Remove test user data
-DELETE FROM hermes_cart WHERE user_id = 99999;
-DELETE FROM hermes_page WHERE user_id = 99999;
-DELETE FROM hermes_purchase WHERE user_id = 99999;
+DELETE FROM tbl_hermes_cart WHERE user_id = 99999;
+DELETE FROM tbl_hermes_page WHERE user_id = 99999;
+DELETE FROM tbl_hermes_purchase WHERE user_id = 99999;
 ```
 
 ### Scenario 3: Enrich Existing Data
 ```sql
 -- Add a flag for VIP users (requires schema change or new table)
-ALTER TABLE hermes_cart ADD COLUMN is_vip BOOLEAN DEFAULT false;
-UPDATE hermes_cart SET is_vip = true WHERE user_id IN (SELECT user_id FROM vip_users);
+ALTER TABLE tbl_hermes_cart ADD COLUMN is_vip BOOLEAN DEFAULT false;
+UPDATE tbl_hermes_cart SET is_vip = true WHERE user_id IN (SELECT user_id FROM vip_users);
 ```
 
 ## Implementation Checklist
 
 - [ ] Create `dbt/macros/materializations/kafka_table.sql`
-- [ ] Create `dbt/models/hermes_cart.sql`
-- [ ] Create `dbt/models/hermes_page.sql`
-- [ ] Create `dbt/models/hermes_purchase.sql`
+- [ ] Create `dbt/models/tbl_hermes_cart.sql`
+- [ ] Create `dbt/models/tbl_hermes_page.sql`
+- [ ] Create `dbt/models/tbl_hermes_purchase.sql`
 - [ ] Create `dbt/models/funnel_from_tables.sql`
-- [ ] Create `dbt/models/demo_operations.sql` (documentation)
+- [ ] Create `docs/DEMO_OPERATIONS_SQL.md` (documentation)
 - [ ] Update `dbt_project.yml` with new execution order
 - [ ] Test dbt run to ensure all models compile
 - [ ] Verify UPDATE/DELETE operations work
@@ -365,11 +365,11 @@ UPDATE hermes_cart SET is_vip = true WHERE user_id IN (SELECT user_id FROM vip_u
 ## Files to Create
 
 1. `dbt/macros/materializations/kafka_table.sql` - New materialization
-2. `dbt/models/hermes_cart.sql` - Cart events table
-3. `dbt/models/hermes_page.sql` - Page views table
-4. `dbt/models/hermes_purchase.sql` - Purchase events table
+2. `dbt/models/tbl_hermes_cart.sql` - Cart events table
+3. `dbt/models/tbl_hermes_page.sql` - Page views table
+4. `dbt/models/tbl_hermes_purchase.sql` - Purchase events table
 5. `dbt/models/funnel_from_tables.sql` - New funnel MV
-6. `dbt/models/demo_operations.sql` - Demo SQL examples
+6. `docs/DEMO_OPERATIONS_SQL.md` - Demo SQL examples
 
 ## Files to Modify
 

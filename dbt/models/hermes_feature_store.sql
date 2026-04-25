@@ -18,7 +18,7 @@
         s.carters as source_carters,
         t.carters as table_carters
     FROM funnel s
-    FULL OUTER JOIN hermes_funnel t
+    FULL OUTER JOIN hermes_feature_store t
         ON s.window_start = t.window_start
     ORDER BY COALESCE(s.window_start, t.window_start) DESC
     LIMIT 10;
@@ -33,13 +33,13 @@ WITH interval_10_seconds AS (
         count(distinct pur.user_id) as purchasers,
         '10 SECONDS' as time_interval,
         date_trunc('minute', window_start) as minute_start
-    FROM TUMBLE({{ ref('hermes_page') }}, event_time, INTERVAL '10 SECONDS') p
+    FROM TUMBLE({{ ref('tbl_hermes_page') }}, event_time, INTERVAL '10 SECONDS') p
     -- Join Cart events
-    LEFT JOIN {{ ref('hermes_cart') }} c
+    LEFT JOIN {{ ref('tbl_hermes_cart') }} c
         ON p.user_id = c.user_id
         AND c.event_time BETWEEN p.window_start AND p.window_end
     -- Join Purchase events
-    LEFT JOIN {{ ref('hermes_purchase') }} pur
+    LEFT JOIN {{ ref('tbl_hermes_purchase') }} pur
         ON p.user_id = pur.user_id
         AND pur.event_time BETWEEN p.window_start AND p.window_end
     GROUP BY window_start, window_end
@@ -53,13 +53,13 @@ interval_30_seconds AS (
         count(distinct pur.user_id) as purchasers,
         '30 SECONDS' as time_interval,
         date_trunc('minute', window_start) as minute_start
-    FROM TUMBLE({{ ref('hermes_page') }}, event_time, INTERVAL '30 SECONDS') p
+    FROM TUMBLE({{ ref('tbl_hermes_page') }}, event_time, INTERVAL '30 SECONDS') p
     -- Join Cart events
-    LEFT JOIN {{ ref('hermes_cart') }} c
+    LEFT JOIN {{ ref('tbl_hermes_cart') }} c
         ON p.user_id = c.user_id
         AND c.event_time BETWEEN p.window_start AND p.window_end
     -- Join Purchase events
-    LEFT JOIN {{ ref('hermes_purchase') }} pur
+    LEFT JOIN {{ ref('tbl_hermes_purchase') }} pur
         ON p.user_id = pur.user_id
         AND pur.event_time BETWEEN p.window_start AND p.window_end
     GROUP BY window_start, window_end
@@ -73,13 +73,13 @@ interval_1_minute AS (
         count(distinct pur.user_id) as purchasers,
         '60 SECONDS' as time_interval,
         date_trunc('minute', window_start) as minute_start
-    FROM TUMBLE({{ ref('hermes_page') }}, event_time, INTERVAL '1 MINUTE') p
+    FROM TUMBLE({{ ref('tbl_hermes_page') }}, event_time, INTERVAL '1 MINUTE') p
     -- Join Cart events
-    LEFT JOIN {{ ref('hermes_cart') }} c
+    LEFT JOIN {{ ref('tbl_hermes_cart') }} c
         ON p.user_id = c.user_id
         AND c.event_time BETWEEN p.window_start AND p.window_end
     -- Join Purchase events
-    LEFT JOIN {{ ref('hermes_purchase') }} pur
+    LEFT JOIN {{ ref('tbl_hermes_purchase') }} pur
         ON p.user_id = pur.user_id
         AND pur.event_time BETWEEN p.window_start AND p.window_end
     GROUP BY window_start, window_end

@@ -33,6 +33,27 @@
     font-size: 0.82rem;
     padding-bottom: 14px;
   }
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 20px 12px;
+  }
+  .tab-btn {
+    border: 1px solid var(--border);
+    background: #171a23;
+    color: var(--text-dim);
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tab-btn.active {
+    color: var(--text);
+    border-color: #4b5568;
+    background: #232837;
+  }
   .legend {
     display: flex; flex-wrap: wrap; justify-content: center;
     gap: 18px; padding: 0 20px 16px; font-size: 0.74rem;
@@ -70,6 +91,10 @@
 <body>
 
 <h1>Real-Time Streaming Architecture</h1>
+<div class="tabs">
+  <button id="tabDashboard" class="tab-btn active" type="button">Dashboard</button>
+  <button id="tabHermes" class="tab-btn" type="button">Hermes</button>
+</div>
 
 <div id="archTooltip" class="arch-tooltip"></div>
 <div class="svg-wrap">
@@ -135,9 +160,9 @@ const NODES = [
   { id:'t-purchase',      col:1, type:'data', c:C.kafka,  logo:L.kafka, lbl:'purchases',                 sub:'Kafka topic',          b:'KAFKA' },
 
   // COL 2 – RW Sources
-  { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_page',                  sub:'RW source (append)',   b:'RW' },
-  { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_cart',                  sub:'RW source (append)',   b:'RW' },
-  { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_purchase',              sub:'RW source (append)',   b:'RW' },
+  { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'tbl_hermes_page',           sub:'RW table (mutable)',   b:'RW' },
+  { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'tbl_hermes_cart',           sub:'RW table (mutable)',   b:'RW' },
+  { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'tbl_hermes_purchase',       sub:'RW table (mutable)',   b:'RW' },
   { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.rw,    lbl:'src_iceberg_countries',     sub:'Iceberg → RW source',  b:'ICEBERG' },
 
   // COL 3 – Funnel join/aggregate
@@ -145,7 +170,7 @@ const NODES = [
   { id:'v-countries',     col:3, type:'data', c:C.rw,     logo:L.rw,    lbl:'rw_countries',              sub:'View · country snapshot',b:'RW' },
 
   // COL 4 – Downstream of funnel (summary, training, countries view)
-  { id:'mv-funnel',       col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel',                    sub:'MV · 20 s tumble',     b:'RW MV', tip:'Joins src_page/cart/purchase in 20s tumbling windows → viewers, carters, purchasers, rates.', rowOff:2 },
+  { id:'mv-funnel',       col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'hermes_feature_store',      sub:'MV · feature windows', b:'RW MV', tip:'Joins Hermes tables in tumbling windows for viewers, carters, purchasers, and rates.', rowOff:-1 },
   { id:'mv-training',     col:4, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_training',           sub:'MV · + time & lag feats',b:'RW MV',tip:'+ hour, minute, day_of_week, lag_1..3 for ML.', rowOff:4 },
 
   // COL 5 – Views, UDFs, kafka sink, iceberg MV
@@ -159,11 +184,13 @@ const NODES = [
   { id:'t-funnel',        col:7, type:'data', c:C.kafka,  logo:L.kafka, lbl:'funnel',                     sub:'Kafka topic',            b:'KAFKA', tip:'Consumed by dashboard backend as SSE.' },
   { id:'sink-pg',         col:6, type:'data', c:C.pg,     logo:L.rw,    lbl:'funnel_postgres_sink',      sub:'RW sink → PostgreSQL',   b:'PG', rowOff:2 },
   { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICEBERG', rowOff:2 },
+  { id:'sink-hermes-iceberg', col:6, type:'data', c:C.ice, logo:L.rw,   lbl:'sink_hermes_feature_store_to_iceberg', sub:'RW sink → Iceberg', b:'ICEBERG', rowOff:-2 },
 
   // COL 7 – ML training/online, external stores
   { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Real-Time Learning',        sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
   { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Batch Training',            sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
   { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'Table - MinIO',           b:'ICEBERG',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
+  { id:'ice-hermes-feature-store', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'hermes_feature_store', sub:'Table - MinIO', b:'ICEBERG', tip:'Hermes feature store sink target table in Iceberg.', lane:'ice' },
   { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },
   { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Table - MinIO',      b:'ICEBERG', lane:'ice' },
 
@@ -207,8 +234,10 @@ const EDGES = [
   ['v-country','v-enriched',C.rw], ['udf','v-enriched',C.py],
   // MVs → sinks
   ['mv-summary','sink-kafka',C.rwmv], ['mv-ice','sink-iceberg',C.ice], ['v-country','sink-pg',C.pg],
+  ['mv-funnel','sink-hermes-iceberg',C.ice],
   // sinks → external
   ['sink-kafka','t-funnel',C.kafka], ['sink-iceberg','ice-funnel',C.ice], ['sink-pg','pg-table',C.pg],
+  ['sink-hermes-iceberg','ice-hermes-feature-store',C.ice],
   // Iceberg countries reference
   ['ice-countries','src-ice-country',C.ice],
   // external → consumers
@@ -433,17 +462,17 @@ let S = '';
   const mlBoxPad = 10;
   const mlBoxTop = mlY0Real - mlBoxPad - 28;
   const mlBoxBottom = mlEndReal + mlBoxPad;
-  S += `<rect x="${mlBoxX}" y="${mlBoxTop}" width="${mlBoxW}" height="${mlBoxBottom - mlBoxTop}" rx="12" fill="#ec489940" stroke="#ec489980" stroke-width="1.5"/>`;
-  S += `<text x="${mlBoxX + mlBoxW/2}" y="${mlBoxTop + 14}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">ML Application</text>`;
+  S += `<rect id="mlAppBox" class="ml-app-group" x="${mlBoxX}" y="${mlBoxTop}" width="${mlBoxW}" height="${mlBoxBottom - mlBoxTop}" rx="12" fill="#ec489940" stroke="#ec489980" stroke-width="1.5"/>`;
+  S += `<text id="mlAppLabel" class="ml-app-group" x="${mlBoxX + mlBoxW/2}" y="${mlBoxTop + 14}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">ML Application</text>`;
   // Vertical dashed separator between Training (col 5) and Serving (col 6)
   const mlSepX = colX[6] - COL_GAP/2;
-  S += `<line x1="${mlSepX}" y1="${mlBoxTop}" x2="${mlSepX}" y2="${mlBoxBottom}" stroke="#ec489960" stroke-width="1" stroke-dasharray="4,6"/>`;
+  S += `<line class="ml-app-group" x1="${mlSepX}" y1="${mlBoxTop}" x2="${mlSepX}" y2="${mlBoxBottom}" stroke="#ec489960" stroke-width="1" stroke-dasharray="4,6"/>`;
   // Subheadings
   const trainCenterX = (mlBoxX + mlSepX) / 2;
   const serveCenterX = (mlSepX + mlBoxX + mlBoxW) / 2;
   const subHeadY = mlBoxTop + 26;
-  S += `<text x="${trainCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Training</text>`;
-  S += `<text x="${serveCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Inference</text>`;
+  S += `<text class="ml-app-group" x="${trainCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Training</text>`;
+  S += `<text class="ml-app-group" x="${serveCenterX}" y="${subHeadY}" text-anchor="middle" fill="#ec4899" font-size="10" font-weight="700" letter-spacing=".06em" opacity=".6" style="text-transform:uppercase">Inference</text>`;
 }
 
 // Web Application background highlight (cols 8–9: Backend + Frontend, including ML predictions)
@@ -453,8 +482,8 @@ let S = '';
   const appPad = 8;
   const appTop = mainY0 - appPad - 12;
   const appBottom = mlEndReal + appPad + 12;
-  S += `<rect x="${appX}" y="${appTop}" width="${appW}" height="${appBottom - appTop}" rx="12" fill="#fdba7440" stroke="#f59e0b80" stroke-width="1.5"/>`;
-  S += `<text x="${appX + appW/2}" y="${appTop + 14}" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Web Application</text>`;
+  S += `<rect id="webAppBox" class="web-app-group" x="${appX}" y="${appTop}" width="${appW}" height="${appBottom - appTop}" rx="12" fill="#fdba7440" stroke="#f59e0b80" stroke-width="1.5"/>`;
+  S += `<text id="webAppLabel" class="web-app-group" x="${appX + appW/2}" y="${appTop + 14}" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="700" letter-spacing=".08em" opacity=".8" style="text-transform:uppercase">Web Application</text>`;
 }
 
 // column labels – position at top of whichever lane has content
@@ -482,7 +511,7 @@ COL_LABELS.forEach((label,c) => {
   } else {
     ly = mainY0 + 14;
   }
-  S += `<text x="${lx}" y="${ly}" text-anchor="middle" fill="#6b7280" font-size="10" font-weight="700" letter-spacing=".06em" style="text-transform:uppercase">${label}</text>`;
+  S += `<text x="${lx}" y="${ly}" text-anchor="middle" fill="#6b7280" font-size="10" font-weight="700" letter-spacing=".06em" style="text-transform:uppercase" data-col-label="${c}">${label}</text>`;
 });
 
 // column separators (only within RisingWave box, cols 3–6)
@@ -560,6 +589,36 @@ NODES.forEach(n => {
 });
 
 svg.innerHTML = S;
+
+// Hermes-only helper arrow: hermes_feature_store -> ML Application box
+// Route: down from node bottom, then right into ML box left margin.
+{
+  const hf = nodeMap['mv-funnel'];
+  const mlBox = svg.querySelector('#mlAppBox');
+  if (hf && mlBox) {
+    const mlX = parseFloat(mlBox.getAttribute('x'));
+    const mlY = parseFloat(mlBox.getAttribute('y'));
+    const mlH = parseFloat(mlBox.getAttribute('height'));
+
+    const sx = hf.x + NODE_W / 2;
+    const sy = hf.y + NODE_H;
+    const midY = mlY + mlH / 2;
+    const ex = mlX;
+    const ey = midY;
+    const cornerRadius = 14;
+    const arrowColor = C.ml;
+
+    const arrowPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    arrowPath.setAttribute('class', 'hermes-ml-arrow');
+    arrowPath.setAttribute('d', `M${sx},${sy} L${sx},${midY-cornerRadius} Q${sx},${midY} ${sx+cornerRadius},${midY} L${ex},${ey} M${ex},${ey} L${ex-6},${ey-4} M${ex},${ey} L${ex-6},${ey+4}`);
+    arrowPath.setAttribute('stroke', arrowColor);
+    arrowPath.setAttribute('stroke-width', '2');
+    arrowPath.setAttribute('fill', 'none');
+    arrowPath.setAttribute('opacity', '.85');
+    arrowPath.style.display = 'none';
+    svg.appendChild(arrowPath);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 //  HOVER HIGHLIGHTING – trace upstream & downstream
@@ -670,6 +729,111 @@ nodeHovers.forEach(el => {
     tip.style.display='none';
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+//  TABS – Dashboard / Hermes
+// ═══════════════════════════════════════════════════════════
+const tabDashboard = document.getElementById('tabDashboard');
+const tabHermes = document.getElementById('tabHermes');
+
+function setTabActive(which) {
+  tabDashboard.classList.toggle('active', which === 'dashboard');
+  tabHermes.classList.toggle('active', which === 'hermes');
+
+  const sourceLabel = svg.querySelector('text[data-col-label="2"]');
+  if (sourceLabel) {
+    sourceLabel.textContent = which === 'hermes' ? 'TABLES' : 'Sources';
+  }
+}
+
+function showNode(id, visible) {
+  const displayValue = visible ? '' : 'none';
+  svg.querySelectorAll(`[data-id="${id}"]`).forEach(el => { el.style.display = displayValue; });
+  svg.querySelectorAll(`[data-nid="${id}"]`).forEach(el => { el.style.display = displayValue; });
+}
+
+function applyTab(which) {
+  clearHighlight();
+  tip.style.display = 'none';
+
+  const nodeIds = new Set(NODES.map(n => n.id));
+  nodeIds.forEach(id => showNode(id, true));
+  svg.querySelectorAll('.edge, .edge-label').forEach(el => { el.style.display = ''; });
+  svg.querySelectorAll('.ml-app-group, .web-app-group').forEach(el => { el.style.display = ''; });
+  svg.querySelectorAll('.hermes-ml-arrow').forEach(el => { el.style.display = 'none'; });
+
+  const hermesOnlyNodes = new Set([
+    'sink-hermes-iceberg',
+    'ice-hermes-feature-store'
+  ]);
+
+  if (which === 'dashboard') {
+    hermesOnlyNodes.forEach(id => showNode(id, false));
+    svg.querySelectorAll('.edge, .edge-label').forEach(el => {
+      const from = el.dataset.from;
+      const to = el.dataset.to;
+      if (hermesOnlyNodes.has(from) || hermesOnlyNodes.has(to)) {
+        el.style.display = 'none';
+      }
+    });
+  }
+
+  if (which === 'hermes') {
+    const hiddenNodes = new Set([
+      'src-ice-country',
+      'mv-summary',
+      'v-countries',
+      'mv-training',
+      'sink-kafka',
+      'v-country',
+      'udf',
+      'v-enriched',
+      'mv-ice',
+      'sink-pg',
+      'sink-iceberg',
+      'ice-funnel',
+      't-funnel',
+      'pg-table',
+      'ml-online',
+      'ml-train',
+      'ml-serving',
+      'api-stream',
+      'api-query',
+      'api-enriched',
+      'api-predict',
+      'tab-dashboard',
+      'tab-queries',
+      'tab-enriched',
+      'tab-predictions'
+    ]);
+
+    hiddenNodes.forEach(id => showNode(id, false));
+
+    svg.querySelectorAll('.edge, .edge-label').forEach(el => {
+      const from = el.dataset.from;
+      const to = el.dataset.to;
+      if (hiddenNodes.has(from) || hiddenNodes.has(to)) {
+        el.style.display = 'none';
+      }
+    });
+
+    // Hermes tab keeps the ML box visible, but hides the Web Application box.
+    svg.querySelectorAll('.web-app-group').forEach(el => {
+      el.style.display = 'none';
+    });
+
+    // Hermes-only arrow from hermes_feature_store to ML box.
+    svg.querySelectorAll('.hermes-ml-arrow').forEach(el => {
+      el.style.display = '';
+    });
+  }
+
+  setTabActive(which);
+}
+
+tabDashboard.addEventListener('click', () => applyTab('dashboard'));
+tabHermes.addEventListener('click', () => applyTab('hermes'));
+applyTab('dashboard');
 
 // ═══════════════════════════════════════════════════════════
 //  DRAG TO PAN – click empty space and drag to scroll (all directions)

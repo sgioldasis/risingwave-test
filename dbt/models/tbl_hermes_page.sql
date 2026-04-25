@@ -16,15 +16,15 @@
 
   Demo Operations:
     -- Update a user's page view timestamp
-    UPDATE hermes_page
+    UPDATE tbl_hermes_page
     SET event_time = NOW()
     WHERE user_id = 123;
 
     -- Delete test user data
-    DELETE FROM hermes_page WHERE user_id = 99999;
+    DELETE FROM tbl_hermes_page WHERE user_id = 99999;
 
     -- Insert manual page view
-    INSERT INTO hermes_page (user_id, page_id, event_time)
+    INSERT INTO tbl_hermes_page (user_id, page_id, event_time)
     VALUES (777, 'manual-page', NOW());
 #}
 

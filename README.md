@@ -2,6 +2,8 @@
 
 This project demonstrates a real-time e-commerce conversion funnel using RisingWave, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. It tracks user behavior through page views, cart events, and purchases to calculate conversion rates in real-time with predictive analytics.
 
+Quick demo SQL reference: [docs/DEMO_OPERATIONS_SQL.md](docs/DEMO_OPERATIONS_SQL.md)
+
 ## Prerequisites
 
 ### Required Software
