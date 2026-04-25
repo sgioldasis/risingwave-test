@@ -9,7 +9,7 @@ Your dbt project now includes two approaches for consuming Kafka data:
 | Approach | Models | Characteristics |
 |----------|--------|-----------------|
 | **Sources** | `src_cart`, `src_page`, `src_purchase` | Append-only, read-only, lightweight |
-| **Tables** | `tbl_cart`, `tbl_page`, `tbl_purchase` | Modifiable, supports UPDATE/DELETE, stores data internally |
+| **Tables** | `hermes_cart`, `hermes_page`, `hermes_purchase` | Modifiable, supports UPDATE/DELETE, stores data internally |
 
 ## Architecture
 
@@ -35,7 +35,7 @@ dbt run
 
 This creates:
 - Original sources: `src_cart`, `src_page`, `src_purchase`
-- New tables: `tbl_cart`, `tbl_page`, `tbl_purchase`
+- New tables: `hermes_cart`, `hermes_page`, `hermes_purchase`
 - Original funnel: `funnel` (from sources)
 - New funnel: `funnel_from_tables` (from tables)
 
@@ -49,7 +49,7 @@ psql -h localhost -p 4566 -d dev -U root
 
 ```sql
 -- Update a user's cart item
-UPDATE tbl_cart
+UPDATE hermes_cart
 SET item_id = 'premium-widget', event_time = NOW()
 WHERE user_id = 123;
 
@@ -63,16 +63,16 @@ LIMIT 5;
 
 ```sql
 -- Remove test data
-DELETE FROM tbl_cart WHERE user_id = 99999;
-DELETE FROM tbl_page WHERE user_id = 99999;
-DELETE FROM tbl_purchase WHERE user_id = 99999;
+DELETE FROM hermes_cart WHERE user_id = 99999;
+DELETE FROM hermes_page WHERE user_id = 99999;
+DELETE FROM hermes_purchase WHERE user_id = 99999;
 
 -- View updated counts
-SELECT 'page_views' as table_name, count(*) as record_count FROM tbl_page
+SELECT 'page_views' as table_name, count(*) as record_count FROM hermes_page
 UNION ALL
-SELECT 'cart_events', count(*) FROM tbl_cart
+SELECT 'cart_events', count(*) FROM hermes_cart
 UNION ALL
-SELECT 'purchases', count(*) FROM tbl_purchase;
+SELECT 'purchases', count(*) FROM hermes_purchase;
 ```
 
 ## Demo Scenarios
@@ -89,7 +89,7 @@ SELECT 'purchases', count(*) FROM tbl_purchase;
 
 ```sql
 -- Fix a purchase that was recorded with wrong amount
-UPDATE tbl_purchase
+UPDATE hermes_purchase
 SET amount = 15.99
 WHERE user_id = 456 AND amount = 1599.00;
 
@@ -103,15 +103,15 @@ LIMIT 3;
 
 ```sql
 -- Insert a manual page view for testing
-INSERT INTO tbl_page (user_id, page_id, event_time)
+INSERT INTO hermes_page (user_id, page_id, event_time)
 VALUES (777, 'demo-landing-page', NOW());
 
 -- Insert a manual cart event
-INSERT INTO tbl_cart (user_id, item_id, event_time)
+INSERT INTO hermes_cart (user_id, item_id, event_time)
 VALUES (777, 'demo-product', NOW());
 
 -- Insert a manual purchase
-INSERT INTO tbl_purchase (user_id, amount, event_time)
+INSERT INTO hermes_purchase (user_id, amount, event_time)
 VALUES (777, 49.99, NOW());
 ```
 
@@ -119,9 +119,9 @@ VALUES (777, 49.99, NOW());
 
 ```sql
 -- Remove all test user data in one go
-DELETE FROM tbl_cart WHERE user_id >= 90000;
-DELETE FROM tbl_page WHERE user_id >= 90000;
-DELETE FROM tbl_purchase WHERE user_id >= 90000;
+DELETE FROM hermes_cart WHERE user_id >= 90000;
+DELETE FROM hermes_page WHERE user_id >= 90000;
+DELETE FROM hermes_purchase WHERE user_id >= 90000;
 ```
 
 ### Scenario 4: Compare Source vs Table Funnels
@@ -160,9 +160,9 @@ LIMIT 10;
 
 | Model | File | Topic | Primary Key |
 |-------|------|-------|-------------|
-| `tbl_cart` | `dbt/models/tbl_cart.sql` | `cart_events` | `user_id` |
-| `tbl_page` | `dbt/models/tbl_page.sql` | `page_views` | `user_id` |
-| `tbl_purchase` | `dbt/models/tbl_purchase.sql` | `purchases` | `user_id` |
+| `hermes_cart` | `dbt/models/hermes_cart.sql` | `cart_events` | `user_id` |
+| `hermes_page` | `dbt/models/hermes_page.sql` | `page_views` | `user_id` |
+| `hermes_purchase` | `dbt/models/hermes_purchase.sql` | `purchases` | `user_id` |
 
 ### Materialization Macro
 
@@ -199,9 +199,9 @@ If you get "table already exists" errors during dbt run:
 
 ```sql
 -- Drop tables manually
-DROP TABLE IF EXISTS tbl_cart CASCADE;
-DROP TABLE IF EXISTS tbl_page CASCADE;
-DROP TABLE IF EXISTS tbl_purchase CASCADE;
+DROP TABLE IF EXISTS hermes_cart CASCADE;
+DROP TABLE IF EXISTS hermes_page CASCADE;
+DROP TABLE IF EXISTS hermes_purchase CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS funnel_from_tables CASCADE;
 ```
 
@@ -217,7 +217,7 @@ Tables start consuming from `earliest` offset by default. If no data appears:
 ```sql
 -- Check if Kafka has data
 SELECT count(*) FROM src_cart;  -- Should show data from source
-SELECT count(*) FROM tbl_cart;  -- Should show data from table
+SELECT count(*) FROM hermes_cart;  -- Should show data from table
 ```
 
 If the source has data but table doesn't, check the Kafka consumer group.
@@ -263,7 +263,7 @@ SELECT * FROM datalake.public.funnel_from_tables ORDER BY window_start DESC LIMI
 
 **Step 3: Modify source data in RisingWave**
 ```sql
-UPDATE tbl_purchase SET amount = 999.99 WHERE user_id = 100;
+UPDATE hermes_purchase SET amount = 999.99 WHERE user_id = 100;
 ```
 
 **Step 4: Watch funnel_from_tables update**
@@ -315,14 +315,14 @@ Time travel queries allow you to:
 ┌─────────────────────────────────────────────────────────────────┐
 │                      CURRENT STATE                              │
 │  ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐    │
-│  │ tbl_page    │───▶│ funnel_from  │───▶│ Iceberg Table   │    │
+│  │ hermes_page    │───▶│ funnel_from  │───▶│ Iceberg Table   │    │
 │  │ (current)   │    │ _tables      │    │ (current)       │    │
 │  └─────────────┘    └──────────────┘    └─────────────────┘    │
 │         │                                                       │
 │         │ DELETE user_id=123                                    │
 │         ▼                                                       │
 │  ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐    │
-│  │ tbl_page    │───▶│ funnel_from  │───▶│ Iceberg Table   │    │
+│  │ hermes_page    │───▶│ funnel_from  │───▶│ Iceberg Table   │    │
 │  │ (minus      │    │ _tables      │    │ (minus deleted) │    │
 │  │ deleted)    │    │ (updated)    │    │                 │    │
 │  └─────────────┘    └──────────────┘    └─────────────────┘    │
@@ -349,7 +349,7 @@ Time travel queries allow you to:
 ```sql
 -- Find a user_id that has data in all three tables
 SELECT user_id, COUNT(*) as page_views
-FROM tbl_page
+FROM hermes_page
 GROUP BY user_id
 HAVING COUNT(*) > 0
 ORDER BY page_views DESC
@@ -368,16 +368,16 @@ SELECT NOW() as before_delete_timestamp;
 SELECT * FROM funnel_from_tables
 WHERE viewers >= (
     SELECT COUNT(DISTINCT user_id)
-    FROM tbl_page
+    FROM hermes_page
     WHERE user_id = 123
 )
 ORDER BY window_start DESC
 LIMIT 5;
 
 -- Count how many page views this user has
-SELECT COUNT(*) as user_page_views FROM tbl_page WHERE user_id = 123;
-SELECT COUNT(*) as user_cart_events FROM tbl_cart WHERE user_id = 123;
-SELECT COUNT(*) as user_purchases FROM tbl_purchase WHERE user_id = 123;
+SELECT COUNT(*) as user_page_views FROM hermes_page WHERE user_id = 123;
+SELECT COUNT(*) as user_cart_events FROM hermes_cart WHERE user_id = 123;
+SELECT COUNT(*) as user_purchases FROM hermes_purchase WHERE user_id = 123;
 ```
 
 **Step 3: Check current state in Iceberg before deletion**
@@ -403,9 +403,9 @@ LIMIT 5;
 
 ```sql
 -- Delete from all three tables (this simulates removing a user from analytics)
-DELETE FROM tbl_page WHERE user_id = 123;
-DELETE FROM tbl_cart WHERE user_id = 123;
-DELETE FROM tbl_purchase WHERE user_id = 123;
+DELETE FROM hermes_page WHERE user_id = 123;
+DELETE FROM hermes_cart WHERE user_id = 123;
+DELETE FROM hermes_purchase WHERE user_id = 123;
 
 -- Record timestamp after deletion
 SELECT NOW() as after_delete_timestamp;
@@ -415,7 +415,7 @@ SELECT NOW() as after_delete_timestamp;
 
 ```sql
 -- Confirm data is gone from source tables
-SELECT COUNT(*) as remaining_page_views FROM tbl_page WHERE user_id = 123;
+SELECT COUNT(*) as remaining_page_views FROM hermes_page WHERE user_id = 123;
 -- Should return 0
 
 -- Check that funnel_from_tables has been updated
@@ -425,13 +425,13 @@ LIMIT 10;
 
 -- Compare total counts before/after
 SELECT
-    'tbl_page' as table_name,
+    'hermes_page' as table_name,
     COUNT(*) as current_count
-FROM tbl_page
+FROM hermes_page
 UNION ALL
-SELECT 'tbl_cart', COUNT(*) FROM tbl_cart
+SELECT 'hermes_cart', COUNT(*) FROM hermes_cart
 UNION ALL
-SELECT 'tbl_purchase', COUNT(*) FROM tbl_purchase;
+SELECT 'hermes_purchase', COUNT(*) FROM hermes_purchase;
 ```
 
 **Step 6: Verify deletion propagated to Iceberg**
@@ -491,8 +491,8 @@ LIMIT 10;
 If you have a valid license, you can query historical state in RisingWave:
 
 ```sql
--- Query tbl_page as it existed before deletion
-SELECT * FROM tbl_page
+-- Query hermes_page as it existed before deletion
+SELECT * FROM hermes_page
 FOR SYSTEM_TIME AS OF '2026-03-22 17:20:13'
 WHERE user_id = 123;
 
@@ -536,7 +536,7 @@ The historical query will show higher viewer counts than the current query, beca
 
 ### Key Observations
 
-1. **RisingWave tables are mutable but versioned** - DELETE operations immediately remove data from `tbl_page`, but historical versions are accessible via time travel queries
+1. **RisingWave tables are mutable but versioned** - DELETE operations immediately remove data from `hermes_page`, but historical versions are accessible via time travel queries
 
 2. **Iceberg is immutable with snapshots** - DELETE operations create new snapshots, but old data remains accessible
 
@@ -588,7 +588,7 @@ SELECT * FROM funnel_from_tables
 FOR SYSTEM_VERSION AS OF 1234567890;
 
 -- Pattern 3: Query relative time (e.g., 5 minutes ago)
-SELECT * FROM tbl_page
+SELECT * FROM hermes_page
 FOR SYSTEM_TIME AS OF NOW() - INTERVAL '5 minutes';
 
 -- Pattern 4: Compare current vs historical in one query
@@ -635,7 +635,7 @@ ORDER BY committed_at DESC;
 | Use Case | RisingWave | Trino/Iceberg |
 |----------|------------|---------------|
 | **Audit compliance** | Query historical snapshots via `FOR SYSTEM_TIME AS OF` | Query `"funnel_from_tables$snapshots"` |
-| **Data recovery** | `SELECT * FROM tbl_page FOR SYSTEM_TIME AS OF '<timestamp>'` | `SELECT * FROM funnel_from_tables FOR TIMESTAMP AS OF TIMESTAMP '...'` |
+| **Data recovery** | `SELECT * FROM hermes_page FOR SYSTEM_TIME AS OF '<timestamp>'` | `SELECT * FROM funnel_from_tables FOR TIMESTAMP AS OF TIMESTAMP '...'` |
 | **Trend analysis** | Compare `NOW()` vs `NOW() - INTERVAL '1 hour'` | Join current vs historical snapshots |
 | **Debugging** | Query MV state at incident time | Query Iceberg at specific snapshot |
 | **Regulatory reporting** | Generate reports as of fiscal quarter end | Same, with Iceberg as source of truth |
@@ -662,7 +662,7 @@ This scenario demonstrates the **powerful time travel capabilities** of both Ris
 | **Snapshot Metadata** | Via system tables | `"$snapshots"` table |
 
 **Key Insight**: You can query historical data at multiple levels:
-1. **RisingWave tables** (`tbl_page`, `funnel_from_tables`) - for recent changes within retention window
+1. **RisingWave tables** (`hermes_page`, `funnel_from_tables`) - for recent changes within retention window
 2. **Iceberg via RisingWave source** - for Iceberg tables with time travel
 3. **Iceberg via Trino** - for data lake analytics with full snapshot history
 

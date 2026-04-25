@@ -5,7 +5,7 @@
   UPDATE/DELETE operations on the tbl_* Kafka tables.
 
   RUN THESE MANUALLY via psql or a SQL client to see real-time effects
-  on the funnel_from_tables materialized view.
+  on the hermes_funnel materialized view.
 #}
 
 {{ config(materialized='ephemeral') }}
@@ -16,10 +16,10 @@
 -- ============================================================================
 --
 -- Update a specific user's cart item and timestamp.
--- The funnel_from_tables MV will automatically reflect this change.
+-- The hermes_funnel MV will automatically reflect this change.
 --
 -- SQL:
---   UPDATE tbl_cart
+--   UPDATE hermes_cart
 --   SET item_id = 'premium-widget', event_time = NOW()
 --   WHERE user_id = 123;
 --
@@ -33,9 +33,9 @@
 -- Useful for cleaning up test scenarios.
 --
 -- SQL:
---   DELETE FROM tbl_cart WHERE user_id = 99999;
---   DELETE FROM tbl_page WHERE user_id = 99999;
---   DELETE FROM tbl_purchase WHERE user_id = 99999;
+--   DELETE FROM hermes_cart WHERE user_id = 99999;
+--   DELETE FROM hermes_page WHERE user_id = 99999;
+--   DELETE FROM hermes_purchase WHERE user_id = 99999;
 --
 
 --
@@ -46,7 +46,7 @@
 -- Fix an erroneous purchase amount (e.g., decimal point error).
 --
 -- SQL:
---   UPDATE tbl_purchase
+--   UPDATE hermes_purchase
 --   SET amount = 15.99
 --   WHERE user_id = 456 AND amount = 1599.00;
 --
@@ -60,15 +60,15 @@
 --
 -- SQL:
 --   -- Add a manual page view
---   INSERT INTO tbl_page (user_id, page_id, event_time)
+--   INSERT INTO hermes_page (user_id, page_id, event_time)
 --   VALUES (777, 'demo-landing-page', NOW());
 --
 --   -- Add a manual cart event
---   INSERT INTO tbl_cart (user_id, item_id, event_time)
+--   INSERT INTO hermes_cart (user_id, item_id, event_time)
 --   VALUES (777, 'demo-product', NOW());
 --
 --   -- Add a manual purchase
---   INSERT INTO tbl_purchase (user_id, amount, event_time)
+--   INSERT INTO hermes_purchase (user_id, amount, event_time)
 --   VALUES (777, 49.99, NOW());
 --
 
@@ -81,7 +81,7 @@
 --
 -- SQL:
 --   -- Mark VIP users (assuming we have a vip_users reference)
---   UPDATE tbl_cart
+--   UPDATE hermes_cart
 --   SET item_id = item_id || '-vip'
 --   WHERE user_id IN (100, 200, 300);
 --
@@ -95,7 +95,7 @@
 --
 -- SQL:
 --   -- View latest funnel metrics from tables
---   SELECT * FROM funnel_from_tables
+--   SELECT * FROM hermes_funnel
 --   ORDER BY window_start DESC
 --   LIMIT 5;
 --
@@ -109,7 +109,7 @@
 --       s.purchasers as source_purchasers,
 --       t.purchasers as table_purchasers
 --   FROM funnel s
---   FULL OUTER JOIN funnel_from_tables t
+--   FULL OUTER JOIN hermes_funnel t
 --       ON s.window_start = t.window_start
 --   ORDER BY COALESCE(s.window_start, t.window_start) DESC
 --   LIMIT 10;
@@ -124,21 +124,21 @@
 --
 -- SQL:
 --   -- Count records per table
---   SELECT 'page_views' as table_name, count(*) as record_count FROM tbl_page
+--   SELECT 'page_views' as table_name, count(*) as record_count FROM hermes_page
 --   UNION ALL
---   SELECT 'cart_events', count(*) FROM tbl_cart
+--   SELECT 'cart_events', count(*) FROM hermes_cart
 --   UNION ALL
---   SELECT 'purchases', count(*) FROM tbl_purchase;
+--   SELECT 'purchases', count(*) FROM hermes_purchase;
 --
 --   -- Find recent activity for a specific user
 --   SELECT 'page' as event_type, page_id as detail, event_time
---   FROM tbl_page WHERE user_id = 123
+--   FROM hermes_page WHERE user_id = 123
 --   UNION ALL
 --   SELECT 'cart', item_id, event_time
---   FROM tbl_cart WHERE user_id = 123
+--   FROM hermes_cart WHERE user_id = 123
 --   UNION ALL
 --   SELECT 'purchase', amount::varchar, event_time
---   FROM tbl_purchase WHERE user_id = 123
+--   FROM hermes_purchase WHERE user_id = 123
 --   ORDER BY event_time DESC;
 --
 
@@ -148,28 +148,28 @@
 -- ============================================================================
 --
 -- This demonstrates how changes propagate from tbl_* tables through
--- funnel_from_tables MV to the Iceberg sink.
+-- hermes_funnel MV to the Iceberg sink.
 --
 -- Setup:
---   1. Ensure sink_funnel_from_tables_to_iceberg.sql is deployed
+--   1. Ensure iceberg_hermes_funnel.sql is deployed
 --   2. Connect to Trino: psql -h localhost -p 8080 -d risingwave
 --
 -- Demo Steps:
 --
 -- Step 1: Check current state in RisingWave
---   SELECT * FROM funnel_from_tables ORDER BY window_start DESC LIMIT 5;
+--   SELECT * FROM hermes_funnel ORDER BY window_start DESC LIMIT 5;
 --
 -- Step 2: Check current state in Iceberg (via Trino)
---   SELECT * FROM iceberg.public.funnel_from_tables ORDER BY window_start DESC LIMIT 5;
+--   SELECT * FROM iceberg.public.hermes_funnel ORDER BY window_start DESC LIMIT 5;
 --
 -- Step 3: Modify source data in RisingWave
---   UPDATE tbl_purchase SET amount = 999.99 WHERE user_id = 100;
+--   UPDATE hermes_purchase SET amount = 999.99 WHERE user_id = 100;
 --
--- Step 4: Watch funnel_from_tables update (in RisingWave)
---   SELECT * FROM funnel_from_tables ORDER BY window_start DESC LIMIT 5;
+-- Step 4: Watch hermes_funnel update (in RisingWave)
+--   SELECT * FROM hermes_funnel ORDER BY window_start DESC LIMIT 5;
 --
 -- Step 5: Watch Iceberg update (in Trino)
---   SELECT * FROM iceberg.public.funnel_from_tables ORDER BY window_start DESC LIMIT 5;
+--   SELECT * FROM iceberg.public.hermes_funnel ORDER BY window_start DESC LIMIT 5;
 --
 -- The upsert sink ensures Iceberg stays in sync with the MV changes!
 --

@@ -16,15 +16,15 @@
 
   Demo Operations:
     -- Update a user's cart item
-    UPDATE tbl_cart
+    UPDATE hermes_cart
     SET item_id = 'premium-widget', event_time = NOW()
     WHERE user_id = 123;
 
     -- Delete a user's cart
-    DELETE FROM tbl_cart WHERE user_id = 456;
+    DELETE FROM hermes_cart WHERE user_id = 456;
 
     -- Insert a new cart event
-    INSERT INTO tbl_cart (user_id, item_id, event_time)
+    INSERT INTO hermes_cart (user_id, item_id, event_time)
     VALUES (999, 'demo-item', NOW());
 #}
 
