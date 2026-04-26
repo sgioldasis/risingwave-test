@@ -1,6 +1,6 @@
 # Demo Operations SQL
 
-These are manual SQL examples for demonstrating UPDATE/DELETE behavior on the Hermes Kafka tables and propagation into `hermes_feature_store` and Iceberg.
+These are manual SQL examples for demonstrating UPDATE/DELETE behavior on the Hermes Kafka tables and propagation into `hermes_features` and Iceberg.
 
 ## Demo 1: Update Cart Item
 
@@ -50,7 +50,7 @@ WHERE user_id IN (100, 200, 300);
 ## Demo 6: View Funnel Changes in Real-Time
 
 ```sql
-SELECT * FROM hermes_feature_store
+SELECT * FROM hermes_features
 ORDER BY window_start DESC
 LIMIT 5;
 
@@ -63,7 +63,7 @@ SELECT
     s.purchasers as source_purchasers,
     t.purchasers as table_purchasers
 FROM funnel s
-FULL OUTER JOIN hermes_feature_store t
+FULL OUTER JOIN hermes_features t
     ON s.window_start = t.window_start
 ORDER BY COALESCE(s.window_start, t.window_start) DESC
 LIMIT 10;
@@ -91,17 +91,17 @@ ORDER BY event_time DESC;
 
 ## Demo 8: Iceberg Sink Propagation
 
-1. Ensure `sink_hermes_feature_store_to_iceberg.sql` is deployed.
+1. Ensure `sink_hermes_features_to_iceberg.sql` is deployed.
 2. Check current state in RisingWave:
 
 ```sql
-SELECT * FROM hermes_feature_store ORDER BY window_start DESC LIMIT 5;
+SELECT * FROM hermes_features ORDER BY window_start DESC LIMIT 5;
 ```
 
 3. Check current state in Iceberg (via Trino):
 
 ```sql
-SELECT * FROM iceberg.public.hermes_feature_store ORDER BY window_start DESC LIMIT 5;
+SELECT * FROM iceberg.public.hermes_features ORDER BY window_start DESC LIMIT 5;
 ```
 
 4. Modify source data in RisingWave:
@@ -113,6 +113,6 @@ UPDATE tbl_hermes_purchase SET amount = 999.99 WHERE user_id = 100;
 5. Verify updates propagate:
 
 ```sql
-SELECT * FROM hermes_feature_store ORDER BY window_start DESC LIMIT 5;
-SELECT * FROM iceberg.public.hermes_feature_store ORDER BY window_start DESC LIMIT 5;
+SELECT * FROM hermes_features ORDER BY window_start DESC LIMIT 5;
+SELECT * FROM iceberg.public.hermes_features ORDER BY window_start DESC LIMIT 5;
 ```

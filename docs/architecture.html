@@ -170,7 +170,7 @@ const NODES = [
   { id:'v-countries',     col:3, type:'data', c:C.rw,     logo:L.rw,    lbl:'rw_countries',              sub:'View · country snapshot',b:'RW' },
 
   // COL 4 – Downstream of funnel (summary, training, countries view)
-  { id:'mv-funnel',       col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'hermes_feature_store',      sub:'MV · feature windows', b:'RW MV', tip:'Joins Hermes tables in tumbling windows for viewers, carters, purchasers, and rates.', rowOff:-1 },
+  { id:'mv-funnel',       col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'hermes_features',      sub:'MV · feature windows', b:'RW MV', tip:'Joins Hermes tables in tumbling windows for viewers, carters, purchasers, and rates.', rowOff:-1 },
   { id:'mv-training',     col:4, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_training',           sub:'MV · + time & lag feats',b:'RW MV',tip:'+ hour, minute, day_of_week, lag_1..3 for ML.', rowOff:4 },
 
   // COL 5 – Views, UDFs, kafka sink, iceberg MV
@@ -184,13 +184,13 @@ const NODES = [
   { id:'t-funnel',        col:7, type:'data', c:C.kafka,  logo:L.kafka, lbl:'funnel',                     sub:'Kafka topic',            b:'KAFKA', tip:'Consumed by dashboard backend as SSE.' },
   { id:'sink-pg',         col:6, type:'data', c:C.pg,     logo:L.rw,    lbl:'funnel_postgres_sink',      sub:'RW sink → PostgreSQL',   b:'PG', rowOff:2 },
   { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICEBERG', rowOff:2 },
-  { id:'sink-hermes-iceberg', col:6, type:'data', c:C.ice, logo:L.rw,   lbl:'sink_hermes_feature_store_to_iceberg', sub:'RW sink → Iceberg', b:'ICEBERG', rowOff:-2 },
+  { id:'sink-hermes-iceberg', col:6, type:'data', c:C.ice, logo:L.rw,   lbl:'sink_hermes_features_to_iceberg', sub:'RW sink → Iceberg', b:'ICEBERG', rowOff:-2 },
 
   // COL 7 – ML training/online, external stores
   { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Real-Time Learning',        sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
   { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Batch Training',            sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
   { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'Table - MinIO',           b:'ICEBERG',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
-  { id:'ice-hermes-feature-store', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'hermes_feature_store', sub:'Table - MinIO', b:'ICEBERG', tip:'Hermes feature store sink target table in Iceberg.', lane:'ice' },
+  { id:'ice-hermes-feature-store', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'iceberg_hermes_features', sub:'Table - MinIO', b:'ICEBERG', tip:'Hermes features sink target table in Iceberg.', lane:'ice' },
   { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },
   { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Table - MinIO',      b:'ICEBERG', lane:'ice' },
 
@@ -590,7 +590,7 @@ NODES.forEach(n => {
 
 svg.innerHTML = S;
 
-// Hermes-only helper arrow: hermes_feature_store -> ML Application box
+// Hermes-only helper arrow: hermes_features -> ML Application box
 // Route: down from node bottom, then right into ML box left margin.
 {
   const hf = nodeMap['mv-funnel'];
@@ -822,7 +822,7 @@ function applyTab(which) {
       el.style.display = 'none';
     });
 
-    // Hermes-only arrow from hermes_feature_store to ML box.
+    // Hermes-only arrow from hermes_features to ML box.
     svg.querySelectorAll('.hermes-ml-arrow').forEach(el => {
       el.style.display = '';
     });

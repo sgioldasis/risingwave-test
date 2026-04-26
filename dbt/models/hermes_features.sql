@@ -18,7 +18,7 @@
         s.carters as source_carters,
         t.carters as table_carters
     FROM funnel s
-    FULL OUTER JOIN hermes_feature_store t
+    FULL OUTER JOIN hermes_features t
         ON s.window_start = t.window_start
     ORDER BY COALESCE(s.window_start, t.window_start) DESC
     LIMIT 10;
