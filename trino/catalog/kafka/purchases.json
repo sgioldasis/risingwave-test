@@ -1,0 +1,25 @@
+{
+  "tableName": "purchases",
+  "schemaName": "default",
+  "topicName": "purchases",
+  "message": {
+    "dataFormat": "json",
+    "fields": [
+      {
+        "name": "user_id",
+        "mapping": "user_id",
+        "type": "BIGINT"
+      },
+      {
+        "name": "amount",
+        "mapping": "amount",
+        "type": "DOUBLE"
+      },
+      {
+        "name": "event_time",
+        "mapping": "event_time",
+        "type": "VARCHAR"
+      }
+    ]
+  }
+}

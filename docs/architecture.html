@@ -160,9 +160,9 @@ const NODES = [
   { id:'t-purchase',      col:1, type:'data', c:C.kafka,  logo:L.kafka, lbl:'purchases',                 sub:'Kafka topic',          b:'KAFKA' },
 
   // COL 2 – RW Sources
-  { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'tbl_hermes_page',           sub:'RW table (mutable)',   b:'RW' },
-  { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'tbl_hermes_cart',           sub:'RW table (mutable)',   b:'RW' },
-  { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'tbl_hermes_purchase',       sub:'RW table (mutable)',   b:'RW' },
+  { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_page',                  sub:'RW source (Kafka)',    b:'RW' },
+  { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_cart',                  sub:'RW source (Kafka)',    b:'RW' },
+  { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_purchase',              sub:'RW source (Kafka)',    b:'RW' },
   { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.rw,    lbl:'src_iceberg_countries',     sub:'Iceberg → RW source',  b:'ICEBERG' },
 
   // COL 3 – Funnel join/aggregate
@@ -220,7 +220,7 @@ const EDGES = [
   ['producer','t-page',C.py], ['producer','t-cart',C.py], ['producer','t-purchase',C.py],
   // Kafka → RW sources
   ['t-page','src-page',C.kafka], ['t-cart','src-cart',C.kafka], ['t-purchase','src-purchase',C.kafka],
-  // Sources → funnel MV
+  // Sources → funnel MV (dashboard uses sources)
   ['src-page','mv-funnel',C.rw], ['src-cart','mv-funnel',C.rw], ['src-purchase','mv-funnel',C.rw],
   // funnel → downstream MVs
   ['mv-funnel','mv-training',C.rwmv],
@@ -752,6 +752,28 @@ function showNode(id, visible) {
   svg.querySelectorAll(`[data-nid="${id}"]`).forEach(el => { el.style.display = displayValue; });
 }
 
+function relabelSourceNodes(which) {
+  const sourceDefs = which === 'hermes'
+    ? [
+        { id: 'src-page', lbl: 'tbl_hermes_page', sub: 'RW table (mutable)' },
+        { id: 'src-cart', lbl: 'tbl_hermes_cart', sub: 'RW table (mutable)' },
+        { id: 'src-purchase', lbl: 'tbl_hermes_purchase', sub: 'RW table (mutable)' }
+      ]
+    : [
+        { id: 'src-page', lbl: 'src_page', sub: 'RW source (Kafka)' },
+        { id: 'src-cart', lbl: 'src_cart', sub: 'RW source (Kafka)' },
+        { id: 'src-purchase', lbl: 'src_purchase', sub: 'RW source (Kafka)' }
+      ];
+
+  sourceDefs.forEach(def => {
+    const node = NODES.find(n => n.id === def.id);
+    const badgeStr = node && node.b ? (B[node.b] || '') : '';
+    const texts = svg.querySelectorAll(`text[data-nid="${def.id}"]`);
+    if (texts[0]) texts[0].innerHTML = `${esc(def.lbl)}${badgeStr}`;
+    if (texts[1]) texts[1].textContent = def.sub;
+  });
+}
+
 function applyTab(which) {
   clearHighlight();
   tip.style.display = 'none';
@@ -769,10 +791,16 @@ function applyTab(which) {
 
   if (which === 'dashboard') {
     hermesOnlyNodes.forEach(id => showNode(id, false));
+    showNode('mv-funnel', false);
+    relabelSourceNodes('dashboard');
     svg.querySelectorAll('.edge, .edge-label').forEach(el => {
       const from = el.dataset.from;
       const to = el.dataset.to;
       if (hermesOnlyNodes.has(from) || hermesOnlyNodes.has(to)) {
+        el.style.display = 'none';
+      }
+      // Hide mv-funnel edges
+      if (from === 'mv-funnel' || to === 'mv-funnel') {
         el.style.display = 'none';
       }
     });
@@ -780,7 +808,11 @@ function applyTab(which) {
 
   if (which === 'hermes') {
     const hiddenNodes = new Set([
+      'src-page',
+      'src-cart',
+      'src-purchase',
       'src-ice-country',
+      'ice-countries',
       'mv-summary',
       'v-countries',
       'mv-training',
@@ -806,8 +838,14 @@ function applyTab(which) {
       'tab-enriched',
       'tab-predictions'
     ]);
-
-    hiddenNodes.forEach(id => showNode(id, false));
+  // Remove src_* from hidden nodes since we're relabeling them
+  hiddenNodes.delete('src-page');
+  hiddenNodes.delete('src-cart');
+  hiddenNodes.delete('src-purchase');
+    
+  hiddenNodes.forEach(id => showNode(id, false));
+    
+    relabelSourceNodes('hermes');
 
     svg.querySelectorAll('.edge, .edge-label').forEach(el => {
       const from = el.dataset.from;

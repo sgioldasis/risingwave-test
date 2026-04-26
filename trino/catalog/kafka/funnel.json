@@ -1,0 +1,45 @@
+{
+  "tableName": "funnel",
+  "schemaName": "default",
+  "topicName": "funnel",
+  "message": {
+    "dataFormat": "json",
+    "fields": [
+      {
+        "name": "window_start",
+        "mapping": "window_start",
+        "type": "VARCHAR"
+      },
+      {
+        "name": "window_end",
+        "mapping": "window_end",
+        "type": "VARCHAR"
+      },
+      {
+        "name": "viewers",
+        "mapping": "viewers",
+        "type": "BIGINT"
+      },
+      {
+        "name": "carters",
+        "mapping": "carters",
+        "type": "BIGINT"
+      },
+      {
+        "name": "purchasers",
+        "mapping": "purchasers",
+        "type": "BIGINT"
+      },
+      {
+        "name": "view_to_cart_rate",
+        "mapping": "view_to_cart_rate",
+        "type": "DOUBLE"
+      },
+      {
+        "name": "cart_to_buy_rate",
+        "mapping": "cart_to_buy_rate",
+        "type": "DOUBLE"
+      }
+    ]
+  }
+}

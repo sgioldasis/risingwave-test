@@ -1,0 +1,25 @@
+{
+  "tableName": "page_views",
+  "schemaName": "default",
+  "topicName": "page_views",
+  "message": {
+    "dataFormat": "json",
+    "fields": [
+      {
+        "name": "user_id",
+        "mapping": "user_id",
+        "type": "BIGINT"
+      },
+      {
+        "name": "page_id",
+        "mapping": "page_id",
+        "type": "VARCHAR"
+      },
+      {
+        "name": "event_time",
+        "mapping": "event_time",
+        "type": "VARCHAR"
+      }
+    ]
+  }
+}

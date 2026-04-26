@@ -1,0 +1,25 @@
+{
+  "tableName": "cart_events",
+  "schemaName": "default",
+  "topicName": "cart_events",
+  "message": {
+    "dataFormat": "json",
+    "fields": [
+      {
+        "name": "user_id",
+        "mapping": "user_id",
+        "type": "BIGINT"
+      },
+      {
+        "name": "item_id",
+        "mapping": "item_id",
+        "type": "VARCHAR"
+      },
+      {
+        "name": "event_time",
+        "mapping": "event_time",
+        "type": "VARCHAR"
+      }
+    ]
+  }
+}
