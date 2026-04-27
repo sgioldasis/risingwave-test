@@ -38,6 +38,22 @@ Java is the strongest implementation option for Flink when you need:
 
 For your Hermes flow, Java is the safest choice if you expect heavy state, exact control over corrections, or a need to evolve beyond purely relational SQL.
 
+## Pros And Cons Of Java For Flink
+
+### Pros
+
+* Best overall API coverage across DataStream, Table API, connectors, state, and runtime controls
+* Strongest option for complex correction logic, custom state handling, and performance tuning
+* Largest pool of production examples, community guidance, and connector support
+* Lowest friction path when you need fine-grained control over savepoints, upgrades, and operator behavior
+
+### Cons
+
+* More verbose than SQL and Python
+* Higher implementation overhead for logic that is mostly relational
+* Slower to iterate on simple analytics pipelines than Flink SQL
+* Less attractive if the team is strongly Python- or SQL-oriented and not comfortable operating JVM services
+
 ## Answer At A Glance
 
 * Always-on jobs needed: 1

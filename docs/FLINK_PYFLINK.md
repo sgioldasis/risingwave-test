@@ -24,6 +24,22 @@ It preserves your existing Kafka sources and current window logic.
 
 This version assumes Postgres is required as the fast serving layer.
 
+## Pros And Cons Of PyFlink
+
+### Pros
+
+* Good fit for a Python-heavy team
+* Easier than Java for quick experimentation, proof-of-concepts, and notebook-driven exploration
+* Lets you keep more implementation logic in the same language family as the rest of your Python tooling
+* Useful when you want DataStream-style control without moving fully into JVM-centric development
+
+### Cons
+
+* Not as complete or frictionless as Java for advanced Flink internals
+* Connector, state, and custom operator workflows are generally more mature in Java
+* Production debugging and optimization usually have fewer examples than the Java ecosystem
+* For a heavy-state Hermes pipeline, PyFlink is viable, but it is usually not the lowest-risk production option
+
 ## Two-Job Boundary
 
 ## Job 1: hermes_realtime_ds

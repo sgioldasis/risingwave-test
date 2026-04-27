@@ -25,6 +25,22 @@ It focuses on practical architecture, exact job boundaries, data storage, correc
 
 This version assumes Postgres is required as the fast serving layer.
 
+## Pros And Cons Of Flink SQL
+
+### Pros
+
+* Closest fit to your current RisingWave and dbt mental model
+* Fastest path for expressing Hermes-style windows, joins, and aggregations
+* Good choice when most of the pipeline is declarative and connector-driven
+* Easier for data engineers to review than a large custom DataStream implementation
+
+### Cons
+
+* Less ergonomic when correction logic becomes highly custom or stateful
+* Harder to express non-relational business logic than in Java
+* Operational lifecycle is still Flink-native even if the logic is SQL, so dbt does not remove job-management complexity
+* Complex debugging can be harder once the query graph becomes large and heavily optimized
+
 ## Answer At A Glance
 
 * Always-on jobs needed: 1
