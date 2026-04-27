@@ -1,0 +1,273 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "description": "Number of funnel windows processed in the past 15 minutes.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+          "w": 8,
+          "x": 0,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawCode": true,
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) AS windows_last_15m\nFROM funnel_summary\nWHERE window_end >= date_trunc('minute', NOW()) - INTERVAL '15 minutes'\n  AND window_end < date_trunc('minute', NOW());",
+          "refId": "A"
+        }
+      ],
+      "title": "Windows Processed (last 15m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "description": "Clock-skew-tolerant visibility latency in milliseconds between producer timestamp and latest visibility in RisingWave src_page.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2000
+              },
+              {
+                "color": "red",
+                "value": 10000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+          "w": 8,
+          "x": 8,
+        "y": 0
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "producer_to_rw_latency_ms",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawCode": true,
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COALESCE(ABS(EXTRACT(EPOCH FROM (NOW() - MAX(produced_at))) * 1000), 0) AS producer_to_rw_latency_ms\nFROM src_page;",
+          "refId": "A"
+        }
+      ],
+      "title": "Producer -> RW latency",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "description": "Viewer transactions per second over the last 30 seconds.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "unit": "suffix:views/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 8,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "viewers_tps",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawCode": true,
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COALESCE(\n    COUNT(*)::double precision\n      / NULLIF(EXTRACT(EPOCH FROM (MAX(produced_at) - MIN(produced_at))), 0),\n    0\n  ) AS viewers_tps\nFROM src_page\nWHERE produced_at >= NOW() - INTERVAL '30 seconds';",
+          "refId": "A"
+        }
+      ],
+      "title": "Viewers TPS",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "description": "History of viewers, carters, and purchasers as per-minute rates, sampled every 5 seconds.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 7,
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawCode": true,
+          "rawQuery": true,
+          "rawSql": "WITH viewers AS (\n  SELECT\n    $__timeGroupAlias(produced_at, '5s'),\n    (COUNT(*) * 12)::bigint AS viewers\n  FROM src_page\n  WHERE $__timeFilter(produced_at)\n  GROUP BY 1\n),\ncarters AS (\n  SELECT\n    $__timeGroupAlias(produced_at, '5s'),\n    (COUNT(*) * 12)::bigint AS carters\n  FROM src_cart\n  WHERE $__timeFilter(produced_at)\n  GROUP BY 1\n),\npurchasers AS (\n  SELECT\n    $__timeGroupAlias(produced_at, '5s'),\n    (COUNT(*) * 12)::bigint AS purchasers\n  FROM src_purchase\n  WHERE $__timeFilter(produced_at)\n  GROUP BY 1\n)\nSELECT\n  COALESCE(viewers.time, carters.time, purchasers.time) AS \"time\",\n  COALESCE(viewers.viewers, 0) AS viewers,\n  COALESCE(carters.carters, 0) AS carters,\n  COALESCE(purchasers.purchasers, 0) AS purchasers\nFROM viewers\nFULL OUTER JOIN carters ON viewers.time = carters.time\nFULL OUTER JOIN purchasers ON COALESCE(viewers.time, carters.time) = purchasers.time\nORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "Viewers / Carters / Purchasers history (per min, 5s refresh)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "description": "Latest 20 processed windows and conversion metrics.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+          "w": 24,
+          "x": 0,
+          "y": 17
+      },
+      "id": 5,
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawCode": true,
+          "rawQuery": true,
+          "rawSql": "SELECT\n  window_start,\n  window_end,\n  viewers,\n  carters,\n  purchasers,\n  view_to_cart_rate,\n  cart_to_buy_rate\nFROM funnel_summary\nORDER BY window_end DESC\nLIMIT 20;",
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Processed Windows",
+      "type": "table"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "risingwave",
+    "business",
+    "funnel"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "RisingWave Funnel Business Health",
+  "uid": "risingwave-funnel-business",
+  "version": 1,
+  "weekStart": ""
+}

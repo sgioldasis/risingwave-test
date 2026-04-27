@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: risingwave-meta
+    static_configs:
+      - targets:
+          - meta-node-0:1250
+
+  - job_name: risingwave-frontend
+    static_configs:
+      - targets:
+          - frontend-node-0:2222
+
+  - job_name: risingwave-compute
+    static_configs:
+      - targets:
+          - compute-node-0:1222
+
+  - job_name: risingwave-compactor
+    static_configs:
+      - targets:
+          - compactor-0:1260
+          - compactor-1:1261
+
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets:
+          - minio-0:9301
+
+  - job_name: redpanda
+    metrics_path: /public_metrics
+    static_configs:
+      - targets:
+          - redpanda:9644

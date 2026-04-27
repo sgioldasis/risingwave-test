@@ -786,18 +786,71 @@ This starts a web application at [http://localhost:4001](http://localhost:4001) 
 - Restart running scripts
 - Auto-detects already-running dashboard processes
 
+The `1_up.sh` startup also brings up Prometheus, Grafana, and a Kafka head observer service for exact Kafka-to-RisingWave event-time lag monitoring.
+
 ## Web Consoles
 
 | Service | URL | Description |
 |---------|-----|-------------|
+| Grafana | http://localhost:3001 | Monitoring dashboards (login: `admin` / `admin`) |
+| Prometheus | http://localhost:9500 | Raw metrics and query UI |
 | RisingWave Console | http://localhost:5691 | Stream processing dashboard |
 | Redpanda Console | http://localhost:9090 | Kafka topic management |
 | Lakekeeper UI | http://localhost:8181 | Iceberg catalog management |
-| MinIO Console | http://localhost:9301 | S3 storage (login: hummockadmin/hummockadmin) |
+| MinIO Console | http://localhost:9400 | S3 storage (login: hummockadmin/hummockadmin) |
 | Dagster UI | http://localhost:3000 | Pipeline orchestration |
 | ML Serving API | http://localhost:8001/docs | ML predictions API |
 | Modern Dashboard | http://localhost:4000 | React frontend |
 | PostgreSQL | `localhost:5432` | Local database (connect via DBeaver/psql) |
+
+## Monitoring With Prometheus And Grafana
+
+The project now includes a prewired monitoring stack under `monitoring/`.
+
+### Accessing Grafana
+
+1. Start the stack with `./bin/1_up.sh`.
+2. Open `http://localhost:3001`.
+3. Sign in with:
+  * username: `admin`
+  * password: `admin`
+4. Open the `RisingWave` folder.
+
+Provisioned starter dashboards:
+
+* `RisingWave Overview`
+* `RisingWave Pipeline Health`
+* `RisingWave Funnel Business Health`
+
+### What The Dashboards Show
+
+* RisingWave target availability
+* RisingWave process memory and CPU rate
+* Scrape health for meta, frontend, compute, and compactor services
+* Dependency availability for Redpanda and MinIO
+
+These dashboards are intended as starter dashboards. They are useful immediately for cluster and scrape health, and they give you a base to extend with more RisingWave-specific metrics as needed.
+
+The business dashboard is SQL-backed and queries `funnel_summary` directly through the Grafana `RisingWave SQL` datasource. If you have not run dbt yet, that dashboard will be empty.
+
+It also includes a `Kafka → RisingWave Lag (seconds)` panel, which uses exact event-time checkpoints written by `kafka-head-observer` and computes per-topic lag as `Kafka max(event_time) - RisingWave max(event_time)`.
+
+### Accessing Prometheus
+
+1. Open `http://localhost:9500`.
+2. Use the `Graph` or `Table` views to inspect metrics.
+3. Start with queries such as:
+
+```promql
+up{job=~"risingwave-.*"}
+process_resident_memory_bytes{job=~"risingwave-.*"}
+rate(process_cpu_seconds_total{job=~"risingwave-.*"}[5m])
+scrape_duration_seconds{job=~"risingwave-.*|redpanda|minio"}
+```
+
+### Monitoring Guide
+
+For detailed usage, dashboard walkthroughs, and extension guidance, see [docs/RISINGWAVE_MONITORING_GUIDE.md](docs/RISINGWAVE_MONITORING_GUIDE.md).
 
 ## ML Predictions Usage
 

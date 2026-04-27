@@ -42,6 +42,13 @@ NEED_CLEANUP=false
 SOURCE_COUNT=$(psql -h localhost -p 4566 -d dev -U root -Atc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('src_cart', 'src_purchase', 'src_page')" 2>/dev/null | head -1)
 
 if [ "$SOURCE_COUNT" -gt 0 ]; then
+    PRODUCED_AT_COUNT=$(psql -h localhost -p 4566 -d dev -U root -Atc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'src_page' AND column_name = 'produced_at'" 2>/dev/null | head -1)
+
+    if [ "$PRODUCED_AT_COUNT" != "1" ]; then
+        echo "⚠️  src_page is missing produced_at, need cleanup"
+        NEED_CLEANUP=true
+    fi
+
     # Sources exist, check if amount is numeric (old schema) vs DOUBLE (new schema)
     AMOUNT_TYPE=$(psql -h localhost -p 4566 -d dev -U root -Atc "SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'src_purchase' AND column_name = 'amount'" 2>/dev/null | head -1)
     if [ "$AMOUNT_TYPE" = "numeric" ] || [ "$AMOUNT_TYPE" = "decimal" ]; then
@@ -93,7 +100,8 @@ if [ "$NEED_CLEANUP" = "true" ]; then
     CREATE SOURCE IF NOT EXISTS src_cart (
         user_id int,
         item_id varchar,
-        event_time timestamp
+        event_time timestamp,
+        produced_at timestamp
     ) WITH (
         connector = 'kafka',
         topic = 'cart_events',
@@ -105,7 +113,8 @@ if [ "$NEED_CLEANUP" = "true" ]; then
     CREATE SOURCE IF NOT EXISTS src_purchase (
         user_id int,
         amount DOUBLE,
-        event_time timestamp
+        event_time timestamp,
+        produced_at timestamp
     ) WITH (
         connector = 'kafka',
         topic = 'purchases',
@@ -117,7 +126,8 @@ if [ "$NEED_CLEANUP" = "true" ]; then
     CREATE SOURCE IF NOT EXISTS src_page (
         user_id int,
         page_id varchar,
-        event_time timestamp
+        event_time timestamp,
+        produced_at timestamp
     ) WITH (
         connector = 'kafka',
         topic = 'page_views',

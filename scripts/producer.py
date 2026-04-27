@@ -97,13 +97,15 @@ def main():
             # Produce events if TPS > 0
             if interval > 0:
                 user_id = random.randint(1, 1000000)
-                event_time_str = get_timestamp()
+                produced_at_str = get_timestamp()
+                event_time_str = produced_at_str
 
                 # 1. Page Views (Always)
                 view_data = {
                     "user_id": user_id,
                     "page_id": f"page_{random.randint(1, 100)}",
-                    "event_time": event_time_str
+                    "event_time": event_time_str,
+                    "produced_at": produced_at_str
                 }
                 producer.produce(
                     'page_views',
@@ -119,7 +121,8 @@ def main():
                     cart_data = {
                         "user_id": user_id,
                         "item_id": f"item_{random.randint(100, 1000)}",
-                        "event_time": event_time_str
+                        "event_time": event_time_str,
+                        "produced_at": produced_at_str
                     }
                     producer.produce(
                         'cart_events',
@@ -135,7 +138,8 @@ def main():
                     purchase_data = {
                         "user_id": user_id,
                         "amount": round(random.uniform(10, 500), 2),
-                        "event_time": event_time_str
+                        "event_time": event_time_str,
+                        "produced_at": produced_at_str
                     }
                     producer.produce(
                         'purchases',

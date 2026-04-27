@@ -1,0 +1,38 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus-0:9500
+    isDefault: true
+    editable: true
+
+  - name: RisingWave SQL
+    uid: risingwave-sql
+    type: postgres
+    access: proxy
+    url: frontend-node-0:4566
+    user: root
+    editable: true
+    jsonData:
+      database: dev
+      postgresVersion: 1500
+      sslmode: disable
+      timescaledb: false
+    secureJsonData:
+      password: root
+
+  - name: Metadata Postgres
+    uid: metadata-postgres
+    type: postgres
+    access: proxy
+    url: postgres-0:5432
+    user: postgres
+    editable: true
+    jsonData:
+      database: metadata
+      postgresVersion: 1500
+      sslmode: disable
+      timescaledb: false

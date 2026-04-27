@@ -3,7 +3,8 @@
 CREATE SOURCE {{ this }} (
     user_id int,
     amount DOUBLE,
-    event_time timestamptz
+    event_time timestamptz,
+    produced_at timestamptz
 ) WITH (
     connector = 'kafka',
     topic = 'purchases',

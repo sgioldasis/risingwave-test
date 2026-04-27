@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: RisingWave dashboards
+    orgId: 1
+    folder: RisingWave
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

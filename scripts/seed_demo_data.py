@@ -203,12 +203,14 @@ def create_kafka_events_for_history(minutes=60, tps=100):
         for _ in range(base_viewers):
             user_id = random.randint(1, 100000)
             viewer_ids.append(user_id)
+            produced_at = datetime.now(timezone.utc).isoformat()
             producer.produce(
                 'page_views',
                 value=json.dumps({
                     "user_id": user_id,
                     "page_id": f"page_{random.randint(1, 100)}",
-                    "event_time": timestamp_str
+                    "event_time": timestamp_str,
+                    "produced_at": produced_at
                 }).encode('utf-8'),
                 callback=delivery_report
             )
@@ -218,12 +220,14 @@ def create_kafka_events_for_history(minutes=60, tps=100):
         actual_carters = min(base_carters, len(viewer_ids))
         cart_user_ids = random.sample(viewer_ids, actual_carters) if viewer_ids else []
         for user_id in cart_user_ids:
+            produced_at = datetime.now(timezone.utc).isoformat()
             producer.produce(
                 'cart_events',
                 value=json.dumps({
                     "user_id": user_id,
                     "item_id": f"item_{random.randint(100, 1000)}",
-                    "event_time": timestamp_str
+                    "event_time": timestamp_str,
+                    "produced_at": produced_at
                 }).encode('utf-8'),
                 callback=delivery_report
             )
@@ -233,12 +237,14 @@ def create_kafka_events_for_history(minutes=60, tps=100):
         actual_purchasers = min(base_purchasers, len(cart_user_ids))
         purchase_user_ids = random.sample(cart_user_ids, actual_purchasers) if cart_user_ids else []
         for user_id in purchase_user_ids:
+            produced_at = datetime.now(timezone.utc).isoformat()
             producer.produce(
                 'purchases',
                 value=json.dumps({
                     "user_id": user_id,
                     "amount": round(random.uniform(10, 500), 2),
-                    "event_time": timestamp_str
+                    "event_time": timestamp_str,
+                    "produced_at": produced_at
                 }).encode('utf-8'),
                 callback=delivery_report
             )

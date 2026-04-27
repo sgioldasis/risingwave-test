@@ -33,7 +33,8 @@ SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 CREATE SOURCE src_page (
     user_id int,
     page_id varchar,
-    event_time timestamp
+    event_time timestamp,
+    produced_at timestamp
 ) WITH (
     connector = 'kafka',
     topic = 'page_views',
@@ -45,7 +46,8 @@ CREATE SOURCE src_page (
 CREATE SOURCE src_cart (
     user_id int,
     item_id varchar,
-    event_time timestamp
+    event_time timestamp,
+    produced_at timestamp
 ) WITH (
     connector = 'kafka',
     topic = 'cart_events',
@@ -57,7 +59,8 @@ CREATE SOURCE src_cart (
 CREATE SOURCE src_purchase (
     user_id int,
     amount numeric,
-    event_time timestamp
+    event_time timestamp,
+    produced_at timestamp
 ) WITH (
     connector = 'kafka',
     topic = 'purchases',

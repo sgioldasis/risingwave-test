@@ -500,6 +500,66 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
+  kafka-head-observer:
+    build:
+      context: .
+      dockerfile: Dockerfile.dagster
+    entrypoint: ["/opt/dagster-venv/bin/python", "/workspace/scripts/kafka_head_observer.py"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - OBSERVER_DB_DSN=postgresql://postgres@postgres-0:5432/metadata
+      - MIRROR_RISINGWAVE_ENABLED=false
+      - MIRROR_RISINGWAVE_DSN=postgresql://root:root@frontend-node-0:4566/dev
+      - KAFKA_OBSERVER_POLL_TIMEOUT=1.0
+    volumes:
+      - "./scripts:/workspace/scripts:ro"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres-0:
+        condition: service_healthy
+      frontend-node-0:
+        condition: service_healthy
+    networks:
+      - iceberg_net
+    container_name: kafka-head-observer
+    restart: always
+
+  prometheus-0:
+    image: prom/prometheus:latest
+    container_name: prometheus-0
+    ports:
+      - "9500:9500"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.listen-address=0.0.0.0:9500"
+    volumes:
+      - "./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+      - "prometheus-0:/prometheus"
+    restart: always
+    networks:
+      - iceberg_net
+
+  grafana-0:
+    image: grafana/grafana:latest
+    container_name: grafana-0
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - "./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro"
+      - "./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro"
+      - "./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro"
+      - "grafana-0:/var/lib/grafana"
+    depends_on:
+      - prometheus-0
+    restart: always
+    networks:
+      - iceberg_net
+
   # Dagster Services
   dagster-webserver:
     build:
@@ -611,6 +671,10 @@ volumes:
   postgres-0:
     external: false
   minio-0:
+    external: false
+  prometheus-0:
+    external: false
+  grafana-0:
     external: false
   lakekeeper-db:
     external: false

@@ -5,7 +5,8 @@
 CREATE SOURCE IF NOT EXISTS src_page (
     user_id int,
     page_id varchar,
-    event_time timestamp
+    event_time timestamp,
+    produced_at timestamp
 ) WITH (
     connector = 'kafka',
     topic = 'page_views',
@@ -16,7 +17,8 @@ CREATE SOURCE IF NOT EXISTS src_page (
 CREATE SOURCE IF NOT EXISTS src_cart (
     user_id int,
     item_id varchar,
-    event_time timestamp
+    event_time timestamp,
+    produced_at timestamp
 ) WITH (
     connector = 'kafka',
     topic = 'cart_events',
@@ -27,7 +29,8 @@ CREATE SOURCE IF NOT EXISTS src_cart (
 CREATE SOURCE IF NOT EXISTS src_purchase (
     user_id int,
     amount decimal,
-    event_time timestamp
+    event_time timestamp,
+    produced_at timestamp
 ) WITH (
     connector = 'kafka',
     topic = 'purchases',
