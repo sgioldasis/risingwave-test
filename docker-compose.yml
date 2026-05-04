@@ -644,7 +644,7 @@ services:
       - "./uv.lock:/workspace/uv.lock:ro"
     depends_on:
       dagster-webserver:
-        condition: service_started
+        condition: service_healthy
       frontend-node-0:
         condition: service_healthy
     networks:

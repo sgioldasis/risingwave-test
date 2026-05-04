@@ -22,5 +22,5 @@ WITH (
     database.name = 'public',
     table.name = 'rw_managed_funnel',
     create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 2
+    commit_checkpoint_interval = 1
 )

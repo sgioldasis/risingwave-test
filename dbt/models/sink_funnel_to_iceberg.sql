@@ -23,5 +23,5 @@ WITH (
     table.name = 'iceberg_funnel',
     connection = lakekeeper_catalog_conn,
     create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 2
+    commit_checkpoint_interval = 1
 )

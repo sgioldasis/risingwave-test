@@ -5,6 +5,28 @@
 
 set -e
 
+echo "=== Stopping Sink Failure Watchdog ==="
+WATCHDOG_PID_FILE="${SINK_WATCHDOG_PID_FILE:-/tmp/rw_sink_watchdog.pid}"
+if [ -f "$WATCHDOG_PID_FILE" ]; then
+    WATCHDOG_PID=$(cat "$WATCHDOG_PID_FILE" 2>/dev/null || true)
+    if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+        echo "Stopping sink watchdog (PID: $WATCHDOG_PID)..."
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+        sleep 1
+        if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+            kill -9 "$WATCHDOG_PID" 2>/dev/null || true
+        fi
+        echo "✅ Sink watchdog stopped"
+    else
+        echo "No running sink watchdog process found"
+    fi
+    rm -f "$WATCHDOG_PID_FILE"
+else
+    echo "No sink watchdog PID file found"
+fi
+
+echo ""
+
 echo "=== Stopping Producer ==="
 if pgrep -f "scripts/producer.py" > /dev/null 2>&1; then
     echo "Stopping producer process..."
