@@ -135,7 +135,7 @@
       "fieldConfig": {
         "defaults": {
           "decimals": 2,
-          "unit": "suffix:views/s"
+          "unit": "suffix:ops/sec"
         },
         "overrides": []
       },

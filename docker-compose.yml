@@ -16,6 +16,12 @@ x-lakekeeper-environment: &lakekeeper-environment
   - LAKEKEEPER__UI__OPENID_CLIENT_ID
   - LAKEKEEPER__UI__OPENID_SCOPE
 
+x-dagster-build: &dagster-build
+  image: ${DAGSTER_IMAGE:-risingwave-test/dagster:local}
+  build:
+    context: .
+    dockerfile: Dockerfile.dagster
+
 services:
   # RisingWave Services - Distributed Mode
   compactor-0:
@@ -501,9 +507,7 @@ services:
     command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
   kafka-head-observer:
-    build:
-      context: .
-      dockerfile: Dockerfile.dagster
+    <<: *dagster-build
     entrypoint: ["/opt/dagster-venv/bin/python", "/workspace/scripts/kafka_head_observer.py"]
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
@@ -541,7 +545,7 @@ services:
       - iceberg_net
 
   grafana-0:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.6.3
     container_name: grafana-0
     ports:
       - "3001:3000"
@@ -549,11 +553,19 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=false
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      # Anonymous access - no login needed for a demo
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_BASIC_ENABLED=false
+      # Dark mode
+      - GF_USERS_DEFAULT_THEME=dark
     volumes:
+      - "grafana-0:/var/lib/grafana"
       - "./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro"
       - "./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro"
       - "./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro"
-      - "grafana-0:/var/lib/grafana"
     depends_on:
       - prometheus-0
     restart: always
@@ -562,9 +574,7 @@ services:
 
   # Dagster Services
   dagster-webserver:
-    build:
-      context: .
-      dockerfile: Dockerfile.dagster
+    <<: *dagster-build
     entrypoint: ["/usr/local/bin/docker-entrypoint-dagster.sh"]
     command: ["dagster-webserver", "-m", "orchestration.definitions", "--host", "0.0.0.0", "--port", "3000"]
     ports:
@@ -610,9 +620,7 @@ services:
     restart: always
 
   dagster-daemon:
-    build:
-      context: .
-      dockerfile: Dockerfile.dagster
+    <<: *dagster-build
     entrypoint: ["/usr/local/bin/docker-entrypoint-dagster.sh"]
     command: ["dagster-daemon", "run", "-m", "orchestration.definitions"]
     environment:
