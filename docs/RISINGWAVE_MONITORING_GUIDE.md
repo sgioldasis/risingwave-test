@@ -59,11 +59,12 @@ After startup, the main monitoring endpoints are:
 
 ## Accessing Grafana
 
-1. Open <http://localhost:3001>.
-2. Log in with:
-   * username: `admin`
-   * password: `admin`
-3. Open the `RisingWave` folder in the dashboard browser.
+Grafana is configured for anonymous access with no login required (suitable for local demo use).
+
+1. Open <http://localhost:3001> — you are taken straight to the home screen.
+2. Open the `RisingWave` folder in the dashboard browser.
+
+> **Note:** Grafana is pinned to version `11.6.3`. The `latest` tag (Grafana 13+) introduced a new unified storage backend that breaks traditional file-based dashboard provisioning and is not used here.
 
 Provisioned dashboards:
 
@@ -146,6 +147,11 @@ Prerequisite:
 * `Windows Processed (last 15m)`:
   * count of `funnel_summary` rows with `window_end` in last 15 minutes
   * indicates whether processing is continuously producing windows
+
+* `Viewers TPS`:
+  * page-view throughput in ops/sec over a rolling 30-second window
+  * computed as `COUNT(*) / elapsed_seconds` where elapsed is the span between oldest and newest `produced_at` in the window
+  * reflects the producer rate as seen by RisingWave, including any small timing jitter
 
 * `Kafka → RisingWave Lag (seconds)`:
   * exact lag based on event-time checkpoints, not current time

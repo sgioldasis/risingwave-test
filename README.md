@@ -792,7 +792,7 @@ The `1_up.sh` startup also brings up Prometheus, Grafana, and a Kafka head obser
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| Grafana | http://localhost:3001 | Monitoring dashboards (login: `admin` / `admin`) |
+| Grafana | http://localhost:3001 | Monitoring dashboards (no login required) |
 | Prometheus | http://localhost:9500 | Raw metrics and query UI |
 | RisingWave Console | http://localhost:5691 | Stream processing dashboard |
 | Redpanda Console | http://localhost:9090 | Kafka topic management |
@@ -810,11 +810,8 @@ The project now includes a prewired monitoring stack under `monitoring/`.
 ### Accessing Grafana
 
 1. Start the stack with `./bin/1_up.sh`.
-2. Open `http://localhost:3001`.
-3. Sign in with:
-  * username: `admin`
-  * password: `admin`
-4. Open the `RisingWave` folder.
+2. Open `http://localhost:3001` — no login required.
+3. Open the `RisingWave` folder.
 
 Provisioned starter dashboards:
 
@@ -831,7 +828,7 @@ Provisioned starter dashboards:
 
 These dashboards are intended as starter dashboards. They are useful immediately for cluster and scrape health, and they give you a base to extend with more RisingWave-specific metrics as needed.
 
-The business dashboard is SQL-backed and queries `funnel_summary` directly through the Grafana `RisingWave SQL` datasource. If you have not run dbt yet, that dashboard will be empty.
+The business dashboard is SQL-backed. It queries RisingWave directly via the provisioned `RisingWave SQL` datasource and includes a **Viewers TPS** panel showing page-view throughput in ops/sec over a rolling 30-second window. If you have not run dbt yet, that dashboard will be empty.
 
 It also includes a `Kafka → RisingWave Lag (seconds)` panel, which uses exact event-time checkpoints written by `kafka-head-observer` and computes per-topic lag as `Kafka max(event_time) - RisingWave max(event_time)`.
 
