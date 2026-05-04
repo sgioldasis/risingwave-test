@@ -172,6 +172,21 @@ Prometheus is useful for:
 * testing PromQL before creating new Grafana panels
 * troubleshooting whether a missing panel is a Grafana problem or a scrape problem
 
+## How Prometheus Is Updated
+
+Prometheus **pulls** (scrapes) metrics from each target every **15 seconds**. Each target exposes an HTTP endpoint that Prometheus polls on schedule.
+
+| Job | Target | Metrics path |
+|---|---|---|
+| `risingwave-meta` | `meta-node-0:1250` | `/metrics` |
+| `risingwave-frontend` | `frontend-node-0:2222` | `/metrics` |
+| `risingwave-compute` | `compute-node-0:1222` | `/metrics` |
+| `risingwave-compactor` | `compactor-0:1260`, `compactor-1:1261` | `/metrics` |
+| `minio` | `minio-0:9301` | `/minio/v2/metrics/cluster` |
+| `redpanda` | `redpanda:9644` | `/public_metrics` |
+
+Grafana panels backed by Prometheus are therefore at most 15 seconds stale. The SQL-backed panels (such as Viewers TPS and Funnel Business Health) bypass Prometheus entirely — they query RisingWave directly and are limited only by Grafana's dashboard refresh interval.
+
 ## Useful Starter PromQL Queries
 
 ### Check That RisingWave Targets Are Up
