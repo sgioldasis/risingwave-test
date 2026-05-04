@@ -280,7 +280,8 @@ services:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 2s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     restart: always
     networks:
       iceberg_net:

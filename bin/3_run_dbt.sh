@@ -31,6 +31,10 @@ echo ""
 # Always drop sinks first (they depend on sources and prevent source recreation)
 echo "=== Dropping existing sinks ==="
 psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS iceberg_funnel_sink CASCADE;" 2>/dev/null || true
+psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS rw_managed_funnel_sink CASCADE;" 2>/dev/null || true
+psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS sink_hermes_features_to_iceberg CASCADE;" 2>/dev/null || true
+psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS funnel_kafka_sink CASCADE;" 2>/dev/null || true
+psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS funnel_postgres_sink CASCADE;" 2>/dev/null || true
 echo "✓ Sinks dropped"
 echo ""
 

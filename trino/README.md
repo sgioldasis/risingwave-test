@@ -97,7 +97,7 @@ DELETE FROM datalake.public.iceberg_countries WHERE country = 'CY';
 -- Insert data
 INSERT INTO datalake.public.iceberg_countries VALUES ('JP', 'Japan');
 
--- Create new table
+-- Create new table in Lakekeeper-managed catalog
 CREATE TABLE datalake.public.new_table (
     id INTEGER,
     name VARCHAR
@@ -105,11 +105,27 @@ CREATE TABLE datalake.public.new_table (
     format = 'PARQUET',
     partitioning = ARRAY['id']
 );
+
+-- Query RisingWave-managed funnel table from datalake catalog (uses storage mode, auto-compacted by compactor-1)
+SELECT max(window_start) AS max_window_start, count(*) AS total_rows
+FROM datalake.public.rw_managed_funnel;
+
+-- Check commit activity for refresh troubleshooting
+SELECT committed_at, snapshot_id
+FROM datalake.public."rw_managed_funnel$snapshots"
+ORDER BY committed_at DESC
+LIMIT 10;
+
+-- Query Lakekeeper-managed reference data
+SELECT count(*) FROM datalake.public.iceberg_countries;
 ```
 
 ### Iceberg Catalog Configuration
 
-See [`trino/catalog/datalake.properties`](catalog/datalake.properties) for full configuration.
+**Lakekeeper-managed catalog** ([`trino/catalog/datalake.properties`](catalog/datalake.properties)): 
+- Manages both `iceberg_countries` (reference data) and `rw_managed_funnel` (auto-compacted by dedicated compactor-1)
+- Both tables are registered in Lakekeeper's metadata but have different write paths
+- `rw_managed_funnel` uses RisingWave storage mode (direct S3 writes) with dedicated compactor
 
 ---
 
@@ -269,10 +285,15 @@ WHERE country = 'GR';
 
 ## Available Tables
 
-### Iceberg Catalog (`datalake.public`)
+### Lakekeeper Iceberg Catalog (`datalake.public`)
 | Table | Description |
 |-------|-------------|
-| `iceberg_countries` | Country data written via Trino |
+| `iceberg_countries` | Country data written via Trino, managed via Lakekeeper REST catalog |
+
+### RisingWave-Managed Iceberg Catalog (`rw_managed.public`)
+| Table | Description |
+|-------|-------------|
+| `rw_managed_funnel` | Funnel aggregates written by RisingWave Iceberg sink (`sink_funnel_to_rw_iceberg`) using storage mode; auto-compacted via dedicated compactor-1 |
 
 ### RisingWave Catalog (`risingwave.public`)
 

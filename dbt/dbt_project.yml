@@ -34,4 +34,5 @@ vars:
 # 5. funnel_enriched.sql (materialized_view) - Enriched funnel with Python UDFs
 # 6. funnel_from_tables.sql (materialized_view) - Funnel aggregation from tables (modifiable)
 # 7. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
-# 8. funnel_to_iceberg_sink.sql (sink) - Sink to Iceberg
+# 8. funnel_to_iceberg_sink.sql (sink) - Sink to Lakekeeper-managed Iceberg (catalog.type=rest)
+# 9. sink_funnel_to_rw_iceberg.sql (sink) - Sink to Lakekeeper-managed Iceberg via connection = lakekeeper_catalog_conn

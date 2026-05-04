@@ -235,6 +235,11 @@ SELECT id, host, type, state FROM rw_catalog.rw_worker_nodes;
 SELECT name, connector FROM rw_catalog.rw_sources;
 SELECT name, sink_type, connector FROM rw_catalog.rw_sinks;
 SELECT ddl_id, ddl_statement, progress FROM rw_catalog.rw_ddl_progress;
+SELECT max(window_start), count(*) FROM datalake.public.rw_managed_funnel;
+SELECT committed_at, snapshot_id
+FROM datalake.public."rw_managed_funnel$snapshots"
+ORDER BY committed_at DESC
+LIMIT 10;
 ```
 
 ## Extending The Dashboards
@@ -274,6 +279,7 @@ Check:
 * scrape targets are up in the Prometheus `Targets` page
 * the queried metric actually exists in the current RisingWave build
 * for `RisingWave Funnel Business Health`, verify `funnel_summary` exists and has data
+* for RW-managed Iceberg output, verify `datalake.public.rw_managed_funnel` has a recent `max(window_start)` and advancing entries in `rw_managed_funnel$snapshots` (compactor-1 should be actively compacting files)
 
 ## Prometheus is up but RisingWave targets are down
 

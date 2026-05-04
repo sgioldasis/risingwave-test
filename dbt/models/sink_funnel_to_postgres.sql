@@ -27,7 +27,7 @@ CREATE SINK IF NOT EXISTS funnel_postgres_sink
 FROM {{ ref('funnel_summary_with_country') }}
 WITH (
     connector = 'jdbc',
-    jdbc.url = '{{ env_var("HOST_POSTGRES_URL", "jdbc:postgresql://host.docker.internal:5432/postgres") }}',
+    jdbc.url = '{{ env_var("HOST_POSTGRES_URL", "jdbc:postgresql://172.17.0.1:5432/postgres") }}',
     user = '{{ env_var("USER", "postgres") }}',
     password = '',
     table.name = 'funnel_summary_with_country',

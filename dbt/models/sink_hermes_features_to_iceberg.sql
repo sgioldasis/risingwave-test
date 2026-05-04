@@ -38,5 +38,5 @@ WITH (
     table.name = 'iceberg_hermes_features',
     connection = lakekeeper_catalog_conn,
     create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 1
+    commit_checkpoint_interval = 2
 )

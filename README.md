@@ -81,6 +81,7 @@ dbt/                              # dbt project folder
 │   ├── funnel_summary_with_country.sql  # Enriched funnel view
 │   ├── sink_funnel_to_kafka.sql  # Kafka sink for dashboard
 │   ├── sink_funnel_to_iceberg.sql # Iceberg sink for persistence
+│   ├── sink_funnel_to_rw_iceberg.sql # Managed Iceberg funnel sink (Lakekeeper catalog)
 │   └── sink_funnel_to_postgres.sql # PostgreSQL sink for external access
 ├── macros/                       # dbt macros
 │   ├── create_iceberg_connection.sql
@@ -392,60 +393,64 @@ async def get_next_predictions():
 
 ### Use Case 3: Historical Iceberg Data in RisingWave (iceberg_countries)
 
-This use case demonstrates how historical/reference data stored in Iceberg can be made available in RisingWave with automatic synchronization. Updates made via Trino to the Iceberg table are immediately visible in RisingWave.
+This use case demonstrates two coordinated Iceberg paths: (1) historical/reference data written via Trino (`iceberg_countries`) and read in RisingWave, and (2) real-time funnel aggregates written from RisingWave using **RW-managed storage mode** (`rw_managed_funnel`) with automatic file compaction via dedicated compactor. Both are queryable through Trino with near real-time visibility.
 
 #### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            WRITE PATH (Trino)                                │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              ICEBERG WRITE PATHS                            │
 │                                                                              │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                 │
-│  │   Dagster    │────▶│    Trino     │────▶│   Iceberg    │                 │
-│  │   Asset      │     │   (JDBC)     │     │  (Lakekeeper)│                 │
-│  │              │     │              │     │              │                 │
-│  │ iceberg_count│     │  INSERT/     │     │ iceberg_count│                 │
-│  │ ries.py      │     │  UPDATE/     │     │ ries table   │                 │
-│  └──────────────┘     │  DELETE      │     └──────┬───────┘                 │
-└───────────────────────┴──────────────┴─────────────┼─────────────────────────┘
-                                                     │
-                              ┌─────────────────────┘
-                              │ REST Catalog API
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            READ PATH (RisingWave)                            │
+│  A) Trino-managed reference table (Lakekeeper REST Catalog)                  │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────────────┐ │
+│  │   Dagster    │────▶│    Trino     │────▶│ Lakekeeper + Iceberg Table   │ │
+│  │   Asset      │     │   (JDBC)     │     │ datalake.public.iceberg_     │ │
+│  │ iceberg_     │     │ INSERT/      │     │ countries                      │ │
+│  │ countries.py │     │ UPDATE/DELETE│     │                              │ │
+│  └──────────────┘     └──────────────┘     └──────────────────────────────┘ │
+│                                                                              │
+│  B) RisingWave-managed funnel sink (Direct S3 storage mode)                  │
+│  ┌─────────────────────┐     ┌────────────────────────┐   ┌───────────────┐ │
+│  │ funnel_for_iceberg  │────▶│ rw_managed_funnel_sink │──▶│ S3 + Iceberg  │ │
+│  │ (materialized view) │     │ (Iceberg sink/upsert)  │   │ s3://hummock  │ │
+│  │                     │     │ dbt: sink_funnel_to_   │   │ 001/iceberg   │ │
+│  │                     │     │ rw_iceberg             │   │               │ │
+│  │                     │     │ storage.type='storage' │   │ Auto-compact  │ │
+│  │                     │     │ + compactor-1          │   │ via compactor │ │
+│  └─────────────────────┘     └────────────────────────┘   └───────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           RISINGWAVE READ + JOIN PATH                       │
 │                                                                              │
 │  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                 │
 │  │   RisingWave │◀────│  Native      │◀────│  Lakekeeper  │                 │
 │  │   SOURCE     │     │  Iceberg     │     │  REST API    │                 │
-│  │              │     │  Connector   │     │              │                 │
-│  │ src_iceberg_ │     │              │     │              │                 │
+│  │ src_iceberg_ │     │  Connector   │     │              │                 │
 │  │ countries    │     │ Auto-refresh │     │              │                 │
 │  └──────┬───────┘     └──────────────┘     └──────────────┘                 │
-│         │                                                                    │
 │         │                                                                    │
 │         ▼                                                                    │
 │  ┌──────────────┐     ┌─────────────────────┐                                │
 │  │     View     │     │   funnel_summary    │                                │
-│  │  rw_countries│     │ (materialized view) │                                │
-│  │              │     │                     │                                │
-│  │ Countries    │     │  Funnel metrics     │                                │
-│  │ from Iceberg │     │  by time window     │                                │
-│  └──────┬──────┘     └──────────┬──────────┘                                │
-│         │                       │                                            │
-│         │                       │                                            │
-│         │         LEFT JOIN     │                                            │
-│         └───────────┬───────────┘                                            │
-│                     │                                                        │
-│                     ▼                                                        │
-│    ┌────────────────────────────────┐                                        │
-│    │  funnel_summary_with_country   │                                        │
-│    │        (joined view)           │                                        │
-│    │                                │                                        │
-│    │  Joins funnel_summary with     │                                        │
-│    │  rw_countries on country       │                                        │
-│    └────────────────────────────────┘                                        │
-└─────────────────────────────────────────────────────────────────────────────┘
+│  │ rw_countries │     │ (materialized view) │                                │
+│  └──────┬───────┘     └──────────┬──────────┘                                │
+│         │       LEFT JOIN         │                                           │
+│         └───────────┬─────────────┘                                           │
+│                     ▼                                                         │
+│    ┌────────────────────────────────┐                                         │
+│    │  funnel_summary_with_country   │                                         │
+│    │        (joined view)           │                                         │
+│    └────────────────────────────────┘                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              QUERY/CONSUME PATH                              │
+│                                                                              │
+│  Trino queries both Iceberg tables from `datalake.public`:                  │
+│  - `iceberg_countries` (reference data)                                      │
+│  - `rw_managed_funnel` (managed funnel aggregates)                           │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 #### Components
@@ -769,6 +774,34 @@ dagster job execute -j postgres_sink_job
 
 # 7. When finished, stop all services and clean up (includes dropping local PostgreSQL tables and producer logs)
 ./bin/6_down.sh
+```
+
+### RisingWave-Managed Iceberg Table
+
+The project creates a **RisingWave-managed** Iceberg table named `rw_managed_funnel` via model `sink_funnel_to_rw_iceberg`.
+
+This sink writes from `funnel_for_iceberg` directly to S3 (`s3://hummock001/iceberg`) using RisingWave's storage mode, enabling automatic file compaction via the dedicated `compactor-1` service. The table is registered in Lakekeeper's metadata and queryable via Trino's `datalake` catalog.
+
+Verify the table is present:
+
+```sql
+SHOW TABLES FROM datalake.public;
+```
+
+Check data freshness:
+
+```sql
+SELECT max(window_start) AS max_window_start, count(*) AS total_rows
+FROM datalake.public.rw_managed_funnel;
+```
+
+Check commit activity (useful if refresh looks stuck):
+
+```sql
+SELECT committed_at, snapshot_id
+FROM datalake.public."rw_managed_funnel$snapshots"
+ORDER BY committed_at DESC
+LIMIT 10;
 ```
 
 ### Alternative: Web-Based Script Runner

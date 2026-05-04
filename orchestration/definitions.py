@@ -257,6 +257,37 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
             raise Exception(f"dbt compile failed: {result.stderr}")
         context.log.info("dbt compile completed. Models will appear on next materialization.")
         return {"status": "initial_compile", "message": "Run again to materialize models"}
+
+    # Keep Dagster behavior consistent with bin/3_run_dbt.sh by dropping sinks
+    # before build, so CREATE SINK IF NOT EXISTS definitions are refreshed.
+    context.log.info("Dropping pre-build sinks via dbt run-operation...")
+    _dbt_env = os.environ.copy()
+    if "DBT_HOST" not in _dbt_env:
+        _dbt_env["DBT_HOST"] = "risingwave-frontend"
+    if "DBT_PROFILES_DIR" not in _dbt_env:
+        _dbt_env["DBT_PROFILES_DIR"] = str(dbt_PROJECT_PATH)
+    if "DBT_PASSWORD" not in _dbt_env:
+        _dbt_env["DBT_PASSWORD"] = "root"
+
+    drop_result = subprocess.run(
+        [
+            "dbt",
+            "run-operation",
+            "drop_prebuild_sinks",
+            "--project-dir",
+            str(dbt_PROJECT_PATH),
+            "--profiles-dir",
+            str(dbt_PROJECT_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(dbt_PROJECT_PATH.parent),
+        env=_dbt_env,
+    )
+    if drop_result.returncode != 0:
+        context.log.error(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
+        raise Exception(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
+    context.log.info("Pre-build sinks dropped successfully")
     
     # Run dbt build and stream events
     yield from dbt.cli(["build"], context=context).stream()
