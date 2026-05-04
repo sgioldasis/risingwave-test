@@ -142,6 +142,29 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             font-size: 0.9rem;
             color: var(--fg-secondary);
         }
+
+        .status-toast {
+            display: none;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: rgba(166, 227, 161, 0.2);
+            color: var(--success);
+            border: 1px solid rgba(166, 227, 161, 0.45);
+            animation: toast-pop 0.2s ease;
+        }
+
+        .status-toast.warning {
+            background: rgba(250, 179, 135, 0.2);
+            color: var(--warning);
+            border-color: rgba(250, 179, 135, 0.45);
+        }
+
+        @keyframes toast-pop {
+            from { transform: translateY(-2px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
         
         .running-count {
             background: var(--warning);
@@ -515,6 +538,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         <div class="status">
             <span id="runningCount"></span>
             <span id="statusText">Ready</span>
+            <span id="statusToast" class="status-toast"></span>
         </div>
     </div>
     
@@ -555,8 +579,26 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         const NO_RUNNING_INDICATOR_SCRIPTS = new Set(['show_links.sh']);
         let ws;
         let reconnectInterval;
+        let toastTimeout = null;
         let activeTabs = new Map(); // scriptFile -> { element, outputElement, running }
         let currentTab = null;
+
+        function showStatusToast(message, level = 'success') {
+            const toastEl = document.getElementById('statusToast');
+            if (!toastEl) return;
+
+            toastEl.textContent = message;
+            toastEl.className = `status-toast${level === 'warning' ? ' warning' : ''}`;
+            toastEl.style.display = 'inline-block';
+
+            if (toastTimeout) {
+                clearTimeout(toastTimeout);
+            }
+
+            toastTimeout = setTimeout(() => {
+                toastEl.style.display = 'none';
+            }, 3500);
+        }
         
         function initScripts() {
             const container = document.getElementById('scriptList');
@@ -673,6 +715,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 }
                 // Also clear pending output
                 pendingOutput.delete(data.script);
+            } else if (data.type === 'toast') {
+                showStatusToast(data.message || 'Done', data.level || 'success');
             }
         }
         
@@ -1249,7 +1293,7 @@ async def websocket_handler(request):
                 elif data.get('action') == 'stop':
                     script_file = data.get('script')
                     if script_file:
-                        stop_script(script_file)
+                        await stop_script(script_file)
                         
                 elif data.get('action') == 'clear':
                     script_file = data.get('script')
@@ -1324,7 +1368,7 @@ async def run_script_in_background(script_file, ws, params=''):
     
     # If script is already running, stop it first
     if script_file in running_processes:
-        stop_script(script_file)
+        await stop_script(script_file)
         # Wait a moment for cleanup
         await asyncio.sleep(0.5)
     
@@ -1556,115 +1600,95 @@ async def script_error(script_file, error_msg):
     await broadcast({'type': 'status', 'status': 'error', 'script': script_file})
 
 
-def stop_script(script_file):
-    """Stop a running script."""
-    if script_file not in running_processes:
-        return
-    
-    process = running_processes[script_file]
-    
-    try:
-        parent = psutil.Process(process.pid)
-        children = parent.children(recursive=True)
-        
-        # Terminate children first
-        for child in children:
-            try:
-                child.terminate()
-            except psutil.NoSuchProcess:
-                pass
-        
-        # Terminate parent
+async def stop_script(script_file):
+    """Stop a running script and any externally running background service for that script."""
+    process = running_processes.get(script_file)
+    terminated_tracked = False
+    killed_external = 0
+
+    if process is not None:
         try:
-            parent.terminate()
-        except psutil.NoSuchProcess:
-            pass
-            
-        # Wait a bit
-        import time
-        for _ in range(5):
-            if process.poll() is not None:
-                break
-            time.sleep(0.1)
-        
-        # Force kill if still alive
-        if process.poll() is None:
+            parent = psutil.Process(process.pid)
+            children = parent.children(recursive=True)
+
+            # Terminate children first.
             for child in children:
                 try:
-                    if child.is_running():
-                        child.kill()
+                    child.terminate()
                 except psutil.NoSuchProcess:
                     pass
+
+            # Terminate parent.
             try:
-                if parent.is_running():
-                    parent.kill()
+                parent.terminate()
             except psutil.NoSuchProcess:
                 pass
 
-        if script_file in running_processes:
-            del running_processes[script_file]
-        
-        # Always ensure cleanup of background services tracking
-        if script_file in running_background_services:
-            running_background_services.remove(script_file)
-        
-        # Mark as manually stopped to prevent the external services checker from re-adding it
-        manually_stopped_services.add(script_file)
-        
-        main_loop = asyncio.get_event_loop()
-        status = 'ready'
-        asyncio.run_coroutine_threadsafe(
-            append_output(script_file, "\n⚠️ Script terminated by user\n", 'warning'),
-            loop=main_loop
-        )
-        
-        # Background scripts use 'stopped' status to trigger client-side cleanup
-        bg_script_names = [s["script"] for s in BACKGROUND_SERVICES_CONFIG]
-        if script_file in bg_script_names:
-            status = 'stopped'
-            last_stop_time[script_file] = time.time()
-            
-        asyncio.run_coroutine_threadsafe(
-            broadcast({'type': 'status', 'status': status, 'script': script_file}),
-            loop=main_loop
-        )
-    except (psutil.NoSuchProcess, ProcessLookupError):
-        if script_file in running_processes:
-            del running_processes[script_file]
-        
-        # Always ensure cleanup of background services tracking
-        if script_file in running_background_services:
-            running_background_services.remove(script_file)
-        
-        # Mark as manually stopped to prevent the external services checker from re-adding it
-        manually_stopped_services.add(script_file)
-            
-        main_loop = asyncio.get_event_loop()
-        status = 'ready'
-        # Background scripts use 'stopped' status to trigger client-side cleanup
-        bg_script_names = [s["script"] for s in BACKGROUND_SERVICES_CONFIG]
-        if script_file in bg_script_names:
-            status = 'stopped'
-            last_stop_time[script_file] = time.time()
-            
-        asyncio.run_coroutine_threadsafe(
-            broadcast({'type': 'status', 'status': status, 'script': script_file}),
-            loop=main_loop
-        )
-    except Exception as e:
-        print(f"Error stopping script {script_file}: {e}")
-        if script_file in running_processes:
-            del running_processes[script_file]
+            # Wait briefly for graceful termination.
+            for _ in range(5):
+                if process.poll() is not None:
+                    break
+                time.sleep(0.1)
 
-    # Also handle background scripts that might have been started externally
+            # Force kill if still alive.
+            if process.poll() is None:
+                for child in children:
+                    try:
+                        if child.is_running():
+                            child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                try:
+                    if parent.is_running():
+                        parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+            terminated_tracked = True
+        except (psutil.NoSuchProcess, ProcessLookupError):
+            terminated_tracked = True
+        except Exception as e:
+            print(f"Error stopping tracked process for {script_file}: {e}")
+
+    # Always attempt background-service cleanup as a fallback.
+    bg_service = next((s for s in BACKGROUND_SERVICES_CONFIG if s["script"] == script_file), None)
+    if bg_service:
+        try:
+            if script_file == "3_run_producer.sh":
+                killed_external = await kill_process_by_pattern("scripts/producer.py")
+            elif "port" in bg_service:
+                killed_external = 1 if await kill_process_on_port(bg_service["port"]) else 0
+            elif "pattern" in bg_service:
+                killed_external = await kill_process_by_pattern(bg_service["pattern"])
+        except Exception as e:
+            print(f"Error stopping external service for {script_file}: {e}")
+
+    running_processes.pop(script_file, None)
+    running_background_services.discard(script_file)
+    manually_stopped_services.add(script_file)
+
+    status = 'ready'
+    bg_script_names = [s["script"] for s in BACKGROUND_SERVICES_CONFIG]
+    if script_file in bg_script_names:
+        status = 'stopped'
+        last_stop_time[script_file] = time.time()
+
+    if terminated_tracked or killed_external > 0:
+        extra = f" + stopped {killed_external} external process(es)" if killed_external > 0 else ""
+        await append_output(script_file, f"\n⚠️ Script terminated by user{extra}\n", 'warning')
+    else:
+        await append_output(script_file, "\nℹ️ No active process was found to stop\n", 'info')
+
     if script_file == "3_run_producer.sh":
-        for proc in psutil.process_iter(['cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline')
-                if cmdline and any("scripts/producer.py" in arg for arg in cmdline):
-                    proc.terminate()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        level = 'success' if killed_external > 0 else 'warning'
+        noun = "process" if killed_external == 1 else "processes"
+        await broadcast({
+            'type': 'toast',
+            'level': level,
+            'message': f'Killed {killed_external} producer {noun}'
+        })
+
+    await broadcast({'type': 'status', 'status': status, 'script': script_file})
 
 
 async def check_running_processes():

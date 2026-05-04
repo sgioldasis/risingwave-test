@@ -8,4 +8,5 @@ echo "=== Starting Producer with $TPS TPS ==="
 echo ""
 
 # Run the producer directly (script_runner handles output capture)
-PYTHONUNBUFFERED=1 uv run python scripts/producer.py --tps "$TPS"
+export PYTHONUNBUFFERED=1
+exec uv run python scripts/producer.py --tps "$TPS"
