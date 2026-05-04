@@ -1,5 +1,0 @@
- source_id | schema_name |      source_name      | content |                                                                                                  file_path                                                                                                  | file_format | record_count | file_size_in_bytes | equality_ids | sort_order_id 
------------+-------------+-----------------------+---------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------+--------------+--------------------+--------------+---------------
-        13 | public      | src_iceberg_countries | Data    | s3://hummock001/risingwave-lakekeeper/019df14f-6769-7c42-96c3-c041ab93079e/iceberg_countries-1202dcf67cd942888c114e8aa84bf2b8/data/20260504_044912_00074_vtbft-d59db401-c63d-4560-a83d-5b0562d3f25c.parquet | parquet     |            1 |                367 |              |             0
-(1 row)
-
