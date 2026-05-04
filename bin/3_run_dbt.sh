@@ -30,7 +30,6 @@ echo ""
 
 # Always drop sinks first (they depend on sources and prevent source recreation)
 echo "=== Dropping existing sinks ==="
-psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS iceberg_funnel_sink CASCADE;" 2>/dev/null || true
 psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS rw_managed_funnel_sink CASCADE;" 2>/dev/null || true
 psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS sink_hermes_features_to_iceberg CASCADE;" 2>/dev/null || true
 psql -h localhost -p 4566 -d dev -U root -c "DROP SINK IF EXISTS funnel_kafka_sink CASCADE;" 2>/dev/null || true
@@ -78,7 +77,7 @@ if [ "$NEED_CLEANUP" = "true" ]; then
     psql -h localhost -p 4566 -d dev -U root -c "DROP SOURCE IF EXISTS src_page CASCADE;" 2>/dev/null || true
     
     # Drop Iceberg table
-    psql -h localhost -p 4566 -d dev -U root -c "DROP TABLE IF EXISTS iceberg_funnel CASCADE;" 2>/dev/null || true
+    psql -h localhost -p 4566 -d dev -U root -c "DROP TABLE IF EXISTS rw_managed_funnel CASCADE;" 2>/dev/null || true
     
     echo "✓ Objects dropped"
     echo ""
@@ -88,13 +87,13 @@ if [ "$NEED_CLEANUP" = "true" ]; then
     
     # Purge Lakekeeper catalog table to clear cached schemas
     echo "=== Purging Lakekeeper catalog table ==="
-    curl -s -X DELETE "http://localhost:8181/catalog/v1/namespaces/public/tables/iceberg_funnel" 2>/dev/null || true
+    curl -s -X DELETE "http://localhost:8181/catalog/v1/namespaces/public/tables/rw_managed_funnel" 2>/dev/null || true
     echo "✓ Lakekeeper table purged (if it existed)"
     echo ""
     
     # Clean MinIO Iceberg data
     echo "=== Cleaning MinIO Iceberg data ==="
-    docker exec minio-0 mc rm --recursive --force minio/risingwave-warehouse/public/iceberg_funnel 2>/dev/null || true
+    docker exec minio-0 mc rm --recursive --force minio/risingwave-warehouse/public/rw_managed_funnel 2>/dev/null || true
     echo "✓ MinIO data cleaned (if it existed)"
     echo ""
     

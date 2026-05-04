@@ -8,14 +8,14 @@ RisingWave is writing to Iceberg very frequently (`commit_checkpoint_interval = 
 Modify the sink in `dbt/models/sink_funnel_to_iceberg.sql`:
 
 ```sql
-CREATE SINK IF NOT EXISTS iceberg_funnel_sink
+CREATE SINK IF NOT EXISTS rw_managed_funnel_sink
 FROM {{ ref('funnel_for_iceberg') }}
 WITH (
     connector = 'iceberg',
     type = 'upsert',
     primary_key = 'window_start',
     database.name = 'public',
-    table.name = 'iceberg_funnel',
+    table.name = 'rw_managed_funnel',
     connection = lakekeeper_catalog_conn,
     create_table_if_not_exists = 'true',
     commit_checkpoint_interval = 60  -- Changed from 1 to 60
@@ -37,7 +37,7 @@ spark = SparkSession.builder.appName("IcebergCompaction").getOrCreate()
 # Compact the funnel table
 spark.sql("""
     CALL lakekeeper.system.rewrite_data_files(
-        table => 'lakekeeper.public.iceberg_funnel',
+        table => 'lakekeeper.public.rw_managed_funnel',
         options => map('target-file-size-bytes', '134217728')
     )
 """)

@@ -28,7 +28,7 @@ WITH (
 | `type` | Sink type | `'upsert'` or `'append-only'` |
 | `primary_key` | Primary key for upserts | `'window_start'` |
 | `database.name` | Target database | `'public'` |
-| `table.name` | Target table name | `'iceberg_funnel'` |
+| `table.name` | Target table name | `'rw_managed_funnel'` |
 | `connection` | Iceberg connection reference | `lakekeeper_catalog_conn` |
 | `create_table_if_not_exists` | Auto-create table | `'true'` |
 | `commit_checkpoint_interval` | Commit frequency (seconds) | `60` |
@@ -57,7 +57,7 @@ SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 
 ### Create Iceberg Target Table
 ```sql
-CREATE TABLE IF NOT EXISTS iceberg_funnel (
+CREATE TABLE IF NOT EXISTS rw_managed_funnel (
     window_start TIMESTAMP,
     window_end TIMESTAMP,
     viewers BIGINT,
@@ -71,15 +71,15 @@ CREATE TABLE IF NOT EXISTS iceberg_funnel (
 
 ### Create Iceberg Sink
 ```sql
-CREATE SINK IF NOT EXISTS iceberg_funnel_sink
-INTO iceberg_funnel
+CREATE SINK IF NOT EXISTS rw_managed_funnel_sink
+INTO rw_managed_funnel
 FROM funnel
 WITH (
     connector = 'iceberg',
     type = 'upsert',
     primary_key = 'window_start',
     database.name = 'public',
-    table.name = 'iceberg_funnel',
+    table.name = 'rw_managed_funnel',
     connection = lakekeeper_catalog_conn,
     create_table_if_not_exists = 'true',
     commit_checkpoint_interval = 60
@@ -126,17 +126,17 @@ WITH (
 
 ### Via DuckDB
 ```bash
-duckdb -c "ATTACH 's3://risingwave-warehouse/risingwave-warehouse' AS iceberg (TYPE ICEBERG); SELECT * FROM iceberg.public.iceberg_funnel;"
+duckdb -c "ATTACH 's3://risingwave-warehouse/risingwave-warehouse' AS iceberg (TYPE ICEBERG); SELECT * FROM iceberg.public.rw_managed_funnel;"
 ```
 
 ### Via Trino
 ```bash
-trino --server http://localhost:9080 --catalog datalake --schema public --execute "SELECT * FROM iceberg_funnel"
+trino --server http://localhost:9080 --catalog datalake --schema public --execute "SELECT * FROM rw_managed_funnel"
 ```
 
 ### Via Spark
 ```python
-spark.read.format("iceberg").load("datalake.public.iceberg_funnel").show()
+spark.read.format("iceberg").load("datalake.public.rw_managed_funnel").show()
 ```
 
 ## Benefits

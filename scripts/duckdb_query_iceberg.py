@@ -55,7 +55,9 @@ def main():
         configure_s3(conn)
         attach_catalog(conn)
 
-        # Get last 5 minutes of data in descending order
+        # Get last 5 minutes of data in descending order.
+        # rw_managed_funnel is fed by an upsert sink with force_compaction=true
+        # (RW 2.8.2+), so each window_start has exactly one physical row.
         results = conn.execute("""
             SELECT
                 window_start,
@@ -65,13 +67,13 @@ def main():
                 purchasers,
                 ROUND(view_to_cart_rate * 100, 1) as v2c_pct,
                 ROUND(cart_to_buy_rate * 100, 1) as c2b_pct
-            FROM iceberg_funnel
+            FROM rw_managed_funnel
             ORDER BY window_start DESC
             LIMIT 5
         """).fetchall()
 
         if not results:
-            print("No data available in iceberg_funnel table")
+            print("No data available in rw_managed_funnel table")
             return
 
         # Print header

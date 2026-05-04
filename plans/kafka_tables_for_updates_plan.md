@@ -259,7 +259,7 @@ vars:
 # 2. tbl_*.sql (kafka_table) - Kafka tables (modifiable with PRIMARY KEY)
 # 3. funnel.sql (materialized_view) - Funnel from sources
 # 4. funnel_from_tables.sql (materialized_view) - Funnel from tables
-# 5. iceberg_funnel_table.sql (iceberg_table) - Iceberg table
+# 5. rw_managed_funnel_table.sql (iceberg_table) - Iceberg table
 # 6. sink_funnel_to_iceberg.sql (sink) - Sink to Iceberg
 # 7. sink_funnel_to_kafka.sql (sink) - Sink to Kafka
 ```

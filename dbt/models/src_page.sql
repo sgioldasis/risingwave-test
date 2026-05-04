@@ -4,7 +4,8 @@ CREATE SOURCE {{ this }} (
     user_id int,
     page_id varchar,
     event_time timestamptz,
-    produced_at timestamptz
+    produced_at timestamptz,
+    WATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND
 ) WITH (
     connector = 'kafka',
     topic = 'page_views',

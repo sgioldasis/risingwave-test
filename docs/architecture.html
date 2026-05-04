@@ -183,14 +183,14 @@ const NODES = [
   // COL 6 – Sinks and output
   { id:'t-funnel',        col:7, type:'data', c:C.kafka,  logo:L.kafka, lbl:'funnel',                     sub:'Kafka topic',            b:'KAFKA', tip:'Consumed by dashboard backend as SSE.' },
   { id:'sink-pg',         col:6, type:'data', c:C.pg,     logo:L.rw,    lbl:'funnel_postgres_sink',      sub:'RW sink → PostgreSQL',   b:'PG', rowOff:2 },
-  { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'iceberg_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICEBERG', rowOff:2 },
+  { id:'sink-iceberg',    col:6, type:'data', c:C.ice,    logo:L.rw,    lbl:'rw_managed_funnel_sink',       sub:'RW sink → Iceberg',      b:'ICEBERG', rowOff:2 },
   { id:'sink-rw-managed-iceberg', col:6, type:'data', c:C.ice, logo:L.rw, lbl:'rw_managed_funnel_sink', sub:'RW storage mode → S3', b:'ICEBERG', tip:'Direct S3 writes with auto-compaction via compactor-1.', rowOff:3 },
   { id:'sink-hermes-iceberg', col:6, type:'data', c:C.ice, logo:L.rw,   lbl:'sink_hermes_features_to_iceberg', sub:'RW sink → Iceberg', b:'ICEBERG', rowOff:-2 },
 
   // COL 7 – ML training/online, external stores
   { id:'ml-online',       col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Real-Time Learning',        sub:'River · incremental',   tip:'Continuous learning from funnel_summary. Checkpoints → MinIO.', lane:'ml' },
   { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Batch Training',            sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
-  { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_funnel',            sub:'Table - MinIO',           b:'ICEBERG',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
+  { id:'ice-funnel',      col:7, type:'data', c:C.ice,    logo:L.ice,   lbl:'rw_managed_funnel',            sub:'Table - MinIO',           b:'ICEBERG',   tip:'Long-term OLAP storage. PK: window_start. Via Trino.', lane:'ice' },
   { id:'ice-rw-managed-funnel', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'rw_managed_funnel', sub:'Table - MinIO', b:'ICEBERG', tip:'RW-managed Iceberg table written in storage mode. Auto-compacted by dedicated compactor-1 service. Query via Trino datalake.public.', lane:'ice' },
   { id:'ice-hermes-feature-store', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'iceberg_hermes_features', sub:'Table - MinIO', b:'ICEBERG', tip:'Hermes features sink target table in Iceberg.', lane:'ice' },
   { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },

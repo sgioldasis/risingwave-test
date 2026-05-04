@@ -51,8 +51,8 @@ if [ $? -eq 0 ]; then
     echo "  - Connection: lakekeeper_catalog_conn"
     echo "  - Sources: src_page, src_cart, src_purchase"
     echo "  - Materialized View: funnel"
-    echo "  - Iceberg Table: iceberg_funnel"
-    echo "  - Sink: iceberg_funnel_sink"
+    echo "  - Iceberg Table: rw_managed_funnel"
+    echo "  - Sink: rw_managed_funnel_sink"
 else
     echo ""
     echo "✗ Error: Some SQL statements failed"

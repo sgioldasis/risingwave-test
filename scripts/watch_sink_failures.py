@@ -24,7 +24,6 @@ LOGGER = logging.getLogger("sink_watchdog")
 
 # Map RisingWave sink object name -> dbt model name.
 SINK_TO_DBT_MODEL: Dict[str, str] = {
-    "iceberg_funnel_sink": "sink_funnel_to_iceberg",
     "rw_managed_funnel_sink": "sink_funnel_to_rw_iceberg",
     "sink_hermes_features_to_iceberg": "sink_hermes_features_to_iceberg",
     "funnel_postgres_sink": "sink_funnel_to_postgres",

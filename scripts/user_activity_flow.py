@@ -159,16 +159,27 @@ def _():
         # Additional Spark SQL settings for stability
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        # Reduce file-scan task explosion for many small Iceberg files
-        .config("spark.sql.files.openCostInBytes", "268435456")
-        .config("spark.sql.files.maxPartitionBytes", "536870912")
-        .config("spark.sql.catalog.lakekeeper.read.split.target-size", "536870912")
-        .config("spark.sql.catalog.lakekeeper.read.split.open-file-cost", "268435456")
-        .config("spark.sql.catalog.lakekeeper.read.split.planning-lookback", "50")
+        # Iceberg split tuning is applied as TBLPROPERTIES below (catalog-prefixed
+        # `read.split.*` keys are NOT honoured by Iceberg's planner).
         .getOrCreate()
     )
 
     spark.sparkContext.setLogLevel("WARN")
+
+    # Apply Iceberg read-split tuning at table level so Spark groups many tiny
+    # files into far fewer tasks. Without this, each ~3 KB file becomes its own
+    # partition.
+    try:
+        spark.sql("""
+            ALTER TABLE lakekeeper.public.rw_managed_funnel SET TBLPROPERTIES (
+                'read.split.target-size' = '134217728',
+                'read.split.open-file-cost' = '67108864',
+                'read.split.planning-lookback' = '50'
+            )
+        """)
+    except Exception as e:
+        print(f"⚠️  Could not set read.split TBLPROPERTIES: {e}")
+
     print("✅ Spark session initialized with Iceberg support")
     print(f"   Spark version: {spark.version}")
     print("   S3 connection stability settings applied (AGGRESSIVE)")
@@ -198,6 +209,47 @@ def _(spark):
             print("ℹ️  No rows found in the latest 10 minutes yet.")
     except Exception as e:
         print(f"⚠️  Could not verify table: {e}")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 🧹 Compact Iceberg Files (optional)
+
+    RisingWave's upsert sink writes one small Parquet file per checkpoint.
+    Run this cell on demand to merge them into fewer, larger files. This
+    reduces the number of Spark partitions on subsequent reads.
+    """)
+    return
+
+
+@app.cell
+def _(spark):
+    # Compact small files in the rw_managed_funnel Iceberg table.
+    # Uses Iceberg's bin-pack rewrite strategy to combine files smaller
+    # than `target-file-size-bytes` into ~128 MB files.
+    try:
+        compact_result = spark.sql("""
+            CALL lakekeeper.system.rewrite_data_files(
+                table => 'public.rw_managed_funnel',
+                strategy => 'binpack',
+                options => map(
+                    'target-file-size-bytes', '134217728',
+                    'min-input-files', '5',
+                    'partial-progress.enabled', 'true',
+                    'partial-progress.max-commits', '10',
+                    'max-concurrent-file-group-rewrites', '1'
+                )
+            )
+        """).collect()
+        if compact_result:
+            compact_row = compact_result[0]
+            print(f"🧹 Compaction: rewrote {compact_row['rewritten_data_files_count']} files "
+                  f"into {compact_row['added_data_files_count']} new files "
+                  f"({compact_row['rewritten_bytes_count']} bytes processed)")
+    except Exception as e:
+        print(f"⚠️  Compaction skipped: {e}")
     return
 
 

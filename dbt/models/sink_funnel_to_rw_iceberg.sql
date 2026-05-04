@@ -18,9 +18,10 @@ WITH (
     connector = 'iceberg',
     type = 'upsert',
     primary_key = 'window_start',
+    force_compaction = 'true',
     connection = lakekeeper_catalog_conn,
     database.name = 'public',
     table.name = 'rw_managed_funnel',
     create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 1
+    commit_checkpoint_interval = 30
 )

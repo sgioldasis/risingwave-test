@@ -70,13 +70,13 @@ def main():
                 purchasers,
                 ROUND(view_to_cart_rate * 100, 1) as v2c_pct,
                 ROUND(cart_to_buy_rate * 100, 1) as c2b_pct
-            FROM iceberg_funnel
+            FROM rw_managed_funnel
             ORDER BY window_start DESC
             LIMIT 5
         """).fetchall()
 
         if not results:
-            logger.info("No data available in iceberg_funnel table")
+            logger.info("No data available in rw_managed_funnel table")
             return
 
         # Print header

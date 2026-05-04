@@ -109,8 +109,8 @@ FROM stats;
 -- STEP 4: Create Iceberg Funnel Table
 -- ==========================================================
 
--- ----- Model: iceberg_funnel -----
-CREATE TABLE IF NOT EXISTS iceberg_funnel (
+-- ----- Model: rw_managed_funnel -----
+CREATE TABLE IF NOT EXISTS rw_managed_funnel (
     window_start TIMESTAMP,
     window_end TIMESTAMP,
     viewers BIGINT,
@@ -125,16 +125,16 @@ CREATE TABLE IF NOT EXISTS iceberg_funnel (
 -- STEP 5: Create Sink to Iceberg (Funnel Only)
 -- ==========================================================
 
--- ----- Model: sink_funnel_to_iceberg -----
-CREATE SINK IF NOT EXISTS iceberg_funnel_sink
-INTO iceberg_funnel
+-- ----- Model: sink_funnel_to_rw_iceberg -----
+CREATE SINK IF NOT EXISTS rw_managed_funnel_sink
+INTO rw_managed_funnel
 FROM funnel
 WITH (
     connector = 'iceberg',
     type = 'upsert',
     primary_key = 'window_start',
     database.name = 'public',
-    table.name = 'iceberg_funnel',
+    table.name = 'rw_managed_funnel',
     connection = lakekeeper_catalog_conn,
     create_table_if_not_exists = 'true',
     commit_checkpoint_interval = 60

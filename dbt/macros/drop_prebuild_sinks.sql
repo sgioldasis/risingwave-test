@@ -6,7 +6,6 @@
 
 {% macro drop_prebuild_sinks() %}
     {% set drop_sinks_sql %}
-        DROP SINK IF EXISTS iceberg_funnel_sink CASCADE;
         DROP SINK IF EXISTS rw_managed_funnel_sink CASCADE;
     DROP SINK IF EXISTS sink_hermes_features_to_iceberg CASCADE;
     DROP SINK IF EXISTS funnel_kafka_sink CASCADE;

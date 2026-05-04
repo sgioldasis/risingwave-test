@@ -1396,8 +1396,7 @@ async def run_script_in_background(script_file, ws, params=''):
             await append_output(script_file, "🛑 Stopping running service for restart...", 'warning')
             # Handle different service types
             if script_file == "3_run_producer.sh":
-                # kill_process_by_pattern now handles all related patterns internally
-                killed = await kill_process_by_pattern("scripts/producer.py")
+                killed = await kill_all_producer_processes()
                 await append_output(script_file, f"   Killed {killed} producer process(es)", 'info')
             elif "port" in bg_service:
                 # For port-based services (dashboard, ML serving, etc.)
@@ -1655,7 +1654,7 @@ async def stop_script(script_file):
     if bg_service:
         try:
             if script_file == "3_run_producer.sh":
-                killed_external = await kill_process_by_pattern("scripts/producer.py")
+                killed_external = await kill_all_producer_processes()
             elif "port" in bg_service:
                 killed_external = 1 if await kill_process_on_port(bg_service["port"]) else 0
             elif "pattern" in bg_service:
@@ -1839,6 +1838,96 @@ async def kill_process_by_pattern(pattern):
         traceback.print_exc()
         pass
     return 0
+
+
+def _cmdline_matches_any(proc_cmdline, patterns):
+    """Return True when any pattern appears in process command line."""
+    if not proc_cmdline:
+        return False
+
+    cmd_str = ' '.join(proc_cmdline)
+    for pattern in patterns:
+        if pattern in cmd_str:
+            return True
+        for arg in proc_cmdline:
+            if pattern in arg and not arg.endswith('.pyc'):
+                return True
+    return False
+
+
+async def kill_all_producer_processes():
+    """Kill all producer launcher and producer.py processes, including children and process groups."""
+    import signal
+
+    producer_patterns = (
+        "scripts/producer.py",
+        "bin/3_run_producer.sh",
+        "3_run_producer.sh",
+        "uv run python scripts/producer.py",
+    )
+
+    matched_pids = set()
+    root_pids = set()
+
+    for proc in psutil.process_iter(['cmdline', 'pid']):
+        try:
+            if proc.pid == os.getpid():
+                continue
+
+            cmdline = proc.info.get('cmdline')
+            if not _cmdline_matches_any(cmdline, producer_patterns):
+                continue
+
+            if cmdline and ("grep" in cmdline[0] or "ps" in cmdline[0] or "rg" in cmdline[0]):
+                continue
+
+            root_pids.add(proc.pid)
+            matched_pids.add(proc.pid)
+
+            try:
+                for child in proc.children(recursive=True):
+                    matched_pids.add(child.pid)
+            except psutil.NoSuchProcess:
+                pass
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    # First terminate process groups for root launchers to catch detached descendants.
+    for pid in list(root_pids):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    # Then terminate matched pids directly.
+    for pid in list(matched_pids):
+        try:
+            psutil.Process(pid).send_signal(signal.SIGTERM)
+        except psutil.NoSuchProcess:
+            matched_pids.discard(pid)
+        except psutil.AccessDenied:
+            pass
+
+    if matched_pids:
+        await asyncio.sleep(0.6)
+
+        for pid in list(root_pids):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+        for pid in list(matched_pids):
+            try:
+                proc = psutil.Process(pid)
+                if proc.is_running():
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        await asyncio.sleep(0.5)
+
+    return len(matched_pids)
 
 
 async def tail_log_file(script_file, log_path):
