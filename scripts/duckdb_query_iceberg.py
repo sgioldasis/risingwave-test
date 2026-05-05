@@ -7,6 +7,7 @@ Shows the latest 5 minutes of funnel data in descending order.
 
 import duckdb
 import sys
+from tabulate import tabulate
 
 # Lakekeeper REST catalog configuration
 LAKEKEEPER_BASE = "http://127.0.0.1:8181"
@@ -56,9 +57,28 @@ def main():
         attach_catalog(conn)
 
         # Get last 5 minutes of data in descending order.
-        # rw_managed_funnel is fed by an upsert sink with force_compaction=true
-        # (RW 2.8.2+), so each window_start has exactly one physical row.
+        # Some readers can expose multiple physical versions for a minute key,
+        # so keep one logical row per window_start using row_number.
         results = conn.execute("""
+            WITH ranked AS (
+                SELECT
+                    window_start,
+                    window_end,
+                    viewers,
+                    carters,
+                    purchasers,
+                    view_to_cart_rate,
+                    cart_to_buy_rate,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY window_start
+                        ORDER BY
+                            COALESCE(viewers, 0) DESC,
+                            COALESCE(carters, 0) DESC,
+                            COALESCE(purchasers, 0) DESC,
+                            window_end DESC
+                    ) AS rn
+                FROM rw_managed_funnel
+            )
             SELECT
                 window_start,
                 window_end,
@@ -67,7 +87,8 @@ def main():
                 purchasers,
                 ROUND(view_to_cart_rate * 100, 1) as v2c_pct,
                 ROUND(cart_to_buy_rate * 100, 1) as c2b_pct
-            FROM rw_managed_funnel
+            FROM ranked
+            WHERE rn = 1
             ORDER BY window_start DESC
             LIMIT 5
         """).fetchall()
@@ -76,24 +97,27 @@ def main():
             print("No data available in rw_managed_funnel table")
             return
 
-        # Print header
-        print("=" * 95)
-        print(f"{'Window Start':<20} {'Window End':<20} {'Viewers':>8} {'Carters':>8} {'Buyers':>8} {'V→C%':>6} {'C→B%':>6}")
-        print("-" * 95)
-
-        # Print rows
+        # Build consistently aligned output via tabulate.
+        rows = []
         for row in results:
             window_start = str(row[0])[:19] if row[0] else "N/A"
             window_end = str(row[1])[:19] if row[1] else "N/A"
-            viewers = row[2] or 0
-            carters = row[3] or 0
-            purchasers = row[4] or 0
-            v2c = row[5] or 0
-            c2b = row[6] or 0
+            viewers = int(row[2] or 0)
+            carters = int(row[3] or 0)
+            purchasers = int(row[4] or 0)
+            v2c = float(row[5] or 0)
+            c2b = float(row[6] or 0)
+            rows.append([window_start, window_end, viewers, carters, purchasers, v2c, c2b])
 
-            print(f"{window_start:<20} {window_end:<20} {viewers:>8} {carters:>8} {purchasers:>8} {v2c:>6.1f} {c2b:>6.1f}")
-
-        print("=" * 95)
+        headers = ["Window Start", "Window End", "Viewers", "Carters", "Buyers", "V->C%", "C->B%"]
+        print(tabulate(
+            rows,
+            headers=headers,
+            tablefmt="psql",
+            stralign="left",
+            numalign="right",
+            floatfmt=("", "", "d", "d", "d", ".1f", ".1f")
+        ))
 
     except Exception as e:
         print(f"Error: {e}")

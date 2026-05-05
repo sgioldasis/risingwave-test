@@ -414,16 +414,19 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             flex: 1;
             padding: 15px;
             overflow-y: auto;
+            overflow-x: auto;
             font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
             font-size: 0.85rem;
             line-height: 1.5;
-            word-break: break-word;
+            word-break: normal;
         }
         
         .output-line {
             margin: 0;
             padding: 0;
             min-height: 1.5em;
+            white-space: pre;
+            font-variant-numeric: tabular-nums;
         }
         
         .terminal-output .timestamp {
@@ -906,6 +909,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             const line = document.createElement('div');
             line.className = 'output-line';
             if (tag) line.classList.add(tag);
+            // Enforce preformatted rendering at element level so spacing survives
+            // any stale CSS cache or downstream style override.
+            line.style.whiteSpace = 'pre';
+            line.style.fontFamily = "'JetBrains Mono', 'Fira Code', 'Consolas', monospace";
             line.innerHTML = ansiToHtml(text);
             outputElement.appendChild(line);
             outputElement.scrollTop = outputElement.scrollHeight;

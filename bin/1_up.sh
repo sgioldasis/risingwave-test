@@ -6,14 +6,14 @@
 set -e
 
 echo "=== Pre-flight: Syncing local Python packages ==="
-# Default behavior is fast and deterministic (no dependency upgrades).
-# Set UPGRADE_DEPS=1 to refresh to latest versions.
-UV_SYNC_ARGS="sync --frozen"
-if [ "${UPGRADE_DEPS:-0}" = "1" ]; then
-    UV_SYNC_ARGS="sync --upgrade"
-    echo "Upgrade mode enabled (UPGRADE_DEPS=1)"
+# Preserve historical behavior: refresh dependencies on startup by default.
+# Set UPGRADE_DEPS=0 to force lockfile-only sync for faster deterministic startup.
+UV_SYNC_ARGS="sync --upgrade"
+if [ "${UPGRADE_DEPS:-1}" = "1" ]; then
+    echo "Upgrade mode enabled (default; set UPGRADE_DEPS=0 to disable)"
 else
-    echo "Upgrade mode disabled (set UPGRADE_DEPS=1 to enable)"
+    UV_SYNC_ARGS="sync --frozen"
+    echo "Upgrade mode disabled (UPGRADE_DEPS=0)"
     echo "Using lockfile-only sync for faster startup"
 fi
 
@@ -103,7 +103,7 @@ fi
 
 echo ""
 echo "✅ Docker Compose services started successfully!"
-if [ "${UPGRADE_DEPS:-0}" = "1" ]; then
+if [ "${UPGRADE_DEPS:-1}" = "1" ]; then
     echo "✅ Packages upgraded with uv sync --upgrade"
 else
     echo "✅ Packages synced with uv sync"

@@ -23,7 +23,7 @@ showing how users move through different stages of the conversion funnel:
 
 import marimo
 
-__generated_with = "0.23.4"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 
@@ -225,31 +225,31 @@ def _(mo):
 
 
 @app.cell
-def _(spark):
-    # Compact small files in the rw_managed_funnel Iceberg table.
-    # Uses Iceberg's bin-pack rewrite strategy to combine files smaller
-    # than `target-file-size-bytes` into ~128 MB files.
-    try:
-        compact_result = spark.sql("""
-            CALL lakekeeper.system.rewrite_data_files(
-                table => 'public.rw_managed_funnel',
-                strategy => 'binpack',
-                options => map(
-                    'target-file-size-bytes', '134217728',
-                    'min-input-files', '5',
-                    'partial-progress.enabled', 'true',
-                    'partial-progress.max-commits', '10',
-                    'max-concurrent-file-group-rewrites', '1'
-                )
-            )
-        """).collect()
-        if compact_result:
-            compact_row = compact_result[0]
-            print(f"🧹 Compaction: rewrote {compact_row['rewritten_data_files_count']} files "
-                  f"into {compact_row['added_data_files_count']} new files "
-                  f"({compact_row['rewritten_bytes_count']} bytes processed)")
-    except Exception as e:
-        print(f"⚠️  Compaction skipped: {e}")
+def _():
+    # # Compact small files in the rw_managed_funnel Iceberg table.
+    # # Uses Iceberg's bin-pack rewrite strategy to combine files smaller
+    # # than `target-file-size-bytes` into ~128 MB files.
+    # try:
+    #     compact_result = spark.sql("""
+    #         CALL lakekeeper.system.rewrite_data_files(
+    #             table => 'public.rw_managed_funnel',
+    #             strategy => 'binpack',
+    #             options => map(
+    #                 'target-file-size-bytes', '134217728',
+    #                 'min-input-files', '5',
+    #                 'partial-progress.enabled', 'true',
+    #                 'partial-progress.max-commits', '10',
+    #                 'max-concurrent-file-group-rewrites', '1'
+    #             )
+    #         )
+    #     """).collect()
+    #     if compact_result:
+    #         compact_row = compact_result[0]
+    #         print(f"🧹 Compaction: rewrote {compact_row['rewritten_data_files_count']} files "
+    #               f"into {compact_row['added_data_files_count']} new files "
+    #               f"({compact_row['rewritten_bytes_count']} bytes processed)")
+    # except Exception as e:
+    #     print(f"⚠️  Compaction skipped: {e}")
     return
 
 
