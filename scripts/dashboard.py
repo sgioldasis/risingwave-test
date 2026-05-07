@@ -8,30 +8,6 @@ import dash_bootstrap_components as dbc
 from sqlalchemy import create_engine
 
 
-import psutil
-import os
-import signal
-import subprocess
-
-# Configuration
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PRODUCER_LOG = os.path.join(PROJECT_ROOT, "producer.log")
-
-def find_producer_process():
-    """Find the external producer process."""
-    for proc in psutil.process_iter(['cmdline']):
-        try:
-            cmdline = proc.info.get('cmdline')
-            if cmdline and any("scripts/producer.py" in arg for arg in cmdline):
-                return proc
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return None
-
-# Producer state management
-producer_output = []
-
-
 # Database connection with connection pooling
 def get_db_connection():
     return create_engine(
@@ -52,7 +28,7 @@ def get_funnel_data():
                 purchasers,
                 view_to_cart_rate,
                 cart_to_buy_rate
-            FROM funnel
+            FROM funnel_summary
             ORDER BY window_start DESC
             LIMIT 100
         """
@@ -428,51 +404,6 @@ app.layout = dbc.Container(
                         ),
                     ],
                     width=12,
-                    lg=8,
-                ),
-                # Right side - Producer controls and output
-                dbc.Col(
-                    [
-                        html.H4("Producer Controls", className="mb-3"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        dbc.Button(
-                                            "Start Producer",
-                                            id="start-producer-btn",
-                                            color="success",
-                                            n_clicks=0,
-                                            className="me-2",
-                                        ),
-                                        dbc.Button(
-                                            "Stop Producer",
-                                            id="stop-producer-btn",
-                                            color="danger",
-                                            n_clicks=0,
-                                            disabled=True,
-                                        ),
-                                    ],
-                                    width=12,
-                                ),
-                            ]
-                        ),
-                        html.Hr(),
-                        html.H4("Producer Output", className="mb-3"),
-                        html.Div(
-                            id="producer-output",
-                            className="producer-output-scroll",
-                            style={
-                                "height": "400px",
-                                "overflow-y": "auto",
-                                "font-family": "monospace",
-                                "font-size": "11px",
-                                "scroll-behavior": "smooth",
-                            },
-                        ),
-                    ],
-                    width=12,
-                    lg=4,
                 ),
             ]
         ),
@@ -496,72 +427,12 @@ app.layout = dbc.Container(
         Output("conversion-rates-chart", "figure"),
         Output("last-update", "children"),
         Output("datetime-display", "children"),
-        Output("start-producer-btn", "disabled"),
-        Output("stop-producer-btn", "disabled"),
-        Output("producer-output", "children"),
     ],
     [
         Input("interval-component", "n_intervals"),
-        Input("start-producer-btn", "n_clicks"),
-        Input("stop-producer-btn", "n_clicks"),
     ],
 )
-def update_dashboard(n, start_clicks, stop_clicks):
-    global producer_running, producer_process, producer_output
-
-    # Handle producer controls
-    ctx = dash.callback_context
-    proc = find_producer_process()
-    
-    if ctx.triggered:
-        button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-
-        if button_id == "start-producer-btn" and start_clicks > 0:
-            if not proc:
-                # Clear old log
-                if os.path.exists(PRODUCER_LOG):
-                    try:
-                        os.remove(PRODUCER_LOG)
-                    except Exception:
-                        pass
-                
-                # Start producer in background via runner script
-                subprocess.Popen(["bash", "bin/3_run_producer.sh", "1"], cwd=PROJECT_ROOT)
-                # Wait briefly for process to start
-                import time
-                time.sleep(1)
-                proc = find_producer_process()
-
-        elif button_id == "stop-producer-btn" and stop_clicks > 0:
-            if proc:
-                # Kill the producer process and its children
-                try:
-                    parent = psutil.Process(proc.pid)
-                    for child in parent.children(recursive=True):
-                        child.send_signal(signal.SIGTERM)
-                    parent.send_signal(signal.SIGTERM)
-                except Exception:
-                    pass
-                proc = None
-
-    # Check current running state after potential trigger
-    producer_running = proc is not None
-
-    # Sync producer_output with producer.log
-    if os.path.exists(PRODUCER_LOG):
-        try:
-            with open(PRODUCER_LOG, "r") as f:
-                # Read last 30 lines for the buffer
-                producer_output = f.readlines()[-30:]
-                producer_output = [line.strip() for line in producer_output]
-        except Exception:
-            pass
-    else:
-        if not producer_running:
-            producer_output = [f"[{datetime.now().strftime('%H:%M:%S')}] Producer stopped - no logs available"]
-        else:
-            producer_output = [f"[{datetime.now().strftime('%H:%M:%S')}] Producer starting..."]
-
+def update_dashboard(n):
     try:
         df = get_funnel_data()
 
@@ -570,36 +441,6 @@ def update_dashboard(n, start_clicks, stop_clicks):
         timeseries_fig = create_timeseries_chart(df)
         conversion_rates_fig = create_conversion_rates_chart(df)
         last_update_time = datetime.now().strftime("%H:%M:%S")
-
-        # Format producer output for display - exactly 25 lines, no scrolling
-        output_lines = producer_output[-25:]  # Get last 25 lines
-        # Pad with empty lines if we have fewer than 25 lines
-        while len(output_lines) < 25:
-            output_lines.insert(0, "")
-
-        output_display = html.Div(
-            [
-                html.P(
-                    line,
-                    style={
-                        "margin": "1px 0",
-                        "color": "darkgreen"
-                        if "Starting" in line or "Stopping" in line
-                        else "black",
-                    },
-                )
-                for line in output_lines
-            ],
-            id="producer-output",
-            style={
-                "height": "300px",  # Increased height to fit all 25 lines comfortably
-                "overflow": "hidden",  # No scrollbar
-                "font-family": "monospace",
-                "font-size": "10px",
-                "line-height": "1.1",
-                "white-space": "pre",
-            },
-        )
 
         # Format datetime display
         datetime_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -610,10 +451,7 @@ def update_dashboard(n, start_clicks, stop_clicks):
             timeseries_fig,
             conversion_rates_fig,
             last_update_time,
-            datetime_str,  # Add datetime display
-            producer_running,  # Disable start button when running
-            not producer_running,  # Disable stop button when not running
-            output_display,
+            datetime_str,
         )
 
     except Exception as e:
@@ -624,79 +462,9 @@ def update_dashboard(n, start_clicks, stop_clicks):
             go.Figure().add_annotation(text=error_msg, x=0.5, y=0.5, showarrow=False),
             go.Figure().add_annotation(text=error_msg, x=0.5, y=0.5, showarrow=False),
             "Error",
-            producer_running,
-            not producer_running,
-            html.Div("Error loading dashboard", className="alert alert-danger"),
+            "",
         )
 
-
-
-
-
-# Add auto-scrolling JavaScript
-app.index_string = """
-<!DOCTYPE html>
-<html>
-    <head>
-        {%metas%}
-        <title>{%title%}</title>
-        {%favicon%}
-        {%css%}
-        <script>
-            function scrollToBottom() {
-                const output = document.getElementById('producer-output');
-                if (output) {
-                    output.scrollTop = output.scrollHeight;
-                    output.scrollIntoView({ behavior: 'smooth', block: 'end' });
-                }
-            }
-            
-            // MutationObserver to detect content changes and scroll
-            function setupAutoScroll() {
-                const output = document.getElementById('producer-output');
-                if (output) {
-                    const observer = new MutationObserver(function(mutations) {
-                        mutations.forEach(function(mutation) {
-                            if (mutation.type === 'childList') {
-                                scrollToBottom();
-                            }
-                        });
-                    });
-                    
-                    observer.observe(output, {
-                        childList: true,
-                        subtree: true,
-                        characterData: true
-                    });
-                }
-            }
-        </script>
-    </head>
-    <body>
-        {%app_entry%}
-        <script>
-            // Initialize auto-scroll when DOM is loaded
-            document.addEventListener('DOMContentLoaded', function() {
-                setupAutoScroll();
-            });
-        </script>
-        {%config%}
-        {%scripts%}
-        {%renderer%}
-    </body>
-</html>
-"""
-
-
-def start_producer_on_init():
-    """Start producer when app initializes - now disabled"""
-    global producer_running, producer_output
-    # Producer auto-start disabled - must be started manually via dashboard
-    pass
-
-
-# Producer auto-start is disabled - must be started manually via dashboard
-# start_producer_on_init()
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
