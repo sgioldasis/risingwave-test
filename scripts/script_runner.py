@@ -46,8 +46,7 @@ SCRIPTS = [
     ("5_marimo_risingwave.sh", "🌊 RisingWave Notebook", "Interactive RisingWave Iceberg demo notebook"),
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
-    ("3_run_psql.sh", "🐘 Run PSQL", "Open PostgreSQL CLI to RisingWave"),
-    ("4_run_dashboard.sh", "📈 Run Dashboard", "Start the analytics dashboard"),
+    ("4_run_dashboard.sh", "📈 Run Simple Dashboard", "Start the analytics dashboard"),
 ]
 
 # Global state - track per-script
