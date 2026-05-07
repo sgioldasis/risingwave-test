@@ -546,7 +546,7 @@ services:
       - iceberg_net
 
   grafana-0:
-    image: grafana/grafana:11.6.3
+    image: grafana/grafana:13.0.1
     container_name: grafana-0
     ports:
       - "3001:3000"
