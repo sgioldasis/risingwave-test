@@ -549,9 +549,14 @@ def _(mo):
 
 @app.cell
 def _(spark):
-    print("📊 Sample Pre-computed Funnel:")
+    print("📊 Sample Pre-computed Funnel (latest 5 minutes, desc):")
     spark.sql("REFRESH TABLE lakekeeper.public.rw_managed_funnel")
-    spark.table("lakekeeper.public.rw_managed_funnel").show(5, truncate=False)
+    spark.sql("""
+        SELECT *
+        FROM lakekeeper.public.rw_managed_funnel
+        WHERE window_start >= current_timestamp() - INTERVAL 5 MINUTES
+        ORDER BY window_start DESC
+    """).show(truncate=False)
     return
 
 
