@@ -147,7 +147,21 @@ fi
 
 # Run dbt inside the dagster container
 echo "=== Running dbt ==="
-docker exec dagster-webserver bash -c "cd /workspace/dbt && dbt run --profiles-dir . --full-refresh"
+
+# Resolve the host gateway IP from inside the container so RisingWave's JDBC
+# sink can connect to the host-running Postgres on both Linux and macOS.
+# (RisingWave's embedded connector doesn't read /etc/hosts, so we can't rely
+# on the host.docker.internal name; we resolve it to a literal IP.)
+HOST_IP=$(docker exec dagster-webserver getent hosts host.docker.internal 2>/dev/null | awk '{print $1}' | head -1)
+if [ -n "$HOST_IP" ]; then
+    HOST_POSTGRES_URL="jdbc:postgresql://${HOST_IP}:5432/postgres"
+    echo "Resolved host gateway: $HOST_IP -> $HOST_POSTGRES_URL"
+else
+    HOST_POSTGRES_URL="${HOST_POSTGRES_URL:-jdbc:postgresql://host.docker.internal:5432/postgres}"
+    echo "WARNING: Could not resolve host.docker.internal from container; using $HOST_POSTGRES_URL"
+fi
+
+docker exec -e HOST_POSTGRES_URL="$HOST_POSTGRES_URL" dagster-webserver bash -c "cd /workspace/dbt && dbt run --profiles-dir . --full-refresh"
 
 echo ""
 echo "=== dbt run completed ==="
