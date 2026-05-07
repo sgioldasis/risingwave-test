@@ -86,5 +86,38 @@ def _(mo, pd, refresh_button, risingwave_engine, text, time):
     return
 
 
+@app.cell
+def _(mo):
+    # Click to re-query the current data file count (useful for demoing compaction)
+    files_refresh_button = mo.ui.button(label="🔄 Refresh data file count")
+    return (files_refresh_button,)
+
+
+@app.cell
+def _(files_refresh_button, iceberg_engine, mo, pd, text, time):
+    # Re-runs whenever the button is clicked
+    files_refresh_button.value
+
+    # Trino's Iceberg connector exposes a "$files" metadata table with
+    # one row per data file currently referenced by the table snapshot.
+    # rw_managed_funnel is the streaming sink from RisingWave — its file
+    # count grows as the producer writes and shrinks as RisingWave's
+    # managed compaction kicks in.
+    files_df = pd.read_sql(
+        text('SELECT file_path, record_count, file_size_in_bytes FROM "rw_managed_funnel$files"'),
+        iceberg_engine,
+    )
+
+    mo.vstack([
+        mo.hstack([
+            files_refresh_button,
+            mo.md(f"Last checked: {time.strftime('%H:%M:%S')}"),
+        ]),
+        mo.md(f"**`rw_managed_funnel` data file count:** {len(files_df)}"),
+        mo.ui.table(files_df),
+    ])
+    return
+
+
 if __name__ == "__main__":
     app.run()
