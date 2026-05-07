@@ -64,7 +64,7 @@ Grafana is configured for anonymous access with no login required (suitable for 
 1. Open <http://localhost:3001> — you are taken straight to the home screen.
 2. Open the `RisingWave` folder in the dashboard browser.
 
-> **Note:** Grafana is pinned to version `11.6.3`. The `latest` tag (Grafana 13+) introduced a new unified storage backend that breaks traditional file-based dashboard provisioning and is not used here.
+> **Note:** Grafana is pinned to version `13.0.1`. Earlier versions (`11.6.x`, `12.x`) work as well; avoid the floating `latest` tag (Grafana 13.1+ nightlies / unified storage backend) since it can break traditional file-based dashboard provisioning.
 
 Provisioned dashboards:
 
