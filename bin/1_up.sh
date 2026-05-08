@@ -34,6 +34,19 @@ run_sync_cmd() {
 
 SYNC_DONE=0
 
+# Capture uv.lock hash before sync so we can detect dependency changes
+# and trigger an automatic image rebuild when needed.
+hash_lock() {
+    if [ -f uv.lock ]; then
+        if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 uv.lock | awk '{print $1}'
+        elif command -v sha256sum >/dev/null 2>&1; then
+            sha256sum uv.lock | awk '{print $1}'
+        fi
+    fi
+}
+LOCK_HASH_BEFORE="$(hash_lock)"
+
 if command -v uv >/dev/null 2>&1; then
     echo "Using local uv binary"
     if run_sync_cmd "" "uv ${UV_SYNC_ARGS}"; then
@@ -74,12 +87,23 @@ echo "Running docker compose up -d from project root"
 echo ""
 
 # Run from project root (where docker-compose.yml is located)
-# Rebuild only when explicitly requested.
-if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ]; then
-    echo "Build mode enabled (COMPOSE_FORCE_BUILD=1): rebuilding images"
+# Auto-rebuild images when uv.lock changed during sync (dependency drift),
+# or when explicitly requested via COMPOSE_FORCE_BUILD=1.
+LOCK_HASH_AFTER="$(hash_lock)"
+AUTO_REBUILD=0
+if [ -n "$LOCK_HASH_BEFORE" ] && [ -n "$LOCK_HASH_AFTER" ] && \
+   [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
+    AUTO_REBUILD=1
+    echo "Detected uv.lock changes during sync → will rebuild images to match"
+fi
+
+if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ] || [ "$AUTO_REBUILD" = "1" ]; then
+    if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ]; then
+        echo "Build mode enabled (COMPOSE_FORCE_BUILD=1): rebuilding images"
+    fi
     docker compose up --build -d
 else
-    echo "Build mode disabled: reusing existing local images"
+    echo "Build mode disabled: reusing existing local images (set COMPOSE_FORCE_BUILD=1 to force)"
     docker compose up -d
 fi
 

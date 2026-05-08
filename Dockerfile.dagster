@@ -37,10 +37,12 @@ RUN uv venv /opt/dagster-venv --seed
 # Copy the full project (needed for editable install)
 COPY --chown=dagster:dagster . .
 
-# Install dependencies using uv pip with --upgrade to get latest versions
-# Uses cache mount to speed up rebuilds while still fetching latest versions
+# Install dependencies from uv.lock for exact parity with the host environment.
+# Uses cache mount to speed up rebuilds. Use --no-install-project because this
+# project is not installed as a package (PYTHONPATH is used instead).
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /opt/dagster-venv/bin/python --upgrade -r pyproject.toml
+    UV_PROJECT_ENVIRONMENT=/opt/dagster-venv \
+    uv sync --frozen --no-install-project --no-dev
 
 # Note: This project is NOT installed as a package.
 # Instead, we use PYTHONPATH to include the workspace root.
