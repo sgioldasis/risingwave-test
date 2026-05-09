@@ -69,6 +69,11 @@ def _():
 
     # Iceberg version - must match the runtime JAR version.
     # Spark 4.0 requires Iceberg >= 1.8 and the Scala 2.13 runtime jar.
+    #
+    # NOTE: Spark version is gated by this jar. Iceberg currently publishes
+    # only `iceberg-spark-runtime-4.0_2.13`; there is no 4.1 build yet.
+    # When Apache Iceberg ships `iceberg-spark-runtime-4.1_2.13`, bump
+    # pyproject.toml to pyspark>=4.1.0,<4.2.0 and change "4.0_2.13" below.
     ICEBERG_VERSION = "1.10.1"
 
     # Java 17+ reflection opens. Spark 4's launcher already injects the
