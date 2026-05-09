@@ -2,7 +2,7 @@
 # requires-python = ">=3.13"
 # dependencies = [
 #     "marimo>=0.10.0",
-#     "pyspark>=3.5.0,<4.0.0",
+#     "pyspark>=4.0.0,<4.1.0",
 #     "pandas>=2.0.0",
 #     "plotly>=5.0.0",
 #     "nbformat>=5.0.0",
@@ -67,54 +67,41 @@ def _():
 
     from pyspark.sql import SparkSession
 
-    # Iceberg version - must match the runtime JAR version
-    ICEBERG_VERSION = "1.6.1"
+    # Iceberg version - must match the runtime JAR version.
+    # Spark 4.0 requires Iceberg >= 1.8 and the Scala 2.13 runtime jar.
+    ICEBERG_VERSION = "1.10.1"
 
-    # Java 17 compatibility - extended flags for Spark/Hadoop security classes
+    # Java 17+ reflection opens. Spark 4's launcher already injects the
+    # standard set; we only add what Iceberg/Arrow/Netty need beyond that.
+    # Only the driver JVM matters here because master=local[*] runs executors
+    # in-process (no separate executor JVM).
     java_opts = (
         "-XX:+IgnoreUnrecognizedVMOptions "
         "--add-opens=java.base/java.lang=ALL-UNNAMED "
         "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED "
-        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED "
-        "--add-opens=java.base/java.io=ALL-UNNAMED "
-        "--add-opens=java.base/java.net=ALL-UNNAMED "
         "--add-opens=java.base/java.nio=ALL-UNNAMED "
         "--add-opens=java.base/java.util=ALL-UNNAMED "
         "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED "
-        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED "
-        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED "
-        "--add-opens=java.base/sun.nio.fs=ALL-UNNAMED "
-        "--add-opens=java.base/sun.security.util=ALL-UNNAMED "
-        "--add-opens=java.base/sun.security.x509=ALL-UNNAMED "
-        "--add-opens=java.base/sun.security.pkcs=ALL-UNNAMED "
-        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED "
-        "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED "
-        "--add-opens=java.base/javax.security.auth=ALL-UNNAMED "
-        "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED "
-        "--add-opens=java.base/javax.security.auth.kerberos=ALL-UNNAMED "
-        "--add-opens=java.base/com.sun.security.auth=ALL-UNNAMED "
-        "--add-opens=java.base/com.sun.security.auth.module=ALL-UNNAMED "
-        "--add-opens=java.base/sun.net.util=ALL-UNNAMED "
-        "--add-opens=java.base/sun.net.dns=ALL-UNNAMED "
-        "--add-opens=java.management/sun.management=ALL-UNNAMED "
-        "-Djdk.reflect.useDirectMethodHandle=false"
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
     )
 
     # Initialize Spark with Iceberg support
     spark = (
         SparkSession.builder
         .appName("UserActivityFlow")
-        .master("local[1]")
+        # local[*] uses all available cores so concurrent S3 file reads can
+        # actually utilize the connection pool below.
+        .master("local[*]")
         # Bind to localhost to prevent external network interference
         .config("spark.driver.bindAddress", "127.0.0.1")
         .config("spark.driver.host", "localhost")
-        # Explicitly disable Spark Connect
-        .config("spark.sql.catalogImplementation", "in-memory")
-        # Java 17 compatibility
+        # Java 17+ compatibility (also works on JDK 21). No executor opts
+        # needed: master=local[*] runs executors in the driver JVM.
         .config("spark.driver.extraJavaOptions", java_opts)
-        .config("spark.executor.extraJavaOptions", java_opts)
-        # Add Iceberg packages (using Scala 2.12 which is standard for Spark 3.5)
-        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
+        # Add Iceberg packages (Spark 4.0 ships with Scala 2.13 only)
+        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
+        # Reproducible Ivy cache (independent of $HOME, survives container runs)
+        .config("spark.jars.ivy", "/tmp/.ivy2")
         # Iceberg extensions
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         # Lakekeeper REST catalog configuration
@@ -130,70 +117,45 @@ def _():
         .config("spark.sql.catalog.lakekeeper.s3.access-key-id", "hummockadmin")
         .config("spark.sql.catalog.lakekeeper.s3.secret-access-key", "hummockadmin")
         .config("spark.sql.catalog.lakekeeper.s3.path-style-access", "true")
-        # S3 Connection Stability Settings - AGGRESSIVE fix for "Connection reset" errors
-        # Connection timeouts (milliseconds) - INCREASED
-        .config("spark.sql.catalog.lakekeeper.s3.connection-timeout-ms", "60000")  # 60 seconds
-        .config("spark.sql.catalog.lakekeeper.s3.socket-timeout-ms", "60000")      # 60 seconds
-        # Connection pooling - INCREASED for high parallel reads
-        .config("spark.sql.catalog.lakekeeper.s3.connection-maximum-connections", "200")
-        # Retry configuration - AGGRESSIVE
-        .config("spark.sql.catalog.lakekeeper.s3.max-retries", "20")
-        .config("spark.sql.catalog.lakekeeper.s3.retry-mode", "adaptive")
         # Disable SSL for local MinIO
         .config("spark.sql.catalog.lakekeeper.s3.ssl-enabled", "false")
-        # Additional stability settings for Iceberg S3FileIO
+        # MinIO doesn't support S3 trailing checksums consistently
         .config("spark.sql.catalog.lakekeeper.s3.checksum-enabled", "false")
-        # AWS SDK v2 specific settings for Apache HTTP client
-        .config("spark.sql.catalog.lakekeeper.s3.apahce-http-client.connection-timeout", "60000")
-        .config("spark.sql.catalog.lakekeeper.s3.apache-http-client.socket-timeout", "60000")
-        # Spark S3A fallback settings (in case S3FileIO uses S3A internally)
-        .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
-        .config("spark.hadoop.fs.s3a.socket.timeout", "60000")
-        .config("spark.hadoop.fs.s3a.connection.maximum", "200")
-        .config("spark.hadoop.fs.s3a.attempts.maximum", "20")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.impl.disable.cache", "true")
-        # REDUCE parallelism to ease connection pressure on MinIO
-        .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.default.parallelism", "4")
-        # Additional Spark SQL settings for stability
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        # Iceberg split tuning is applied as TBLPROPERTIES below (catalog-prefixed
-        # `read.split.*` keys are NOT honoured by Iceberg's planner).
+        # Modest retry/timeout headroom for local MinIO. Iceberg 1.10's S3FileIO
+        # has solid defaults; we only override what materially helps stability.
+        .config("spark.sql.catalog.lakekeeper.s3.connection-timeout-ms", "60000")
+        .config("spark.sql.catalog.lakekeeper.s3.socket-timeout-ms", "60000")
+        .config("spark.sql.catalog.lakekeeper.s3.connection-maximum-connections", "100")
+        # Modest shuffle parallelism for local runs against MinIO
+        .config("spark.sql.shuffle.partitions", "8")
+        # Arrow-accelerated toPandas() (Spark 4 has greatly improved Arrow paths)
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+        .config("spark.sql.execution.arrow.pyspark.fallback.enabled", "true")
+        # AQE is on by default in Spark 4; coalescePartitions is on by default too.
+        # Iceberg split tuning is applied as TBLPROPERTIES out-of-band (catalog-
+        # prefixed `read.split.*` keys are NOT honoured by Iceberg's planner).
         .getOrCreate()
     )
 
     spark.sparkContext.setLogLevel("WARN")
 
-    # Apply Iceberg read-split tuning at table level so Spark groups many tiny
-    # files into far fewer tasks. Without this, each ~3 KB file becomes its own
-    # partition.
-    try:
-        spark.sql("""
-            ALTER TABLE lakekeeper.public.rw_managed_funnel SET TBLPROPERTIES (
-                'read.split.target-size' = '134217728',
-                'read.split.open-file-cost' = '67108864',
-                'read.split.planning-lookback' = '50'
-            )
-        """)
-    except Exception as e:
-        print(f"⚠️  Could not set read.split TBLPROPERTIES: {e}")
+    # Note: Iceberg read.split.* TBLPROPERTIES on rw_managed_funnel should be
+    # set once out-of-band (e.g. in bin/3_create_funnel_views.sh) rather than
+    # on every notebook reload — each ALTER TABLE is a metadata commit that
+    # pollutes snapshot history.
 
     print("✅ Spark session initialized with Iceberg support")
     print(f"   Spark version: {spark.version}")
-    print("   S3 connection stability settings applied (AGGRESSIVE)")
-    print("   - Connection pool: 200")
-    print("   - Timeouts: 60s")
-    print("   - Max retries: 20")
-    print("   - Parallelism reduced to 4")
+    print("   - S3 connection pool: 100, timeouts: 60s")
+    print("   - Shuffle partitions: 8 (master=local[*])")
     return (spark,)
 
 
 @app.cell
 def _(spark):
+    # No REFRESH TABLE needed: catalog has cache-enabled=false, so Iceberg
+    # reloads metadata on every query.
     try:
-        spark.sql("REFRESH TABLE lakekeeper.public.rw_managed_funnel")
         result = spark.sql(
             """
             SELECT window_start
@@ -295,7 +257,6 @@ def _(mo):
 def _(spark):
     # Quick status check - get latest row from last 10 minutes
     try:
-        spark.sql("REFRESH TABLE lakekeeper.public.rw_managed_funnel")
         rows = spark.sql("""
             SELECT window_start
             FROM lakekeeper.public.rw_managed_funnel
@@ -332,7 +293,6 @@ def _(mo):
 def _(go, spark):
     # Use pre-computed rw_managed_funnel table for metrics
     try:
-        spark.sql("REFRESH TABLE lakekeeper.public.rw_managed_funnel")
         funnel_latest_row = spark.sql("""
             SELECT
                 window_start,
@@ -401,15 +361,15 @@ def _(go, spark):
             template="plotly_white",
         )
 
-        funnel_fig.show()
-
-        # Print data freshness info below chart
+        # Print data freshness info
         print(f"\n📅 {time_label}")
         print(f"   Viewers → Cart: {funnel_data['rates'][1]:.1f}%")
         print(f"   Cart → Purchase: {funnel_data['rates'][2]:.1f}%")
     else:
+        funnel_fig = None
         print(f"📅 {time_label}")
         print("ℹ️  No data in the last 10 minutes")
+    funnel_fig
     return
 
 
@@ -428,7 +388,6 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(go, pd, spark):
     # Use pre-computed rw_managed_funnel table for time series data
-    spark.sql("REFRESH TABLE lakekeeper.public.rw_managed_funnel")
     ts_data = spark.sql("""
         SELECT
             window_start,
@@ -456,16 +415,19 @@ def _(go, pd, spark):
         time_end = ts_data['window_start'].max()
         time_range_str = f"{time_start.strftime('%Y-%m-%d %H:%M')} to {time_end.strftime('%Y-%m-%d %H:%M')}"
 
-        # Create area chart similar to the dashboard
+        # Create area chart similar to the dashboard. Use lines+markers so a
+        # single data point (e.g. only one minute of data so far) still
+        # renders as a visible dot — a pure line with one point is invisible.
         area_fig = go.Figure()
 
         # Add viewers area - only value in hover (time shown in x-axis label)
         area_fig.add_trace(go.Scatter(
             x=ts_data['window_start'],
             y=ts_data['viewers'],
-            mode='lines',
+            mode='lines+markers',
             name='Viewers',
             line=dict(color='#636efa', width=3),
+            marker=dict(size=8),
             fill='tozeroy',
             fillcolor='rgba(99, 110, 250, 0.3)',
             hovertemplate='%{y} viewers<extra></extra>'
@@ -475,9 +437,10 @@ def _(go, pd, spark):
         area_fig.add_trace(go.Scatter(
             x=ts_data['window_start'],
             y=ts_data['carters'],
-            mode='lines',
+            mode='lines+markers',
             name='Carters',
             line=dict(color='#00cc96', width=3),
+            marker=dict(size=8),
             fill='tozeroy',
             fillcolor='rgba(0, 204, 150, 0.3)',
             hovertemplate='%{y} carters<extra></extra>'
@@ -487,13 +450,25 @@ def _(go, pd, spark):
         area_fig.add_trace(go.Scatter(
             x=ts_data['window_start'],
             y=ts_data['purchasers'],
-            mode='lines',
+            mode='lines+markers',
             name='Purchasers',
             line=dict(color='#ff6692', width=3),
+            marker=dict(size=8),
             fill='tozeroy',
             fillcolor='rgba(255, 102, 146, 0.3)',
             hovertemplate='%{y} purchasers<extra></extra>'
         ))
+
+        # Only pad the x-axis when there's a single point (otherwise a lone
+        # marker sits on the chart edge). With 2+ points let Plotly autoscale
+        # exactly to the data range so there's no empty space on either side.
+        if len(ts_data) == 1:
+            xaxis_range = [
+                (time_start - pd.Timedelta(seconds=30)).isoformat(),
+                (time_end + pd.Timedelta(seconds=30)).isoformat(),
+            ]
+        else:
+            xaxis_range = None
 
         area_fig.update_layout(
             title=dict(
@@ -514,7 +489,8 @@ def _(go, pd, spark):
                 tickmode='linear',
                 dtick=60*1000,  # 1 minute in milliseconds
                 showgrid=True,
-                gridcolor='rgba(0,0,0,0.1)'
+                gridcolor='rgba(0,0,0,0.1)',
+                range=xaxis_range,
             ),
             legend=dict(
                 orientation="h",
@@ -525,15 +501,15 @@ def _(go, pd, spark):
             )
         )
 
-        area_fig.show()
-
         # Also display a summary table
         print(f"\n📊 Time Series Summary ({len(ts_data)} data points):")
         print(f"   Time range: {time_range_str}")
         print(f"   Aggregation: 1-minute buckets")
         print(f"   Peak viewers: {int(ts_data['viewers'].max())} at {ts_data.loc[ts_data['viewers'].idxmax(), 'window_start'].strftime('%H:%M')}")
     else:
+        area_fig = None
         print("❌ No time series data available")
+    area_fig
     return
 
 
@@ -550,7 +526,6 @@ def _(mo):
 @app.cell
 def _(spark):
     print("📊 Sample Pre-computed Funnel (latest 5 minutes, desc):")
-    spark.sql("REFRESH TABLE lakekeeper.public.rw_managed_funnel")
     spark.sql("""
         SELECT *
         FROM lakekeeper.public.rw_managed_funnel

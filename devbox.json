@@ -6,14 +6,13 @@
   "packages": [
     "python@3.13",
     "uv@latest",
-    "jdk@17",
+    "jdk@21",
     "duckdb@latest",
     "postgresql@latest",
     "sqlcmd@latest",
     "bat@latest",
     "sqlfluff@latest",
     "watch@latest",
-    "ngrok@latest",
     "trino-cli@latest"
   ],
   "shell": {
