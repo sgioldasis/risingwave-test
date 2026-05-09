@@ -73,3 +73,6 @@ __marimo__/
 
 # Log files
 *.log
+
+# Accidental local DuckDB artifact at repo root
+/version
