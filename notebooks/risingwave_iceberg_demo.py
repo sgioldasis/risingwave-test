@@ -119,5 +119,42 @@ def _(files_refresh_button, iceberg_engine, mo, pd, text, time):
     return
 
 
+@app.cell
+def _(mo):
+    # Click to re-query the current data file count for the hermes table
+    hermes_files_refresh_button = mo.ui.button(label="🔄 Refresh hermes data file count")
+    return (hermes_files_refresh_button,)
+
+
+@app.cell
+def _(hermes_files_refresh_button, iceberg_engine, mo, pd, text, time):
+    # Re-runs whenever the button is clicked
+    hermes_files_refresh_button.value
+
+    # iceberg_hermes_features is the streaming sink from RisingWave for the
+    # hermes_features model. With RW-managed compaction enabled, the file
+    # count should stay small over time. The external Spark compaction job
+    # remains available for demo purposes only.
+    hermes_files_df = pd.read_sql(
+        text(
+            'SELECT file_path, record_count, file_size_in_bytes '
+            'FROM "iceberg_hermes_features$files"'
+        ),
+        iceberg_engine,
+    )
+
+    mo.vstack([
+        mo.hstack([
+            hermes_files_refresh_button,
+            mo.md(f"Last checked: {time.strftime('%H:%M:%S')}"),
+        ]),
+        mo.md(
+            f"**`iceberg_hermes_features` data file count:** {len(hermes_files_df)}"
+        ),
+        mo.ui.table(hermes_files_df),
+    ])
+    return
+
+
 if __name__ == "__main__":
     app.run()

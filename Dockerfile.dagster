@@ -11,11 +11,52 @@ WORKDIR /workspace
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    libpq-dev \
-    curl \
+        build-essential gcc libpq-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install JDK 21 (Eclipse Temurin / Adoptium) — required by pyspark 4 for the
+# in-process Spark session used by the Iceberg compaction Dagster job.
+# Uses the official Adoptium apt repo (no base-image swap).
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    set -eux; \
+    mkdir -p /etc/apt/keyrings; \
+    curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public -o /etc/apt/keyrings/adoptium.asc; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/adoptium.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends temurin-21-jdk; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Pre-stage Iceberg Spark runtime + AWS bundle jars so the Spark session uses
+# spark.jars (local paths) instead of spark.jars.packages (Ivy fetch at run time).
+# Versions must match scripts/user_activity_flow.py and pyspark 4.0 (Scala 2.13).
+ARG ICEBERG_VERSION=1.10.1
+ENV ICEBERG_JARS_DIR=/opt/iceberg-jars
+RUN set -eux; \
+    mkdir -p ${ICEBERG_JARS_DIR}; \
+    for artifact in iceberg-spark-runtime-4.0_2.13 iceberg-aws-bundle; do \
+        base="https://repo1.maven.org/maven2/org/apache/iceberg/${artifact}/${ICEBERG_VERSION}"; \
+        jar="${artifact}-${ICEBERG_VERSION}.jar"; \
+        curl -fsSL "${base}/${jar}" -o "${ICEBERG_JARS_DIR}/${jar}"; \
+        curl -fsSL "${base}/${jar}.sha512" -o "${ICEBERG_JARS_DIR}/${jar}.sha512"; \
+        ( cd ${ICEBERG_JARS_DIR} && echo "$(cat ${jar}.sha512)  ${jar}" | sha512sum -c - ); \
+    done; \
+    rm -f ${ICEBERG_JARS_DIR}/*.sha512
+
+# Iceberg compaction job runtime defaults (overridable via docker-compose env).
+# Credentials are intentionally NOT baked here — the Dagster service in
+# docker-compose.yml is expected to inject S3_ACCESS_KEY / S3_SECRET_KEY at run
+# time. The Python asset falls back to the well-known local MinIO defaults
+# (hummockadmin/hummockadmin) only when both env vars are unset.
+ENV ICEBERG_REST_URI=http://lakekeeper:8181/catalog \
+    ICEBERG_WAREHOUSE=risingwave-warehouse \
+    ICEBERG_CATALOG_NAME=lakekeeper \
+    ICEBERG_TARGET_TABLE=public.iceberg_hermes_features \
+    S3_ENDPOINT=http://minio-0:9301
 
 # Create a non-root user with UID 1000 to match host user
 RUN useradd -m -u 1000 -s /bin/bash dagster && \

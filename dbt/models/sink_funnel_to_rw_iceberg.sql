@@ -25,5 +25,9 @@ WITH (
     database.name = 'public',
     table.name = 'rw_managed_funnel',
     create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 30
+    commit_checkpoint_interval = 30,
+    -- Parquet compression for sink writes AND RW-managed compaction output.
+    -- zstd: ~2-3x smaller files than snappy for low-cardinality funnel rows.
+    -- Requires RisingWave >= 2.9.0; supports dynamic updates via ALTER SINK.
+    compaction.write_parquet_compression = 'zstd'
 )

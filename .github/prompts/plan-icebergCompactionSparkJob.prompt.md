@@ -2,9 +2,11 @@
 
 TL;DR — Add an on-demand Dagster job (`iceberg_compaction_job`) that opens an in-process Spark 4 session inside the Dagster container, then runs the full Iceberg maintenance suite (`rewrite_data_files` binpack + delete-file-threshold/partial-progress, `rewrite_position_delete_files`, `rewrite_manifests`, `expire_snapshots`, `remove_orphan_files`) against `lakekeeper.public.iceberg_hermes_features`. Bake JDK 21 + pyspark + Iceberg jars into `Dockerfile.dagster` so no Ivy download happens at run time. No schedule — user triggers from Dagster UI.
 
+**How to read this plan**: work is split into four independent phases (A → D) with one concern each — A is image/Dockerfile setup, B is Python code, C is Dagster wiring, D is runtime verification. Complete each phase before starting the next; treat each phase's checklist as self-contained.
+
 ## Phase A — Image & deps (blocks everything)
 1. Add `pyspark>=4.0.0,<4.1.0` to `pyproject.toml` (matching Spark 4 migration notes).
-2. In `Dockerfile.dagster`, install JDK 21 (`apt-get install -y temurin-21-jdk` via Adoptium repo, or `openjdk-21-jre-headless` from Debian backports — pick whichever the existing base supports cleanly) and set `JAVA_HOME`.
+2. In `Dockerfile.dagster`, install JDK 21 (`apt-get install -y temurin-21-jdk` via Adoptium repo, or `openjdk-21-jre-headless` from Debian backports — pick whichever installs on the existing base image without adding new apt sources beyond Adoptium and without requiring a base-image swap) and set `JAVA_HOME`.
 3. Pre-stage the two Iceberg jars into the image at `/opt/iceberg-jars/` so the Spark session uses `spark.jars` (local paths) instead of `spark.jars.packages` (network fetch on every run):
    - `org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1`
    - `org.apache.iceberg:iceberg-aws-bundle:1.10.1`
@@ -17,7 +19,7 @@ TL;DR — Add an on-demand Dagster job (`iceberg_compaction_job`) that opens an 
 
 ## Phase B — Compaction code (parallel with A once design is settled)
 5. New module `orchestration/assets/iceberg_compaction.py` with:
-   - A small helper `_build_spark_session()` mirroring [scripts/user_activity_flow.py](scripts/user_activity_flow.py#L80-L130) but using container hostnames + local jar paths from Phase A. Driver memory ~2 GB, `master=local[*]`, JDK 17/21 `--add-opens` set per `/memories/repo/spark4-migration.md`. Catalog name: `lakekeeper`.
+   - A small helper `_build_spark_session()` mirroring [../../scripts/user_activity_flow.py](../../scripts/user_activity_flow.py#L80-L130) but using container hostnames + local jar paths from Phase A. Driver memory ~2 GB, `master=local[*]`, JDK 17/21 `--add-opens` set per `/memories/repo/spark4-migration.md`. Catalog name: `lakekeeper`.
    - One `@op` per maintenance step so each appears as a separate node in the Dagster run graph and can fail/retry independently:
      - `op_rewrite_data_files` → `CALL lakekeeper.system.rewrite_data_files(table => 'public.iceberg_hermes_features', strategy => 'binpack', options => map('target-file-size-bytes','134217728','min-input-files','3','delete-file-threshold','2','partial-progress.enabled','true','partial-progress.max-commits','10','max-concurrent-file-group-rewrites','4'))`
      - `op_rewrite_position_deletes` → `CALL lakekeeper.system.rewrite_position_delete_files(table => 'public.iceberg_hermes_features', options => map('rewrite-all','true'))`
@@ -26,11 +28,12 @@ TL;DR — Add an on-demand Dagster job (`iceberg_compaction_job`) that opens an 
      - `op_remove_orphan_files` → `CALL lakekeeper.system.remove_orphan_files(table => 'public.iceberg_hermes_features', older_than => TIMESTAMP '<now-7d>')`
    - Each op should reuse a single SparkSession built once at job start (use a Dagster resource `spark_session_resource` with `@resource` returning the session and stopping it on teardown). Avoids JVM cold-start per op.
    - Each op returns the result row count from the procedure (Iceberg returns rewritten/added/deleted file counts) and yields a `MetadataValue` so the Dagster UI surfaces what changed.
+   - **Failure handling**: if `_build_spark_session()` raises (JVM/JDK misconfig, jar load failure, catalog auth failure), the resource setup must log the exception with `context.log.error` and re-raise so Dagster marks the run failed before any op executes; do not swallow. Each `@op` wraps its `spark.sql("CALL ...")` in try/except: on exception, log the procedure name plus full stack via `context.log.exception`, attach `MetadataValue.text` with the error message, and re-raise so downstream ops are skipped via Dagster's default failure propagation. Do not add retries — these procedures are not safely idempotent mid-commit; rely on `partial-progress.enabled` inside `rewrite_data_files` for resumability.
 
 6. Wire ops sequentially (each depends on the previous return) inside `@job def iceberg_compaction_job()` in the same module — order matters: data-file rewrite → position-delete rewrite → manifest rewrite → expire snapshots → remove orphan files. Tag the job `{"compaction": "iceberg"}` for filtering.
 
 ## Phase C — Dagster registration
-7. In [orchestration/definitions.py](orchestration/definitions.py):
+7. In [../../orchestration/definitions.py](../../orchestration/definitions.py):
    - Import `iceberg_compaction_job` and `spark_session_resource`.
    - Add the job to the `Definitions(jobs=[...])` list near the existing `iceberg_countries_job` (~L368).
    - Add the resource to the `Definitions(resources=...)` mapping.
@@ -48,13 +51,13 @@ TL;DR — Add an on-demand Dagster job (`iceberg_compaction_job`) that opens an 
 13. RisingWave smoke test: confirm the upstream `sink_hermes_features_to_iceberg` is still committing fine (`rw_catalog.rw_event_logs` has no new SINK_FAIL).
 
 ## Relevant files
-- [Dockerfile.dagster](Dockerfile.dagster) — add JDK + curl-fetch Iceberg jars + JAVA_HOME/env vars.
-- [pyproject.toml](pyproject.toml) — add pyspark dep.
-- [scripts/user_activity_flow.py](scripts/user_activity_flow.py#L80-L130) — reference for SparkSession config (catalog keys, --add-opens, S3FileIO options). Do not import from it.
-- [dbt/models/sink_hermes_features_to_iceberg.sql](dbt/models/sink_hermes_features_to_iceberg.sql) — confirms target table name + that no RW-side compaction is running (so engine-side is meaningful).
-- [orchestration/definitions.py](orchestration/definitions.py) — register job + resource.
-- [orchestration/assets/iceberg_compaction.py](orchestration/assets/iceberg_compaction.py) — **new file** with resource, ops, and job.
-- [trino/catalog/datalake.properties](trino/catalog/datalake.properties) — confirms container-side endpoints for verification queries.
+- [../../Dockerfile.dagster](../../Dockerfile.dagster) — add JDK + curl-fetch Iceberg jars + JAVA_HOME/env vars.
+- [../../pyproject.toml](../../pyproject.toml) — add pyspark dep.
+- [../../scripts/user_activity_flow.py](../../scripts/user_activity_flow.py#L80-L130) — reference for SparkSession config (catalog keys, --add-opens, S3FileIO options). Do not import from it.
+- [../../dbt/models/sink_hermes_features_to_iceberg.sql](../../dbt/models/sink_hermes_features_to_iceberg.sql) — confirms target table name + that no RW-side compaction is running (so engine-side is meaningful).
+- [../../orchestration/definitions.py](../../orchestration/definitions.py) — register job + resource.
+- [../../orchestration/assets/iceberg_compaction.py](../../orchestration/assets/iceberg_compaction.py) — **new file** with resource, ops, and job.
+- [../../trino/catalog/datalake.properties](../../trino/catalog/datalake.properties) — confirms container-side endpoints for verification queries.
 - `/memories/repo/spark4-migration.md` — Spark 4 jar / `--add-opens` / S3FileIO option-name caveats; honour these.
 - `/memories/repo/startup-notes.md` — confirms `iceberg_hermes_features` has no native RW compaction (correct gap to fill).
 

@@ -38,5 +38,15 @@ WITH (
     table.name = 'iceberg_hermes_features',
     connection = lakekeeper_catalog_conn,
     create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 2
+    -- RW-managed file maintenance via dedicated compactor-1 service.
+    -- The external Spark `iceberg_compaction_job` is retained for DEMO only;
+    -- in steady state RW handles rewrite + snapshot expiration on this table.
+    enable_compaction = 'true',
+    compaction_interval_sec = '60',
+    enable_snapshot_expiration = 'true',
+    -- Raised from 2s to 30s to reduce small-file pressure and commit churn
+    -- now that compaction is RW-managed (matches rw_managed_funnel cadence).
+    commit_checkpoint_interval = 30,
+    -- zstd: ~2-3x smaller files than snappy; supports dynamic updates via ALTER SINK.
+    compaction.write_parquet_compression = 'zstd'
 )

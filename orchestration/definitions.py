@@ -23,6 +23,7 @@ from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table
+from .assets.iceberg_compaction import iceberg_compaction_job, spark_session_resource
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -409,11 +410,13 @@ defs = Definitions(
         dbt_build_job,
         ml_training_job,
         iceberg_countries_job,
+        iceberg_compaction_job,
         postgres_sink_job,
     ],
     schedules=[dbt_build_schedule, ml_training_schedule],
     sensors=[ml_training_sensor_realtime],
     resources={
         "dbt": DbtCliResource(project_dir=str(dbt_PROJECT_PATH)),
+        "spark": spark_session_resource,
     },
 )
