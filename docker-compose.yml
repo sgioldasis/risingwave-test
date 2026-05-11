@@ -15,6 +15,17 @@ x-lakekeeper-environment: &lakekeeper-environment
   - LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS
   - LAKEKEEPER__UI__OPENID_CLIENT_ID
   - LAKEKEEPER__UI__OPENID_SCOPE
+  # Disable OrbStack-injected HTTP proxy. Lakekeeper writes Iceberg metadata
+  # to MinIO over HTTP; routing those through proxyproxy.orb.internal would
+  # hang because the proxy cannot resolve docker-network hostnames.
+  - HTTP_PROXY=
+  - HTTPS_PROXY=
+  - ALL_PROXY=
+  - http_proxy=
+  - https_proxy=
+  - all_proxy=
+  - NO_PROXY=*
+  - no_proxy=*
 
 x-dagster-build: &dagster-build
   image: ${DAGSTER_IMAGE:-risingwave-test/dagster:local}
@@ -49,6 +60,17 @@ services:
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
+      # Clear OrbStack-injected HTTP proxy. RisingWave's S3 uploader honors
+      # HTTP(S)_PROXY env vars and would route http://minio-0:9301 writes through
+      # proxyproxy.orb.internal, which kills the connection mid-upload.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
     container_name: compactor-0
     healthcheck:
       test:
@@ -94,6 +116,15 @@ services:
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
+      # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
     container_name: compactor-1
     healthcheck:
       test:
@@ -137,6 +168,15 @@ services:
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
+      # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
     container_name: compute-node-0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -182,6 +222,15 @@ services:
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
+      # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
     container_name: frontend-node-0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -244,6 +293,15 @@ services:
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
       RW_TELEMETRY_TYPE: ${RW_TELEMETRY_TYPE:-"docker-compose"}
       RW_SECRET_STORE_PRIVATE_KEY_HEX: ${RW_SECRET_STORE_PRIVATE_KEY_HEX:-0123456789abcdef0123456789abcdef}
+      # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
     container_name: meta-node-0
     healthcheck:
       test:
@@ -317,6 +375,15 @@ services:
       MINIO_ROOT_PASSWORD: hummockadmin
       MINIO_ROOT_USER: hummockadmin
       MINIO_DOMAIN: "minio-0"
+      # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
     container_name: minio-0
     healthcheck:
       test:
@@ -590,6 +657,17 @@ services:
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
       - RISINGWAVE_HOST=frontend-node-0
+      # Disable OrbStack-injected HTTP proxy so in-network HTTP calls
+      # (e.g. Trino, Lakekeeper, MinIO) bypass proxyproxy.orb.internal which
+      # cannot resolve docker-network hostnames and returns HTTP 502.
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - ALL_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      - NO_PROXY=*
+      - no_proxy=*
     volumes:
       # Mount only specific directories needed by Dagster instead of entire project
       # This prevents root-owned files from being created in the project root
@@ -634,6 +712,15 @@ services:
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
       - RISINGWAVE_HOST=frontend-node-0
+      # Disable OrbStack-injected HTTP proxy (see dagster-webserver above).
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - ALL_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      - NO_PROXY=*
+      - no_proxy=*
     volumes:
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
@@ -661,6 +748,19 @@ services:
       - "9080:8080"
     environment:
       - CATALOG_MANAGEMENT=dynamic
+      # Disable OrbStack-injected HTTP proxy. The AWS SDK v2 used by Trino's
+      # native S3 client honors HTTPS_PROXY/HTTP_PROXY env vars and would route
+      # http://minio-0:9301 and http://lakekeeper:8181 calls through
+      # proxyproxy.orb.internal, which cannot resolve docker-network hostnames
+      # and hangs / returns 502.
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - ALL_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      - NO_PROXY=*
+      - no_proxy=*
     volumes:
       - type: bind
         source: ./trino/catalog

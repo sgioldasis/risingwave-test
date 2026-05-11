@@ -43,7 +43,7 @@ SCRIPTS = [
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
-    ("5_marimo_risingwave.sh", "🌊 RisingWave Notebook", "Interactive RisingWave Iceberg demo notebook"),
+    ("5_marimo_risingwave.sh", "🧊 Trino Iceberg", "Query Iceberg tables with Trino"),
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
     ("4_run_dashboard.sh", "📈 Run Simple Dashboard", "Start the analytics dashboard"),

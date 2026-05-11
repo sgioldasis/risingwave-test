@@ -28,7 +28,11 @@ RUN --mount=type=cache,target=/var/cache/apt \
     apt-get install -y --no-install-recommends temurin-21-jdk; \
     rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
+# Resolve JAVA_HOME architecture-dynamically so the same Dockerfile works on
+# both linux/amd64 and linux/arm64 (Apple Silicon). The Adoptium package
+# installs to /usr/lib/jvm/temurin-21-jdk-{amd64,arm64} depending on $(dpkg --print-architecture).
+RUN ln -sfn "/usr/lib/jvm/temurin-21-jdk-$(dpkg --print-architecture)" /usr/lib/jvm/temurin-21-jdk
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Pre-stage Iceberg Spark runtime + AWS bundle jars so the Spark session uses
