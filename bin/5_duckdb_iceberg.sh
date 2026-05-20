@@ -17,11 +17,17 @@ echo "🧊 Querying Iceberg Tables via DuckDB"
 echo "================================================================================"
 echo ""
 
-# Check if Python is available
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Error: python3 is not installed"
+# Prefer the project's virtual environment so duckdb and other deps resolve.
+if [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+elif command -v uv &> /dev/null; then
+    PY="uv run python"
+elif command -v python3 &> /dev/null; then
+    PY="python3"
+else
+    echo "❌ Error: no Python interpreter found (.venv, uv, or python3)"
     exit 1
 fi
 
 # Run the query script with any provided arguments
-python3 scripts/duckdb_query_iceberg.py "$@"
+exec $PY scripts/duckdb_query_iceberg.py "$@"
