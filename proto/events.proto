@@ -1,0 +1,88 @@
+// Protobuf schema for the RisingWave nested-data demo.
+//
+// Exercises every nested feature RisingWave's PROTOBUF encoder supports:
+//   - nested messages          (Order.customer, Customer.address)
+//   - repeated nested messages (Order.items[])
+//   - map<string, string>      (Order.attributes)
+//   - oneof                    (Order.payment)
+//   - enum                     (OrderStatus)
+//   - well-known Timestamp     (Order.event_time)
+//
+// Producer registers this schema under subject "orders-value" in Redpanda's
+// Schema Registry; RisingWave fetches it via schema.registry.url.
+
+syntax = "proto3";
+
+package demo;
+
+import "google/protobuf/timestamp.proto";
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING     = 1;
+  ORDER_STATUS_PAID        = 2;
+  ORDER_STATUS_SHIPPED     = 3;
+  ORDER_STATUS_CANCELLED   = 4;
+}
+
+message Address {
+  string street      = 1;
+  string city        = 2;
+  string country     = 3;
+  string postal_code = 4;
+}
+
+message Customer {
+  int64   id      = 1;
+  string  email   = 2;
+  string  name    = 3;
+  Address address = 4;
+  bool    is_vip  = 5;
+}
+
+message Product {
+  string id       = 1;
+  string name     = 2;
+  string category = 3;
+}
+
+message LineItem {
+  Product product    = 1;
+  int32   quantity   = 2;
+  double  unit_price = 3;
+  // Per-line discount percent, 0-100.
+  double  discount_pct = 4;
+}
+
+message CardPayment {
+  string brand     = 1;  // visa, mastercard, ...
+  string last4     = 2;
+  string holder    = 3;
+}
+
+message WalletPayment {
+  string provider = 1;  // apple_pay, google_pay, ...
+  string wallet_id = 2;
+}
+
+message CryptoPayment {
+  string chain   = 1;   // eth, btc, sol
+  string tx_hash = 2;
+}
+
+message Order {
+  string                       order_id   = 1;
+  Customer                     customer   = 2;
+  repeated LineItem            items      = 3;
+  map<string, string>          attributes = 4;
+  OrderStatus                  status     = 5;
+  google.protobuf.Timestamp    event_time = 6;
+  double                       total      = 7;
+  string                       currency   = 8;
+
+  oneof payment {
+    CardPayment   card   = 20;
+    WalletPayment wallet = 21;
+    CryptoPayment crypto = 22;
+  }
+}
