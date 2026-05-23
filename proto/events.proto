@@ -23,7 +23,8 @@ enum OrderStatus {
   ORDER_STATUS_PAID        = 2;
   ORDER_STATUS_SHIPPED     = 3;
   ORDER_STATUS_CANCELLED   = 4;
-  ORDER_STATUS_REFUNDED    = 5;
+  // --- schema-evolution demo: uncomment on the 2nd run ---
+  // ORDER_STATUS_REFUNDED    = 5;
 }
 
 message Address {
@@ -80,7 +81,8 @@ message Order {
   google.protobuf.Timestamp    event_time = 6;
   double                       total      = 7;
   string                       currency   = 8;
-  string                       shipping_method = 9;  // "standard" | "express" | "pickup"
+  // --- schema-evolution demo: uncomment on the 2nd run ---
+  // string                       shipping_method = 9;  // "standard" | "express" | "pickup"
 
   oneof payment {
     CardPayment   card   = 20;
