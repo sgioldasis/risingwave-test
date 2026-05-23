@@ -108,11 +108,13 @@ def build_order(pb, i: int):
                 pb.ORDER_STATUS_PAID,
                 pb.ORDER_STATUS_SHIPPED,
                 pb.ORDER_STATUS_CANCELLED,
+                pb.ORDER_STATUS_REFUNDED,
             ]
         ),
         event_time=ts,
         total=total,
         currency=random.choice(["USD", "EUR", "JPY"]),
+        shipping_method=random.choice(["standard", "standard", "express", "pickup"]),
     )
 
     # map<string, string>

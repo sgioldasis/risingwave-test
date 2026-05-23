@@ -294,3 +294,149 @@ psql -h localhost -p 4566 -d dev -U root -c \
      DROP SOURCE IF EXISTS src_orders_proto CASCADE;"
 docker exec redpanda rpk topic delete orders
 ```
+
+## Variant: FileDescriptorSet (`.pb`) instead of Schema Registry
+
+Everything above relies on Schema Registry (`schema.registry = '…'`).
+RisingWave also supports loading the protobuf schema from a compiled
+**FileDescriptorSet** on disk via `schema.location = 'file:///…'`. That
+mode is exercised end-to-end by a separate companion demo so the two
+code paths can be compared side-by-side:
+
+| Aspect                 | SR demo (`orders` topic)        | File-descriptor demo (`orders_filedesc` topic) |
+| ---------------------- | ------------------------------- | ---------------------------------------------- |
+| Runner script          | [bin/3_run_protobuf_demo.sh](../bin/3_run_protobuf_demo.sh) | [bin/3_run_protobuf_demo_filedesc.sh](../bin/3_run_protobuf_demo_filedesc.sh) |
+| Producer               | [scripts/produce_protobuf_orders.py](../scripts/produce_protobuf_orders.py) (Confluent `ProtobufSerializer`) | [scripts/produce_protobuf_orders_filedesc.py](../scripts/produce_protobuf_orders_filedesc.py) (raw `SerializeToString`) |
+| Wire format            | 5-byte Confluent magic/schema-id prefix + protobuf payload | **Raw** protobuf payload — no prefix bytes |
+| Schema discovery       | RisingWave fetches `.proto` from `http://redpanda:8081` by subject `orders-value` | RisingWave reads `/proto/events.pb` (FileDescriptorSet) from disk |
+| RisingWave DDL clause  | `schema.registry = 'http://redpanda:8081'` | `schema.location = 'file:///proto/events.pb'` |
+| Source name            | `src_orders_proto`              | `src_orders_proto_filedesc`                    |
+| MV name                | `mv_revenue_by_country_category` | `mv_revenue_by_country_category_filedesc`     |
+| SQL file               | [sql/protobuf_demo.sql](../sql/protobuf_demo.sql) | [sql/protobuf_demo_filedesc.sql](../sql/protobuf_demo_filedesc.sql) |
+
+Both variants emit semantically identical `demo.Order` payloads (the
+file-descriptor producer re-imports `build_order()` from the SR
+producer), so every nested-access query in §1–§9 above works against
+`src_orders_proto_filedesc` just by renaming the source.
+
+### Why a second variant?
+
+- **No Schema Registry dependency.** Useful when the deployment doesn't
+  run SR, or when the protobuf contract is shipped as part of an
+  image/artifact rather than registered at runtime.
+- **Reproducible / pinned schema.** The `.pb` is a build artifact
+  checked alongside the producer; there is no "what got registered
+  last?" ambiguity.
+- **Different wire format.** Raw protobuf bytes — handy for consuming
+  from systems that don't speak the Confluent envelope.
+- **Exercises a different RisingWave code path** (`schema.location`
+  reader vs. SR HTTP client + magic-byte stripper).
+
+### Required docker-compose change
+
+`schema.location = 'file:///proto/events.pb'` is resolved **inside the
+RisingWave containers**, so the host's `./proto` directory must be
+bind-mounted into the frontend, compute, and meta nodes. The compose
+file mounts it read-only on all three:
+
+```yaml
+# docker-compose.yml (frontend-node-0, compute-node-0, meta-node-0)
+volumes:
+  - "./proto:/proto:ro"
+```
+
+If your stack predates that change, the runner script will detect it
+and bail out — recreate the affected services:
+
+```bash
+docker compose up -d --force-recreate frontend-node-0 compute-node-0 meta-node-0
+```
+
+### How the `.pb` file is built
+
+The producer compiles `proto/events.proto` twice on every run (only if
+the source `.proto` is newer):
+
+1. `events_pb2.py` — Python module used to build/serialize messages.
+2. `proto/events.pb` — FileDescriptorSet for RisingWave.
+
+The descriptor build uses `--include_imports`, which is **mandatory**:
+without it, `google/protobuf/timestamp.proto` (used by `event_time`)
+isn't embedded, and RisingWave can't fully resolve the `Order` message.
+
+```bash
+python -m grpc_tools.protoc \
+    -Iproto \
+    --descriptor_set_out=proto/events.pb \
+    --include_imports \
+    proto/events.proto
+```
+
+### Run it
+
+```bash
+./bin/3_run_protobuf_demo_filedesc.sh
+# knobs: COUNT, TPS, TOPIC
+COUNT=500 TPS=50 ./bin/3_run_protobuf_demo_filedesc.sh
+```
+
+The script:
+
+1. Verifies `/proto` is bind-mounted in `frontend-node-0`,
+   `compute-node-0`, and `meta-node-0`.
+2. Creates the `orders_filedesc` topic in Redpanda if missing.
+3. (Re)builds `proto/events.pb` and produces N raw-protobuf Orders.
+4. Confirms `/proto/events.pb` is visible inside `frontend-node-0`.
+5. Applies `sql/protobuf_demo_filedesc.sql` (idempotent — `DROP …
+   IF EXISTS`).
+
+### The DDL
+
+```sql
+CREATE SOURCE src_orders_proto_filedesc
+WITH (
+    connector = 'kafka',
+    topic = 'orders_filedesc',
+    properties.bootstrap.server = 'redpanda:9092',
+    scan.startup.mode = 'earliest'
+) FORMAT PLAIN ENCODE PROTOBUF (
+    schema.location = 'file:///proto/events.pb',
+    message = 'demo.Order'
+);
+```
+
+Note the `file://` URI: the path is relative to the RisingWave
+container's filesystem, not the host. RisingWave also accepts
+`http(s)://` and `s3://` locations for the same option.
+
+### Inspect raw payloads (no SR envelope)
+
+```bash
+docker exec redpanda rpk topic consume orders_filedesc -n 1 -o oldest
+```
+
+You'll see binary protobuf bytes directly — no leading `\x00` + 4-byte
+schema id that the SR variant prepends.
+
+### Cleanup
+
+```bash
+psql -h localhost -p 4566 -d dev -U root -c \
+    "DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_country_category_filedesc;
+     DROP SOURCE IF EXISTS src_orders_proto_filedesc CASCADE;"
+docker exec redpanda rpk topic delete orders_filedesc
+```
+
+### Schema evolution caveat
+
+Unlike the SR variant — where re-registering the schema is enough —
+the file-descriptor source is pinned to whatever `events.pb` contained
+at `CREATE SOURCE` time. To pick up `.proto` changes:
+
+1. Re-run the producer (it rebuilds `proto/events.pb`).
+2. `DROP SOURCE src_orders_proto_filedesc CASCADE;`
+3. Re-apply `sql/protobuf_demo_filedesc.sql`.
+
+RisingWave reads the descriptor file once at source-creation time; the
+bind mount being read-only is fine because the file is replaced
+atomically on the host.

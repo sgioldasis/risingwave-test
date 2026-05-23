@@ -165,6 +165,9 @@ services:
       - meta-node-0
     volumes:
       - "./risingwave.toml:/risingwave.toml"
+      # Expose compiled protobuf FileDescriptorSet for ENCODE PROTOBUF
+      # (schema.location='file:///proto/events.pb') tests.
+      - "./proto:/proto:ro"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
@@ -219,6 +222,8 @@ services:
       - meta-node-0
     volumes:
       - "./risingwave.toml:/risingwave.toml"
+      # See compute-node-0: file-descriptor protobuf schema for tests.
+      - "./proto:/proto:ro"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
@@ -288,6 +293,8 @@ services:
       - "minio-0"
     volumes:
       - "./risingwave.toml:/risingwave.toml"
+      # See compute-node-0: file-descriptor protobuf schema for tests.
+      - "./proto:/proto:ro"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
