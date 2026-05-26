@@ -36,10 +36,12 @@ on `localhost:4566`.
 ./bin/3_run_protobuf_demo.sh
 ```
 
-Optional knobs:
+Optional knobs (defaults: `COUNT=200`, `TPS=0` unlimited, `ICEBERG_WAIT=10`):
 
 ```bash
 COUNT=1000 TPS=50 ./bin/3_run_protobuf_demo.sh
+# skip the iceberg row-count verification step
+ICEBERG_WAIT=0 ./bin/3_run_protobuf_demo.sh
 ```
 
 What the script does:
@@ -51,8 +53,13 @@ What the script does:
    `ProtobufSerializer` to **register the schema under subject
    `orders-value`** and emit nested Order messages.
 4. Executes `sql/protobuf_demo.sql` against RisingWave — this creates the
-   source, prints the four nested-access query results, and builds a
-   materialized view rolling up revenue by `(country, category)`.
+   source, prints the nested-access query results, builds a materialized
+   view rolling up revenue by `(country, category)`, a flattening MV
+   `mv_proto_orders_flat`, two `ENGINE = iceberg` tables
+   (`rw_managed_proto_orders`, `rw_managed_proto_revenue`), and the
+   upsert sinks that feed them.
+5. Waits `ICEBERG_WAIT` seconds (default 10) for the first iceberg
+   commit, then prints row counts from both managed tables.
 
 ## The RisingWave bit
 
@@ -224,13 +231,51 @@ SELECT * FROM mv_revenue_by_country_category ORDER BY revenue DESC LIMIT 10;
 In another terminal:
 
 ```bash
-uv run python scripts/produce_protobuf_orders.py --count 200 --tps 50
+uv run python scripts/produce_protobuf_orders.py --count 200 --tps 0
 ```
 
 Re-run the `SELECT` — `orders`, `units`, `revenue` will increment without
 re-running the MV definition.
 
-### 9. Internal catalog peek (RisingWave-specific)
+### 9. Managed Iceberg sinks
+
+The SQL step also created two `ENGINE = iceberg` tables in the
+Lakekeeper-managed warehouse and the upsert sinks that feed them. After
+step [4/4] of the runner finishes, both tables already have data:
+
+```sql
+SELECT count(*) FROM rw_managed_proto_orders;    -- e.g. 200
+SELECT count(*) FROM rw_managed_proto_revenue;   -- e.g. 20
+
+SELECT name, connector, sink_type
+FROM rw_catalog.rw_sinks
+WHERE name IN ('rw_managed_proto_orders_sink',
+               'rw_managed_proto_revenue_sink');
+```
+
+Both sinks use `commit_checkpoint_interval = 5`, so new RisingWave rows
+appear in iceberg snapshots within ~5 s. When sinking **into** a managed
+iceberg table the `WITH` clause must not include `connector`,
+`connection`, `database.name`, `table.name`, or
+`create_table_if_not_exists` — RisingWave infers them from the target.
+Only `type`, `primary_key`, and maintenance opts belong there.
+
+`google.protobuf.Timestamp` is exposed as `struct<seconds, nanos>`, so
+the flattening MV converts it to `TIMESTAMPTZ` before sinking:
+
+```sql
+to_timestamp((event_time).seconds + (event_time).nanos / 1e9)
+    AS event_time
+```
+
+The same iceberg tables are visible through the other tiles in the
+runner:
+
+- 🦆 **DuckDB Iceberg** — [bin/5_duckdb_iceberg.sh](../bin/5_duckdb_iceberg.sh)
+- 🔥 **Spark Iceberg** — [bin/5_spark_iceberg.sh](../bin/5_spark_iceberg.sh)
+- 🧊 **Trino / Marimo** — [bin/5_marimo_risingwave.sh](../bin/5_marimo_risingwave.sh)
+
+### 10. Internal catalog peek (RisingWave-specific)
 
 ```sql
 -- All your sources / MVs in this DB
@@ -242,7 +287,7 @@ SELECT * FROM rw_catalog.rw_source_throughput
 WHERE source_name = 'src_orders_proto';
 ```
 
-### 10. Schema-evolution sanity (optional)
+### 11. Schema-evolution sanity (optional)
 
 After adding a new optional field to `proto/events.proto` and re-running
 the producer:
@@ -376,8 +421,8 @@ python -m grpc_tools.protoc \
 
 ```bash
 ./bin/3_run_protobuf_demo_filedesc.sh
-# knobs: COUNT, TPS, TOPIC
-COUNT=500 TPS=50 ./bin/3_run_protobuf_demo_filedesc.sh
+# knobs: COUNT, TPS, TOPIC, ICEBERG_WAIT
+COUNT=500 ./bin/3_run_protobuf_demo_filedesc.sh
 ```
 
 The script:

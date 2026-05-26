@@ -53,20 +53,21 @@ Open the UI: <http://localhost:4001>
 
 Click **🧬 Protobuf Demo (FileDescriptorSet)**. That tile is wired to
 [bin/3_run_protobuf_demo_filedesc.sh](../bin/3_run_protobuf_demo_filedesc.sh)
-which performs four steps:
+which performs five steps:
 
 | Step | What happens |
 | ---- | ------------ |
 | 1    | Verifies `/proto` is mounted inside `frontend-node-0`, `compute-node-0`, `meta-node-0`. |
 | 2    | Creates Kafka topic `orders_filedesc` if missing. |
 | 3    | Runs [scripts/produce_protobuf_orders_filedesc.py](../scripts/produce_protobuf_orders_filedesc.py) — compiles `proto/events.proto` to both `events_pb2.py` (Python) and `proto/events.pb` (FileDescriptorSet with `--include_imports`), then sends raw protobuf bytes to Kafka. **No** Confluent magic-byte prefix. |
-| 4    | Applies [sql/protobuf_demo_filedesc.sql](../sql/protobuf_demo_filedesc.sql) against RisingWave — creates `src_orders_proto_filedesc` and `mv_revenue_by_country_category_filedesc`. |
+| 4    | Applies [sql/protobuf_demo_filedesc.sql](../sql/protobuf_demo_filedesc.sql) against RisingWave — creates `src_orders_proto_filedesc`, `mv_revenue_by_country_category_filedesc`, a flattening MV `mv_proto_fd_orders_flat`, two `ENGINE = iceberg` tables (`rw_managed_proto_fd_orders`, `rw_managed_proto_fd_revenue`), and the upsert sinks that feed them. |
+| 5    | Waits `ICEBERG_WAIT` seconds (default 10) for the first iceberg commit, then prints row counts from both managed tables. Set `ICEBERG_WAIT=0` to skip. |
 
 Watch the streamed output in the UI; it ends with `=== done ===`.
 
-Defaults: `COUNT=200`, `TPS=20`, `TOPIC=orders_filedesc`. Override via
-the runner's env-input box or by setting them before running the shell
-script directly.
+Defaults: `COUNT=200`, `TPS=0` (no rate limit), `TOPIC=orders_filedesc`,
+`ICEBERG_WAIT=10`. Override via the runner's env-input box or by setting
+them before running the shell script directly.
 
 ---
 
@@ -187,7 +188,7 @@ ORDER BY revenue DESC
 LIMIT 10;
 ```
 
-Re-run the producer tile (or `COUNT=500 TPS=50 ./bin/3_run_protobuf_demo_filedesc.sh`)
+Re-run the producer tile (or `COUNT=500 ./bin/3_run_protobuf_demo_filedesc.sh`)
 and re-`SELECT` — the rollup updates live without redefining the MV.
 
 ### 2h. Peek at raw payloads (no SR envelope)
@@ -198,6 +199,44 @@ docker exec redpanda rpk topic consume orders_filedesc -n 1 -o oldest
 
 The value is plain protobuf wire-format bytes; there is no leading
 `\x00` + 4-byte schema-id prefix that the SR variant carries.
+
+### 2i. Managed Iceberg sinks
+
+The SQL step also created two `ENGINE = iceberg` tables in the
+Lakekeeper-managed warehouse and the upsert sinks that feed them. After
+step [5/5] of the runner finishes, both tables already have data:
+
+```sql
+SELECT count(*) FROM rw_managed_proto_fd_orders;    -- e.g. 200
+SELECT count(*) FROM rw_managed_proto_fd_revenue;   -- e.g. 20
+
+SELECT name, connector, sink_type
+FROM rw_catalog.rw_sinks
+WHERE name IN ('rw_managed_proto_fd_orders_sink',
+               'rw_managed_proto_fd_revenue_sink');
+```
+
+Both sinks use `commit_checkpoint_interval = 5`, so new RisingWave rows
+appear in iceberg snapshots within ~5 s. When sinking **into** a managed
+iceberg table the `WITH` clause must not include `connector`,
+`connection`, `database.name`, `table.name`, or
+`create_table_if_not_exists` — RisingWave infers them from the target.
+Only `type`, `primary_key`, and maintenance opts belong there.
+
+`google.protobuf.Timestamp` is exposed as `struct<seconds, nanos>`, so
+the flattening MV converts it to `TIMESTAMPTZ` before sinking:
+
+```sql
+to_timestamp((event_time).seconds + (event_time).nanos / 1e9)
+    AS event_time
+```
+
+The same iceberg tables are visible through the other tiles in the
+runner:
+
+- 🦆 **DuckDB Iceberg** — [bin/5_duckdb_iceberg.sh](../bin/5_duckdb_iceberg.sh)
+- 🔥 **Spark Iceberg** — [bin/5_spark_iceberg.sh](../bin/5_spark_iceberg.sh)
+- 🧊 **Trino / Marimo** — [bin/5_marimo_risingwave.sh](../bin/5_marimo_risingwave.sh)
 
 ---
 
@@ -300,7 +339,7 @@ source still has the **old** catalog schema cached.
 > directly instead and skip step 4 of the script:
 >
 > ```bash
-> uv run python scripts/produce_protobuf_orders_filedesc.py --count 200 --tps 20
+> uv run python scripts/produce_protobuf_orders_filedesc.py --count 200 --tps 0
 > ```
 
 ### 3d. Refresh the source schema (no DROP)
@@ -417,6 +456,11 @@ diffs. If you removed a field, renumbered something, or changed a
 type, you have to drop and re-create:
 
 ```sql
+DROP SINK            IF EXISTS rw_managed_proto_fd_orders_sink;
+DROP SINK            IF EXISTS rw_managed_proto_fd_revenue_sink;
+DROP TABLE           IF EXISTS rw_managed_proto_fd_orders;
+DROP TABLE           IF EXISTS rw_managed_proto_fd_revenue;
+DROP MATERIALIZED VIEW IF EXISTS mv_proto_fd_orders_flat;
 DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_shipping;
 DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_country_category_filedesc;
 DROP SOURCE IF EXISTS src_orders_proto_filedesc CASCADE;
@@ -431,6 +475,11 @@ You'll lose any incremental state on the dropped MVs, so prefer
 ## 5. Cleanup
 
 ```sql
+DROP SINK            IF EXISTS rw_managed_proto_fd_orders_sink;
+DROP SINK            IF EXISTS rw_managed_proto_fd_revenue_sink;
+DROP TABLE           IF EXISTS rw_managed_proto_fd_orders;
+DROP TABLE           IF EXISTS rw_managed_proto_fd_revenue;
+DROP MATERIALIZED VIEW IF EXISTS mv_proto_fd_orders_flat;
 DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_shipping;
 DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_country_category_filedesc;
 DROP SOURCE IF EXISTS src_orders_proto_filedesc CASCADE;
@@ -449,7 +498,7 @@ docker exec redpanda rpk topic delete orders_filedesc
 | Start stack                                | `./bin/1_up.sh`                                                                          |
 | Start runner UI                            | `./bin/0_script_runner.sh` → <http://localhost:4001>                                     |
 | Run demo                                   | Click **🧬 Protobuf Demo (FileDescriptorSet)** (or `./bin/3_run_protobuf_demo_filedesc.sh`) |
-| Produce only (preserve MV state)           | `uv run python scripts/produce_protobuf_orders_filedesc.py --count 200 --tps 20`         |
+| Produce only (preserve MV state)           | `uv run python scripts/produce_protobuf_orders_filedesc.py --count 200 --tps 0`          |
 | Inspect raw payload                        | `docker exec redpanda rpk topic consume orders_filedesc -n 1 -o oldest`                  |
 | List columns                               | `SELECT column_name, data_type FROM information_schema.columns WHERE table_name='src_orders_proto_filedesc';` |
 | Refresh descriptor after `.proto` edit     | `ALTER SOURCE src_orders_proto_filedesc REFRESH SCHEMA;`                                 |

@@ -16,7 +16,8 @@ Sister docs:
 1. Start the stack.
 2. Launch the demo from the script-runner UI.
 3. Run the validation queries in psql.
-4. Evolve the Avro schema (add a field + an enum symbol), refresh the
+4. Inspect the managed-Iceberg tables produced as part of the same demo.
+5. Evolve the Avro schema (add a field + an enum symbol), refresh the
    source in place, and verify with new queries.
 
 ---
@@ -50,13 +51,14 @@ Start the runner (idempotent — kills any prior instance):
 Open the UI: <http://localhost:4001>
 
 Click **🅰️  Avro Demo**. That tile is wired to
-[bin/3_run_avro_demo.sh](../bin/3_run_avro_demo.sh) which performs three steps:
+[bin/3_run_avro_demo.sh](../bin/3_run_avro_demo.sh) which performs four steps:
 
 | Step | What happens |
 | ---- | ------------ |
 | 1    | **Resets** Kafka topic `orders_avro` (delete + recreate) and clears the SR subject `orders_avro-value` (soft + hard delete). Idempotent. |
 | 2    | Runs [scripts/produce_avro_orders.py](../scripts/produce_avro_orders.py) — loads `avro/orders.avsc`, registers it under subject `orders_avro-value`, and sends Confluent-framed Avro messages (magic byte `\x00` + 4-byte schema id + Avro body) to Kafka. |
-| 3    | Applies [sql/avro_demo.sql](../sql/avro_demo.sql) against RisingWave — creates `src_orders_avro` and `mv_avro_revenue_by_country_category`. |
+| 3    | Applies [sql/avro_demo.sql](../sql/avro_demo.sql) against RisingWave — creates `src_orders_avro`, `mv_avro_revenue_by_country_category`, a flattening MV `mv_avro_orders_flat`, two `ENGINE = iceberg` tables (`rw_managed_avro_orders`, `rw_managed_avro_revenue`), and the upsert sinks that feed them. |
+| 4    | Waits `ICEBERG_WAIT` seconds (default 10) for the first iceberg commit, then prints row counts from both managed tables. Set `ICEBERG_WAIT=0` to skip. |
 
 > **Why the aggressive reset in step 1?** The SR subject reset prevents
 > BACKWARD-compatibility 409s from a previously-registered schema. The
@@ -68,9 +70,11 @@ Click **🅰️  Avro Demo**. That tile is wired to
 
 Watch the streamed output in the UI; it ends with `=== done ===`.
 
-Defaults: `COUNT=200`, `TPS=20`, `TOPIC=orders_avro`. Override via the
-runner's env-input box or by setting them before running the shell script
-directly.
+Defaults: `COUNT=200`, `TPS=0` (no rate limit), `TOPIC=orders_avro`,
+`ICEBERG_WAIT=10`. Override via the runner's env-input box or by setting
+them before running the shell script directly. With the defaults a full
+run completes in ~15 s end-to-end — most of which is the post-apply
+iceberg-commit wait.
 
 You can confirm the schema landed in Schema Registry from the host:
 
@@ -222,8 +226,8 @@ ORDER BY revenue DESC
 LIMIT 10;
 ```
 
-Re-run the producer tile (or `COUNT=500 TPS=50 ./bin/3_run_avro_demo.sh`)
-and re-`SELECT` — the rollup updates live without redefining the MV.
+Re-run the producer tile (or `COUNT=500 ./bin/3_run_avro_demo.sh`) and
+re-`SELECT` — the rollup updates live without redefining the MV.
 
 ### 2h. Peek at raw payloads
 
@@ -235,6 +239,42 @@ The value starts with `\x00` (Confluent magic byte) followed by a 4-byte
 big-endian schema id, then the Avro-binary-encoded record. Compare with
 the protobuf-FileDescriptor demo's raw payload, which has no magic-byte
 prefix.
+
+---
+
+## 2i. Managed Iceberg sinks
+
+The SQL step also created two `ENGINE = iceberg` tables in the
+Lakekeeper-managed warehouse and the upsert sinks that feed them. After
+step [4/4] of the runner finishes, both tables already have data:
+
+```sql
+SELECT count(*) FROM rw_managed_avro_orders;    -- e.g. 200
+SELECT count(*) FROM rw_managed_avro_revenue;   -- e.g. 20
+
+SELECT name, connector, sink_type
+FROM rw_catalog.rw_sinks
+WHERE name IN ('rw_managed_avro_orders_sink',
+               'rw_managed_avro_revenue_sink');
+```
+
+Both sinks use `commit_checkpoint_interval = 5`, so new RisingWave rows
+appear in the iceberg snapshots within ~5 s. The catalog connection
+(`lakekeeper_catalog_conn`) and the session variable
+`iceberg_engine_connection = 'public.lakekeeper_catalog_conn'` are set
+idempotently inside `sql/avro_demo.sql`.
+
+When sinking **into** a managed iceberg table, the `WITH` clause must
+not include `connector`, `connection`, `database.name`, `table.name`,
+or `create_table_if_not_exists` — RisingWave infers them from the
+target. Only `type`, `primary_key`, and maintenance opts belong there.
+
+The same iceberg tables are also visible through the other tiles in the
+runner:
+
+- 🦆 **DuckDB Iceberg** — [bin/5_duckdb_iceberg.sh](../bin/5_duckdb_iceberg.sh)
+- 🔥 **Spark Iceberg** — [bin/5_spark_iceberg.sh](../bin/5_spark_iceberg.sh)
+- 🧊 **Trino / Marimo** — [bin/5_marimo_risingwave.sh](../bin/5_marimo_risingwave.sh)
 
 ---
 
@@ -484,6 +524,11 @@ curl -X PUT http://localhost:8081/config/orders_avro-value \
 ## 5. Cleanup
 
 ```sql
+DROP SINK            IF EXISTS rw_managed_avro_orders_sink;
+DROP SINK            IF EXISTS rw_managed_avro_revenue_sink;
+DROP TABLE           IF EXISTS rw_managed_avro_orders;
+DROP TABLE           IF EXISTS rw_managed_avro_revenue;
+DROP MATERIALIZED VIEW IF EXISTS mv_avro_orders_flat;
 DROP MATERIALIZED VIEW IF EXISTS mv_avro_revenue_by_shipping;
 DROP MATERIALIZED VIEW IF EXISTS mv_avro_revenue_by_country_category;
 DROP SOURCE IF EXISTS src_orders_avro CASCADE;
@@ -624,8 +669,10 @@ file-descriptor demo instead.
 | --------------------------------------- | -------------------------------------------------------------------------------- |
 | Start stack                             | `./bin/1_up.sh`                                                                  |
 | Start runner UI                         | `./bin/0_script_runner.sh` → <http://localhost:4001>                             |
-| Run demo                                | Click **🅰️  Avro Demo** (or `./bin/3_run_avro_demo.sh`)                          |
-| Produce only (preserve MV state)        | `uv run python scripts/produce_avro_orders.py --count 200 --tps 20`              |
+| Run demo (incl. iceberg sinks)          | Click **🅰️  Avro Demo** (or `./bin/3_run_avro_demo.sh`)                          |
+| Run demo, skip iceberg verification     | `ICEBERG_WAIT=0 ./bin/3_run_avro_demo.sh`                                        |
+| Produce only (preserve MV state)        | `uv run python scripts/produce_avro_orders.py --count 200 --tps 0`               |
+| Count rows in managed iceberg tables    | `SELECT count(*) FROM rw_managed_avro_orders; SELECT count(*) FROM rw_managed_avro_revenue;` |
 | Inspect raw payload                     | `docker exec redpanda rpk topic consume orders_avro -n 1 -o oldest`              |
 | List columns                            | `SELECT column_name, data_type FROM information_schema.columns WHERE table_name='src_orders_avro';` |
 | List schema versions                    | `curl -s http://localhost:8081/subjects/orders_avro-value/versions`              |
