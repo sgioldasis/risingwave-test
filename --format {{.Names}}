@@ -1,0 +1,9 @@
+        order_id         |         status         | customer_id |   customer_email   |  city  | country |  total  | currency 
+-------------------------+------------------------+-------------+--------------------+--------+---------+---------+----------
+ ord-1779767482052-00000 | ORDER_STATUS_SHIPPED   |        1000 | user0@example.com  | Paris  | AU      | 1709.61 | USD
+ ord-1779767482107-00001 | ORDER_STATUS_CANCELLED |        1001 | user1@example.com  | Berlin | JP      |  623.72 | EUR
+ ord-1779767482260-00004 | ORDER_STATUS_PAID      |        1004 | user4@example.com  | Tokyo  | AU      |  114.34 | JPY
+ ord-1779767482314-00005 | ORDER_STATUS_PAID      |        1005 | user5@example.com  | Berlin | FR      |  519.44 | JPY
+ ord-1779767482682-00012 | ORDER_STATUS_PAID      |        1012 | user12@example.com | NYC    | AU      |  186.45 | USD
+(5 rows)
+

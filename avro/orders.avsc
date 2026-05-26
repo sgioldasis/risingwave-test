@@ -1,0 +1,143 @@
+{
+  "type": "record",
+  "name": "Order",
+  "namespace": "demo.avro",
+  "doc": "Avro schema for the RisingWave nested-data demo. Mirrors proto/events.proto so the SQL queries look (almost) identical across encodings.",
+  "fields": [
+    { "name": "order_id", "type": "string" },
+    {
+      "name": "customer",
+      "type": {
+        "type": "record",
+        "name": "Customer",
+        "fields": [
+          { "name": "id",     "type": "long" },
+          { "name": "email",  "type": "string" },
+          { "name": "name",   "type": "string" },
+          { "name": "is_vip", "type": "boolean" },
+          {
+            "name": "address",
+            "type": {
+              "type": "record",
+              "name": "Address",
+              "fields": [
+                { "name": "street",      "type": "string" },
+                { "name": "city",        "type": "string" },
+                { "name": "country",     "type": "string" },
+                { "name": "postal_code", "type": "string" }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "items",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "LineItem",
+          "fields": [
+            {
+              "name": "product",
+              "type": {
+                "type": "record",
+                "name": "Product",
+                "fields": [
+                  { "name": "id",       "type": "string" },
+                  { "name": "name",     "type": "string" },
+                  { "name": "category", "type": "string" }
+                ]
+              }
+            },
+            { "name": "quantity",     "type": "int" },
+            { "name": "unit_price",   "type": "double" },
+            { "name": "discount_pct", "type": "double" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "attributes",
+      "type": { "type": "map", "values": "string" },
+      "default": {}
+    },
+    {
+      "name": "status",
+      "type": {
+        "type": "enum",
+        "name": "OrderStatus",
+        "symbols": [
+          "ORDER_STATUS_UNSPECIFIED",
+          "ORDER_STATUS_PENDING",
+          "ORDER_STATUS_PAID",
+          "ORDER_STATUS_SHIPPED",
+          "ORDER_STATUS_CANCELLED"
+        ]
+      }
+    },
+    {
+      "name": "event_time",
+      "type": { "type": "long", "logicalType": "timestamp-millis" }
+    },
+    { "name": "total",    "type": "double" },
+    { "name": "currency", "type": "string" },
+    {
+      "name": "payment",
+      "doc": "Protobuf-oneof analogue: a record with one nullable sub-record per branch; exactly one is non-null per row. RisingWave does not yet support Avro unions of named record types (issue #17632), so we model the variants as nullable fields instead of a true union.",
+      "type": {
+        "type": "record",
+        "name": "Payment",
+        "fields": [
+          {
+            "name": "card",
+            "default": null,
+            "type": [
+              "null",
+              {
+                "type": "record",
+                "name": "CardPayment",
+                "fields": [
+                  { "name": "brand",  "type": "string" },
+                  { "name": "last4",  "type": "string" },
+                  { "name": "holder", "type": "string" }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "wallet",
+            "default": null,
+            "type": [
+              "null",
+              {
+                "type": "record",
+                "name": "WalletPayment",
+                "fields": [
+                  { "name": "provider",  "type": "string" },
+                  { "name": "wallet_id", "type": "string" }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "crypto",
+            "default": null,
+            "type": [
+              "null",
+              {
+                "type": "record",
+                "name": "CryptoPayment",
+                "fields": [
+                  { "name": "chain",   "type": "string" },
+                  { "name": "tx_hash", "type": "string" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
