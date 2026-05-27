@@ -594,3 +594,204 @@ warehouse (or `./bin/6_down.sh`).
 - [bin/3_run_protobuf_casino_demo.sh](../bin/3_run_protobuf_casino_demo.sh) — runner
 - [docs/PROTOBUF_NESTED_DEMO.md](./PROTOBUF_NESTED_DEMO.md) — companion orders demo
 - [docs/PROTOBUF_FILEDESC_WALKTHROUGH.md](./PROTOBUF_FILEDESC_WALKTHROUGH.md) — FileDescriptorSet variant (no Schema Registry)
+
+---
+
+## Registering this `.proto` in the Kaizen Confluent Schema Registry
+
+If you want to publish the schema *without* running a producer (typical for
+hand-off to platform teams, CI/CD, or pre-registration before producers come
+online), use the REST API directly. The same flow works against Redpanda's SR
+locally — only the host and auth change.
+
+### Registry URLs
+
+| Environment | URL                                                |
+| ----------- | -------------------------------------------------- |
+| Staging     | `http://staging-schema-registry.kaizengaming.net/` |
+| Production  | `http://schema-registry.kaizengaming.net/`         |
+
+> Pick the URL once and export it. Every snippet below uses `$SR`.
+
+```bash
+export SR="http://staging-schema-registry.kaizengaming.net"   # or prod
+# Confluent Cloud / authenticated SR:
+# export SR_AUTH="<api-key>:<api-secret>"
+```
+
+If auth is required, append `-u "$SR_AUTH"` to every `curl` below. The Kaizen
+clusters above are reachable without basic auth from inside the corp network.
+
+### 1. Decide the subject name
+
+Confluent's default strategy (matching what RisingWave + the Kafka clients
+assume) is **TopicNameStrategy** → `subject = <topic>-value`. Confirm with
+whoever owns the topic before you register; the other strategies are:
+
+| Strategy                    | Subject                              | When                                                   |
+| --------------------------- | ------------------------------------ | ------------------------------------------------------ |
+| `TopicNameStrategy`         | `<topic>-value`                      | Default. Multiple message types on one topic forbidden. |
+| `RecordNameStrategy`        | `<protobuf-FQN>`                     | Multiple message types across topics, same schema.    |
+| `TopicRecordNameStrategy`   | `<topic>-<protobuf-FQN>`             | Multiple message types on one topic.                  |
+
+For this demo:
+
+```bash
+TOPIC="casino_rounds"
+SUBJECT="${TOPIC}-value"        # TopicNameStrategy
+# SUBJECT="Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto"   # RecordNameStrategy
+```
+
+### 2. Build the request body
+
+The SR REST API expects the `.proto` source as a single JSON-escaped string.
+`jq -Rs` does the escape for you:
+
+```bash
+PROTO_FILE="proto/casinoroundinfodto.proto"
+SCHEMA_JSON=$(jq -Rs . < "$PROTO_FILE")
+
+cat > /tmp/sr-payload.json <<JSON
+{
+  "schemaType": "PROTOBUF",
+  "schema": $SCHEMA_JSON
+}
+JSON
+```
+
+If your `.proto` `import`s other custom `.proto` files (not the case here —
+this schema only imports `google/protobuf/timestamp.proto`, which is
+**built-in** to Confluent SR), register each imported subject first and add a
+`references` array:
+
+```jsonc
+{
+  "schemaType": "PROTOBUF",
+  "schema": "...",
+  "references": [
+    { "name": "common.proto", "subject": "common-value", "version": 1 }
+  ]
+}
+```
+
+`name` is the exact string used in the `.proto`'s `import` statement.
+
+### 3. (Optional) Compatibility-check before registering
+
+This validates the schema against the current subject without writing anything:
+
+```bash
+curl -sS -X POST "$SR/compatibility/subjects/$SUBJECT/versions/latest" \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  --data @/tmp/sr-payload.json | jq
+# Expect: { "is_compatible": true }
+```
+
+If the subject doesn't exist yet you'll get a 404 — that's expected, skip to
+step 4.
+
+### 4. Register
+
+```bash
+curl -sS -X POST "$SR/subjects/$SUBJECT/versions" \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  --data @/tmp/sr-payload.json | jq
+# Expect: { "id": 12345 }
+```
+
+The call is **idempotent** — posting the same schema again returns the same
+`id`. A different schema bumps the subject to a new version and returns a new
+`id` (provided it passes the subject's compatibility rule).
+
+### 5. (Optional) Pin the compatibility rule on the subject
+
+Most Kaizen subjects inherit the global default (usually `BACKWARD`). If you
+want to override per-subject — e.g. enforce `FULL` while iterating on a new
+schema:
+
+```bash
+curl -sS -X PUT "$SR/config/$SUBJECT" \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"compatibility":"BACKWARD"}' | jq
+```
+
+Valid values: `NONE`, `BACKWARD`, `BACKWARD_TRANSITIVE`, `FORWARD`,
+`FORWARD_TRANSITIVE`, `FULL`, `FULL_TRANSITIVE`.
+
+### 6. Verify
+
+```bash
+# All subjects on the registry
+curl -sS "$SR/subjects" | jq
+
+# Every version of our subject
+curl -sS "$SR/subjects/$SUBJECT/versions" | jq
+
+# The latest version
+curl -sS "$SR/subjects/$SUBJECT/versions/latest" | jq '.id, .version, .schemaType'
+
+# The raw .proto source as registered (round-trips back through jq)
+curl -sS "$SR/subjects/$SUBJECT/versions/latest" | jq -r .schema
+```
+
+### 7. Wire RisingWave (or any consumer) to that SR
+
+Once registered, RisingWave can consume the topic by pointing
+`schema.registry` at the same URL — no producer-side knowledge required:
+
+```sql
+CREATE SOURCE src_casino_rounds_proto
+WITH (
+    connector = 'kafka',
+    topic = 'casino_rounds',
+    properties.bootstrap.server = '<kaizen-bootstrap>:9092',
+    scan.startup.mode = 'earliest'
+)
+FORMAT PLAIN ENCODE PROTOBUF (
+    schema.registry = 'http://staging-schema-registry.kaizengaming.net',
+    message = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
+);
+```
+
+(If the registry ever moves behind basic auth, add
+`schema.registry.username` and `schema.registry.password` to the encode
+options.)
+
+### 8. Deregistering (cleanup)
+
+Soft delete keeps history (and lets you re-register the same `id`):
+
+```bash
+curl -sS -X DELETE "$SR/subjects/$SUBJECT" | jq
+```
+
+Permanent delete (only allowed *after* a soft delete; frees the version number
+for reuse):
+
+```bash
+curl -sS -X DELETE "$SR/subjects/$SUBJECT?permanent=true" | jq
+```
+
+> Don't `permanent=true` against a subject with live consumers — they'll fail
+> their next deserialize with `Schema not found`.
+
+### Pitfalls / FAQ
+
+- **`HTTP 422 Schema being registered is incompatible`** — the new schema
+  violates the subject's compatibility rule. Compare with
+  `curl "$SR/subjects/$SUBJECT/versions/latest"` and check renamed/reordered
+  fields, especially **never-reuse-a-tag-number** for a different type.
+- **`HTTP 409 Schema reference does not exist`** — a `references[]` entry
+  points to a subject/version that isn't registered yet. Register imports
+  first, in dependency order.
+- **Wrong subject strategy** — symptom is producers succeed, consumers fail
+  with `Subject ... not found`. The producer (or the team owning the
+  registration) and the consumer must agree.
+- **Magic-byte / wire format** — every record on the topic carries a 5-byte
+  prefix (`0x00 + 4-byte big-endian schema id`) before the protobuf payload,
+  plus a varint index for nested messages. The Confluent serializer and
+  RisingWave both handle this; do not hand-roll raw protobuf onto the topic.
+- **Pre-registration in CI/CD** — typical pattern: producers run with
+  `auto.register.schemas=false` against prod, and a pipeline step calls the
+  `POST /subjects/.../versions` REST endpoint after a compatibility check.
+  The flow in this section is exactly that step.
