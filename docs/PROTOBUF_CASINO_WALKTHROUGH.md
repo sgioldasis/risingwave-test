@@ -597,57 +597,73 @@ warehouse (or `./bin/6_down.sh`).
 
 ---
 
-## Registering this `.proto` in the Kaizen Confluent Schema Registry
+## Registering this `.proto` in the Kaizen Apicurio Registry
 
-If you want to publish the schema *without* running a producer (typical for
-hand-off to platform teams, CI/CD, or pre-registration before producers come
-online), use the REST API directly. The same flow works against Redpanda's SR
-locally — only the host and auth change.
+The Kaizen "schema registry" is **Apicurio Registry**, not Confluent's. Apicurio
+exposes two REST APIs on the same host:
+
+- **Native Apicurio API** — `/apis/registry/v2/...` (or `v3/...` on newer
+  deployments). Richer feature set (artifact types, groups, content rules,
+  labels, branches…). The Apicurio web UI uses this.
+- **Confluent-compatible API** — `/apis/ccompat/v6/` (or `/v7/`). A 1:1 facade
+  over the Confluent SR REST API. **This is what RisingWave, kcat, and the
+  Confluent Java/Python serializers talk to.**
+
+Both endpoints write to the same backing store — a schema registered through
+ccompat is visible in the Apicurio UI and vice versa.
 
 ### Registry URLs
 
-| Environment | URL                                                |
+| Environment | Base URL                                           |
 | ----------- | -------------------------------------------------- |
 | Staging     | `http://staging-schema-registry.kaizengaming.net/` |
 | Production  | `http://schema-registry.kaizengaming.net/`         |
 
-> Pick the URL once and export it. Every snippet below uses `$SR`.
+Concrete endpoints we'll use:
 
 ```bash
-export SR="http://staging-schema-registry.kaizengaming.net"   # or prod
-# Confluent Cloud / authenticated SR:
-# export SR_AUTH="<api-key>:<api-secret>"
+export REG="http://staging-schema-registry.kaizengaming.net"   # or prod
+export CCOMPAT="$REG/apis/ccompat/v7"     # use this from RisingWave / Kafka clients
+export APICURIO="$REG/apis/registry/v3"   # use this for Apicurio-native ops
 ```
 
-If auth is required, append `-u "$SR_AUTH"` to every `curl` below. The Kaizen
-clusters above are reachable without basic auth from inside the corp network.
+> **You already uploaded the schema via the Apicurio UI** — so steps 1–4 below
+> are the equivalent REST calls (for CI/CD or re-registration in prod).
+> Skip to step 6 (verify) and step 7 (wire RisingWave) if you just need to
+> consume the existing artifact.
 
-### 1. Decide the subject name
+### 1. (Apicurio-native) — what the UI does
 
-Confluent's default strategy (matching what RisingWave + the Kafka clients
-assume) is **TopicNameStrategy** → `subject = <topic>-value`. Confirm with
-whoever owns the topic before you register; the other strategies are:
+Apicurio organizes artifacts by `groupId/artifactId`. The UI defaults to
+`default` for the group; `artifactId` is whatever you typed.
 
-| Strategy                    | Subject                              | When                                                   |
-| --------------------------- | ------------------------------------ | ------------------------------------------------------ |
-| `TopicNameStrategy`         | `<topic>-value`                      | Default. Multiple message types on one topic forbidden. |
-| `RecordNameStrategy`        | `<protobuf-FQN>`                     | Multiple message types across topics, same schema.    |
-| `TopicRecordNameStrategy`   | `<topic>-<protobuf-FQN>`             | Multiple message types on one topic.                  |
+```bash
+GROUP="default"
+ARTIFACT="CasinoRoundInfoDto"
 
-For this demo:
+curl -sS -X POST "$APICURIO/groups/$GROUP/artifacts" \
+  -H "Content-Type: application/json" \
+  -H "X-Registry-ArtifactId: $ARTIFACT" \
+  -H "X-Registry-ArtifactType: PROTOBUF" \
+  --data-binary @proto/casinoroundinfodto.proto | jq
+```
+
+That endpoint returns the full artifact metadata. The Apicurio UI was doing
+exactly this when you uploaded.
+
+### 2. (ccompat) — what Kafka clients & RisingWave need
+
+For RisingWave to consume the topic, the schema must be reachable under a
+**Confluent-style subject name** — typically `<topic>-value` — via the ccompat
+facade. If you registered through the Apicurio UI under a different
+`artifactId`, the subject seen by ccompat will be that `artifactId`, not
+`<topic>-value`. Most likely you need to register it under the subject name
+your consumers expect:
 
 ```bash
 TOPIC="casino_rounds"
-SUBJECT="${TOPIC}-value"        # TopicNameStrategy
-# SUBJECT="Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto"   # RecordNameStrategy
-```
+SUBJECT="${TOPIC}-value"          # TopicNameStrategy (Confluent default)
 
-### 2. Build the request body
-
-The SR REST API expects the `.proto` source as a single JSON-escaped string.
-`jq -Rs` does the escape for you:
-
-```bash
 PROTO_FILE="proto/casinoroundinfodto.proto"
 SCHEMA_JSON=$(jq -Rs . < "$PROTO_FILE")
 
@@ -657,12 +673,25 @@ cat > /tmp/sr-payload.json <<JSON
   "schema": $SCHEMA_JSON
 }
 JSON
+
+curl -sS -X POST "$CCOMPAT/subjects/$SUBJECT/versions" \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  --data @/tmp/sr-payload.json | jq
+# => { "id": 12345 }
 ```
 
-If your `.proto` `import`s other custom `.proto` files (not the case here —
-this schema only imports `google/protobuf/timestamp.proto`, which is
-**built-in** to Confluent SR), register each imported subject first and add a
-`references` array:
+The call is **idempotent** — identical schema returns the same id.
+
+> Confirm with whoever owns the topic whether your platform uses
+> `TopicNameStrategy` (`<topic>-value`), `RecordNameStrategy` (`<protobuf-FQN>`)
+> or `TopicRecordNameStrategy` (`<topic>-<FQN>`). The wrong subject is the #1
+> reason producers succeed but consumers/RisingWave can't find the schema.
+
+### 3. Schema references (only if your `.proto` imports other custom protos)
+
+Not needed for this demo — `casinoroundinfodto.proto` only imports
+`google/protobuf/timestamp.proto` which is built into both Apicurio and
+Confluent. If you ever need them, register the imported subjects first, then:
 
 ```jsonc
 {
@@ -674,70 +703,39 @@ this schema only imports `google/protobuf/timestamp.proto`, which is
 }
 ```
 
-`name` is the exact string used in the `.proto`'s `import` statement.
-
-### 3. (Optional) Compatibility-check before registering
-
-This validates the schema against the current subject without writing anything:
+### 4. (Optional) Compatibility-check before registering
 
 ```bash
-curl -sS -X POST "$SR/compatibility/subjects/$SUBJECT/versions/latest" \
+curl -sS -X POST "$CCOMPAT/compatibility/subjects/$SUBJECT/versions/latest" \
   -H "Content-Type: application/vnd.schemaregistry.v1+json" \
   --data @/tmp/sr-payload.json | jq
-# Expect: { "is_compatible": true }
+# => { "is_compatible": true }
 ```
 
-If the subject doesn't exist yet you'll get a 404 — that's expected, skip to
-step 4.
-
-### 4. Register
+### 5. (Optional) Pin compatibility per subject
 
 ```bash
-curl -sS -X POST "$SR/subjects/$SUBJECT/versions" \
-  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
-  --data @/tmp/sr-payload.json | jq
-# Expect: { "id": 12345 }
-```
-
-The call is **idempotent** — posting the same schema again returns the same
-`id`. A different schema bumps the subject to a new version and returns a new
-`id` (provided it passes the subject's compatibility rule).
-
-### 5. (Optional) Pin the compatibility rule on the subject
-
-Most Kaizen subjects inherit the global default (usually `BACKWARD`). If you
-want to override per-subject — e.g. enforce `FULL` while iterating on a new
-schema:
-
-```bash
-curl -sS -X PUT "$SR/config/$SUBJECT" \
+curl -sS -X PUT "$CCOMPAT/config/$SUBJECT" \
   -H "Content-Type: application/vnd.schemaregistry.v1+json" \
   -d '{"compatibility":"BACKWARD"}' | jq
 ```
 
-Valid values: `NONE`, `BACKWARD`, `BACKWARD_TRANSITIVE`, `FORWARD`,
-`FORWARD_TRANSITIVE`, `FULL`, `FULL_TRANSITIVE`.
-
-### 6. Verify
+### 6. Verify (via either API)
 
 ```bash
-# All subjects on the registry
-curl -sS "$SR/subjects" | jq
+# Confluent-compat view
+curl -sS "$CCOMPAT/subjects" | jq
+curl -sS "$CCOMPAT/subjects/$SUBJECT/versions" | jq
+curl -sS "$CCOMPAT/subjects/$SUBJECT/versions/latest" | jq '.id, .version, .schemaType'
+curl -sS "$CCOMPAT/subjects/$SUBJECT/versions/latest" | jq -r .schema
 
-# Every version of our subject
-curl -sS "$SR/subjects/$SUBJECT/versions" | jq
-
-# The latest version
-curl -sS "$SR/subjects/$SUBJECT/versions/latest" | jq '.id, .version, .schemaType'
-
-# The raw .proto source as registered (round-trips back through jq)
-curl -sS "$SR/subjects/$SUBJECT/versions/latest" | jq -r .schema
+# Apicurio-native view
+curl -sS "$APICURIO/search/artifacts?name=$ARTIFACT" | jq
+curl -sS "$APICURIO/groups/$GROUP/artifacts/$ARTIFACT" | jq
+curl -sS "$APICURIO/groups/$GROUP/artifacts/$ARTIFACT/versions" | jq
 ```
 
-### 7. Wire RisingWave (or any consumer) to that SR
-
-Once registered, RisingWave can consume the topic by pointing
-`schema.registry` at the same URL — no producer-side knowledge required:
+### 7. Wire RisingWave to the Apicurio ccompat endpoint
 
 ```sql
 CREATE SOURCE src_casino_rounds_proto
@@ -748,28 +746,59 @@ WITH (
     scan.startup.mode = 'earliest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.registry = 'http://staging-schema-registry.kaizengaming.net',
+    schema.registry = 'http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7',
     message = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
 );
 ```
 
-(If the registry ever moves behind basic auth, add
-`schema.registry.username` and `schema.registry.password` to the encode
-options.)
+> ⚠ **Crucial:** `schema.registry` must point at `/apis/ccompat/v7` (or `v6`),
+> **not** the bare host. RisingWave speaks the Confluent SR REST dialect; the
+> bare Apicurio root will 404 on `/subjects/...`.
 
-### 8. Deregistering (cleanup)
+### 8. ⚠ Wire-format pitfall: Apicurio default vs Confluent
 
-Soft delete keeps history (and lets you re-register the same `id`):
+This trips up every Apicurio + RisingWave setup. Producers can publish records
+with **two different on-wire framings** depending on which Apicurio Java/.NET
+serializer mode is used:
 
-```bash
-curl -sS -X DELETE "$SR/subjects/$SUBJECT" | jq
+| Mode                                                 | Per-record framing                                                 | RisingWave compatible? |
+| ---------------------------------------------------- | ------------------------------------------------------------------ | ---------------------- |
+| Apicurio default (header-id encoding)                | Schema id in Kafka **record headers** (`apicurio.value.globalId`)  | ❌ No                  |
+| Apicurio with `apicurio.registry.as-confluent=true`  | Confluent magic-byte + 4-byte id prefix in **payload**             | ✅ Yes                 |
+| Confluent serializer pointed at ccompat              | Confluent magic-byte + 4-byte id prefix in payload                 | ✅ Yes                 |
+
+Tell the producing team **explicitly** to use Confluent-style framing —
+either via the Confluent serializer against `/apis/ccompat/v7`, or with the
+Apicurio serializer configured with:
+
+```properties
+apicurio.registry.url=http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7
+apicurio.registry.as-confluent=true
+apicurio.registry.use-id=contentId
 ```
 
-Permanent delete (only allowed *after* a soft delete; frees the version number
-for reuse):
+(.NET: `UseIdStrategy = IdStrategy.ContentId`, `EnableConfluentIdHandler = true`.)
+
+Quick smoke test from your laptop — peek at the first byte of a record:
 
 ```bash
-curl -sS -X DELETE "$SR/subjects/$SUBJECT?permanent=true" | jq
+docker run --rm --network host edenhill/kcat:1.7.1 \
+  -C -b <kaizen-bootstrap>:9092 -t casino_rounds -c 1 -e -q | xxd | head -1
+# Confluent framing → first byte is 00 (magic byte), bytes 1..4 are big-endian schema id.
+# If you see protobuf field tags right away (e.g. 0a, 12, 1a...), producers are still on Apicurio header-id mode → RisingWave will fail to decode.
+```
+
+### 9. Deregistering
+
+```bash
+# Soft delete (keeps history; same id can be re-registered)
+curl -sS -X DELETE "$CCOMPAT/subjects/$SUBJECT" | jq
+
+# Permanent delete (only after soft delete)
+curl -sS -X DELETE "$CCOMPAT/subjects/$SUBJECT?permanent=true" | jq
+
+# Apicurio-native delete
+curl -sS -X DELETE "$APICURIO/groups/$GROUP/artifacts/$ARTIFACT" | jq
 ```
 
 > Don't `permanent=true` against a subject with live consumers — they'll fail
@@ -777,21 +806,18 @@ curl -sS -X DELETE "$SR/subjects/$SUBJECT?permanent=true" | jq
 
 ### Pitfalls / FAQ
 
-- **`HTTP 422 Schema being registered is incompatible`** — the new schema
-  violates the subject's compatibility rule. Compare with
-  `curl "$SR/subjects/$SUBJECT/versions/latest"` and check renamed/reordered
-  fields, especially **never-reuse-a-tag-number** for a different type.
-- **`HTTP 409 Schema reference does not exist`** — a `references[]` entry
-  points to a subject/version that isn't registered yet. Register imports
+- **`HTTP 422 incompatible`** — new schema violates the subject's compatibility
+  rule. Tag-number reuse for a different type is the usual culprit; never
+  reuse a field number.
+- **`HTTP 409 reference does not exist`** — register imported `.proto` subjects
   first, in dependency order.
-- **Wrong subject strategy** — symptom is producers succeed, consumers fail
-  with `Subject ... not found`. The producer (or the team owning the
-  registration) and the consumer must agree.
-- **Magic-byte / wire format** — every record on the topic carries a 5-byte
-  prefix (`0x00 + 4-byte big-endian schema id`) before the protobuf payload,
-  plus a varint index for nested messages. The Confluent serializer and
-  RisingWave both handle this; do not hand-roll raw protobuf onto the topic.
-- **Pre-registration in CI/CD** — typical pattern: producers run with
-  `auto.register.schemas=false` against prod, and a pipeline step calls the
-  `POST /subjects/.../versions` REST endpoint after a compatibility check.
-  The flow in this section is exactly that step.
+- **`subject not found` from RisingWave / Kafka clients** but the schema is
+  visible in the Apicurio UI — the UI created an artifact under
+  `groupId=default, artifactId=<whatever>`, not the ccompat subject
+  `<topic>-value`. Use step 2 above to register under the expected subject
+  name.
+- **Records decode partially or RisingWave logs `Failed to deserialize`** —
+  producers are publishing with Apicurio header-id framing instead of
+  Confluent magic-byte framing. See step 8.
+- **`schema.registry` 404 on RisingWave source creation** — you pointed at the
+  bare Apicurio host instead of `/apis/ccompat/v7`.

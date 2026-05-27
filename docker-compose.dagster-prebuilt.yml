@@ -1,0 +1,31 @@
+# Compose override: skip the Dagster image build and reuse whatever is already
+# in the local Docker image cache.
+#
+# Use when network egress is blocked (VPN, captive portal, registry outage) and
+# the `Dockerfile.dagster` build can't reach Docker Hub / Adoptium / Maven.
+#
+# Activate by adding `SKIP_DAGSTER_BUILD=1` to `bin/1_up.sh`, or directly:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.dagster-prebuilt.yml \
+#     up -d
+#
+# Compose merge semantics: setting `build: !reset null` removes the build
+# context entirely from the merged config, so `docker compose up` will not
+# attempt to build — it just uses the image referenced by the service.
+# `pull_policy: never` additionally suppresses any attempt to pull the image
+# from a remote registry, which would also fail on a blocked network.
+
+services:
+  kafka-head-observer:
+    build: !reset null
+    pull_policy: never
+
+  dagster-webserver:
+    build: !reset null
+    pull_policy: never
+
+  dagster-daemon:
+    build: !reset null
+    pull_policy: never

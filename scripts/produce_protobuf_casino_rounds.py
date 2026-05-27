@@ -1,23 +1,54 @@
 #!/usr/bin/env python3
-"""Produce protobuf-encoded `CasinoRoundInfoDto` events into Redpanda.
+"""Produce protobuf-encoded `CasinoRoundInfoDto` events into Kafka/Redpanda.
 
 Mirrors scripts/produce_protobuf_orders.py but for the Cronus casino schema in
 proto/casinoroundinfodto.proto.
 
 - Auto-compiles proto/casinoroundinfodto.proto -> scripts/_pb/casinoroundinfodto_pb2.py.
-- Registers the schema under subject `<topic>-value` via Redpanda's Schema
-  Registry (Confluent-compatible) using `ProtobufSerializer`.
+- Registers the schema under subject `<topic>-value` via a
+  Confluent-compatible Schema Registry endpoint (works against Redpanda's SR
+  locally and against Apicurio's `/apis/ccompat/v7/` endpoint in staging/prod).
 - Emits realistic nested CasinoRoundInfoDto rounds with multiple Messages, each
   carrying multiple Transactions, so the demo SQL can exercise nested struct
   access + double UNNEST + map-less aggregations.
+- Writes Confluent magic-byte wire format (5-byte id prefix + varint message
+  index), which RisingWave can decode.
 
 Usage:
     uv run python scripts/produce_protobuf_casino_rounds.py --count 200 --tps 0
 
-Env overrides:
-    KAFKA_BOOTSTRAP    default localhost:19092
-    SCHEMA_REGISTRY    default http://localhost:8081
-    TOPIC              default casino_rounds
+Local (Redpanda) defaults:
+    KAFKA_BOOTSTRAP            localhost:19092
+    SCHEMA_REGISTRY            http://localhost:8081
+    TOPIC                      casino_rounds
+
+Apicurio staging example (point at ccompat endpoint, reuse existing artifact):
+    KAFKA_BOOTSTRAP=<kaizen-bootstrap>:9092 \\
+    SCHEMA_REGISTRY=http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7 \\
+    SCHEMA_SUBJECT=bigdata:casinoroundinfo \\
+    SCHEMA_AUTO_REGISTER=false \\
+    TOPIC=casino_rounds \\
+    uv run python scripts/produce_protobuf_casino_rounds.py --count 100 --tps 5
+
+Env reference:
+    KAFKA_BOOTSTRAP            Kafka bootstrap server(s).
+    SCHEMA_REGISTRY            Schema-Registry-compatible URL.
+                               For Apicurio MUST end in /apis/ccompat/v7 (or v6).
+    SCHEMA_REGISTRY_USERNAME   Basic-auth username (optional).
+    SCHEMA_REGISTRY_PASSWORD   Basic-auth password (optional).
+    SCHEMA_SUBJECT             Override subject lookup name.
+                               Default: <topic>-value (Confluent TopicNameStrategy).
+                               For Apicurio with a non-default group, use
+                               '<groupId>:<artifactId>' if ccompat is configured
+                               with legacy-id-mode=false. E.g. 'bigdata:casinoroundinfo'.
+    SCHEMA_AUTO_REGISTER       'true' (default) or 'false'. Set false in
+                               environments where you pre-register schemas
+                               and want the producer to only look up by hash.
+    KAFKA_SECURITY_PROTOCOL    e.g. SASL_SSL (optional).
+    KAFKA_SASL_MECHANISM       e.g. PLAIN, SCRAM-SHA-512 (optional).
+    KAFKA_SASL_USERNAME        SASL username (optional).
+    KAFKA_SASL_PASSWORD        SASL password (optional).
+    TOPIC                      Kafka topic. Default: casino_rounds.
 """
 from __future__ import annotations
 
@@ -203,23 +234,59 @@ def main() -> None:
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP", "localhost:19092")
     sr_url = os.environ.get("SCHEMA_REGISTRY", "http://localhost:8081")
     topic = os.environ.get("TOPIC", "casino_rounds")
+    sr_user = os.environ.get("SCHEMA_REGISTRY_USERNAME")
+    sr_pass = os.environ.get("SCHEMA_REGISTRY_PASSWORD")
+    subject_override = os.environ.get("SCHEMA_SUBJECT")
+    auto_register = os.environ.get("SCHEMA_AUTO_REGISTER", "true").lower() != "false"
 
-    print(f"[producer] bootstrap={bootstrap}  schema_registry={sr_url}  topic={topic}")
+    effective_subject = subject_override or f"{topic}-value"
+    print(
+        f"[producer] bootstrap={bootstrap}  schema_registry={sr_url}  topic={topic}\n"
+        f"           subject={effective_subject!r}  auto_register={auto_register}"
+    )
 
-    sr_client = SchemaRegistryClient({"url": sr_url})
+    sr_conf: dict[str, object] = {"url": sr_url}
+    if sr_user and sr_pass:
+        sr_conf["basic.auth.user.info"] = f"{sr_user}:{sr_pass}"
+    sr_client = SchemaRegistryClient(sr_conf)
+
+    def _fixed_subject(_topic, _record):  # noqa: WPS430
+        return effective_subject
+
     proto_serializer = ProtobufSerializer(
         pb.CasinoRoundInfoDto,
         sr_client,
-        {"use.deprecated.format": False},
-    )
-    producer = SerializingProducer(
         {
-            "bootstrap.servers": bootstrap,
-            "key.serializer": StringSerializer("utf_8"),
-            "value.serializer": proto_serializer,
-            "linger.ms": 50,
-        }
+            "use.deprecated.format": False,
+            "auto.register.schemas": auto_register,
+            # `use.latest.version` is mutually exclusive with auto-register; when
+            # auto_register is False we want the serializer to look up the
+            # latest registered schema by subject instead of trying to register.
+            "use.latest.version": not auto_register,
+            "subject.name.strategy": _fixed_subject,
+        },
     )
+
+    kafka_conf: dict[str, object] = {
+        "bootstrap.servers": bootstrap,
+        "key.serializer": StringSerializer("utf_8"),
+        "value.serializer": proto_serializer,
+        "linger.ms": 50,
+    }
+    sec_proto = os.environ.get("KAFKA_SECURITY_PROTOCOL")
+    if sec_proto:
+        kafka_conf["security.protocol"] = sec_proto
+    sasl_mech = os.environ.get("KAFKA_SASL_MECHANISM")
+    if sasl_mech:
+        kafka_conf["sasl.mechanism"] = sasl_mech
+    sasl_user = os.environ.get("KAFKA_SASL_USERNAME")
+    if sasl_user:
+        kafka_conf["sasl.username"] = sasl_user
+    sasl_pass = os.environ.get("KAFKA_SASL_PASSWORD")
+    if sasl_pass:
+        kafka_conf["sasl.password"] = sasl_pass
+
+    producer = SerializingProducer(kafka_conf)
 
     def on_delivery(err, msg) -> None:
         if err is not None:

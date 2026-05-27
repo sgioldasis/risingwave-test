@@ -36,12 +36,14 @@ BIN_DIR = PROJECT_ROOT / "bin"
 
 # Scripts configuration (in order)
 SCRIPTS = [
-    ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies"),
+    ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies", None,
+     [{"label": "Offline (skip Dagster build, reuse cached image)", "flag": "--offline"}]),
     ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("3_run_protobuf_demo.sh", "🧬 Protobuf Demo", "Produce nested protobuf orders and create RisingWave source + MV"),
     ("3_run_protobuf_demo_filedesc.sh", "🧬 Protobuf Demo (FileDescriptorSet)", "Same demo but via schema.location=file:///proto/events.pb (no Schema Registry)"),
     ("3_run_protobuf_casino_demo.sh", "🎰 Casino Protobuf Demo", "Produce Cronus CasinoRoundInfoDto protobuf rounds, create RisingWave source + MVs, and sink into managed Iceberg tables"),
+    ("3_run_casino_prd_demo.sh", "🏭 Casino Production Demo", "Wire RisingWave to prd2 Kafka (cronus.casino.out.gh), create MVs + Iceberg sinks via Lakekeeper"),
     ("3_run_avro_demo.sh", "🅰️  Avro Demo", "Produce nested Avro orders, create RisingWave source + MV, and sink into managed Iceberg tables"),
     ("4_run_ml_serving.sh", "🤖 ML Serving", "Start ML serving with River online learning (port 8001)"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
@@ -608,13 +610,13 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         
         function initScripts() {
             const container = document.getElementById('scriptList');
-            scripts.forEach(([file, name, desc, hasParams]) => {
+            scripts.forEach(([file, name, desc, hasParams, checkboxes]) => {
                 const div = document.createElement('div');
                 div.className = 'script-item';
                 div.id = `script-${file}`;
                 div.onclick = (e) => {
-                    // Don't trigger if clicking inside the param input
-                    if (e.target.tagName !== 'INPUT') {
+                    // Don't trigger if clicking inside an input (text or checkbox) or its label
+                    if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'LABEL') {
                         runScript(file);
                     }
                 };
@@ -630,6 +632,19 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     `;
                 }
 
+                let checkboxHtml = '';
+                if (checkboxes && checkboxes.length) {
+                    const items = checkboxes.map((cb, idx) => `
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--fg-secondary); cursor: pointer;"
+                               onclick="event.stopPropagation()">
+                            <input type="checkbox" id="flag-${file}-${idx}" data-flag="${cb.flag}"
+                                   onclick="event.stopPropagation()">
+                            ${cb.label}
+                        </label>
+                    `).join('');
+                    checkboxHtml = `<div class="flag-container" style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">${items}</div>`;
+                }
+
                 div.innerHTML = `
                     <div class="script-name">
                         <span class="running-indicator" id="indicator-${file}" style="display: none;"></span>
@@ -637,6 +652,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     </div>
                     <div class="script-desc">${desc}</div>
                     ${paramHtml}
+                    ${checkboxHtml}
                 `;
                 container.appendChild(div);
             });
@@ -1111,7 +1127,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 
                 // Get parameters if any
                 const paramInput = document.getElementById(`param-${scriptFile}`);
-                const params = paramInput ? paramInput.value : '';
+                let params = paramInput ? paramInput.value : '';
+
+                // Append any checked flag-style checkboxes
+                const flagInputs = document.querySelectorAll(`#script-${scriptFile} input[type=checkbox][data-flag]`);
+                flagInputs.forEach(cb => {
+                    if (cb.checked) {
+                        params = (params ? params + ' ' : '') + cb.dataset.flag;
+                    }
+                });
 
                 // Check if script is already running
                 let tab = activeTabs.get(scriptFile);

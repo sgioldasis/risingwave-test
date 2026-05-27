@@ -2,8 +2,27 @@
 
 # Script to start Docker Compose services
 # This script should be run from the project root
+#
+# Flags:
+#   --offline | --skip-dagster-build
+#       Reuse the locally cached Dagster image instead of (re)building it.
+#       Equivalent to exporting SKIP_DAGSTER_BUILD=1 before invocation.
+#       Use when the network blocks Docker Hub / Adoptium / Maven (e.g. VPN).
+#       Requires the image 'risingwave-test/dagster:local' to already exist;
+#       build it once when off-VPN: `docker compose build dagster-webserver`.
 
 set -e
+
+# Parse CLI flags (the script runner forwards its params field as positional
+# args, so this lets users toggle offline mode per-run from the UI).
+for arg in "$@"; do
+    case "$arg" in
+        --offline|--skip-dagster-build)
+            export SKIP_DAGSTER_BUILD=1
+            echo "Flag '$arg' → SKIP_DAGSTER_BUILD=1 for this run"
+            ;;
+    esac
+done
 
 echo "=== Pre-flight: Syncing local Python packages ==="
 # Preserve historical behavior: refresh dependencies on startup by default.
@@ -89,6 +108,10 @@ echo ""
 # Run from project root (where docker-compose.yml is located)
 # Auto-rebuild images when uv.lock changed during sync (dependency drift),
 # or when explicitly requested via COMPOSE_FORCE_BUILD=1.
+#
+# Offline / VPN escape hatch: SKIP_DAGSTER_BUILD=1 layers an override that
+# strips `build:` from the Dagster services so Compose reuses the locally
+# cached image and never touches Docker Hub / Adoptium / Maven.
 LOCK_HASH_AFTER="$(hash_lock)"
 AUTO_REBUILD=0
 if [ -n "$LOCK_HASH_BEFORE" ] && [ -n "$LOCK_HASH_AFTER" ] && \
@@ -97,14 +120,29 @@ if [ -n "$LOCK_HASH_BEFORE" ] && [ -n "$LOCK_HASH_AFTER" ] && \
     echo "Detected uv.lock changes during sync → will rebuild images to match"
 fi
 
-if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ] || [ "$AUTO_REBUILD" = "1" ]; then
+COMPOSE_ARGS=()
+DAGSTER_IMAGE_REF="${DAGSTER_IMAGE:-risingwave-test/dagster:local}"
+
+if [ "${SKIP_DAGSTER_BUILD:-0}" = "1" ]; then
+    if ! docker image inspect "${DAGSTER_IMAGE_REF}" >/dev/null 2>&1; then
+        echo "❌ SKIP_DAGSTER_BUILD=1 but image '${DAGSTER_IMAGE_REF}' is not present locally."
+        echo "   Build it once when off-VPN: docker compose build dagster-webserver"
+        exit 1
+    fi
+    echo "Offline mode (SKIP_DAGSTER_BUILD=1): reusing local image '${DAGSTER_IMAGE_REF}'"
+    COMPOSE_ARGS+=(-f docker-compose.yml -f docker-compose.dagster-prebuilt.yml)
+    AUTO_REBUILD=0
+fi
+
+if [ "${SKIP_DAGSTER_BUILD:-0}" != "1" ] && \
+   ( [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ] || [ "$AUTO_REBUILD" = "1" ] ); then
     if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ]; then
         echo "Build mode enabled (COMPOSE_FORCE_BUILD=1): rebuilding images"
     fi
-    docker compose up --build -d
+    docker compose "${COMPOSE_ARGS[@]}" up --build -d
 else
     echo "Build mode disabled: reusing existing local images (set COMPOSE_FORCE_BUILD=1 to force)"
-    docker compose up -d
+    docker compose "${COMPOSE_ARGS[@]}" up -d
 fi
 
 echo ""
