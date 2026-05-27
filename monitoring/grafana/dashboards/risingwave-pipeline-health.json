@@ -53,6 +53,36 @@
       "targets": [{"expr": "scrape_duration_seconds{job=\"redpanda\"}", "legendFormat": "redpanda", "refId": "A"}, {"expr": "scrape_duration_seconds{job=\"minio\"}", "legendFormat": "minio", "refId": "B"}],
       "title": "Dependency Scrape Duration",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Per-source rows/sec emitted by RisingWave source executors. Includes auto-created `__iceberg_source_*` readers backing managed iceberg tables.",
+      "fieldConfig": {"defaults": {"unit": "rps"}, "overrides": []},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 30},
+      "id": 7,
+      "targets": [{"expr": "sum by (source_name) (rate(stream_source_output_rows_counts[1m]))", "legendFormat": "{{source_name}}", "refId": "A"}],
+      "title": "Source Throughput (rows/s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Per-sink rows/sec arriving at the sink executor (joined with `sink_info` so the legend shows sink_name). `connector_sink_rows_received` is unreliable for iceberg sinks in this RW build, so we use the stream-side counter.",
+      "fieldConfig": {"defaults": {"unit": "rps"}, "overrides": []},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 30},
+      "id": 8,
+      "targets": [{"expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[1m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info)\n)", "legendFormat": "{{sink_name}}", "refId": "A"}],
+      "title": "Sink Throughput (rows/s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Iceberg commits per minute. Each spike = one snapshot written to Lakekeeper / MinIO (driven by `commit_checkpoint_interval`).",
+      "fieldConfig": {"defaults": {"unit": "cpm"}, "overrides": []},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 40},
+      "id": 9,
+      "targets": [{"expr": "sum by (sink_name, connector) (rate(sink_commit_duration_count[1m]) * 60)", "legendFormat": "{{sink_name}} ({{connector}})", "refId": "A"}],
+      "title": "Sink Commits / min",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",

@@ -563,8 +563,12 @@ services:
       - "9090:8080"  # Access at http://localhost:9090
     environment:
       - KAFKA_BROKERS=redpanda:9092
+      # Legacy keys (older console versions)
       - KAFKA_SCHEMAREGISTRY_ENABLED=true
       - KAFKA_SCHEMAREGISTRY_URLS=http://redpanda:8081
+      # New top-level keys (console v2.x+)
+      - SCHEMAREGISTRY_ENABLED=true
+      - SCHEMAREGISTRY_URLS=http://redpanda:8081
     depends_on:
       - redpanda
     networks:

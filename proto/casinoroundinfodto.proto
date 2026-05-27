@@ -1,0 +1,69 @@
+syntax = "proto3";
+package Cronus.CasinoService.RoundInfo.Abstractions;
+import "google/protobuf/timestamp.proto";
+
+message CasinoMessageInformation {
+  int64 MessageId = 1;
+  string TransactionRef = 2;
+  string SessionId = 3;
+  int32 MessageTypeId = 4;
+  int32 TokenTypeId = 5;
+  string ProviderBonusTokenCode = 6;
+  .google.protobuf.Timestamp Created = 7;
+  string JackpotWinAmount = 8;
+  string JackpotContributionAmount = 9;
+  string JackpotInfo = 10;
+  bool IsRoundClosed = 11;
+  repeated TransactionInformation Transactions = 12;
+  optional string CommissionAmount = 13;
+  optional int32 P2PGameMode = 14;
+  optional string JackpotRealWinAmount = 15;
+  optional string JackpotBonusWinAmount = 16;
+  optional string BetCoverage = 17;
+}
+message CasinoRoundInfoDto {
+  string UniqueId = 1;
+  int32 CustomerId = 2;
+  int32 CompanyId = 3;
+  int32 CasinoProviderId = 4;
+  int32 ExternalProviderId = 5;
+  GameInformation GameInfo = 6;
+  RoundInformation RoundInfo = 7;
+  bool IsBonusLockedOnFatMessageCreation = 8;
+  optional bool IsBonusCampaignWagering = 9;
+}
+message GameInformation {
+  int32 GameId = 1;
+  string ProviderGameCode = 2;
+  bool IsLive = 3;
+  string ProviderTableCode = 4;
+  int32 GameType = 5;
+  optional bool IsJackpotContributionsFromOperator = 6;
+}
+message RoundInformation {
+  string GameRoundRef = 1;
+  .google.protobuf.Timestamp RoundCreated = 2;
+  .google.protobuf.Timestamp RoundEnded = 3;
+  repeated CasinoMessageInformation Messages = 4;
+}
+message TransactionInformation {
+  int64 TransactionId = 1;
+  .google.protobuf.Timestamp Created = 2;
+  int32 CurrencyId = 3;
+  int32 AccountId = 4;
+  string BaseBalanceBefore = 5;
+  string BonusBalanceBefore = 6;
+  string Amount = 7;
+  string CurrencyRateToEuro = 8;
+  string TokenAmount = 9;
+  int32 CustomerCampaignId = 10;
+  int32 CampaignId = 11;
+  int32 CampaignTypeId = 12;
+  int64 PandoraJourneyId = 13;
+  int32 SourceId = 14;
+  string BonusAction = 15;
+  optional bool IsDepositFromToken = 16;
+  optional string RawBaseBalanceBefore = 17;
+  optional string RawBonusBalanceBefore = 18;
+  optional int32 TransactionTypeId = 19;
+}

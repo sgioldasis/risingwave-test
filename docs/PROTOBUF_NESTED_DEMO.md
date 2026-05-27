@@ -282,9 +282,10 @@ runner:
 SELECT name, owner FROM rw_catalog.rw_sources WHERE name = 'src_orders_proto';
 SELECT name FROM rw_catalog.rw_materialized_views WHERE name LIKE 'mv_%';
 
--- Throughput stats for the source
-SELECT * FROM rw_catalog.rw_source_throughput
-WHERE source_name = 'src_orders_proto';
+-- Throughput stats: rw_catalog.rw_source_throughput is not yet implemented
+-- (https://github.com/risingwavelabs/risingwave/issues/1695). Use SHOW instead:
+SHOW JOBS;
+-- or open the dashboard at http://localhost:5691 (Streaming → Sources).
 ```
 
 ### 11. Schema-evolution sanity (optional)
