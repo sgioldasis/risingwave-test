@@ -153,10 +153,19 @@ def main():
 
                 # Control execution rate using target time for precise TPS
                 target_time += interval
-                sleep_time = target_time - time.time()
-                
+                now = time.time()
+                sleep_time = target_time - now
+
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+                elif -sleep_time > max(interval * 5, 1.0):
+                    # Wall clock jumped forward (sleep/suspend/stall).
+                    # Don't burst-catch-up; resync target_time to now.
+                    print(
+                        f"[{get_timestamp()}] ⚠️  Detected {-sleep_time:.1f}s lag "
+                        f"(likely host/container suspend); resyncing pacing."
+                    )
+                    target_time = now
             else:
                 # If TPS is 0, just sleep until next report
                 time.sleep(0.1)
