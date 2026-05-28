@@ -21,21 +21,22 @@ tables.
 └──────────────────────────┘                      └─────────────┬─────────────┘
                                                                 │ mounted in
                                                                 ▼  RW container
-┌──────────────────────────┐    SSL one-way   ┌─────────────────────────────┐
-│ Kaizen prd2 Kafka        │ ────────────────▶│  RisingWave (compute-node-0)│
-│ prd2-kafka-bootstrap     │  topic           │   src_casino_prd  (SOURCE)  │
-│ .kaizengaming.net:443    │  cronus.casino   │   ↓                          │
-│ 5 brokers, 290 topics    │  .out.gh         │   mv_casino_prd_rounds_flat  │
-└──────────────────────────┘                  │   mv_casino_prd_volume_..    │
-                                              │   mv_casino_prd_funnel       │
-                                              └────────────┬────────────────┘
-                                                           │ upsert sink
+┌──────────────────────────┐    SSL one-way   ┌─────────────────────────────────┐
+│ Kaizen prd2 Kafka        │ ────────────────▶│  RisingWave (compute-node-0)     │
+│ prd2-kafka-bootstrap     │  topic           │   src_casino_prd  (TABLE)        │
+│ .kaizengaming.net:443    │  cronus.casino   │   ↓                              │
+│ 5 brokers, 290 topics    │  .out.gh         │   mv_casino_raw  (nested 1:1)    │
+└──────────────────────────┘                  │   mv_casino_transactions         │
+                                              │   mv_casino_real_bet_events      │
+                                              │   mv_casino_real_bet_hourly_..   │
+                                              └────────────┬────────────────────┘
+                                                           │ upsert sinks
                                                            ▼  (commit ≈5s)
-                                              ┌─────────────────────────────┐
-                                              │ Lakekeeper REST catalog     │
-                                              │ + MinIO S3 (hummock001)     │
-                                              │ rw_managed_casino_prd_*     │
-                                              └─────────────────────────────┘
+                                              ┌─────────────────────────────────┐
+                                              │ Lakekeeper REST catalog          │
+                                              │ + MinIO S3 (hummock001)          │
+                                              │ rw_managed_casino_*              │
+                                              └─────────────────────────────────┘
 ```
 
 Key decisions:
@@ -48,8 +49,14 @@ Key decisions:
   5/6-byte magic prefix. RisingWave's `schema.location` (file-based) reads
   byte 0 as a protobuf field tag — that matches what's on the wire, so no
   framing strip is needed.
-- **`scan.startup.mode = 'latest'`** so we don't drag the full 386 K+ history
-  through the dev cluster; the demo proves itself on live traffic.
+- **`scan.startup.mode = 'earliest'`** combined with `CREATE TABLE` (not
+  `CREATE SOURCE`) persists the topic into RW state, so MVs see full
+  history and batch counts agree with streaming counts.
+- **Source lands in Iceberg with full nested fidelity.** `mv_casino_raw`
+  is a thin pass-through MV that only renames top-level columns to
+  snake_case; the nested `STRUCT<…>[]` (incl. `Messages[].Transactions[]`)
+  flows into Iceberg unchanged. The other MVs are analytical projections
+  over the same source.
 
 ---
 
@@ -120,25 +127,38 @@ docker exec redpanda rpk topic consume cronus.casino.out.gh \
 Leading bytes were `0a …` (protobuf field tag 1, wire type 2 = length-prefixed
 string). Confirmed: **no Confluent 5-byte prefix** to strip.
 
-### 3.4 Create the source in RisingWave
+### 3.4 Create the ingest TABLE in RisingWave
+
+We use a `TABLE` (not a `SOURCE`) so RisingWave persists ingested rows in its
+internal state store. This lets `scan.startup.mode = 'earliest'` replay the
+full topic history into downstream MVs, and makes batch `SELECT COUNT(*)`
+against the table consistent with what MVs have actually consumed.
 
 ```sql
-DROP SOURCE IF EXISTS src_casino_prd CASCADE;
+DROP TABLE IF EXISTS src_casino_prd CASCADE;
 
-CREATE SOURCE src_casino_prd
+CREATE TABLE src_casino_prd
 WITH (
     connector                     = 'kafka',
     topic                         = 'cronus.casino.out.gh',
     properties.bootstrap.server   = 'prd2-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol  = 'SSL',
     group.id.prefix               = 'rw-readonly-casino-demo',
-    scan.startup.mode             = 'latest'
+    scan.startup.mode             = 'earliest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location = 'file:///proto/casinoroundinfodto.pb',
     message         = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
 );
 ```
+
+> **Why TABLE instead of SOURCE?** A `SOURCE` is a thin streaming subscription —
+> batch queries re-scan Kafka at read time, while streaming MVs only see
+> messages arriving **after** the source was created (controlled by
+> `scan.startup.mode`). That makes `SELECT COUNT(*) FROM src` (batch path,
+> reads from earliest) disagree with MV row counts (streaming path, reads from
+> `latest`). A `TABLE` materializes the stream once, so both paths agree and
+> historical data can backfill MVs.
 
 Sanity check — describe column shape:
 
@@ -181,68 +201,95 @@ to re-run.
 ### 3.6 Real-time materialized views
 
 See [`sql/casino_prd_funnel_iceberg.sql`](../sql/casino_prd_funnel_iceberg.sql)
-for the full file. Highlights:
+for the full file. The slim demo build keeps **three** MVs:
+`mv_casino_transactions` (one row per transaction, see §4.1 for the query
+body), `mv_casino_real_bet_events`, and
+`mv_casino_real_bet_hourly_per_customer`.
 
 ```sql
--- One row per round, flattened
-CREATE MATERIALIZED VIEW mv_casino_prd_rounds_flat AS
+-- Real Bet Amount events — business-logic filter on top of mv_casino_transactions.
+-- Mirrors `getCasinoRealBetAmountEvents` from the Spark PoC:
+--   MessageTypeId = 1  (bet)
+--   AccountId     = 1  (real account, not bonus)
+--   Amount        IS NOT NULL
+-- The extra `amount_raw <> ''` guard is RisingWave-specific: proto3 string
+-- fields decode as empty strings, not NULL, when absent on the wire.
+CREATE MATERIALIZED VIEW mv_casino_real_bet_events AS
 SELECT
-    r."UniqueId"                                    AS unique_id,
-    r."CustomerId"                                  AS customer_id,
-    r."CompanyId"                                   AS company_id,
-    (r."GameInfo")."GameId"                         AS game_id,
-    (r."GameInfo")."ProviderGameCode"               AS provider_game_code,
-    (r."RoundInfo")."GameRoundRef"                  AS game_round_ref,
-    to_timestamp(((r."RoundInfo")."RoundCreated")."seconds"
-               + ((r."RoundInfo")."RoundCreated")."nanos" / 1e9)
-                                                    AS round_created,
-    array_length((r."RoundInfo")."Messages")        AS num_messages
-FROM src_casino_prd AS r;
+    customer_id,
+    transaction_id,
+    currency_id,
+    amount_abs                                  AS real_bet_amount,
+    transaction_created_at                      AS event_ts,
+    DATE_TRUNC('hour', transaction_created_at)  AS event_hour
+FROM mv_casino_transactions
+WHERE message_type_id = 1
+  AND account_id      = 1
+  AND amount_raw IS NOT NULL
+  AND amount_raw <> '';
 
--- Bet-volume rollup per (company, game)
-CREATE MATERIALIZED VIEW mv_casino_prd_volume_by_company_game AS
-WITH exploded_msgs AS (
-    SELECT
-        r."CompanyId"              AS company_id,
-        (r."GameInfo")."GameId"    AS game_id,
-        (r."GameInfo")."GameType"  AS game_type,
-        r."UniqueId"               AS unique_id,
-        "Transactions"             AS txs
-    FROM src_casino_prd AS r,
-         UNNEST((r."RoundInfo")."Messages")
-)
+-- Hourly bucketed real-bet totals per customer.
+-- Mirrors the `mapGroupsWithState` bucketed accumulator from the Spark PoC
+-- (one row per (customer, 1-hour tumbling window) with running totals).
+-- RisingWave handles the incremental state automatically via TUMBLE; a strict
+-- 14-day rolling total is then a cheap aggregate on top of these buckets:
+--   SELECT customer_id, SUM(total_real_bet_amount)
+--   FROM mv_casino_real_bet_hourly_per_customer
+--   WHERE window_start > now() - INTERVAL '14 days'
+--   GROUP BY customer_id;
+CREATE MATERIALIZED VIEW mv_casino_real_bet_hourly_per_customer AS
 SELECT
-    company_id, game_id, game_type,
-    COUNT(DISTINCT unique_id)                          AS rounds,
-    COUNT(*)                                           AS transactions,
-    ROUND(SUM(NULLIF("Amount", '')::numeric), 4)       AS total_amount,
-    ROUND(SUM(NULLIF("TokenAmount", '')::numeric), 4)  AS total_token_amount,
-    ROUND(AVG(NULLIF("CurrencyRateToEuro", '')::numeric), 6) AS avg_fx_to_eur
-FROM exploded_msgs, UNNEST(txs)
-GROUP BY 1, 2, 3;
-
--- Per-(company, game, message-type) funnel
-CREATE MATERIALIZED VIEW mv_casino_prd_funnel AS
-WITH stages AS (
-    SELECT
-        r."CompanyId"                       AS company_id,
-        (r."GameInfo")."GameId"             AS game_id,
-        r."UniqueId"                        AS unique_id,
-        "MessageTypeId"                     AS msg_type,
-        "IsRoundClosed"                     AS round_closed
-    FROM src_casino_prd AS r,
-         UNNEST((r."RoundInfo")."Messages")
-)
-SELECT
-    company_id, game_id, msg_type,
-    COUNT(*)                              AS messages,
-    COUNT(DISTINCT unique_id)             AS rounds_with_stage,
-    COUNT(*) FILTER (WHERE round_closed)  AS round_closed_count
-FROM stages
-GROUP BY 1, 2, 3;
+    customer_id,
+    window_start,
+    window_end,
+    SUM(real_bet_amount) AS total_real_bet_amount,
+    COUNT(*)             AS bet_count
+FROM TUMBLE(mv_casino_real_bet_events, event_ts, INTERVAL '1 HOUR')
+GROUP BY customer_id, window_start, window_end;
 ```
 
 ### 3.7 Managed-Iceberg sinks (Lakekeeper + MinIO)
+
+Four MVs (`mv_casino_raw`, `mv_casino_transactions`,
+`mv_casino_real_bet_events`, `mv_casino_real_bet_hourly_per_customer`) are
+landed into Lakekeeper-managed Iceberg tables.
+
+`sql/casino_prd_raw_iceberg.sql` produces a **faithful raw nested archive**
+of every Kafka message:
+
+- `mv_casino_raw` — thin pass-through MV that only renames the top-level
+  columns of `src_casino_prd` to snake_case (`unique_id`, `customer_id`,
+  `game_info`, `round_info`, …). All nested `STRUCT<…>` and
+  `STRUCT<…>[]` types flow through unchanged.
+- `rw_managed_casino_raw` — managed Iceberg table mirroring `src_casino_prd`
+  1:1, including the array-of-struct `RoundInfo.Messages[]` and the
+  twice-nested `Messages[].Transactions[]`. No flattening.
+
+The raw sink is the event-sourced archive you can replay or re-derive from
+at any time; the analytical MVs (`mv_casino_transactions` etc.) give fast
+flat projections off the same source.
+
+#### `src_casino_prd` vs `rw_managed_casino_raw`
+
+Both hold the same logical data but live in completely different layers:
+
+| | `src_casino_prd` | `rw_managed_casino_raw` |
+|---|---|---|
+| **Type** | Kafka-backed `TABLE` (RisingWave source) | Managed Iceberg `TABLE` (`ENGINE = iceberg`) |
+| **Storage** | RisingWave's internal Hummock state (Kafka topic persisted into RW) | Parquet files in MinIO under Lakekeeper's warehouse |
+| **Catalog** | RW catalog only | Lakekeeper REST catalog — discoverable by Spark, DuckDB, Trino, PyIceberg, … |
+| **Format / wire** | Protobuf decoded from `cronus.casino.out.gh`, schema from `/proto/casinoroundinfodto.pb` | Iceberg v2 table with Parquet data files + snapshot metadata |
+| **Freshness** | Real-time — every Kafka message lands here first | ~5 s behind (`commit_checkpoint_interval = 5`) |
+| **Identifier casing** | PascalCase verbatim from proto (`"UniqueId"`, `"CustomerId"`, `"GameInfo"`, …); needs double-quoting | Top-level columns snake_case (`unique_id`, `customer_id`, `game_info`, …); nested struct fields still PascalCase quoted |
+| **Schema** | Full nested protobuf reflection | Same nested shape — `STRUCT<…>` and `STRUCT<…>[]` (`RoundInfo.Messages[].Transactions[]`) preserved 1:1 |
+| **Primary key** | None enforced at the table level | `PRIMARY KEY (unique_id)`, upserted via the sink |
+| **Write path** | Streaming consumer of Kafka | Sink fed by `mv_casino_raw` (thin pass-through MV that only renames top-level cols to snake_case for the `primary_key` config) |
+| **Use case** | Hot streaming source — drive MVs, real-time queries, RW dashboards | Cold/warm archival lake — historical analytics, replay, external engine access, time-travel via Iceberg snapshots |
+| **Drop blast radius** | All MVs break; re-ingest from Kafka via `scan.startup.mode='earliest'` | Iceberg files stay in MinIO; can be re-attached as a foreign table or read directly by Spark/DuckDB |
+
+In short, `rw_managed_casino_raw` is `src_casino_prd` projected into
+open-format lakehouse storage with a stable PK and snake_case top-level
+columns, kept ~5 s behind in near-real-time.
 
 ```sql
 CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn WITH (
@@ -256,58 +303,75 @@ CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn WITH (
     s3.endpoint           = 'http://minio-0:9301',
     s3.region             = 'us-east-1'
 );
-
 SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 ```
 
-Each sink follows the pattern:
+Each sink follows the same pattern — explicit `CREATE TABLE … ENGINE =
+iceberg` declaring the column order to match the upstream MV's `SELECT`,
+then an upsert sink keyed on the table's PK. Example:
 
 ```sql
-CREATE TABLE rw_managed_casino_prd_rounds ( … PRIMARY KEY (unique_id) )
-  ENGINE = iceberg;
+CREATE TABLE rw_managed_casino_transactions (
+    customer_id              INT,
+    message_type_id          INT,
+    message_created_at       TIMESTAMPTZ,
+    transaction_id           BIGINT,
+    account_id               INT,
+    currency_id              INT,
+    transaction_created_at   TIMESTAMPTZ,
+    amount_abs               NUMERIC,
+    amount_raw               VARCHAR,
+    PRIMARY KEY (transaction_id)
+) ENGINE = iceberg;
 
-CREATE SINK rw_managed_casino_prd_rounds_sink
-INTO rw_managed_casino_prd_rounds
-FROM mv_casino_prd_rounds_flat
+CREATE SINK rw_managed_casino_transactions_sink
+INTO rw_managed_casino_transactions
+FROM mv_casino_transactions
 WITH (
     type                        = 'upsert',
-    primary_key                 = 'unique_id',
-    enable_compaction           = 'true',
-    compaction_interval_sec     = '60',
-    enable_snapshot_expiration  = 'true',
+    primary_key                 = 'transaction_id',
     commit_checkpoint_interval  = 5         -- ~5 s freshness in Iceberg
 );
 ```
 
-Sinks created: `rw_managed_casino_prd_rounds_sink`,
-`rw_managed_casino_prd_volume_sink`, `rw_managed_casino_prd_funnel_sink`.
-
-### 3.8 Verify end-to-end
-
-After ~30 s:
-
-```text
-=== MV row counts ===
- rounds_flat |  573
- volume      |   11
- funnel      |   22
-
-=== Iceberg row counts ===
- iceberg_rounds | 566
- iceberg_volume |  11
- iceberg_funnel |  22
-
-=== Top 5 (company, game) by total bet amount ===
- company_id | game_id | game_type | rounds | transactions | total_amount
-       30 |  35697 |        2 |    103 |          308 |      145.50
-       30 |  36556 |        2 |      1 |            7 |       58.5
-       30 |  35937 |        2 |      1 |            2 |       42.7
-       30 |   8780 |        2 |      1 |            7 |       10.9
-       30 |  30410 |        2 |     15 |           24 |       7.00
-```
+Sinks created: `rw_managed_casino_raw_sink`,
+`rw_managed_casino_transactions_sink`,
+`rw_managed_casino_real_bet_events_sink`,
+`rw_managed_casino_real_bet_hourly_sink`.
 
 Iceberg snapshots land under
 `s3://hummock001/risingwave-lakekeeper/<warehouse-uuid>/<table-uuid>/`.
+
+### 3.8 Verify end-to-end
+
+After ~30 s (counts shown from a live tap — lag of a few rows between MV
+and iceberg is expected with `commit_checkpoint_interval = 5`):
+
+```text
+--- Materialized views ---
+ mv_casino_raw                           | 424395
+ mv_casino_transactions                  | 539895
+ mv_casino_real_bet_events               | 389541
+ mv_casino_real_bet_hourly_per_customer  |   5511
+
+--- Iceberg sink tables (managed) ---
+ rw_managed_casino_raw                   | 424368
+ rw_managed_casino_transactions          | 539858
+ rw_managed_casino_real_bet_events       | 389490
+ rw_managed_casino_real_bet_hourly       |   5511
+```
+
+The raw iceberg table preserves the full nested shape — you can still drill
+into messages and transactions after the fact:
+
+```sql
+SELECT unique_id,
+       (round_info)."GameRoundRef"               AS round_ref,
+       array_length((round_info)."Messages")     AS n_messages
+FROM rw_managed_casino_raw
+WHERE (round_info)."Messages" IS NOT NULL
+LIMIT 5;
+```
 
 ---
 
@@ -397,27 +461,27 @@ Returns `TIMESTAMP WITH TIME ZONE` (UTC). For local: `… AT TIME ZONE
 ### 4.4 Useful one-liners
 
 ```sql
--- live tail of round count
-SELECT count(*) FROM mv_casino_prd_rounds_flat;
+-- live tail of transaction count
+SELECT count(*) FROM mv_casino_transactions;
 
--- most recent rounds
-SELECT unique_id, company_id, game_id, round_created
-FROM mv_casino_prd_rounds_flat
-ORDER BY round_created DESC LIMIT 10;
+-- most recent real-money bets
+SELECT customer_id, real_bet_amount, event_ts
+FROM mv_casino_real_bet_events
+ORDER BY event_ts DESC LIMIT 10;
 
--- highest-volume games
-SELECT * FROM mv_casino_prd_volume_by_company_game
-ORDER BY total_amount DESC NULLS LAST LIMIT 10;
-
--- Iceberg-side counts (read from RW's iceberg table reader)
-SELECT count(*) FROM rw_managed_casino_prd_rounds;
+-- top customers by hourly real-bet volume in the last day
+SELECT customer_id, SUM(total_real_bet_amount) AS bet_24h
+FROM mv_casino_real_bet_hourly_per_customer
+WHERE window_start > now() - INTERVAL '1 day'
+GROUP BY customer_id
+ORDER BY bet_24h DESC NULLS LAST LIMIT 10;
 ```
 
 Bash watch:
 
 ```bash
 watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
-  "SELECT count(*) FROM mv_casino_prd_rounds_flat"'
+  "SELECT count(*) FROM mv_casino_transactions"'
 ```
 
 ---
@@ -432,6 +496,40 @@ watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
   schemas via native v2 at deploy time, mount a compiled `.pb` into the RW
   container, use `schema.location`.
 
+- **`scan.startup.mode = 'earliest'` + `CREATE TABLE` replays history.**
+  Earlier iterations used `CREATE SOURCE` + `latest`; that made batch
+  `SELECT COUNT(*) FROM src` (which re-scans Kafka from earliest) disagree
+  with MV counts (streaming, latest). Switching to `TABLE` persists the
+  topic into RW state once, so both paths agree.
+
+- **Don't ad-hoc `SELECT` from the source.** Wrap in an MV; otherwise the
+  query is a transient batch consumer.
+
+- **PascalCase identifiers must be double-quoted.** RW preserves protobuf
+  field names verbatim; unquoted `CompanyId` folds to `companyid` and
+  doesn't resolve.
+
+- **Managed Iceberg sinks bind columns *positionally*, not by name.**
+  `CREATE TABLE … ENGINE = iceberg` followed by `CREATE SINK … FROM <mv>`
+  matches columns by ordinal — the target table's column order MUST mirror
+  the upstream MV's `SELECT` projection. A mismatch surfaces as a confusing
+  error of the form `column type mismatch: <target_type> vs <mv_type>,
+  column name: "<mv>.<wrong_name>"`. The reported column name is the MV's
+  column at the offending ordinal — not the target column actually being
+  bound — so the error often points at a totally unrelated field. When you
+  see it, line up the two column lists side-by-side and reorder either the
+  `CREATE TABLE` or the MV's `SELECT` to match.
+
+- **Iceberg sink `primary_key` config lowercases the lookup string.**
+  `CREATE SINK … WITH (primary_key = 'UniqueId')` against an upstream that
+  exposes the column as the quoted PascalCase `"UniqueId"` fails with
+  `Primary key column uniqueid not found in sink schema`. Quoting in the
+  option value (`primary_key = '"UniqueId"'`) doesn't help either.
+  *Workaround:* put a thin pass-through MV between source and sink that
+  aliases the PK column to snake_case (e.g. `mv_casino_raw` does
+  `s."UniqueId" AS unique_id`). Nested struct types pass through
+  unchanged; only the top-level PK column needs renaming.
+
 - **License caps streaming-failure isolation at 4 CPU cores.**
   Our compute node has 10. Result: `DatabaseFailureIsolation` is disabled
   and **any DDL failure resets the whole database** (error
@@ -440,17 +538,6 @@ watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
   *Workaround:* keep DDL scripts idempotent (`DROP … IF EXISTS` /
   `CREATE … IF NOT EXISTS`) and just rerun once. The Java catalog is warm
   on the second pass and the rest of the script succeeds.
-
-- **`scan.startup.mode = 'latest'` means cold-start sees zero rows.**
-  This is intentional for the demo. To replay history use `earliest` (will
-  pull the full 386 K+ messages; expect minutes of backfill).
-
-- **Don't ad-hoc `SELECT` from the source.** Wrap in an MV; otherwise the
-  query is a transient batch consumer.
-
-- **PascalCase identifiers must be double-quoted.** RW preserves protobuf
-  field names verbatim; unquoted `CompanyId` folds to `companyid` and
-  doesn't resolve.
 
 - **OrbStack HTTP proxy is hostile to container DNS.**
   `bin/bootstrap_lakekeeper.sh` unsets `http_proxy/HTTPS_PROXY` because the
@@ -465,7 +552,8 @@ watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
 |---|---|
 | [proto/casinoroundinfodto.proto](../proto/casinoroundinfodto.proto) | Schema, fetched from Apicurio v2 native |
 | [proto/casinoroundinfodto.pb](../proto/casinoroundinfodto.pb) | Compiled FileDescriptorSet, mounted at `/proto/` in RW |
-| [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | Full DDL: source, MVs, Iceberg sinks |
+| [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | Analytical MVs + 3 managed Iceberg sinks (transactions, real bets, hourly aggregates) |
+| [sql/casino_prd_raw_iceberg.sql](../sql/casino_prd_raw_iceberg.sql) | Faithful nested raw archive: `mv_casino_raw` + `rw_managed_casino_raw` |
 | [bin/bootstrap_lakekeeper.sh](../bin/bootstrap_lakekeeper.sh) | Idempotent Lakekeeper warehouse bootstrap |
 | [docker-compose.yml](../docker-compose.yml) | Service definitions (RW, MinIO, Lakekeeper, Redpanda for tooling) |
 
@@ -488,15 +576,21 @@ docker compose up -d \
   lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap
 
 # 3. Source + MVs + Iceberg sinks (idempotent)
+psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_source.sql
 psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_funnel_iceberg.sql
+psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_raw_iceberg.sql
 # If the first run hits `database 1 reset` on the iceberg CREATE TABLE,
 # just rerun the same command — JVM is warm, it'll complete.
 
 # 4. Verify
 psql -h localhost -p 4566 -d dev -U root <<'SQL'
-SELECT 'rounds_flat' AS mv, count(*) FROM mv_casino_prd_rounds_flat
-UNION ALL SELECT 'volume',  count(*) FROM mv_casino_prd_volume_by_company_game
-UNION ALL SELECT 'funnel',  count(*) FROM mv_casino_prd_funnel
-UNION ALL SELECT 'iceberg_rounds', count(*) FROM rw_managed_casino_prd_rounds;
+SELECT 'mv_raw'                AS view, count(*) FROM mv_casino_raw
+UNION ALL SELECT 'mv_transactions',     count(*) FROM mv_casino_transactions
+UNION ALL SELECT 'mv_real_bet_events',  count(*) FROM mv_casino_real_bet_events
+UNION ALL SELECT 'mv_real_bet_hourly',  count(*) FROM mv_casino_real_bet_hourly_per_customer
+UNION ALL SELECT 'ice_raw',             count(*) FROM rw_managed_casino_raw
+UNION ALL SELECT 'ice_transactions',    count(*) FROM rw_managed_casino_transactions
+UNION ALL SELECT 'ice_real_bet_events', count(*) FROM rw_managed_casino_real_bet_events
+UNION ALL SELECT 'ice_real_bet_hourly', count(*) FROM rw_managed_casino_real_bet_hourly;
 SQL
 ```
