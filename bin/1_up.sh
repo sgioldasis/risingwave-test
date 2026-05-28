@@ -5,11 +5,13 @@
 #
 # Flags:
 #   --offline | --skip-dagster-build
-#       Reuse the locally cached Dagster image instead of (re)building it.
+#       Reuse the locally cached Dagster image instead of (re)building it,
+#       and skip any network-touching pre-flight (uv --upgrade, image pulls).
 #       Equivalent to exporting SKIP_DAGSTER_BUILD=1 before invocation.
-#       Use when the network blocks Docker Hub / Adoptium / Maven (e.g. VPN).
-#       Requires the image 'risingwave-test/dagster:local' to already exist;
-#       build it once when off-VPN: `docker compose build dagster-webserver`.
+#       Use when the network blocks Docker Hub / Adoptium / Maven / PyPI
+#       (e.g. VPN). Requires the image 'risingwave-test/dagster:local' to
+#       already exist; build it once when off-VPN:
+#           docker compose build dagster-webserver
 
 set -e
 
@@ -23,6 +25,24 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Offline mode implies "fully offline": don't refresh deps from PyPI, don't
+# pull container images. Callers can still opt back in by explicitly setting
+# UPGRADE_DEPS=1 / COMPOSE_PULL=always alongside SKIP_DAGSTER_BUILD=1.
+if [ "${SKIP_DAGSTER_BUILD:-0}" = "1" ]; then
+    : "${UPGRADE_DEPS:=0}"
+    : "${COMPOSE_PULL:=never}"
+    export UPGRADE_DEPS COMPOSE_PULL
+    echo "Offline mode active → UPGRADE_DEPS=${UPGRADE_DEPS}, COMPOSE_PULL=${COMPOSE_PULL}"
+
+    # Fail fast with an actionable message before we touch anything else.
+    DAGSTER_IMAGE_REF="${DAGSTER_IMAGE:-risingwave-test/dagster:local}"
+    if ! docker image inspect "${DAGSTER_IMAGE_REF}" >/dev/null 2>&1; then
+        echo "❌ Offline mode requires '${DAGSTER_IMAGE_REF}' to be present locally."
+        echo "   Build it once off-VPN: docker compose build dagster-webserver"
+        exit 1
+    fi
+fi
 
 echo "=== Pre-flight: Syncing local Python packages ==="
 # Preserve historical behavior: refresh dependencies on startup by default.
@@ -121,17 +141,19 @@ if [ -n "$LOCK_HASH_BEFORE" ] && [ -n "$LOCK_HASH_AFTER" ] && \
 fi
 
 COMPOSE_ARGS=()
-DAGSTER_IMAGE_REF="${DAGSTER_IMAGE:-risingwave-test/dagster:local}"
+UP_ARGS=(-d)
 
 if [ "${SKIP_DAGSTER_BUILD:-0}" = "1" ]; then
-    if ! docker image inspect "${DAGSTER_IMAGE_REF}" >/dev/null 2>&1; then
-        echo "❌ SKIP_DAGSTER_BUILD=1 but image '${DAGSTER_IMAGE_REF}' is not present locally."
-        echo "   Build it once when off-VPN: docker compose build dagster-webserver"
-        exit 1
-    fi
-    echo "Offline mode (SKIP_DAGSTER_BUILD=1): reusing local image '${DAGSTER_IMAGE_REF}'"
+    # Image presence + dependency-drift handling are already enforced up front
+    # in the offline-mode preamble; here we only need to layer the override.
+    echo "Offline mode (SKIP_DAGSTER_BUILD=1): reusing local image '${DAGSTER_IMAGE:-risingwave-test/dagster:local}'"
     COMPOSE_ARGS+=(-f docker-compose.yml -f docker-compose.dagster-prebuilt.yml)
     AUTO_REBUILD=0
+fi
+
+# Honor COMPOSE_PULL (defaults to "missing", offline mode sets it to "never").
+if [ -n "${COMPOSE_PULL:-}" ]; then
+    UP_ARGS+=(--pull "${COMPOSE_PULL}")
 fi
 
 if [ "${SKIP_DAGSTER_BUILD:-0}" != "1" ] && \
@@ -139,10 +161,10 @@ if [ "${SKIP_DAGSTER_BUILD:-0}" != "1" ] && \
     if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ]; then
         echo "Build mode enabled (COMPOSE_FORCE_BUILD=1): rebuilding images"
     fi
-    docker compose "${COMPOSE_ARGS[@]}" up --build -d
+    docker compose "${COMPOSE_ARGS[@]}" up --build "${UP_ARGS[@]}"
 else
     echo "Build mode disabled: reusing existing local images (set COMPOSE_FORCE_BUILD=1 to force)"
-    docker compose "${COMPOSE_ARGS[@]}" up -d
+    docker compose "${COMPOSE_ARGS[@]}" up "${UP_ARGS[@]}"
 fi
 
 echo ""

@@ -1129,8 +1129,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 const paramInput = document.getElementById(`param-${scriptFile}`);
                 let params = paramInput ? paramInput.value : '';
 
-                // Append any checked flag-style checkboxes
-                const flagInputs = document.querySelectorAll(`#script-${scriptFile} input[type=checkbox][data-flag]`);
+                // Append any checked flag-style checkboxes.
+                // NOTE: script filenames contain '.', so we can't use `#script-${scriptFile}`
+                // in a CSS selector (the '.' would be parsed as a class). Use an attribute
+                // selector instead so getElementById-style matching works.
+                const flagInputs = document.querySelectorAll(`[id="script-${scriptFile}"] input[type=checkbox][data-flag]`);
                 flagInputs.forEach(cb => {
                     if (cb.checked) {
                         params = (params ? params + ' ' : '') + cb.dataset.flag;
