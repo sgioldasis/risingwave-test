@@ -40,20 +40,22 @@ SCRIPTS = [
      [{"label": "Offline (skip Dagster build, reuse cached image)", "flag": "--offline"}]),
     ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
-    ("3_run_casino_prd_demo.sh", "🏭 Casino Production Demo", "Wire RisingWave to prd2 Kafka (cronus.casino.out.gh), create MVs + Iceberg sinks via Lakekeeper"),
     ("4_run_ml_serving.sh", "🤖 ML Serving", "Start ML serving with River online learning (port 8001)"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
     ("5_marimo_risingwave.sh", "🧊 Trino Iceberg", "Query Iceberg tables with Trino"),
-    ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
     ("4_run_dashboard.sh", "📈 Run Simple Dashboard", "Start the analytics dashboard"),
     # --- Protobuf & Avro demos (moved to the bottom) ----------------------
     ("3_run_protobuf_demo.sh", "🧬 Protobuf Demo", "Produce nested protobuf orders and create RisingWave source + MV"),
     ("3_run_protobuf_demo_filedesc.sh", "🧬 Protobuf Demo (FileDescriptorSet)", "Same demo but via schema.location=file:///proto/events.pb (no Schema Registry)"),
     ("3_run_protobuf_casino_demo.sh", "🎰 Casino Protobuf Demo", "Produce Cronus CasinoRoundInfoDto protobuf rounds, create RisingWave source + MVs, and sink into managed Iceberg tables"),
-    ("3_run_avro_demo.sh", "🅰️  Avro Demo", "Produce nested Avro orders, create RisingWave source + MV, and sink into managed Iceberg tables"),
+    ("3_run_avro_demo.sh", "🪶 Avro Demo", "Produce nested Avro orders, create RisingWave source + MV, and sink into managed Iceberg tables"),
+    # --- Casino Production Demo (moved to the very bottom) ----------------
+    ("3_run_casino_prd_demo.sh", "🏭 Casino Production Demo", "Wire RisingWave to prd2 Kafka (cronus.casino.out.gh), create MVs + Iceberg sinks via Lakekeeper"),
+    # --- Stop everything (kept last so it's hard to misclick) -------------
+    ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
 ]
 
 # Global state - track per-script

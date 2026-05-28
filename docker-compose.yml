@@ -37,6 +37,7 @@ services:
   # RisingWave Services - Distributed Mode
   compactor-0:
     <<: *image
+    init: true
     command:
       - compactor-node
       - "--listen-addr"
@@ -145,6 +146,7 @@ services:
 
   compute-node-0:
     <<: *image
+    init: true
     command:
       - compute-node
       - "--listen-addr"
@@ -202,6 +204,7 @@ services:
 
   frontend-node-0:
     <<: *image
+    init: true
     command:
       - frontend-node
       - "--listen-addr"
@@ -259,6 +262,7 @@ services:
 
   meta-node-0:
     <<: *image
+    init: true
     command:
       - meta-node
       - "--listen-addr"

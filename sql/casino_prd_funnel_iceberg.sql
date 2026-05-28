@@ -9,28 +9,9 @@
 --   3. mv_casino_real_bet_hourly_per_customer
 --                                           -- TUMBLE 1h totals per customer
 --
--- NOTE: This file used to also build mv_casino_prd_rounds_flat,
--- mv_casino_prd_volume_by_company_game, mv_casino_prd_funnel and four
--- managed Iceberg sinks. They were dropped from the demo. The DROPs below
--- are kept so re-runs on an old environment clean those objects up first.
+-- The faithful raw nested archive (mv_casino_raw + rw_managed_casino_raw)
+-- is created separately in sql/casino_prd_raw_iceberg.sql.
 -- =============================================================================
-
--- --- Compatibility drops (old demo objects) ---------------------------------
--- Old "_prd_" managed iceberg objects from the previous demo build, plus any
--- legacy MVs whose names changed.
-\set ON_ERROR_STOP off
-DROP SINK              IF EXISTS rw_managed_casino_prd_rounds_sink;
-DROP SINK              IF EXISTS rw_managed_casino_prd_volume_sink;
-DROP SINK              IF EXISTS rw_managed_casino_prd_funnel_sink;
-DROP SINK              IF EXISTS rw_managed_casino_prd_transactions_sink;
-DROP TABLE             IF EXISTS rw_managed_casino_prd_rounds;
-DROP TABLE             IF EXISTS rw_managed_casino_prd_volume;
-DROP TABLE             IF EXISTS rw_managed_casino_prd_funnel;
-DROP TABLE             IF EXISTS rw_managed_casino_prd_transactions;
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_prd_rounds_flat            CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_prd_volume_by_company_game CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_prd_funnel                 CASCADE;
-\set ON_ERROR_STOP on
 
 -- ---------------------------------------------------------------------------
 -- 1. Transaction-level flat view (one row per transaction inside each message)
