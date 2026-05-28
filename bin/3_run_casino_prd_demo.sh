@@ -5,7 +5,7 @@
 # End-to-end setup of the prod casino streaming demo on RisingWave:
 #   1. (Re)compile proto FileDescriptorSet if protoc is available
 #   2. Ensure the RisingWave core nodes are up and accepting SQL on :4566
-#   3. Bring up Lakekeeper + MinIO + Trino (idempotent)
+#   3. Bring up Lakekeeper + MinIO + Trino + Grafana (idempotent)
 #   4. Create the prod Kafka table `src_casino_prd`
 #   5. Create funnel/aggregation MVs and Iceberg sinks
 #   6. Create the faithful nested raw Iceberg archive
@@ -75,8 +75,8 @@ else
 fi
 
 echo ""
-echo "=== [3/7] Lakekeeper + MinIO + Trino ==="
-docker compose up -d lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino
+echo "=== [3/7] Lakekeeper + MinIO + Trino + Grafana ==="
+docker compose up -d lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino prometheus-0 grafana-0
 
 echo ""
 echo "=== [4/7] Create table src_casino_prd ==="
