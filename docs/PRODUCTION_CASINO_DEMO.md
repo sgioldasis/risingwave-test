@@ -201,51 +201,139 @@ to re-run.
 ### 3.6 Real-time materialized views
 
 See [`sql/casino_prd_funnel_iceberg.sql`](../sql/casino_prd_funnel_iceberg.sql)
-for the full file. The slim demo build keeps **three** MVs:
-`mv_casino_transactions` (one row per transaction, see §4.1 for the query
-body), `mv_casino_real_bet_events`, and
-`mv_casino_real_bet_hourly_per_customer`.
+for the full file. The pipeline covers two use cases:
+
+**UC1 — Real Bet Amount:** `mv_casino_transactions` → `mv_casino_real_bet_events`
+→ `mv_casino_real_bet` (rolling 14-day real bet total per customer/currency).
+
+**UC2 — Casino Turnover Percentage:** `mv_casino_turnover_events` +
+`mv_sportsbook_turnover_events` → `mv_turnover_percentage` (90-day casino vs
+sportsbook ratio per customer). UC2 requires a second source `bets_out_gh`
+(sportsbook bets — `prd4-kafka-bootstrap.kaizengaming.net:443`, topic
+`bets-out-gh`, 10 partitions).
+
+#### UC1 — Real Bet Amount
 
 ```sql
--- Real Bet Amount events — business-logic filter on top of mv_casino_transactions.
--- Mirrors `getCasinoRealBetAmountEvents` from the Spark PoC:
---   MessageTypeId = 1  (bet)
---   AccountId     = 1  (real account, not bonus)
---   Amount        IS NOT NULL
--- The extra `amount_raw <> ''` guard is RisingWave-specific: proto3 string
--- fields decode as empty strings, not NULL, when absent on the wire.
+-- UC1: Real bet events — filter on top of mv_casino_transactions.
+-- Mirrors getCasinoRealBetAmountEvents from the Spark PoC:
+--   MessageTypeId = 1  (bet placed)
+--   AccountId     = 1  (real money account, not bonus)
+--   Amount        IS NOT NULL AND <> '' (proto3 string fields decode as '' when absent)
 CREATE MATERIALIZED VIEW mv_casino_real_bet_events AS
 SELECT
     customer_id,
     transaction_id,
     currency_id,
-    amount_abs                                  AS real_bet_amount,
-    transaction_created_at                      AS event_ts,
-    DATE_TRUNC('hour', transaction_created_at)  AS event_hour
+    game_id,
+    game_type,
+    is_live,
+    company_id,
+    amount_abs                                    AS real_bet_amount,
+    transaction_created_at                        AS event_ts
 FROM mv_casino_transactions
 WHERE message_type_id = 1
   AND account_id      = 1
   AND amount_raw IS NOT NULL
   AND amount_raw <> '';
 
--- Hourly bucketed real-bet totals per customer.
--- Mirrors the `mapGroupsWithState` bucketed accumulator from the Spark PoC
--- (one row per (customer, 1-hour tumbling window) with running totals).
--- RisingWave handles the incremental state automatically via TUMBLE; a strict
--- 14-day rolling total is then a cheap aggregate on top of these buckets:
---   SELECT customer_id, SUM(total_real_bet_amount)
---   FROM mv_casino_real_bet_hourly_per_customer
---   WHERE window_start > now() - INTERVAL '14 days'
---   GROUP BY customer_id;
-CREATE MATERIALIZED VIEW mv_casino_real_bet_hourly_per_customer AS
+-- UC1: Rolling 14-day real bet amount per customer/currency.
+-- Mirrors the Spark mapGroupsWithState logic: on each incoming event, emit the
+-- updated sum of all real bets placed by that customer in the last 14 days.
+-- One row per event; consumers key on (customer_id, currency_id) and keep the latest.
+CREATE MATERIALIZED VIEW mv_casino_real_bet AS
 SELECT
     customer_id,
-    window_start,
-    window_end,
-    SUM(real_bet_amount) AS total_real_bet_amount,
-    COUNT(*)             AS bet_count
-FROM TUMBLE(mv_casino_real_bet_events, event_ts, INTERVAL '1 HOUR')
-GROUP BY customer_id, window_start, window_end;
+    currency_id,
+    event_ts,
+    SUM(real_bet_amount) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY event_ts
+        RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_14d_real_bet_amount
+FROM mv_casino_real_bet_events;
+```
+
+#### UC2 — Casino Turnover Percentage
+
+```sql
+-- UC2: Casino turnover events.
+-- MessageTypeId = 2 (withdraw/payout), AccountId IN (1, 4) (real money + bonus).
+CREATE MATERIALIZED VIEW mv_casino_turnover_events AS
+SELECT
+    customer_id,
+    currency_id,
+    amount_abs               AS turnover,
+    transaction_created_at   AS event_ts
+FROM mv_casino_transactions
+WHERE message_type_id = 2
+  AND account_id      IN (1, 4)
+  AND amount_raw IS NOT NULL
+  AND amount_raw <> '';
+
+-- UC2: Sportsbook turnover events (from bets_out_gh source).
+-- TotalStake.Euro uses DecimalValue encoding (units + nanos/1e9).
+-- Euro-normalised so casino and sportsbook turnover are comparable across currencies.
+CREATE MATERIALIZED VIEW mv_sportsbook_turnover_events AS
+SELECT
+    ("CustomerInfo")."Id"                                                       AS customer_id,
+    TO_TIMESTAMP(("PlacedAt").seconds)                                          AS event_ts,
+    (("TotalStake")."Euro")."units"::NUMERIC
+        + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000                AS turnover
+FROM src_bets_gh
+WHERE ("CustomerInfo")."Id" IS NOT NULL
+  AND ("TotalStake")."Euro" IS NOT NULL;
+
+-- UC2: 90-day rolling totals, deduplicated to latest per customer, then ratio.
+CREATE MATERIALIZED VIEW mv_casino_turnover_90d AS
+SELECT customer_id, event_ts,
+    SUM(turnover) OVER (
+        PARTITION BY customer_id
+        ORDER BY event_ts
+        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_90d_turnover
+FROM mv_casino_turnover_events;
+
+CREATE MATERIALIZED VIEW mv_sportsbook_turnover_90d AS
+SELECT customer_id, event_ts,
+    SUM(turnover) OVER (
+        PARTITION BY customer_id
+        ORDER BY event_ts
+        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_90d_turnover
+FROM mv_sportsbook_turnover_events;
+
+CREATE MATERIALIZED VIEW mv_casino_turnover_latest AS
+SELECT DISTINCT ON (customer_id) customer_id,
+    rolling_90d_turnover AS casino_turnover, event_ts
+FROM mv_casino_turnover_90d
+ORDER BY customer_id, event_ts DESC;
+
+CREATE MATERIALIZED VIEW mv_sportsbook_turnover_latest AS
+SELECT DISTINCT ON (customer_id) customer_id,
+    rolling_90d_turnover AS sportsbook_turnover, event_ts
+FROM mv_sportsbook_turnover_90d
+ORDER BY customer_id, event_ts DESC;
+
+CREATE MATERIALIZED VIEW mv_turnover_percentage AS
+SELECT
+    COALESCE(c.customer_id, s.customer_id)      AS customer_id,
+    COALESCE(c.casino_turnover, 0)              AS casino_turnover,
+    COALESCE(s.sportsbook_turnover, 0)          AS sportsbook_turnover,
+    COALESCE(c.casino_turnover, 0)
+        + COALESCE(s.sportsbook_turnover, 0)    AS total_turnover,
+    CASE
+        WHEN COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0) = 0 THEN 0
+        ELSE COALESCE(c.casino_turnover, 0)
+             / (COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0))
+    END                                         AS casino_ratio,
+    CASE
+        WHEN COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0) = 0 THEN 0
+        ELSE COALESCE(s.sportsbook_turnover, 0)
+             / (COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0))
+    END                                         AS sportsbook_ratio
+FROM mv_casino_turnover_latest      c
+FULL OUTER JOIN mv_sportsbook_turnover_latest s USING (customer_id);
 ```
 
 ### 3.7 Managed-Iceberg sinks (Lakekeeper + MinIO)
@@ -335,9 +423,8 @@ WITH (
 ```
 
 Sinks created: `rw_managed_casino_raw_sink`,
-`rw_managed_casino_transactions_sink`,
-`rw_managed_casino_real_bet_events_sink`,
-`rw_managed_casino_real_bet_hourly_sink`.
+`rw_managed_casino_real_bet_sink`,
+`rw_managed_turnover_percentage_sink`.
 
 Iceberg snapshots land under
 `s3://hummock001/risingwave-lakekeeper/<warehouse-uuid>/<table-uuid>/`.
@@ -349,16 +436,15 @@ and iceberg is expected with `commit_checkpoint_interval = 5`):
 
 ```text
 --- Materialized views ---
- mv_casino_raw                           | 424395
- mv_casino_transactions                  | 539895
- mv_casino_real_bet_events               | 389541
- mv_casino_real_bet_hourly_per_customer  |   5511
+ mv_casino_raw             | 424395
+ mv_casino_transactions    | 539895
+ mv_casino_real_bet_events | 389541
+ mv_casino_real_bet        | 389541   ← one row per event (rolling window, not aggregate)
 
 --- Iceberg sink tables (managed) ---
- rw_managed_casino_raw                   | 424368
- rw_managed_casino_transactions          | 539858
- rw_managed_casino_real_bet_events       | 389490
- rw_managed_casino_real_bet_hourly       |   5511
+ rw_managed_casino_raw             | 424368
+ rw_managed_casino_real_bet        | 389490
+ rw_managed_turnover_percentage    |   8120
 ```
 
 The raw iceberg table preserves the full nested shape — you can still drill
@@ -382,39 +468,32 @@ LIMIT 5;
 > `scan.startup.mode='latest'` and usually returns 0 rows. Always go through
 > an MV.
 
-### 4.1 The query that drove the schema discovery
+### 4.1 The `mv_casino_transactions` definition
 
-The end goal was per-transaction rows with real timestamps. Final working
-version:
+One row per transaction, flattening the nested `Messages[].Transactions[]`
+structure via two chained `UNNEST` calls with explicit row aliases:
 
 ```sql
-WITH msgs AS (
-    SELECT
-        s."CustomerId"          AS customer_id,
-        "MessageTypeId"         AS message_type_id,
-        "Created"               AS message_created_struct,
-        "Transactions"          AS txs
-    FROM src_casino_prd AS s,
-         UNNEST((s."RoundInfo")."Messages")
-)
+CREATE MATERIALIZED VIEW mv_casino_transactions AS
 SELECT
-    customer_id,
-    message_type_id,
-    to_timestamp(
-        (message_created_struct)."seconds"
-      + (message_created_struct)."nanos" / 1e9
-    )                                                     AS message_created_at,
-    "TransactionId"                                       AS transaction_id,
-    "AccountId"                                           AS account_id,
-    "CurrencyId"                                          AS currency_id,
-    to_timestamp(
-        (("Created"))."seconds"
-      + (("Created"))."nanos" / 1e9
-    )                                                     AS transaction_created_at,
-    ABS(NULLIF("Amount", '')::numeric)                    AS amount_abs,
-    "Amount"                                              AS amount_raw
-FROM msgs, UNNEST(txs)
-LIMIT 20;
+    s."CustomerId"                                        AS customer_id,
+    msg."MessageTypeId"                                   AS message_type_id,
+    TO_TIMESTAMP((msg."Created").seconds)                 AS message_created_at,
+    txn."TransactionId"                                   AS transaction_id,
+    txn."AccountId"                                       AS account_id,
+    txn."CurrencyId"                                      AS currency_id,
+    TO_TIMESTAMP((txn."Created").seconds)                 AS transaction_created_at,
+    ABS(NULLIF(txn."Amount", '')::numeric)                AS amount_abs,
+    txn."Amount"                                          AS amount_raw,
+    txn."BonusAction"                                     AS bonus_action,
+    (s."GameInfo")."GameId"                               AS game_id,
+    (s."GameInfo")."GameType"                             AS game_type,
+    (s."GameInfo")."IsLive"                               AS is_live,
+    s."CompanyId"                                         AS company_id
+FROM
+    src_casino_prd                              AS s,
+    UNNEST((s."RoundInfo")."Messages")          AS msg,
+    UNNEST(msg."Transactions")                  AS txn;
 ```
 
 ### 4.2 Why it's written that way — the four gotchas
@@ -438,8 +517,10 @@ LIMIT 20;
 
 3. **Double UNNEST with field-name collisions.** Both
    `CasinoMessageInformation` and `TransactionInformation` have a `Created`
-   field. Use a CTE to rename the outer level (or pass the struct forward
-   with a non-colliding alias) and then `UNNEST(txs)` in the outer SELECT.
+   field. Use explicit row aliases (`UNNEST(...) AS msg, UNNEST(msg."Transactions") AS txn`)
+   and reference them as `msg."Created"` / `txn."Created"` to disambiguate.
+   Chaining the second UNNEST off the alias (`UNNEST(msg."Transactions")`) is
+   the idiomatic RisingWave pattern — no CTE needed.
 
 4. **Decimal-as-string proto fields can be empty.** `Amount`, `TokenAmount`,
    `CurrencyRateToEuro`, `CommissionAmount`, etc. are `string`-typed in the
@@ -469,12 +550,16 @@ SELECT customer_id, real_bet_amount, event_ts
 FROM mv_casino_real_bet_events
 ORDER BY event_ts DESC LIMIT 10;
 
--- top customers by hourly real-bet volume in the last day
-SELECT customer_id, SUM(total_real_bet_amount) AS bet_24h
-FROM mv_casino_real_bet_hourly_per_customer
-WHERE window_start > now() - INTERVAL '1 day'
-GROUP BY customer_id
-ORDER BY bet_24h DESC NULLS LAST LIMIT 10;
+-- top customers by 14-day rolling real bet amount
+SELECT DISTINCT ON (customer_id)
+    customer_id, currency_id, rolling_14d_real_bet_amount
+FROM mv_casino_real_bet
+ORDER BY customer_id, event_ts DESC;
+
+-- UC2: current casino turnover percentage by customer
+SELECT customer_id, casino_ratio, sportsbook_ratio, total_turnover
+FROM mv_turnover_percentage
+ORDER BY total_turnover DESC NULLS LAST LIMIT 20;
 ```
 
 Bash watch:

@@ -1,0 +1,292 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Ariadne.BonusIntegration.Protos";
+
+//https://r00t.dk/post/2022/09/17/dot-net-decimal-to-protobuf/
+//https://learn.microsoft.com/en-us/aspnet/core/grpc/protobuf?view=aspnetcore-9.0#creating-a-custom-decimal-type-for-protobuf
+message DecimalValue {
+    int64 units = 1;
+    sfixed32 nanos = 2;
+}
+message BetAccountInfoVm {
+   optional int64 Id = 1;
+   optional int32 AccountId = 2;
+   optional MoneyVm Amount = 3;
+}
+message BetFlagInfoVm {
+   optional int64 BetId = 1;
+   optional int32 Flag = 2;
+   optional string Notes = 3;
+   optional DecimalValue Score = 4;
+   optional int32 FlaggedBetsCount = 5;
+}
+message BetReferralRequestVm {
+   optional int32 StatusId = 1;
+   optional DecimalValue MaxStake = 2;
+   optional DecimalValue RequestedStake = 3;
+   optional BaseVm AssignedUser = 4;
+   optional google.protobuf.Timestamp ExpiresAt = 5;
+   repeated BetReferralSelectionVm Selections = 6;
+   optional google.protobuf.Timestamp CreatedAt = 7;
+   optional MoneyVm RequestedStakeMoney = 8;
+   optional MoneyVm MaxStakeMoney = 9;
+   optional int32 StakeLimitMultiplier = 10;
+   optional string UpdatedBy = 11;
+   optional bool TimeoutAlreadyExtended = 12;
+}
+message BetReferralSelectionVm {
+   optional int64 SelectionId = 1;
+   optional DecimalValue MaxStake = 2;
+}
+message BetslipInfoVm {
+   optional int64 Id = 1;
+   optional int32 ChannelId = 2;
+   optional int32 StatusId = 3;
+   optional int32 RejectionReasonId = 4;
+   optional int32 PlacementOptionId = 5;
+   optional google.protobuf.Timestamp LastUpdated = 6;
+}
+message BonusBetTokenInfoVm {
+   optional int64 Id = 1;
+   optional int32 BonusTokenTypeId = 2;
+   optional MoneyVm Amount = 3;
+}
+message CashoutErrorMetadataVm {
+   optional DecimalValue MinimumAllowedAmount = 1;
+   optional DecimalValue CashoutAmount = 2;
+   optional int64 SelectionId = 3;
+   optional string SelectionName = 4;
+   optional string EventName = 5;
+   optional DecimalValue SelectionOdds = 6;
+}
+message CashoutErrorVm {
+   optional int32 Code = 1;
+   optional CashoutErrorMetadataVm CashoutErrorMetadata = 2;
+}
+message CashoutInfoVm {
+   optional int32 CashoutChannel = 1;
+   optional int32 EarlyCashoutTypeId = 2;
+   repeated EarlyCashoutSelectionVm EarlyCashoutSelections = 3;
+}
+message CashoutOfferStatusVm {
+   optional bool CashoutOfferResult = 1;
+   optional CashoutErrorVm CashoutError = 2;
+   repeated CashoutErrorVm CashoutErrors = 3;
+   optional DecimalValue CashoutAmount = 4;
+   optional int32 EarlyCashoutTypeId = 5;
+}
+message CustomerInfoVm {
+   optional int32 Id = 1;
+   optional string Code = 2;
+   optional int32 Limit = 3;
+   optional int32 SegmentId = 4;
+}
+message EarlyCashoutSelectionVm {
+   optional int64 SelectionId = 1;
+   optional int32 ResultId = 2;
+}
+message EventInfoVm {
+   optional int32 Id = 1;
+   optional string Name = 2;
+   optional google.protobuf.Timestamp StartTime = 3;
+   optional bool Virtual = 4;
+   optional int32 EventTypeId = 5;
+   optional bool Live = 6;
+   optional LiveEventInfoVm LiveInfo = 7;
+   optional SportInfoVm Sport = 8;
+   optional BaseVm Zone = 9;
+   optional BaseVm League = 10;
+   optional BaseVm Country = 11;
+   optional int64 BetradarMatchId = 12;
+   optional int64 BetgeniusMatchId = 13;
+   optional VirtualProviderVm VirtualProvider = 14;
+   optional bool Reversed = 15;
+   map<string,string> Statistics = 16;
+   optional bool IsEnded = 17;
+}
+message KeyValuePair_Language_Dictionary_String_String {
+   optional int32 Key = 1;
+   map<string, string> Value = 2;
+}
+message KeyValuePair_String_String {
+   optional string Key = 1;
+   optional string Value = 2;
+}
+message LegInfoVm {
+   optional string Name = 1;
+   optional int32 ComboLegType = 2;
+   optional DecimalValue Odds = 3;
+   optional int32 LineParticipation = 4;
+   optional bool IsInPlay = 5;
+   optional bool Banker = 6;
+   repeated LegItemVm LegItems = 7;
+   optional int32 FinalResultId = 8;
+   optional int32 ResultId = 9;
+}
+message LegItemVm {
+   optional int64 BetSelectionId = 1;
+   optional int32 ComboLegType = 2;
+   optional bool IsInPlay = 3;
+   optional DecimalValue OriginalOdds = 4;
+   optional DecimalValue Odds = 5;
+   repeated SelectionInfoVm Selections = 6;
+   optional DecimalValue WeightPlacement = 7;
+   optional DecimalValue WeightCurrent = 8;
+   optional int32 ExplicitSelectionStatusId = 9;
+   optional int32 FinalResultId = 10;
+   optional int32 ResultId = 11;
+   optional bool VoidNotStartingPlayersSelected = 12;
+    optional int64 MatchComboSelectionId = 13;
+    optional DecimalValue OddsBeforeEnhancement = 14;
+    optional int32 EnhancedOddsType = 15;
+}
+message LiveEventInfoVm {
+   optional int32 EventTime = 1;
+   optional int32 PeriodNumber = 2;
+   optional bool IsExtraTimeFL = 3;
+   optional string Score = 4;
+   optional bool ClockRunningFL = 5;
+   optional bool InPlayFL = 6;
+}
+message MarketInfoVm {
+   optional int64 Id = 1;
+   optional string Name = 2;
+   optional int32 MarketTypeId = 3;
+   repeated NumericSpecifierInfoVm NumericMarketSpecifiers = 4;
+}
+message MoneyVm {
+   optional string CurrencyCode = 1;
+   optional int32 Currency = 2;
+   optional DecimalValue Local = 3;
+   optional DecimalValue Euro = 4;
+}
+message NumericSpecifierInfoVm {
+   optional int32 SpecifierType = 1;
+   optional DecimalValue Value = 2;
+   optional bool HandicapTotalTypeApplies = 3;
+}
+message PandoraBetInfoVm {
+   optional int64 Id = 1;
+   optional int32 OperatorId = 2;
+   optional string LocalBetId = 3;
+   optional BetslipInfoVm BetslipInfo = 4;
+   optional int32 BetTypeId = 5;
+   optional string BetType = 6;
+   optional CustomerInfoVm CustomerInfo = 7;
+   optional int32 BetStatusId = 8;
+   optional CashoutOfferStatusVm CashoutOfferStatus = 9;
+   optional SettlementInfoVm SettlementInfo = 10;
+   optional MoneyVm TotalStake = 11;
+   optional MoneyVm UnitStake = 12;
+   optional MoneyVm MaxReturns = 13;
+   optional MoneyVm PotentialReturns = 14;
+   optional DecimalValue OriginalMaxStake = 15;
+   optional bool Parked = 16;
+   optional int32 ParkedReason = 17;
+   optional DecimalValue TotalOdds = 18;
+   optional int32 Lines = 19;
+   optional bool InPlay = 20;
+   optional google.protobuf.Timestamp PlacedAt = 21;
+   optional int32 BonusType = 22;
+   optional bool HasSettlementRulesOverride = 23;
+   optional bool HasSpecialPromotionsOverride = 24;
+   repeated LegInfoVm Legs = 25;
+   repeated BonusBetTokenInfoVm Tokens = 26;
+   repeated BetAccountInfoVm BetAccounts = 27;
+   optional BetFlagInfoVm FlagInfo = 28;
+   optional DecimalValue OveraskPercentage = 29;
+   optional BetReferralRequestVm BetReferralRequestVm = 30;
+   optional int64 AriadneTransactionId = 31;
+   optional bool IsPlacement = 32;
+   optional bool IsParking = 33;
+   optional google.protobuf.Timestamp LastUpdated = 34;
+   repeated KeyValuePair_Language_Dictionary_String_String Translations = 35;
+   optional bool IsPlacedLate = 36;
+   optional bool HasEnhancedOdds = 37;
+   optional FlexBetRequestVm FlexBetRequestVm = 38;
+   optional int32 BetClassId = 39;
+   repeated BetBonusInfoVm BetBonuses = 40;
+}
+message SelectionInfoVm {
+   optional int64 Id = 1;
+   optional string Name = 2;
+   optional int32 SelectionTypeId = 3;
+   optional DecimalValue Odds = 4;
+   optional DecimalValue OriginalOdds = 5;
+   optional int32 ResultId = 6;
+   optional int32 FinalResultId = 7;
+   optional int32 SelectionResultReasonId = 8;
+   optional string ResultReasonComment = 9;
+   optional string OverrideReason = 10;
+   optional SelectionSpecifiersInfoVm SelectionSpecifiers = 11;
+   optional int32 OverrideRefId = 12;
+   optional EventInfoVm Event = 13;
+   optional MarketInfoVm Market = 14;
+   optional int32 TeamId = 15;
+   optional int32 PlayerId = 16;
+   optional bool IsInPlay = 17;
+   repeated SettlementResultRuleInfoVm Reasons = 18;
+   optional DecimalValue OddsBeforeEnhancement = 19;
+   optional DecimalValue PlacementSelectionOdds = 20;
+   optional PlayerSubstitutionInfoVm SubstitutedBy = 21;
+   repeated int32 EligibleSpecialPromotions = 22;
+   optional string SelectionTypeNamePattern = 23;
+   optional string PlayerName = 24;
+   optional string Handicap = 25;
+   optional google.protobuf.Timestamp ResultedAt = 34;
+   optional bool HasExtraTime = 35;
+   optional string SelectionTypeName = 36;
+   optional int32 SelectionResultTypeId = 37;
+   optional int32 AtLeastHandicap = 38;
+}
+message SelectionSpecifiersInfoVm {
+   optional int32 HomeCount = 1;
+   optional int32 AwayCount = 2;
+   optional int32 Score = 3;
+   optional int32 Position = 4;
+}
+message SettlementInfoVm {
+   optional MoneyVm Amount = 1;
+   optional google.protobuf.Timestamp SettledAt = 2;
+   optional BaseVm SettledBy = 3;
+   optional CashoutInfoVm CashoutInfo = 4;
+   optional bool HasPendingCashoutTransaction = 5;
+   optional int32 SettlementReason = 6;
+}
+message SettlementResultRuleInfoVm {
+   optional int32 TypeId = 1;
+   optional int32 Level = 2;
+}
+message SportInfoVm {
+   optional int32 Id = 1;
+   optional string Name = 2;
+   optional bool IsVirtual = 3;
+}
+message BaseVm {
+   optional int32 Id = 1;
+   optional string Name = 2;
+}
+message VirtualProviderVm {
+   optional int32 ProviderId = 1;
+   optional string ProviderName = 2;
+   optional int64 FixtureId = 3;
+}
+message PlayerSubstitutionInfoVm {
+    optional int32 PlayerId = 1;
+    optional string PlayerName = 2;
+    optional PlayerSubstitutionInfoVm SubstitutedBy = 3;
+}
+message FlexBetRequestVm {
+  optional int32 NumberOfCutSelectionsSelected = 1;
+  optional DecimalValue FlexbetOdds = 2;
+}
+
+message BetBonusInfoVm {
+    optional int64 BetId = 1;
+    optional int32 OperatorId = 2;
+    optional int32 BonusTypeId = 3;
+    optional DecimalValue BonusPercentage = 4;
+}
+
