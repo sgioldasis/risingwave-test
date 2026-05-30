@@ -208,14 +208,13 @@ sleep 20
 psql "$PSQL_URL" <<'SQL'
 \echo '--- UC1 materialized views ---'
 SELECT 'mv_casino_transactions'    AS view, COUNT(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_casino_real_bet_events', COUNT(*) FROM mv_casino_real_bet_events
 UNION ALL SELECT 'mv_casino_real_bet',        COUNT(*) FROM mv_casino_real_bet;
 
 \echo ''
 \echo '--- UC2 materialized views ---'
-SELECT 'mv_casino_turnover_events',     COUNT(*) FROM mv_casino_turnover_events
-UNION ALL SELECT 'mv_sportsbook_turnover_events', COUNT(*) FROM mv_sportsbook_turnover_events
-UNION ALL SELECT 'mv_turnover_percentage',        COUNT(*) FROM mv_turnover_percentage;
+SELECT 'mv_casino_turnover_90d',         COUNT(*) FROM mv_casino_turnover_90d
+UNION ALL SELECT 'mv_sportsbook_turnover_90d', COUNT(*) FROM mv_sportsbook_turnover_90d
+UNION ALL SELECT 'mv_turnover_percentage',     COUNT(*) FROM mv_turnover_percentage;
 
 \echo ''
 \echo '--- Raw archive ---'

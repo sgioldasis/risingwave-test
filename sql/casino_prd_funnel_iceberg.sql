@@ -7,21 +7,18 @@
 --
 -- UC1 — Real Bet Amount:
 --   mv_casino_transactions          one row per transaction (flattened)
---   mv_casino_real_bet_events       bet filter (MessageTypeId=1, AccountId=1)
 --   mv_casino_real_bet              rolling 14-day real bet total per customer/currency
+--                                   (filter: MessageTypeId=1, AccountId=1)
 --
 -- UC2 — Casino Turnover Percentage:
---   mv_casino_turnover_events       casino payout events (MessageTypeId=2)
---   mv_sportsbook_turnover_events   sportsbook placement events (from src_bets_gh)
 --   mv_casino_turnover_90d          rolling 90-day casino turnover per customer
+--                                   (filter: MessageTypeId=2, AccountId IN (1,4))
 --   mv_sportsbook_turnover_90d      rolling 90-day sportsbook turnover per customer
 --   mv_casino_turnover_latest       latest rolling sum per customer (deduped)
 --   mv_sportsbook_turnover_latest   latest rolling sum per customer (deduped)
 --   mv_turnover_percentage          casino vs sportsbook ratio per customer
 --
 -- Iceberg sinks (Lakekeeper REST catalog + MinIO S3):
---   rw_managed_casino_transactions
---   rw_managed_casino_real_bet_events
 --   rw_managed_casino_real_bet
 --   rw_managed_turnover_percentage
 --
@@ -37,10 +34,7 @@ DROP MATERIALIZED VIEW IF EXISTS mv_sportsbook_turnover_latest CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_latest    CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_sportsbook_turnover_90d   CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_90d       CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_sportsbook_turnover_events CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_events    CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet           CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet_events   CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_transactions      CASCADE;
 
 -- =============================================================================
@@ -54,7 +48,7 @@ DROP MATERIALIZED VIEW IF EXISTS mv_casino_transactions      CASCADE;
 -- NOTE: background_ddl is intentionally NOT set here. When background_ddl=true,
 --   CREATE MATERIALIZED VIEW returns before the MV is visible in the catalog.
 --   Because this file creates a chain of dependent MVs (mv_casino_transactions
---   → mv_casino_real_bet_events → mv_casino_real_bet, etc.), each step must see
+--   → mv_casino_real_bet, mv_casino_turnover_90d, etc.), each step must see
 --   the previous MV in the catalog before it can be created. background_ddl
 --   breaks that dependency chain. Use it only for isolated, top-level MVs with
 --   no downstream dependents in the same session.
@@ -92,62 +86,46 @@ FROM
     UNNEST(msg."Transactions")                 AS txn;
 
 -- ---------------------------------------------------------------------------
--- 2. Real Bet Amount events (UC1 filter).
---    Mirrors getCasinoRealBetAmountEvents from the Spark PoC:
---      MessageTypeId = 1  (bet placed)
---      AccountId     = 1  (real money, not bonus)
---      Amount        IS NOT NULL AND <> '' (proto3 strings decode as '' when absent)
+-- 2. Rolling 14-day real bet total per customer/currency.
+--    Filter: MessageTypeId=1 (bet placed), AccountId=1 (real money, not bonus).
+--    One output row per event with the updated sum over the preceding 14 days
+--    (1 209 600 s). Consumers key on (customer_id, currency_id) and keep the
+--    latest row.
 -- ---------------------------------------------------------------------------
-CREATE MATERIALIZED VIEW mv_casino_real_bet_events AS
+CREATE MATERIALIZED VIEW mv_casino_real_bet AS
 SELECT
     customer_id,
-    transaction_id,
     currency_id,
-    game_id,
-    game_type,
-    is_live,
-    company_id,
-    amount_abs                                    AS real_bet_amount,
-    transaction_created_at                        AS event_ts
+    transaction_created_at                                AS event_ts,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_14d_real_bet_amount
 FROM mv_casino_transactions
 WHERE message_type_id = 1
   AND account_id      = 1
   AND amount_raw IS NOT NULL
   AND amount_raw <> '';
 
--- ---------------------------------------------------------------------------
--- 3. Rolling 14-day real bet total per customer/currency.
---    Mirrors Spark mapGroupsWithState: one output row per event with the
---    updated sum over the preceding 14 days (1 209 600 s).
---    Consumers key on (customer_id, currency_id) and keep the latest row.
--- ---------------------------------------------------------------------------
-CREATE MATERIALIZED VIEW mv_casino_real_bet AS
-SELECT
-    customer_id,
-    currency_id,
-    event_ts,
-    SUM(real_bet_amount) OVER (
-        PARTITION BY customer_id, currency_id
-        ORDER BY event_ts
-        RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_14d_real_bet_amount
-FROM mv_casino_real_bet_events;
-
 -- =============================================================================
 -- UC2 — Casino Turnover Percentage
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- 4. Casino turnover events.
---    MessageTypeId = 2 (withdraw/payout), AccountId IN (1, 4) (real + bonus).
---    Mirrors getCasinoTurnover from the Spark PoC.
+-- 3. 90-day rolling casino turnover per customer.
+--    Filter: MessageTypeId=2 (withdraw/payout), AccountId IN (1,4) (real+bonus).
+--    (7 776 000 s = 90 days)
 -- ---------------------------------------------------------------------------
-CREATE MATERIALIZED VIEW mv_casino_turnover_events AS
+CREATE MATERIALIZED VIEW mv_casino_turnover_90d AS
 SELECT
     customer_id,
-    currency_id,
-    amount_abs               AS turnover,
-    transaction_created_at   AS event_ts
+    transaction_created_at                                AS event_ts,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_90d_turnover
 FROM mv_casino_transactions
 WHERE message_type_id = 2
   AND account_id      IN (1, 4)
@@ -155,48 +133,26 @@ WHERE message_type_id = 2
   AND amount_raw <> '';
 
 -- ---------------------------------------------------------------------------
--- 5. Sportsbook turnover events (from src_bets_gh).
+-- 4. 90-day rolling sportsbook turnover per customer (from src_bets_gh).
 --    TotalStake.Euro uses DecimalValue encoding (units + nanos/1e9).
---    Euro-normalised amounts make casino and sportsbook comparable across
---    currencies when computing the ratio.
+--    Euro-normalised so casino and sportsbook turnover are comparable.
 -- ---------------------------------------------------------------------------
-CREATE MATERIALIZED VIEW mv_sportsbook_turnover_events AS
+CREATE MATERIALIZED VIEW mv_sportsbook_turnover_90d AS
 SELECT
     ("CustomerInfo")."Id"                                                        AS customer_id,
     TO_TIMESTAMP(("PlacedAt").seconds)                                           AS event_ts,
-    (("TotalStake")."Euro")."units"::NUMERIC
-        + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000                 AS turnover
+    SUM((("TotalStake")."Euro")."units"::NUMERIC
+        + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000) OVER (
+        PARTITION BY ("CustomerInfo")."Id"
+        ORDER BY TO_TIMESTAMP(("PlacedAt").seconds)
+        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_90d_turnover
 FROM src_bets_gh
 WHERE ("CustomerInfo")."Id" IS NOT NULL
   AND ("TotalStake")."Euro" IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
--- 6. 90-day rolling totals (7 776 000 s = 90 days).
--- ---------------------------------------------------------------------------
-CREATE MATERIALIZED VIEW mv_casino_turnover_90d AS
-SELECT
-    customer_id,
-    event_ts,
-    SUM(turnover) OVER (
-        PARTITION BY customer_id
-        ORDER BY event_ts
-        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_90d_turnover
-FROM mv_casino_turnover_events;
-
-CREATE MATERIALIZED VIEW mv_sportsbook_turnover_90d AS
-SELECT
-    customer_id,
-    event_ts,
-    SUM(turnover) OVER (
-        PARTITION BY customer_id
-        ORDER BY event_ts
-        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_90d_turnover
-FROM mv_sportsbook_turnover_events;
-
--- ---------------------------------------------------------------------------
--- 7. Latest rolling sum per customer (one row per customer for ratio join).
+-- 6. Latest rolling sum per customer (one row per customer for ratio join).
 --
 -- Uses ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)
 -- rather than DISTINCT ON (customer_id) ORDER BY …. In RisingWave streaming
@@ -233,7 +189,7 @@ FROM (
 WHERE rn = 1;
 
 -- ---------------------------------------------------------------------------
--- 8. Turnover percentage — updated whenever either side gets a new event.
+-- 7. Turnover percentage — updated whenever either side gets a new event.
 --
 -- Implemented as UNION ALL + GROUP BY (a pivot), NOT a FULL OUTER JOIN.
 -- The upstream _latest MVs use DISTINCT ON (customer_id), so their stream key

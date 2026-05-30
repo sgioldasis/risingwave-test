@@ -27,7 +27,7 @@ tables.
 │ .kaizengaming.net:443    │  cronus.casino   │   ↓                              │
 │ 5 brokers, 290 topics    │  .out.gh         │   mv_casino_raw  (nested 1:1)    │
 └──────────────────────────┘                  │   mv_casino_transactions         │
-                                              │   mv_casino_real_bet_events      │
+                                              │   mv_casino_real_bet             │
                                               │   mv_turnover_percentage         │
                                               └────────────┬────────────────────┘
                                                            │ upsert sinks
@@ -219,7 +219,7 @@ to re-run.
 
 ### 3.5b Create the sportsbook bets source (UC2)
 
-UC2's `mv_sportsbook_turnover_events` reads from a second Kafka table, `src_bets_gh`,
+UC2's `mv_sportsbook_turnover_90d` reads from a second Kafka table, `src_bets_gh`,
 which decodes `PandoraBetInfoVm` protobuf from the `bets-out-gh` topic on the prd4 cluster.
 
 ```bash
@@ -263,7 +263,7 @@ FORMAT PLAIN ENCODE PROTOBUF (
 > contains a field of its own type, creating a recursive schema that RisingWave
 > cannot represent as a native `STRUCT`. The `messages_as_jsonb` option tells
 > RisingWave to decode that message type as `JSONB` rather than attempting a
-> native struct mapping. The `mv_sportsbook_turnover_events` MV only reads
+> native struct mapping. `mv_sportsbook_turnover_90d` only reads
 > `TotalStake.Euro` and `PlacedAt`, so `PlayerSubstitutionInfoVm` columns are
 > never accessed and the JSONB fallback has no cost.
 
@@ -272,11 +272,11 @@ FORMAT PLAIN ENCODE PROTOBUF (
 See [`sql/casino_prd_funnel_iceberg.sql`](../sql/casino_prd_funnel_iceberg.sql)
 for the full file. The pipeline covers two use cases:
 
-**UC1 — Real Bet Amount:** `mv_casino_transactions` → `mv_casino_real_bet_events`
-→ `mv_casino_real_bet` (rolling 14-day real bet total per customer/currency).
+**UC1 — Real Bet Amount:** `mv_casino_transactions` → `mv_casino_real_bet`
+(rolling 14-day real bet total per customer/currency; filter for MessageTypeId=1, AccountId=1 applied inline).
 
-**UC2 — Casino Turnover Percentage:** `mv_casino_turnover_events` +
-`mv_sportsbook_turnover_events` → `mv_turnover_percentage` (90-day casino vs
+**UC2 — Casino Turnover Percentage:** `mv_casino_turnover_90d` +
+`mv_sportsbook_turnover_90d` → `mv_turnover_percentage` (90-day casino vs
 sportsbook ratio per customer). UC2 requires a second source `src_bets_gh`
 (sportsbook bets — `prd4-kafka-bootstrap.kaizengaming.net:443`, topic
 `bets-out-gh`, 10 partitions); see step 3.5b above for setup.
@@ -284,93 +284,63 @@ sportsbook ratio per customer). UC2 requires a second source `src_bets_gh`
 #### UC1 — Real Bet Amount
 
 ```sql
--- UC1: Real bet events — filter on top of mv_casino_transactions.
--- Mirrors getCasinoRealBetAmountEvents from the Spark PoC:
---   MessageTypeId = 1  (bet placed)
---   AccountId     = 1  (real money account, not bonus)
---   Amount        IS NOT NULL AND <> '' (proto3 string fields decode as '' when absent)
-CREATE MATERIALIZED VIEW mv_casino_real_bet_events AS
+-- UC1: Rolling 14-day real bet amount per customer/currency.
+-- Filter: MessageTypeId=1 (bet placed), AccountId=1 (real money, not bonus).
+-- One row per event with the updated 14-day sum; consumers key on
+-- (customer_id, currency_id) and keep the latest row.
+CREATE MATERIALIZED VIEW mv_casino_real_bet AS
 SELECT
     customer_id,
-    transaction_id,
     currency_id,
-    game_id,
-    game_type,
-    is_live,
-    company_id,
-    amount_abs                                    AS real_bet_amount,
-    transaction_created_at                        AS event_ts
+    transaction_created_at                                AS event_ts,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_14d_real_bet_amount
 FROM mv_casino_transactions
 WHERE message_type_id = 1
   AND account_id      = 1
   AND amount_raw IS NOT NULL
   AND amount_raw <> '';
-
--- UC1: Rolling 14-day real bet amount per customer/currency.
--- Mirrors the Spark mapGroupsWithState logic: on each incoming event, emit the
--- updated sum of all real bets placed by that customer in the last 14 days.
--- One row per event; consumers key on (customer_id, currency_id) and keep the latest.
-CREATE MATERIALIZED VIEW mv_casino_real_bet AS
-SELECT
-    customer_id,
-    currency_id,
-    event_ts,
-    SUM(real_bet_amount) OVER (
-        PARTITION BY customer_id, currency_id
-        ORDER BY event_ts
-        RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_14d_real_bet_amount
-FROM mv_casino_real_bet_events;
 ```
 
 #### UC2 — Casino Turnover Percentage
 
 ```sql
--- UC2: Casino turnover events.
--- MessageTypeId = 2 (withdraw/payout), AccountId IN (1, 4) (real money + bonus).
-CREATE MATERIALIZED VIEW mv_casino_turnover_events AS
+-- UC2: 90-day rolling casino turnover per customer.
+-- Filter: MessageTypeId=2 (withdraw/payout), AccountId IN (1,4) (real+bonus).
+CREATE MATERIALIZED VIEW mv_casino_turnover_90d AS
 SELECT
     customer_id,
-    currency_id,
-    amount_abs               AS turnover,
-    transaction_created_at   AS event_ts
+    transaction_created_at                                AS event_ts,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_90d_turnover
 FROM mv_casino_transactions
 WHERE message_type_id = 2
   AND account_id      IN (1, 4)
   AND amount_raw IS NOT NULL
   AND amount_raw <> '';
 
--- UC2: Sportsbook turnover events (from src_bets_gh).
+-- UC2: 90-day rolling sportsbook turnover per customer (from src_bets_gh).
 -- TotalStake.Euro uses DecimalValue encoding (units + nanos/1e9).
 -- Euro-normalised so casino and sportsbook turnover are comparable across currencies.
-CREATE MATERIALIZED VIEW mv_sportsbook_turnover_events AS
+CREATE MATERIALIZED VIEW mv_sportsbook_turnover_90d AS
 SELECT
     ("CustomerInfo")."Id"                                                       AS customer_id,
     TO_TIMESTAMP(("PlacedAt").seconds)                                          AS event_ts,
-    (("TotalStake")."Euro")."units"::NUMERIC
-        + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000                AS turnover
+    SUM((("TotalStake")."Euro")."units"::NUMERIC
+        + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000) OVER (
+        PARTITION BY ("CustomerInfo")."Id"
+        ORDER BY TO_TIMESTAMP(("PlacedAt").seconds)
+        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_90d_turnover
 FROM src_bets_gh
 WHERE ("CustomerInfo")."Id" IS NOT NULL
   AND ("TotalStake")."Euro" IS NOT NULL;
-
--- UC2: 90-day rolling totals, deduplicated to latest per customer, then ratio.
-CREATE MATERIALIZED VIEW mv_casino_turnover_90d AS
-SELECT customer_id, event_ts,
-    SUM(turnover) OVER (
-        PARTITION BY customer_id
-        ORDER BY event_ts
-        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_90d_turnover
-FROM mv_casino_turnover_events;
-
-CREATE MATERIALIZED VIEW mv_sportsbook_turnover_90d AS
-SELECT customer_id, event_ts,
-    SUM(turnover) OVER (
-        PARTITION BY customer_id
-        ORDER BY event_ts
-        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_90d_turnover
-FROM mv_sportsbook_turnover_events;
 
 CREATE MATERIALIZED VIEW mv_casino_turnover_latest AS
 SELECT DISTINCT ON (customer_id) customer_id,
@@ -514,7 +484,6 @@ and iceberg is expected with `commit_checkpoint_interval = 5`):
 --- Materialized views ---
  mv_casino_raw             | 424395
  mv_casino_transactions    | 539895
- mv_casino_real_bet_events | 389541
  mv_casino_real_bet        | 389541   ← one row per event (rolling window, not aggregate)
 
 --- Iceberg sink tables (managed) ---
@@ -593,7 +562,7 @@ psql session from blocking while a large backfill or index build runs.
 The reason: when `background_ddl` is on, the created object is not immediately
 visible in the catalog. A subsequent `CREATE MATERIALIZED VIEW` that references
 a just-created MV would fail with `table or source not found`. Because the MV
-chain (`mv_casino_transactions` → `mv_casino_real_bet_events` → `mv_casino_real_bet`,
+chain (`mv_casino_transactions` → `mv_casino_real_bet`, `mv_casino_turnover_90d`,
 etc.) requires each step to be fully registered before the next can be created,
 `background_ddl` must be off during MV creation.
 
@@ -833,9 +802,9 @@ Returns `TIMESTAMP WITH TIME ZONE` (UTC). For local: `… AT TIME ZONE
 -- live tail of transaction count
 SELECT count(*) FROM mv_casino_transactions;
 
--- most recent real-money bets
-SELECT customer_id, real_bet_amount, event_ts
-FROM mv_casino_real_bet_events
+-- most recent real-money bets (latest rolling sum per customer/currency)
+SELECT customer_id, currency_id, rolling_14d_real_bet_amount, event_ts
+FROM mv_casino_real_bet
 ORDER BY event_ts DESC LIMIT 10;
 
 -- top customers by 14-day rolling real bet amount (latest row per customer)
@@ -1095,13 +1064,12 @@ psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_raw_iceberg.sql
 
 # 4. Verify
 psql -h localhost -p 4566 -d dev -U root <<'SQL'
-SELECT 'mv_raw'              AS view, count(*) FROM mv_casino_raw
-UNION ALL SELECT 'mv_transactions',   count(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_real_bet_events',count(*) FROM mv_casino_real_bet_events
-UNION ALL SELECT 'mv_real_bet',       count(*) FROM mv_casino_real_bet
-UNION ALL SELECT 'mv_turnover_pct',   count(*) FROM mv_turnover_percentage
-UNION ALL SELECT 'ice_raw',           count(*) FROM rw_managed_casino_raw
-UNION ALL SELECT 'ice_real_bet',      count(*) FROM rw_managed_casino_real_bet
-UNION ALL SELECT 'ice_turnover_pct',  count(*) FROM rw_managed_turnover_percentage;
+SELECT 'mv_raw'            AS view, count(*) FROM mv_casino_raw
+UNION ALL SELECT 'mv_transactions',  count(*) FROM mv_casino_transactions
+UNION ALL SELECT 'mv_real_bet',      count(*) FROM mv_casino_real_bet
+UNION ALL SELECT 'mv_turnover_pct',  count(*) FROM mv_turnover_percentage
+UNION ALL SELECT 'ice_raw',          count(*) FROM rw_managed_casino_raw
+UNION ALL SELECT 'ice_real_bet',     count(*) FROM rw_managed_casino_real_bet
+UNION ALL SELECT 'ice_turnover_pct', count(*) FROM rw_managed_turnover_percentage;
 SQL
 ```
