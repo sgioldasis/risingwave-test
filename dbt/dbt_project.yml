@@ -15,6 +15,9 @@ models:
   realtime_funnel:
     +materialized: materialized_view
     +schema: public
+    casino_prd:
+      +pre-hook:
+        - "SET streaming_use_shared_source = true"
 
 vars:
   # Kafka configuration

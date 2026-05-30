@@ -10,6 +10,8 @@
     DROP SINK IF EXISTS sink_hermes_features_to_iceberg CASCADE;
     DROP SINK IF EXISTS funnel_kafka_sink CASCADE;
     DROP SINK IF EXISTS funnel_postgres_sink CASCADE;
+    DROP SINK IF EXISTS sink_casino_real_bet CASCADE;
+    DROP SINK IF EXISTS sink_turnover_percentage CASCADE;
     {% endset %}
 
     {% do run_query(drop_sinks_sql) %}

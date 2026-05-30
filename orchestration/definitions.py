@@ -24,6 +24,11 @@ from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table
 from .assets.iceberg_compaction import iceberg_compaction_job, spark_session_resource
+from .assets.casino_prd_setup import (
+    casino_prd_proto_fetch,
+    casino_prd_proto_compile,
+    casino_prd_proto_upload,
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -129,10 +134,15 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             kinds.add("iceberg")
             spec = spec.replace_attributes(kinds=frozenset(kinds))
         
+        # Casino UC models get their own groups; shared sources go to casino_uc1
+        if "casino_uc2" in tags and "casino_uc1" not in tags:
+            new_spec = spec.replace_attributes(group_name="casino_uc2")
+        elif "casino_uc1" in tags:
+            new_spec = spec.replace_attributes(group_name="casino_uc1")
         # Assign group based on where the model runs (not its target)
         # Models materialized as sinks, materialized_views, or tables in RisingWave
         # go to the "risingwave" group, even if they target Iceberg
-        if materialized in ["sink", "materialized_view", "view", "table"]:
+        elif materialized in ["sink", "materialized_view", "view", "table"]:
             new_spec = spec.replace_attributes(group_name="risingwave")
         elif "iceberg" in tags:
             # True Iceberg tables (not RisingWave objects targeting Iceberg)
@@ -221,7 +231,7 @@ else:
 custom_translator = CustomDagsterDbtTranslator()
 
 
-@dbt_assets(manifest=dbt_project.manifest_path, dagster_dbt_translator=custom_translator)
+@dbt_assets(manifest=dbt_project.manifest_path, dagster_dbt_translator=custom_translator, exclude="casino_prd")
 def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     """All dbt assets for the realtime funnel project."""
     context.log.info(f"Starting dbt build for project: {dbt_PROJECT_PATH}")
@@ -291,6 +301,28 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
     context.log.info("Pre-build sinks dropped successfully")
     
     # Run dbt build and stream events
+    yield from dbt.cli(["build"], context=context).stream()
+
+
+@dbt_assets(
+    manifest=dbt_project.manifest_path,
+    dagster_dbt_translator=custom_translator,
+    select="tag:casino_uc1",
+    name="casino_uc1_dbt_assets",
+)
+def casino_uc1_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+    """dbt assets for Casino UC1 — Real Bet Amount pipeline."""
+    yield from dbt.cli(["build"], context=context).stream()
+
+
+@dbt_assets(
+    manifest=dbt_project.manifest_path,
+    dagster_dbt_translator=custom_translator,
+    select="tag:casino_uc2",
+    name="casino_uc2_dbt_assets",
+)
+def casino_uc2_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+    """dbt assets for Casino UC2 — Turnover Percentage pipeline."""
     yield from dbt.cli(["build"], context=context).stream()
 
 
@@ -372,6 +404,42 @@ iceberg_countries_job = define_asset_job(
     description="Create and populate Iceberg countries reference table",
 )
 
+casino_prd_setup_job = define_asset_job(
+    name="casino_prd_setup_job",
+    selection=AssetSelection.assets(
+        casino_prd_proto_fetch,
+        casino_prd_proto_compile,
+        casino_prd_proto_upload,
+    ),
+    description="Fetch, compile, and upload casino proto schemas to MinIO",
+)
+
+casino_uc1_dbt_job = define_asset_job(
+    name="casino_uc1_dbt_job",
+    selection=[casino_uc1_dbt_assets],
+    description="Build Casino UC1 (Real Bet Amount) dbt models",
+)
+
+casino_uc2_dbt_job = define_asset_job(
+    name="casino_uc2_dbt_job",
+    selection=[casino_uc2_dbt_assets],
+    description="Build Casino UC2 (Turnover Percentage) dbt models",
+)
+
+casino_prd_full_job = define_asset_job(
+    name="casino_prd_full_job",
+    selection=(
+        AssetSelection.assets(
+            casino_prd_proto_fetch,
+            casino_prd_proto_compile,
+            casino_prd_proto_upload,
+        )
+        | AssetSelection.groups("casino_uc1")
+        | AssetSelection.groups("casino_uc2")
+    ),
+    description="End-to-end casino demo: proto setup → UC1 → UC2",
+)
+
 # ML Training Schedule (5 minutes - Production)
 ml_training_schedule = ScheduleDefinition(
     job=ml_training_job,
@@ -405,6 +473,13 @@ defs = Definitions(
         postgres_funnel_table,
         realtime_funnel_dbt_assets,
         ml_trained_models,
+        # Casino production prerequisites
+        casino_prd_proto_fetch,
+        casino_prd_proto_compile,
+        casino_prd_proto_upload,
+        # Casino dbt assets
+        casino_uc1_dbt_assets,
+        casino_uc2_dbt_assets,
     ],
     jobs=[
         dbt_build_job,
@@ -412,6 +487,10 @@ defs = Definitions(
         iceberg_countries_job,
         iceberg_compaction_job,
         postgres_sink_job,
+        casino_prd_setup_job,
+        casino_uc1_dbt_job,
+        casino_uc2_dbt_job,
+        casino_prd_full_job,
     ],
     schedules=[dbt_build_schedule, ml_training_schedule],
     sensors=[ml_training_sensor_realtime],

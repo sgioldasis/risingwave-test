@@ -18,7 +18,12 @@
     {%- endset -%}
     
     {{ log("Creating sink: " ~ this.identifier, info=True) }}
-    
+
+    {# background_ddl prevents blocking while the initial Iceberg snapshot commits #}
+    {% call statement('set_background_ddl') %}
+        SET background_ddl = true
+    {% endcall %}
+
     {# Execute the create sink statement #}
     {% call statement('main') %}
         {{ create_sink_sql }}
