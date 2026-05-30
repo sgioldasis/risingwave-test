@@ -31,6 +31,7 @@
 -- ---------------------------------------------------------------------------
 -- Drop in dependency order so CASCADE doesn't fail on cross-MV dependencies
 -- ---------------------------------------------------------------------------
+SET client_min_messages = WARNING;
 DROP MATERIALIZED VIEW IF EXISTS mv_turnover_percentage       CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_sportsbook_turnover_latest CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_latest    CASCADE;
@@ -39,11 +40,26 @@ DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_90d       CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_sportsbook_turnover_events CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_events    CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet           CASCADE;
--- legacy names from previous schema
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet_14d_per_customer    CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet_hourly_per_customer CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet_events   CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_transactions      CASCADE;
+
+-- =============================================================================
+-- Session settings
+--
+-- streaming_use_shared_source: src_casino_prd feeds mv_casino_transactions,
+--   mv_casino_raw (raw_iceberg.sql), and potentially others. Without this, each
+--   MV spawns its own Kafka SourceExecutor — multiplying broker connections and
+--   network bandwidth. A shared source fans out a single consumer to all MVs.
+--
+-- NOTE: background_ddl is intentionally NOT set here. When background_ddl=true,
+--   CREATE MATERIALIZED VIEW returns before the MV is visible in the catalog.
+--   Because this file creates a chain of dependent MVs (mv_casino_transactions
+--   → mv_casino_real_bet_events → mv_casino_real_bet, etc.), each step must see
+--   the previous MV in the catalog before it can be created. background_ddl
+--   breaks that dependency chain. Use it only for isolated, top-level MVs with
+--   no downstream dependents in the same session.
+-- =============================================================================
+SET streaming_use_shared_source = true;
 
 -- =============================================================================
 -- UC1 — Real Bet Amount
@@ -181,45 +197,80 @@ FROM mv_sportsbook_turnover_events;
 
 -- ---------------------------------------------------------------------------
 -- 7. Latest rolling sum per customer (one row per customer for ratio join).
+--
+-- Uses ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)
+-- rather than DISTINCT ON (customer_id) ORDER BY …. In RisingWave streaming
+-- mode ORDER BY at the SELECT level is not honoured by the streaming executor
+-- (it applies only at creation time, not to ongoing result updates). DISTINCT
+-- ON relies on that ORDER BY to pick the "latest" row — in a live streaming
+-- context it becomes arbitrary. The ROW_NUMBER() Top-1 pattern is the
+-- RisingWave-idiomatic way to maintain a per-key maximum: it compiles to a
+-- stateful TopN operator that correctly handles retract+insert pairs emitted
+-- by the upstream sliding-window MVs.
 -- ---------------------------------------------------------------------------
 CREATE MATERIALIZED VIEW mv_casino_turnover_latest AS
-SELECT DISTINCT ON (customer_id)
-    customer_id,
-    rolling_90d_turnover    AS casino_turnover,
-    event_ts
-FROM mv_casino_turnover_90d
-ORDER BY customer_id, event_ts DESC;
+SELECT customer_id, casino_turnover, event_ts
+FROM (
+    SELECT
+        customer_id,
+        rolling_90d_turnover                                                     AS casino_turnover,
+        event_ts,
+        ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)      AS rn
+    FROM mv_casino_turnover_90d
+) t
+WHERE rn = 1;
 
 CREATE MATERIALIZED VIEW mv_sportsbook_turnover_latest AS
-SELECT DISTINCT ON (customer_id)
-    customer_id,
-    rolling_90d_turnover    AS sportsbook_turnover,
-    event_ts
-FROM mv_sportsbook_turnover_90d
-ORDER BY customer_id, event_ts DESC;
+SELECT customer_id, sportsbook_turnover, event_ts
+FROM (
+    SELECT
+        customer_id,
+        rolling_90d_turnover                                                     AS sportsbook_turnover,
+        event_ts,
+        ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)      AS rn
+    FROM mv_sportsbook_turnover_90d
+) t
+WHERE rn = 1;
 
 -- ---------------------------------------------------------------------------
 -- 8. Turnover percentage — updated whenever either side gets a new event.
+--
+-- Implemented as UNION ALL + GROUP BY (a pivot), NOT a FULL OUTER JOIN.
+-- The upstream _latest MVs use DISTINCT ON (customer_id), so their stream key
+-- IS the join key. A FULL OUTER JOIN on that key keeps its hash-join state
+-- with an *empty* extra pk; while the DISTINCT ON sides emit retract+insert
+-- pairs during backfill/live updates, two rows for the same customer_id can
+-- briefly reach the join state and panic with `double inserting a join state
+-- entry`, which (with DatabaseFailureIsolation license-disabled) resets the
+-- whole database. A hash aggregation keeps one state row per group and applies
+-- +/- deltas, so it consumes the same update stream without that failure mode.
+-- A customer present on only one side simply gets 0 from the other branch,
+-- reproducing the FULL OUTER JOIN's COALESCE(..., 0) semantics.
 -- ---------------------------------------------------------------------------
 CREATE MATERIALIZED VIEW mv_turnover_percentage AS
 SELECT
-    COALESCE(c.customer_id, s.customer_id)      AS customer_id,
-    COALESCE(c.casino_turnover, 0)              AS casino_turnover,
-    COALESCE(s.sportsbook_turnover, 0)          AS sportsbook_turnover,
-    COALESCE(c.casino_turnover, 0)
-        + COALESCE(s.sportsbook_turnover, 0)    AS total_turnover,
+    customer_id,
+    SUM(casino_turnover)                             AS casino_turnover,
+    SUM(sportsbook_turnover)                         AS sportsbook_turnover,
+    SUM(casino_turnover) + SUM(sportsbook_turnover)  AS total_turnover,
     CASE
-        WHEN COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0) = 0 THEN 0
-        ELSE COALESCE(c.casino_turnover, 0)
-             / (COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0))
-    END                                         AS casino_ratio,
+        WHEN SUM(casino_turnover) + SUM(sportsbook_turnover) = 0 THEN 0
+        ELSE SUM(casino_turnover)
+             / (SUM(casino_turnover) + SUM(sportsbook_turnover))
+    END                                              AS casino_ratio,
     CASE
-        WHEN COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0) = 0 THEN 0
-        ELSE COALESCE(s.sportsbook_turnover, 0)
-             / (COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0))
-    END                                         AS sportsbook_ratio
-FROM mv_casino_turnover_latest      c
-FULL OUTER JOIN mv_sportsbook_turnover_latest s USING (customer_id);
+        WHEN SUM(casino_turnover) + SUM(sportsbook_turnover) = 0 THEN 0
+        ELSE SUM(sportsbook_turnover)
+             / (SUM(casino_turnover) + SUM(sportsbook_turnover))
+    END                                              AS sportsbook_ratio
+FROM (
+    SELECT customer_id, casino_turnover, 0::NUMERIC AS sportsbook_turnover
+    FROM mv_casino_turnover_latest
+    UNION ALL
+    SELECT customer_id, 0::NUMERIC AS casino_turnover, sportsbook_turnover
+    FROM mv_sportsbook_turnover_latest
+) u
+GROUP BY customer_id;
 
 -- =============================================================================
 -- Managed Iceberg sinks (Lakekeeper REST catalog + MinIO S3).
@@ -239,6 +290,12 @@ CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn WITH (
 
 SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 
+-- background_ddl is safe from here to end-of-file: sinks and indexes are all
+-- terminal — nothing in this session depends on them being fully built before
+-- the session exits. Without it, each CREATE SINK/INDEX blocks until the full
+-- initial snapshot or index build completes over the backfilled MV history.
+SET background_ddl = true;
+
 -- --- Rolling 14-day real bet (UC1) -------------------------------------------
 DROP SINK  IF EXISTS rw_managed_casino_real_bet_sink;
 DROP TABLE IF EXISTS rw_managed_casino_real_bet;
@@ -257,7 +314,8 @@ FROM mv_casino_real_bet
 WITH (
     type                        = 'upsert',
     primary_key                 = 'customer_id,currency_id,event_ts',
-    commit_checkpoint_interval  = 5
+    commit_checkpoint_interval  = 5,
+    force_compaction            = true
 );
 
 -- --- Turnover percentage (UC2) -----------------------------------------------
@@ -280,8 +338,24 @@ FROM mv_turnover_percentage
 WITH (
     type                        = 'upsert',
     primary_key                 = 'customer_id',
-    commit_checkpoint_interval  = 5
+    commit_checkpoint_interval  = 5,
+    force_compaction            = true
 );
+
+-- =============================================================================
+-- Indexes on serving MVs
+--
+-- Terminal MVs queried by Grafana or application code do full heap scans
+-- without indexes. customer_id is the primary lookup key for both UC1 and UC2;
+-- (customer_id, currency_id) is the natural compound key for real-bet queries.
+-- RisingWave indexes are maintained incrementally by the streaming engine —
+-- they add write overhead but pay off immediately on point lookups.
+-- =============================================================================
+CREATE INDEX IF NOT EXISTS idx_casino_real_bet_customer
+    ON mv_casino_real_bet (customer_id, currency_id);
+
+CREATE INDEX IF NOT EXISTS idx_turnover_percentage_customer
+    ON mv_turnover_percentage (customer_id);
 
 \echo ''
 \echo '=== MVs ==='

@@ -5,7 +5,7 @@ the Kaizen production Kafka cluster into RisingWave, building real-time
 materialized views, and landing the results into Lakekeeper-managed Iceberg
 tables.
 
-> **Status:** working as of 2026-05-27. RisingWave 2.8.2, Lakekeeper
+> **Status:** working as of 2026-05-30. RisingWave 2.8.4, Lakekeeper
 > `latest-main`, MinIO local. No producer required — we consume the live
 > production topic directly.
 
@@ -14,13 +14,13 @@ tables.
 ## 1. Architecture
 
 ```
-┌──────────────────────────┐                      ┌───────────────────────────┐
-│ Kaizen Apicurio Registry │  one-shot fetch      │  Local repo                │
-│ (staging-schema-registry)│ ───────────────────▶ │  proto/casinoroundinfodto  │
-│   bigdata/casinoroundinfo│                      │       .proto  + .pb        │
-└──────────────────────────┘                      └─────────────┬─────────────┘
-                                                                │ mounted in
-                                                                ▼  RW container
+┌──────────────────────────┐  one-shot fetch+compile  ┌────────────────────────┐
+│ Kaizen Apicurio Registry │ ────────────────────────▶│  MinIO (hummock001)     │
+│ (staging-schema-registry)│                          │  proto/casino…dto.pb   │
+│   bigdata/casinoroundinfo│                          │  proto/betinfo.desc    │
+└──────────────────────────┘                          └──────────┬─────────────┘
+                                                                 │ s3:// fetch at
+                                                                 ▼ CREATE TABLE time
 ┌──────────────────────────┐    SSL one-way   ┌─────────────────────────────────┐
 │ Kaizen prd2 Kafka        │ ────────────────▶│  RisingWave (compute-node-0)     │
 │ prd2-kafka-bootstrap     │  topic           │   src_casino_prd  (TABLE)        │
@@ -28,7 +28,7 @@ tables.
 │ 5 brokers, 290 topics    │  .out.gh         │   mv_casino_raw  (nested 1:1)    │
 └──────────────────────────┘                  │   mv_casino_transactions         │
                                               │   mv_casino_real_bet_events      │
-                                              │   mv_casino_real_bet_hourly_..   │
+                                              │   mv_turnover_percentage         │
                                               └────────────┬────────────────────┘
                                                            │ upsert sinks
                                                            ▼  (commit ≈5s)
@@ -41,14 +41,19 @@ tables.
 
 Key decisions:
 
-- **Schema sourcing is one-shot at deploy time**, not at RW runtime.
-  Apicurio's `ccompat/v7` layer normalises PROTOBUF artifacts to binary
+- **Schema sourcing: compile once, store in MinIO, fetch via `s3://` at DDL
+  time.** Apicurio's `ccompat/v7` layer normalises PROTOBUF artifacts to binary
   `FileDescriptorSet`, which RisingWave's `schema.registry` fetcher cannot
-  parse. We bypass it.
+  parse. The native v2 endpoint returns `.proto` text, but `schema.location`
+  expects a compiled binary FDS — not source text. Resolution: fetch `.proto`
+  from Apicurio native v2, compile with `protoc --include_imports`, upload the
+  `.pb`/`.desc` to MinIO, and reference via
+  `schema.location = 's3://hummock001/proto/…'`. No container volume mount.
 - **Wire format on `cronus.casino.out.*` is raw protobuf**, no Confluent
-  5/6-byte magic prefix. RisingWave's `schema.location` (file-based) reads
-  byte 0 as a protobuf field tag — that matches what's on the wire, so no
-  framing strip is needed.
+  5/6-byte magic prefix. `schema.location` reads byte 0 as a protobuf field
+  tag — that matches what's on the wire, so no framing strip is needed.
+  (`schema.registry` requires the Confluent magic byte and is therefore
+  incompatible with these topics.)
 - **`scan.startup.mode = 'earliest'`** combined with `CREATE TABLE` (not
   `CREATE SOURCE`) persists the topic into RW state, so MVs see full
   history and batch counts agree with streaming counts.
@@ -98,22 +103,32 @@ Result: a clean `.proto` file declaring
 `CasinoMessageInformation`, `TransactionInformation` (proto3, many `optional`
 fields → oneofs under the hood).
 
-### 3.2 Compile to a FileDescriptorSet
+### 3.2 Compile to a FileDescriptorSet and upload to MinIO
 
 RisingWave's `schema.location` reads a serialised
-`google.protobuf.FileDescriptorSet`, **not** a `.proto` text. We compile
-with `protoc --include_imports` so well-known types like
-`google.protobuf.Timestamp` are baked in:
+`google.protobuf.FileDescriptorSet`, **not** `.proto` source text
+(confirmed: passing the Apicurio native v2 URL directly as `schema.location`
+fails with "failed to decode file descriptor set"). Compile with
+`--include_imports` so well-known types like `google.protobuf.Timestamp` are
+baked in, then upload to MinIO:
 
 ```bash
 protoc \
   --include_imports \
   --descriptor_set_out=proto/casinoroundinfodto.pb \
   proto/casinoroundinfodto.proto
+
+# Upload to MinIO (runs once; no container restart needed)
+AWS_ACCESS_KEY_ID=hummockadmin AWS_SECRET_ACCESS_KEY=hummockadmin \
+  aws --endpoint-url http://localhost:9301 s3 cp \
+    proto/casinoroundinfodto.pb \
+    s3://hummock001/proto/casinoroundinfodto.pb
 ```
 
-`proto/` is mounted into the RisingWave container at `/proto/`
-(see [docker-compose.yml](../docker-compose.yml)).
+RisingWave fetches the `.pb` from MinIO at `CREATE TABLE` time via
+`schema.location = 's3://hummock001/proto/casinoroundinfodto.pb'`. No
+container volume mount required. Schema updates are: re-run protoc →
+re-upload to MinIO → re-run the source DDL.
 
 ### 3.3 Verify wire format on the topic
 
@@ -147,8 +162,12 @@ WITH (
     scan.startup.mode             = 'earliest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location = 'file:///proto/casinoroundinfodto.pb',
-    message         = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
+    schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',
+    message          = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto',
+    s3.region        = 'us-east-1',
+    s3.endpoint      = 'http://minio-0:9301',
+    s3.access.key    = 'hummockadmin',
+    s3.secret.key    = 'hummockadmin'
 );
 ```
 
@@ -198,6 +217,56 @@ container) waits for `/health`, posts the EULA accept, then creates the
 key prefix `risingwave-lakekeeper` and a public namespace. Idempotent — safe
 to re-run.
 
+### 3.5b Create the sportsbook bets source (UC2)
+
+UC2's `mv_sportsbook_turnover_events` reads from a second Kafka table, `src_bets_gh`,
+which decodes `PandoraBetInfoVm` protobuf from the `bets-out-gh` topic on the prd4 cluster.
+
+```bash
+# Fetch the betinfo proto from Apicurio (same native-v2 pattern as casino)
+curl -fsSL -H 'Accept: text/plain' \
+  http://staging-schema-registry.kaizengaming.net/apis/registry/v2/groups/bigdata/artifacts/betinfo \
+  > proto/betinfo.proto
+
+# Compile (note: proto_path includes well-known types from homebrew or your system protoc)
+protoc --descriptor_set_out=proto/betinfo.desc --include_imports \
+  --proto_path=/opt/homebrew/include --proto_path=proto proto/betinfo.proto
+
+# Upload to MinIO
+AWS_ACCESS_KEY_ID=hummockadmin AWS_SECRET_ACCESS_KEY=hummockadmin \
+  aws --endpoint-url http://localhost:9301 s3 cp \
+    proto/betinfo.desc s3://hummock001/proto/betinfo.desc
+```
+
+```sql
+CREATE TABLE src_bets_gh
+WITH (
+    connector                     = 'kafka',
+    topic                         = 'bets-out-gh',
+    properties.bootstrap.server   = 'prd4-kafka-bootstrap.kaizengaming.net:443',
+    properties.security.protocol  = 'SSL',
+    group.id.prefix               = 'rw-readonly-bets-demo',
+    scan.startup.mode             = 'earliest'
+)
+FORMAT PLAIN ENCODE PROTOBUF (
+    schema.location   = 's3://hummock001/proto/betinfo.desc',
+    message           = 'PandoraBetInfoVm',
+    messages_as_jsonb = 'PlayerSubstitutionInfoVm',
+    s3.region         = 'us-east-1',
+    s3.endpoint       = 'http://minio-0:9301',
+    s3.access.key     = 'hummockadmin',
+    s3.secret.key     = 'hummockadmin'
+);
+```
+
+> **`messages_as_jsonb` for self-referential types.** `PlayerSubstitutionInfoVm`
+> contains a field of its own type, creating a recursive schema that RisingWave
+> cannot represent as a native `STRUCT`. The `messages_as_jsonb` option tells
+> RisingWave to decode that message type as `JSONB` rather than attempting a
+> native struct mapping. The `mv_sportsbook_turnover_events` MV only reads
+> `TotalStake.Euro` and `PlacedAt`, so `PlayerSubstitutionInfoVm` columns are
+> never accessed and the JSONB fallback has no cost.
+
 ### 3.6 Real-time materialized views
 
 See [`sql/casino_prd_funnel_iceberg.sql`](../sql/casino_prd_funnel_iceberg.sql)
@@ -208,9 +277,9 @@ for the full file. The pipeline covers two use cases:
 
 **UC2 — Casino Turnover Percentage:** `mv_casino_turnover_events` +
 `mv_sportsbook_turnover_events` → `mv_turnover_percentage` (90-day casino vs
-sportsbook ratio per customer). UC2 requires a second source `bets_out_gh`
+sportsbook ratio per customer). UC2 requires a second source `src_bets_gh`
 (sportsbook bets — `prd4-kafka-bootstrap.kaizengaming.net:443`, topic
-`bets-out-gh`, 10 partitions).
+`bets-out-gh`, 10 partitions); see step 3.5b above for setup.
 
 #### UC1 — Real Bet Amount
 
@@ -271,7 +340,7 @@ WHERE message_type_id = 2
   AND amount_raw IS NOT NULL
   AND amount_raw <> '';
 
--- UC2: Sportsbook turnover events (from bets_out_gh source).
+-- UC2: Sportsbook turnover events (from src_bets_gh).
 -- TotalStake.Euro uses DecimalValue encoding (units + nanos/1e9).
 -- Euro-normalised so casino and sportsbook turnover are comparable across currencies.
 CREATE MATERIALIZED VIEW mv_sportsbook_turnover_events AS
@@ -315,32 +384,44 @@ SELECT DISTINCT ON (customer_id) customer_id,
 FROM mv_sportsbook_turnover_90d
 ORDER BY customer_id, event_ts DESC;
 
+-- Pivot via UNION ALL + GROUP BY, NOT a FULL OUTER JOIN. The _latest MVs are
+-- keyed on customer_id (DISTINCT ON), so a FULL OUTER JOIN on that key holds
+-- join state with an empty extra pk and can panic with `double inserting a
+-- join state entry` while the DISTINCT ON sides emit retract+insert pairs. A
+-- hash aggregation consumes that same update stream safely; a customer on only
+-- one side gets 0 from the other branch (same as COALESCE(...,0)).
 CREATE MATERIALIZED VIEW mv_turnover_percentage AS
 SELECT
-    COALESCE(c.customer_id, s.customer_id)      AS customer_id,
-    COALESCE(c.casino_turnover, 0)              AS casino_turnover,
-    COALESCE(s.sportsbook_turnover, 0)          AS sportsbook_turnover,
-    COALESCE(c.casino_turnover, 0)
-        + COALESCE(s.sportsbook_turnover, 0)    AS total_turnover,
+    customer_id,
+    SUM(casino_turnover)                             AS casino_turnover,
+    SUM(sportsbook_turnover)                         AS sportsbook_turnover,
+    SUM(casino_turnover) + SUM(sportsbook_turnover)  AS total_turnover,
     CASE
-        WHEN COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0) = 0 THEN 0
-        ELSE COALESCE(c.casino_turnover, 0)
-             / (COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0))
-    END                                         AS casino_ratio,
+        WHEN SUM(casino_turnover) + SUM(sportsbook_turnover) = 0 THEN 0
+        ELSE SUM(casino_turnover)
+             / (SUM(casino_turnover) + SUM(sportsbook_turnover))
+    END                                              AS casino_ratio,
     CASE
-        WHEN COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0) = 0 THEN 0
-        ELSE COALESCE(s.sportsbook_turnover, 0)
-             / (COALESCE(c.casino_turnover, 0) + COALESCE(s.sportsbook_turnover, 0))
-    END                                         AS sportsbook_ratio
-FROM mv_casino_turnover_latest      c
-FULL OUTER JOIN mv_sportsbook_turnover_latest s USING (customer_id);
+        WHEN SUM(casino_turnover) + SUM(sportsbook_turnover) = 0 THEN 0
+        ELSE SUM(sportsbook_turnover)
+             / (SUM(casino_turnover) + SUM(sportsbook_turnover))
+    END                                              AS sportsbook_ratio
+FROM (
+    SELECT customer_id, casino_turnover, 0::NUMERIC AS sportsbook_turnover
+    FROM mv_casino_turnover_latest
+    UNION ALL
+    SELECT customer_id, 0::NUMERIC AS casino_turnover, sportsbook_turnover
+    FROM mv_sportsbook_turnover_latest
+) u
+GROUP BY customer_id;
 ```
 
 ### 3.7 Managed-Iceberg sinks (Lakekeeper + MinIO)
 
-Four MVs (`mv_casino_raw`, `mv_casino_transactions`,
-`mv_casino_real_bet_events`, `mv_casino_real_bet_hourly_per_customer`) are
-landed into Lakekeeper-managed Iceberg tables.
+Three MVs are landed into Lakekeeper-managed Iceberg tables:
+- `mv_casino_raw` → `rw_managed_casino_raw` (faithful nested archive, raw_iceberg.sql)
+- `mv_casino_real_bet` → `rw_managed_casino_real_bet` (rolling 14-day real bet per customer, funnel_iceberg.sql)
+- `mv_turnover_percentage` → `rw_managed_turnover_percentage` (UC2 casino vs sportsbook ratio, funnel_iceberg.sql)
 
 `sql/casino_prd_raw_iceberg.sql` produces a **faithful raw nested archive**
 of every Kafka message:
@@ -396,28 +477,23 @@ SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 
 Each sink follows the same pattern — explicit `CREATE TABLE … ENGINE =
 iceberg` declaring the column order to match the upstream MV's `SELECT`,
-then an upsert sink keyed on the table's PK. Example:
+then an upsert sink keyed on the table's PK. Example (UC1 rolling real bet):
 
 ```sql
-CREATE TABLE rw_managed_casino_transactions (
-    customer_id              INT,
-    message_type_id          INT,
-    message_created_at       TIMESTAMPTZ,
-    transaction_id           BIGINT,
-    account_id               INT,
-    currency_id              INT,
-    transaction_created_at   TIMESTAMPTZ,
-    amount_abs               NUMERIC,
-    amount_raw               VARCHAR,
-    PRIMARY KEY (transaction_id)
+CREATE TABLE rw_managed_casino_real_bet (
+    customer_id                  INT,
+    currency_id                  INT,
+    event_ts                     TIMESTAMPTZ,
+    rolling_14d_real_bet_amount  NUMERIC,
+    PRIMARY KEY (customer_id, currency_id, event_ts)
 ) ENGINE = iceberg;
 
-CREATE SINK rw_managed_casino_transactions_sink
-INTO rw_managed_casino_transactions
-FROM mv_casino_transactions
+CREATE SINK rw_managed_casino_real_bet_sink
+INTO rw_managed_casino_real_bet
+FROM mv_casino_real_bet
 WITH (
     type                        = 'upsert',
-    primary_key                 = 'transaction_id',
+    primary_key                 = 'customer_id,currency_id,event_ts',
     commit_checkpoint_interval  = 5         -- ~5 s freshness in Iceberg
 );
 ```
@@ -461,14 +537,226 @@ LIMIT 5;
 
 ---
 
-## 4. Querying the source
+## 4. RisingWave optimizations applied
+
+The SQL files incorporate several RisingWave-specific optimizations beyond the
+minimum required to get the pipeline working. This section explains each one,
+why it matters, and what would go wrong without it.
+
+### 4.1 `APPEND ONLY` on source tables
+
+```sql
+CREATE TABLE src_casino_prd
+APPEND ONLY
+WITH ( connector = 'kafka', … )
+FORMAT PLAIN ENCODE PROTOBUF (…);
+```
+
+Both `src_casino_prd` and `src_bets_gh` are Kafka topics carrying immutable
+event records — a casino round is never updated or deleted, and neither is a
+bet placement. Without `APPEND ONLY`, RisingWave allocates internal
+delete-tracking structures and row-versioning overhead for data that will never
+change. `APPEND ONLY` tells the engine to skip that bookkeeping entirely, which
+reduces storage amplification and enables downstream MVs to skip retraction
+handling.
+
+**What breaks without it:** nothing functionally, but every row carries hidden
+overhead that scales with cardinality.
+
+### 4.2 Shared Kafka source (`streaming_use_shared_source`)
+
+```sql
+SET streaming_use_shared_source = true;
+```
+
+`src_casino_prd` is read by at least three independent MV chains:
+`mv_casino_transactions` (and its descendants), `mv_casino_raw`, and the raw
+Iceberg sink. Without this setting, RisingWave spawns a separate
+`SourceExecutor` — an independent Kafka consumer — for each of those chains.
+With N downstream MVs, you get N consumer group members, N× broker connections,
+and N× network bandwidth consumed from the Kafka cluster.
+
+With `streaming_use_shared_source = true`, a single consumer fans out to all
+MV operators internally. The Kafka cluster only sees one consumer per topic per
+RisingWave cluster.
+
+**What breaks without it:** nothing functionally, but Kafka broker load and
+network egress scale with the number of MVs rather than being constant.
+
+### 4.3 Non-blocking DDL (`background_ddl`) — applied selectively to terminal statements
+
+`background_ddl = true` causes `CREATE MATERIALIZED VIEW`, `CREATE SINK`, and
+`CREATE INDEX` to return before the object is fully built. This prevents the
+psql session from blocking while a large backfill or index build runs.
+
+**It is applied selectively in this pipeline, not at the top of the session.**
+The reason: when `background_ddl` is on, the created object is not immediately
+visible in the catalog. A subsequent `CREATE MATERIALIZED VIEW` that references
+a just-created MV would fail with `table or source not found`. Because the MV
+chain (`mv_casino_transactions` → `mv_casino_real_bet_events` → `mv_casino_real_bet`,
+etc.) requires each step to be fully registered before the next can be created,
+`background_ddl` must be off during MV creation.
+
+Sinks and indexes have no downstream dependents in the same session — they are
+terminal. `SET background_ddl = true` is therefore added immediately before the
+first `CREATE SINK` / `CREATE INDEX` block in each file:
+
+```sql
+-- MVs are all created synchronously above (background_ddl = false / default).
+-- From here, only sinks and indexes remain — nothing depends on them below.
+SET background_ddl = true;
+
+CREATE SINK rw_managed_casino_raw_sink INTO … FROM mv_casino_raw WITH (…);
+```
+
+Without this, `CREATE SINK rw_managed_casino_raw_sink` blocks until the full
+initial Iceberg snapshot of the backfilled `mv_casino_raw` (424k+ rows) is
+committed — which can take minutes and makes the demo script appear to hang.
+
+Monitor ongoing background jobs with:
+
+```sql
+SHOW JOBS;
+-- or
+SELECT ddl_id, ddl_statement, progress FROM rw_catalog.rw_ddl_progress;
+```
+
+**What breaks with it applied globally (at session top):** every MV after the
+first fails with "table or source not found" — the catalog registration is
+asynchronous and the next statement runs before the previous MV is visible.
+
+### 4.4 `ROW_NUMBER()` Top-1 instead of `DISTINCT ON … ORDER BY`
+
+```sql
+-- Before (broken in streaming mode):
+SELECT DISTINCT ON (customer_id) customer_id, rolling_90d_turnover, event_ts
+FROM mv_casino_turnover_90d
+ORDER BY customer_id, event_ts DESC;
+
+-- After (correct):
+SELECT customer_id, casino_turnover, event_ts
+FROM (
+    SELECT customer_id,
+           rolling_90d_turnover AS casino_turnover,
+           event_ts,
+           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC) AS rn
+    FROM mv_casino_turnover_90d
+) t
+WHERE rn = 1;
+```
+
+This is a correctness fix, not just an optimization.
+
+`DISTINCT ON (customer_id) … ORDER BY customer_id, event_ts DESC` works in
+PostgreSQL because the `ORDER BY` determines which row within each group the
+`DISTINCT ON` keeps (the one with the largest `event_ts`). In RisingWave's
+streaming executor, however, a trailing `ORDER BY` on a `CREATE MATERIALIZED
+VIEW` applies only at DDL-creation time — it does not affect how the streaming
+result is maintained as new rows arrive. The result is that `DISTINCT ON` picks
+an *arbitrary* row per `customer_id`, not necessarily the one with the latest
+`event_ts`.
+
+For `mv_casino_turnover_latest` and `mv_sportsbook_turnover_latest`, this means
+the `rolling_90d_turnover` value fed into `mv_turnover_percentage` may reflect
+a stale event rather than the most recent 90-day sum — silently producing wrong
+casino/sportsbook ratios.
+
+The `ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)`
+pattern compiles to RisingWave's stateful `TopN` operator, which is explicitly
+designed to maintain the top-1 row per key in a streaming context. It correctly
+handles the retract+insert pairs emitted by the upstream sliding-window MVs
+when a newer event arrives for a customer.
+
+**What breaks without it:** `mv_turnover_percentage` computes ratios from
+stale/arbitrary per-customer sums, producing incorrect Iceberg sink output.
+
+### 4.5 `force_compaction = true` on upsert sinks
+
+```sql
+CREATE SINK rw_managed_casino_real_bet_sink
+INTO rw_managed_casino_real_bet FROM mv_casino_real_bet
+WITH (
+    type = 'upsert', primary_key = '…',
+    commit_checkpoint_interval = 5,
+    force_compaction = true        -- added
+);
+```
+
+Applied to all three Iceberg upsert sinks (`rw_managed_casino_real_bet`,
+`rw_managed_turnover_percentage`, `rw_managed_casino_raw`).
+
+Sliding-window MVs emit a recalculated row for every incoming event within the
+window's scope. Without `force_compaction`, every intermediate state — even
+those that are immediately superseded by the next event in the same checkpoint
+— is written as a separate row to the Iceberg sink. For a high-frequency casino
+stream, a single checkpoint can contain thousands of intermediate states per
+customer, each landing as a small Iceberg data file.
+
+With `force_compaction = true`, RisingWave deduplicates by primary key within
+each checkpoint before writing, emitting only the final state per key. This
+dramatically reduces small-file count in the Iceberg warehouse and the I/O
+written per checkpoint.
+
+**What breaks without it:** Iceberg small-file proliferation, slower scan
+performance on the lake side, and excessive write I/O — nothing breaks
+functionally but the Iceberg tables degrade over time.
+
+### 4.6 Indexes on serving MVs
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_casino_real_bet_customer
+    ON mv_casino_real_bet (customer_id, currency_id);
+
+CREATE INDEX IF NOT EXISTS idx_turnover_percentage_customer
+    ON mv_turnover_percentage (customer_id);
+```
+
+`mv_casino_real_bet` and `mv_turnover_percentage` are the terminal serving MVs
+queried by Grafana and application code. Without indexes, every query that
+filters by `customer_id` performs a full heap scan over potentially millions of
+rows. RisingWave indexes are maintained incrementally by the streaming engine
+as new events arrive — they add a small write overhead but make point-lookup
+queries instant regardless of total cardinality.
+
+**What breaks without it:** Grafana dashboards and customer-level queries
+become progressively slower as the cardinality grows.
+
+### 4.7 Watermarks — known limitation
+
+The pipeline does not yet define watermarks on the source tables. Watermarks
+are required for:
+
+- Bounded sliding-window state: without one, the 14-day and 90-day
+  `RANGE BETWEEN … PRECEDING` windows accumulate state for every customer
+  forever — RisingWave has no signal for when old event-time rows can be
+  expired.
+- `EMIT ON WINDOW CLOSE` semantics: without watermarks, window MVs emit
+  partial results on every incoming event rather than final results once the
+  window is closed.
+
+Adding watermarks to these sources is blocked by the protobuf nested-struct
+layout: the relevant timestamps (`txn."Created"` for casino transactions,
+`"PlacedAt"` for bets) are either deeply nested inside array-of-struct fields
+(requiring UNNEST before they are accessible as scalar columns) or are
+`STRUCT<seconds BIGINT, nanos INT>` rather than native `TIMESTAMPTZ`, which
+RisingWave's watermark clause requires.
+
+The practical resolution is to promote a derived timestamp to a top-level
+generated column on each source table and define the watermark there. This
+requires schema changes not yet implemented. Until then, window state is
+unbounded; plan for memory growth proportional to the number of distinct
+customers in the stream.
+
+---
+
+## 5. Querying the source
 
 > **Rule of thumb:** never do ad-hoc `SELECT … FROM src_casino_prd` directly.
 > A bare select on a Kafka source is a **batch scan** that respects
 > `scan.startup.mode='latest'` and usually returns 0 rows. Always go through
 > an MV.
 
-### 4.1 The `mv_casino_transactions` definition
+### 5.1 The `mv_casino_transactions` definition
 
 One row per transaction, flattening the nested `Messages[].Transactions[]`
 structure via two chained `UNNEST` calls with explicit row aliases:
@@ -496,7 +784,7 @@ FROM
     UNNEST(msg."Transactions")                  AS txn;
 ```
 
-### 4.2 Why it's written that way — the four gotchas
+### 5.2 Why it's written that way — the four gotchas
 
 1. **Struct field access needs parens.**
    `s."RoundInfo"."Messages"` is parsed as `schema.table.column`. Wrap the
@@ -528,7 +816,7 @@ FROM
    `::numeric` cannot parse. Use `NULLIF("Amount", '')::numeric` or
    `try_cast("Amount" AS numeric)`.
 
-### 4.3 Converting `google.protobuf.Timestamp`
+### 5.3 Converting `google.protobuf.Timestamp`
 
 Lands as `STRUCT<seconds BIGINT, nanos INT>`. Convert with:
 
@@ -539,7 +827,7 @@ to_timestamp((ts)."seconds" + (ts)."nanos" / 1e9)
 Returns `TIMESTAMP WITH TIME ZONE` (UTC). For local: `… AT TIME ZONE
 'Europe/Athens'`. To drop the zone: `…::timestamp`.
 
-### 4.4 Useful one-liners
+### 5.4 Useful one-liners
 
 ```sql
 -- live tail of transaction count
@@ -550,11 +838,15 @@ SELECT customer_id, real_bet_amount, event_ts
 FROM mv_casino_real_bet_events
 ORDER BY event_ts DESC LIMIT 10;
 
--- top customers by 14-day rolling real bet amount
-SELECT DISTINCT ON (customer_id)
-    customer_id, currency_id, rolling_14d_real_bet_amount
-FROM mv_casino_real_bet
-ORDER BY customer_id, event_ts DESC;
+-- top customers by 14-day rolling real bet amount (latest row per customer)
+SELECT customer_id, currency_id, rolling_14d_real_bet_amount
+FROM (
+    SELECT customer_id, currency_id, rolling_14d_real_bet_amount,
+           ROW_NUMBER() OVER (PARTITION BY customer_id, currency_id ORDER BY event_ts DESC) AS rn
+    FROM mv_casino_real_bet
+) t
+WHERE rn = 1
+ORDER BY rolling_14d_real_bet_amount DESC NULLS LAST LIMIT 20;
 
 -- UC2: current casino turnover percentage by customer
 SELECT customer_id, casino_ratio, sportsbook_ratio, total_turnover
@@ -569,17 +861,84 @@ watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
   "SELECT count(*) FROM mv_casino_transactions"'
 ```
 
+### 5.5 Why `mv_turnover_percentage` is a pivot, not a `FULL OUTER JOIN`
+
+UC2 needs one row per customer combining their casino and sportsbook turnover.
+The obvious way to write that is a `FULL OUTER JOIN` of the two
+`*_turnover_latest` MVs on `customer_id`. That version **worked at rest but
+reset the whole database under live ingestion** — worth understanding before
+anyone "simplifies" it back.
+
+**The failure.** During a full pipeline build against the live topic, creating
+the join MV panicked:
+
+```
+Executor error: join key: [428491138], pk: [], row: [428491138, 3924.70],
+state_table_id: 48: double inserting a join state entry
+```
+
+`gRPC … CreateMaterializedView failed … failed over: database 1 reset` — and
+because the license disables `DatabaseFailureIsolation` (cluster has 50 CPU
+cores, license cap is 4), that single job's panic reset the entire database.
+
+**Root cause.** Both inputs are `SELECT DISTINCT ON (customer_id) …`, so each
+input's **stream key is `customer_id`** — the same column the join keys on. A
+hash join keyed on `customer_id` therefore keeps its state with **no extra pk**
+(`pk: []`) and assumes at most one row per `customer_id` per side. But
+`DISTINCT ON` is a Top-1 that emits a **retract + insert pair** whenever the
+"latest" row for a customer changes. Under live ingestion (and during
+backfill) the insert can momentarily reach the join state before the matching
+retract, presenting two rows for the same `customer_id` → "double inserting a
+join state entry". At rest, with no updates flowing, the race never fires —
+which is why it looked fine in isolation.
+
+**The fix.** Replace the join with a `UNION ALL` + `GROUP BY customer_id`
+pivot: each branch contributes its own metric and `0` for the other side, and
+a hash aggregation sums them per customer.
+
+```sql
+FROM (
+    SELECT customer_id, casino_turnover, 0::NUMERIC AS sportsbook_turnover
+    FROM mv_casino_turnover_latest
+    UNION ALL
+    SELECT customer_id, 0::NUMERIC AS casino_turnover, sportsbook_turnover
+    FROM mv_sportsbook_turnover_latest
+) u
+GROUP BY customer_id
+```
+
+A hash aggregation maintains **one state row per group** and applies `+`/`-`
+deltas as updates arrive — it's built to consume exactly the retract+insert
+stream that `DISTINCT ON` produces, and it never uses the join-state tables
+where the empty-pk assumption lives. The full-outer semantics are preserved:
+a customer present on only one side simply gets `0` from the other branch,
+identical to the old `COALESCE(…, 0)`.
+
+**Verified equivalent and deterministic.** The pivot produces the same 2212
+rows (= distinct-customer union of both sides), ratios sum to 1, and
+`total = casino + sportsbook` exactly. Rebuilt under live ingestion, and then
+rebuilt the entire funnel from scratch, both with **zero database resets** —
+the operation that previously failed every time.
+
+> **Takeaway:** when combining two streams whose join key is also their unique
+> stream key, prefer `UNION ALL` + `GROUP BY` over `FULL OUTER JOIN`. The
+> aggregation path is robust to the retract+insert updates that `DISTINCT ON`,
+> Top-N, and other stateful upstreams emit.
+
 ---
 
-## 5. Gotchas worth remembering
+## 6. Gotchas worth remembering
 
-- **Apicurio ↔ RisingWave protobuf trilemma**
-  ccompat returns binary FDS for protobuf artifacts; native v2 returns the
-  original `.proto`. Confluent libs require binary FDS; RisingWave's
-  `schema.registry` fetcher requires the original `.proto`. These are
-  mutually exclusive over the same ccompat URL. **Resolution:** source
-  schemas via native v2 at deploy time, mount a compiled `.pb` into the RW
-  container, use `schema.location`.
+- **Apicurio ↔ RisingWave protobuf quadrilemma**
+  ccompat returns binary FDS; native v2 returns `.proto` text.
+  `schema.registry` requires the Confluent magic-byte wire format (our topics
+  don't have it) AND expects `.proto` text from the registry.
+  `schema.location` with `http://` fetches from any URL but expects binary
+  FDS — so pointing it at the native v2 text endpoint also fails.
+  **Resolution:** fetch `.proto` via native v2, compile to binary FDS, upload
+  to MinIO, and reference via
+  `schema.location = 's3://hummock001/proto/…'`. RisingWave fetches the FDS
+  from MinIO at `CREATE TABLE` time. No container volume mount needed.
 
 - **`scan.startup.mode = 'earliest'` + `CREATE TABLE` replays history.**
   Earlier iterations used `CREATE SOURCE` + `latest`; that made batch
@@ -616,13 +975,62 @@ watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
   unchanged; only the top-level PK column needs renaming.
 
 - **License caps streaming-failure isolation at 4 CPU cores.**
-  Our compute node has 10. Result: `DatabaseFailureIsolation` is disabled
-  and **any DDL failure resets the whole database** (error
-  `database 1 reset`). The first `CREATE TABLE … ENGINE = iceberg` after a
-  fresh start often trips this on the JVM/JNI catalog cold start.
-  *Workaround:* keep DDL scripts idempotent (`DROP … IF EXISTS` /
-  `CREATE … IF NOT EXISTS`) and just rerun once. The Java catalog is warm
-  on the second pass and the rest of the script succeeds.
+  The cluster has far more (50 observed). Result: `DatabaseFailureIsolation`
+  is disabled and **any single streaming-job failure resets the whole
+  database** (error `database 1 reset`). Known trigger that remains:
+  - The first `CREATE TABLE … ENGINE = iceberg` after a fresh start, on the
+    JVM/JNI catalog cold start.
+
+  A second trigger — `mv_turnover_percentage` panicking with `double inserting
+  a join state entry` — has been **structurally eliminated**: that MV was a
+  `FULL OUTER JOIN` of two `DISTINCT ON (customer_id)` streams (join key ==
+  stream key ⇒ empty extra pk in the join state, which can't tolerate the
+  transient duplicate a retract+insert pair produces under live ingestion). It
+  is now a `UNION ALL` + `GROUP BY customer_id` pivot (a hash aggregation that
+  consumes update streams safely). Rebuilt against the live topic with zero
+  resets.
+
+  *Workaround for the remaining JVM cold-start trigger:* the DDL files are
+  idempotent (`DROP … IF EXISTS` / `CREATE … IF NOT EXISTS`), and
+  `bin/3_run_casino_prd_demo.sh` wraps the pipeline steps in
+  `run_sql_with_retry` (3 attempts, 15 s recovery wait), so a transient reset
+  no longer aborts startup — it converges once the JVM catalog is warm.
+
+- **`background_ddl = true` breaks chained MV creation — apply it only to terminal statements.**
+  When `background_ddl` is on, `CREATE MATERIALIZED VIEW` (and `CREATE SINK`,
+  `CREATE INDEX`) return before the object is registered in the catalog. The
+  next statement that references the just-created object fails with
+  `table or source not found`. Safe pattern: keep `background_ddl = false`
+  (the default) for all chained MV creation; then `SET background_ddl = true`
+  immediately before the first terminal sink or index, which have no downstream
+  dependents in the same session. This prevents the demo from appearing to hang
+  while the initial Iceberg snapshot is committed. See §4.3 for detail.
+
+- **`DISTINCT ON … ORDER BY` is not a reliable Top-1 in streaming mode.**
+  In a streaming MV, `ORDER BY` at the SELECT level applies only at DDL-creation
+  time; it has no effect on how ongoing results are maintained. `DISTINCT ON`
+  therefore picks an arbitrary row per key, not the row with the largest or
+  smallest sort column. Use `ROW_NUMBER() OVER (PARTITION BY key ORDER BY …)`
+  with `WHERE rn = 1` instead — this compiles to a stateful TopN operator that
+  correctly handles retract+insert update pairs. See §4.4 for detail.
+
+- **`DISTINCT ON` inputs to a `FULL OUTER JOIN` can panic the database.**
+  See §5.5 for a full post-mortem. The short version: `DISTINCT ON (k)` emits
+  retract+insert pairs; a hash join keyed on `k` allocates state with an empty
+  extra pk and cannot tolerate seeing two rows for the same `k` simultaneously —
+  a transient state that a retract+insert pair creates. The fix is `UNION ALL` +
+  `GROUP BY` (a hash aggregation, not a join). This was structurally eliminated;
+  the additional safeguard added is replacing the `DISTINCT ON` inputs with
+  `ROW_NUMBER()` Top-1 (§4.4) so there is no retract+insert on the TopN output
+  as long as the upstream sliding-window MV emits monotonically increasing
+  `event_ts` per customer.
+
+- **`s3.*` options in the ENCODE clause produce "unknown format_encode_options" warnings.**
+  The S3 credentials and endpoint options (`s3.region`, `s3.endpoint`,
+  `s3.access.key`, `s3.secret.key`) live conceptually at the connector level,
+  so RisingWave warns when they appear inside the `FORMAT … ENCODE PROTOBUF (…)`
+  block. The warning is harmless — the options are still applied and MinIO is
+  reached correctly. `CREATE TABLE` succeeds.
 
 - **OrbStack HTTP proxy is hostile to container DNS.**
   `bin/bootstrap_lakekeeper.sh` unsets `http_proxy/HTTPS_PROXY` because the
@@ -631,37 +1039,55 @@ watch -n 2 'psql -h localhost -p 4566 -d dev -U root -c \
 
 ---
 
-## 6. Files of interest
+## 7. Files of interest
 
 | Path | Purpose |
 |---|---|
-| [proto/casinoroundinfodto.proto](../proto/casinoroundinfodto.proto) | Schema, fetched from Apicurio v2 native |
-| [proto/casinoroundinfodto.pb](../proto/casinoroundinfodto.pb) | Compiled FileDescriptorSet, mounted at `/proto/` in RW |
-| [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | Analytical MVs + 3 managed Iceberg sinks (transactions, real bets, hourly aggregates) |
+| [proto/casinoroundinfodto.proto](../proto/casinoroundinfodto.proto) | Casino schema, fetched from Apicurio v2 native |
+| [proto/casinoroundinfodto.pb](../proto/casinoroundinfodto.pb) | Compiled FileDescriptorSet for casino; uploaded to `s3://hummock001/proto/` |
+| [proto/betinfo.proto](../proto/betinfo.proto) | Sportsbook bets schema (UC2), fetched from Apicurio v2 native |
+| [proto/betinfo.desc](../proto/betinfo.desc) | Compiled FileDescriptorSet for bets; uploaded to `s3://hummock001/proto/` |
+| [sql/casino_prd_source.sql](../sql/casino_prd_source.sql) | Creates `src_casino_prd` TABLE (prd2 Kafka, protobuf) |
+| [sql/casino_prd_bets_source.sql](../sql/casino_prd_bets_source.sql) | Creates `src_bets_gh` TABLE (prd4 Kafka, protobuf + JSONB fallback for self-referential type) |
+| [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | UC1 + UC2 analytical MVs + 2 managed Iceberg sinks (`rw_managed_casino_real_bet`, `rw_managed_turnover_percentage`) |
 | [sql/casino_prd_raw_iceberg.sql](../sql/casino_prd_raw_iceberg.sql) | Faithful nested raw archive: `mv_casino_raw` + `rw_managed_casino_raw` |
 | [bin/bootstrap_lakekeeper.sh](../bin/bootstrap_lakekeeper.sh) | Idempotent Lakekeeper warehouse bootstrap |
 | [docker-compose.yml](../docker-compose.yml) | Service definitions (RW, MinIO, Lakekeeper, Redpanda for tooling) |
 
 ---
 
-## 7. Reproduce from scratch
+## 8. Reproduce from scratch
 
 ```bash
-# 1. Schema
+# 1. Casino schema — fetch, compile, upload to MinIO
 curl -fsSL -H 'Accept: text/plain' \
   http://staging-schema-registry.kaizengaming.net/apis/registry/v2/groups/bigdata/artifacts/casinoroundinfo \
   > proto/casinoroundinfodto.proto
 protoc --include_imports \
   --descriptor_set_out=proto/casinoroundinfodto.pb \
   proto/casinoroundinfodto.proto
+AWS_ACCESS_KEY_ID=hummockadmin AWS_SECRET_ACCESS_KEY=hummockadmin \
+  aws --endpoint-url http://localhost:9301 s3 cp \
+    proto/casinoroundinfodto.pb s3://hummock001/proto/casinoroundinfodto.pb
 
-# 2. Stack
+# 1b. Bets schema (UC2)
+curl -fsSL -H 'Accept: text/plain' \
+  http://staging-schema-registry.kaizengaming.net/apis/registry/v2/groups/bigdata/artifacts/betinfo \
+  > proto/betinfo.proto
+protoc --descriptor_set_out=proto/betinfo.desc --include_imports \
+  --proto_path=/opt/homebrew/include --proto_path=proto proto/betinfo.proto
+AWS_ACCESS_KEY_ID=hummockadmin AWS_SECRET_ACCESS_KEY=hummockadmin \
+  aws --endpoint-url http://localhost:9301 s3 cp \
+    proto/betinfo.desc s3://hummock001/proto/betinfo.desc
+
+# 2. Stack (MinIO must be up before step 1 uploads — adjust ordering if needed)
 docker compose up -d \
   minio-0 frontend-node-0 meta-node-0 compute-node-0 compactor-0 \
   lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap
 
-# 3. Source + MVs + Iceberg sinks (idempotent)
+# 3. Sources + MVs + Iceberg sinks (idempotent)
 psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_source.sql
+psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_bets_source.sql   # UC2
 psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_funnel_iceberg.sql
 psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_raw_iceberg.sql
 # If the first run hits `database 1 reset` on the iceberg CREATE TABLE,
@@ -669,13 +1095,13 @@ psql -h localhost -p 4566 -d dev -U root -f sql/casino_prd_raw_iceberg.sql
 
 # 4. Verify
 psql -h localhost -p 4566 -d dev -U root <<'SQL'
-SELECT 'mv_raw'                AS view, count(*) FROM mv_casino_raw
-UNION ALL SELECT 'mv_transactions',     count(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_real_bet_events',  count(*) FROM mv_casino_real_bet_events
-UNION ALL SELECT 'mv_real_bet_hourly',  count(*) FROM mv_casino_real_bet_hourly_per_customer
-UNION ALL SELECT 'ice_raw',             count(*) FROM rw_managed_casino_raw
-UNION ALL SELECT 'ice_transactions',    count(*) FROM rw_managed_casino_transactions
-UNION ALL SELECT 'ice_real_bet_events', count(*) FROM rw_managed_casino_real_bet_events
-UNION ALL SELECT 'ice_real_bet_hourly', count(*) FROM rw_managed_casino_real_bet_hourly;
+SELECT 'mv_raw'              AS view, count(*) FROM mv_casino_raw
+UNION ALL SELECT 'mv_transactions',   count(*) FROM mv_casino_transactions
+UNION ALL SELECT 'mv_real_bet_events',count(*) FROM mv_casino_real_bet_events
+UNION ALL SELECT 'mv_real_bet',       count(*) FROM mv_casino_real_bet
+UNION ALL SELECT 'mv_turnover_pct',   count(*) FROM mv_turnover_percentage
+UNION ALL SELECT 'ice_raw',           count(*) FROM rw_managed_casino_raw
+UNION ALL SELECT 'ice_real_bet',      count(*) FROM rw_managed_casino_real_bet
+UNION ALL SELECT 'ice_turnover_pct',  count(*) FROM rw_managed_turnover_percentage;
 SQL
 ```

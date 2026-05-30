@@ -21,12 +21,12 @@
 -- Idempotent: CASCADE drops dependent MVs/sinks so the table can be rebuilt.
 -- =============================================================================
 
-\set ON_ERROR_STOP off
-DROP SOURCE IF EXISTS src_bets_gh CASCADE;
-DROP TABLE  IF EXISTS src_bets_gh CASCADE;
-\set ON_ERROR_STOP on
+SET client_min_messages = WARNING;
 
-CREATE TABLE src_bets_gh
+DROP TABLE IF EXISTS src_bets_gh CASCADE;
+
+CREATE TABLE src_bets_gh (*)
+APPEND ONLY
 WITH (
     connector                         = 'kafka',
     topic                             = 'bets-out-gh',
@@ -36,7 +36,11 @@ WITH (
     scan.startup.mode                 = 'earliest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
+    schema.location   = 's3://hummock001/proto/betinfo.desc',
     message           = 'PandoraBetInfoVm',
-    schema.location   = 'file:///proto/betinfo.desc',
-    messages_as_jsonb = 'PlayerSubstitutionInfoVm'
+    messages_as_jsonb = 'PlayerSubstitutionInfoVm',
+    s3.region         = 'us-east-1',
+    s3.endpoint       = 'http://minio-0:9301',
+    s3.access.key     = 'hummockadmin',
+    s3.secret.key     = 'hummockadmin'
 );

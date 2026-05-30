@@ -16,16 +16,12 @@
 -- rebuilt cleanly. Re-run the MV/sink DDL afterwards.
 -- =============================================================================
 
--- Drop both possible prior shapes (legacy SOURCE or current TABLE) so this
--- script is idempotent across the SOURCE→TABLE migration. RisingWave refuses
--- DROP SOURCE on a TABLE (and vice versa) even with IF EXISTS, so we toggle
--- ON_ERROR_STOP around each attempt.
-\set ON_ERROR_STOP off
-DROP SOURCE IF EXISTS src_casino_prd CASCADE;
-DROP TABLE  IF EXISTS src_casino_prd CASCADE;
-\set ON_ERROR_STOP on
+SET client_min_messages = WARNING;
 
-CREATE TABLE src_casino_prd
+DROP TABLE IF EXISTS src_casino_prd CASCADE;
+
+CREATE TABLE src_casino_prd (*)
+APPEND ONLY
 WITH (
     connector                     = 'kafka',
     topic                         = 'cronus.casino.out.gh',
@@ -35,6 +31,10 @@ WITH (
     scan.startup.mode             = 'earliest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location = 'file:///proto/casinoroundinfodto.pb',
-    message         = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
+    schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',
+    message          = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto',
+    s3.region        = 'us-east-1',
+    s3.endpoint      = 'http://minio-0:9301',
+    s3.access.key    = 'hummockadmin',
+    s3.secret.key    = 'hummockadmin'
 );

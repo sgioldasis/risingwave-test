@@ -14,6 +14,13 @@ DROP TABLE             IF EXISTS rw_managed_casino_raw;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_raw CASCADE;
 \set ON_ERROR_STOP on
 
+SET client_min_messages = WARNING;
+
+-- Session settings (see casino_prd_funnel_iceberg.sql for rationale)
+-- NOTE: background_ddl is NOT set — mv_casino_raw must be in the catalog
+--   before the Iceberg sink DDL can reference it.
+SET streaming_use_shared_source = true;
+
 -- --- Pass-through MV: rename top-level cols, keep nested structs intact ----
 CREATE MATERIALIZED VIEW mv_casino_raw AS
 SELECT
@@ -93,13 +100,18 @@ CREATE TABLE rw_managed_casino_raw (
     PRIMARY KEY (unique_id)
 ) ENGINE = iceberg;
 
+-- background_ddl is safe here: CREATE SINK is the last statement in this file;
+-- nothing downstream depends on it in this session. Without it, psql blocks
+-- until the full initial Iceberg snapshot (424k+ rows) is committed.
+SET background_ddl = true;
 CREATE SINK rw_managed_casino_raw_sink
 INTO rw_managed_casino_raw
 FROM mv_casino_raw
 WITH (
     type                        = 'upsert',
     primary_key                 = 'unique_id',
-    commit_checkpoint_interval  = 5
+    commit_checkpoint_interval  = 5,
+    force_compaction            = true
 );
 
 \echo ''
