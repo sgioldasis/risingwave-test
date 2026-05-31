@@ -92,39 +92,9 @@ what the casino pipeline currently demonstrates.
 
 ## Recommended Next Steps (in order)
 
-### Step 1 — Kafka output sinks for UC1 and UC2
+### Step 1 — Kafka output sinks for UC1 and UC2 — ✅ DONE
 
-The PoC spec says both UCs must "emit updates to destination Kafka topic in near-real-time." This is a blocker for R4. Add two Kafka sinks pointing at Redpanda (already used by the funnel demo):
-
-**UC1 Kafka sink** — from `mv_casino_real_bet`:
-```sql
-CREATE SINK sink_casino_real_bet_kafka
-FROM mv_casino_real_bet
-WITH (
-    connector = 'kafka',
-    properties.bootstrap.server = 'redpanda:9092',
-    topic = 'casino_real_bet_output'
-)
-FORMAT PLAIN ENCODE JSON (force_append_only = 'true');
-```
-
-**UC2 Kafka sink** — from `mv_turnover_percentage`:
-```sql
-CREATE SINK sink_turnover_percentage_kafka
-FROM mv_turnover_percentage
-WITH (
-    connector = 'kafka',
-    properties.bootstrap.server = 'redpanda:9092',
-    topic = 'casino_turnover_percentage_output'
-)
-FORMAT PLAIN ENCODE JSON (force_append_only = 'true');
-```
-
-Add as dbt models (`sink_casino_real_bet_kafka.sql`, `sink_turnover_percentage_kafka.sql`) in `dbt/models/casino_prd/`, tagged `casino_uc1` / `casino_uc2` respectively. Also add to the raw SQL in `sql/casino_prd_funnel_iceberg.sql`.
-
-Redpanda needs to be re-enabled in `docker-compose.yml` (currently commented out). Alternatively, output to a topic on the production Kafka cluster — but local Redpanda is safer and controllable.
-
-**Files:** `dbt/models/casino_prd/`, `sql/casino_prd_funnel_iceberg.sql`, `docker-compose.yml`
+`sink_casino_real_bet_kafka` (→ `casino_real_bet_output`) and `sink_turnover_percentage_kafka` (→ `casino_turnover_percentage_output`) are implemented as dbt models in `dbt/models/casino_prd/`, in the raw SQL (`sql/casino_prd_funnel_iceberg.sql`), and Redpanda is enabled in `docker-compose.yml`. See PRODUCTION_CASINO_DEMO.md §4.5 / §5.8. They remain the prerequisite for the R4 benchmark below.
 
 ---
 
@@ -144,17 +114,9 @@ The producer already emits realistic nested `CasinoRoundInfoDto` events. A small
 
 ---
 
-### Step 3 — Casino Grafana dashboard
+### Step 3 — Casino Grafana dashboard — ✅ DONE
 
-Add a new Grafana dashboard (`monitoring/grafana/dashboards/casino-uc-metrics.json`) showing:
-- UC1: row count in `mv_casino_real_bet` over time, sink throughput (rows/s), latest rolling real bet amounts by top customer
-- UC2: row count in `mv_turnover_percentage`, casino vs sportsbook ratio distribution
-- Sink health: commit rate for `sink_casino_real_bet` and `sink_turnover_percentage`
-- Latency panel (from Step 2 benchmark results or live if producer is running)
-
-Reuse the existing Prometheus scrape config — RisingWave already exposes sink throughput and source lag metrics.
-
-**Files:** `monitoring/grafana/dashboards/casino-uc-metrics.json`
+`monitoring/grafana/dashboards/casino-uc-metrics.json` is built: UC1/UC2 business metrics (customers, volumes, top-customer tables), Iceberg sink health (snapshot count + operations/min via Trino, commits/min, write throughput), and source ingestion. Uses the Trino + Prometheus + RisingWave-SQL datasources. The `casino_trino_views` Dagster asset provisions the dollar-free metadata views it queries.
 
 ---
 
