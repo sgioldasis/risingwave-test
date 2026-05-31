@@ -248,8 +248,6 @@ CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn WITH (
     s3.region             = 'us-east-1'
 );
 
-SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
-
 -- background_ddl is safe from here to end-of-file: sinks and indexes are all
 -- terminal — nothing in this session depends on them being fully built before
 -- the session exits. Without it, each CREATE SINK/INDEX blocks until the full
@@ -257,50 +255,59 @@ SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 SET background_ddl = true;
 
 -- --- Rolling 14-day real bet (UC1) -------------------------------------------
-DROP SINK  IF EXISTS rw_managed_casino_real_bet_sink;
+-- connector='iceberg' sinks write directly to Lakekeeper and support
+-- enable_compaction (RisingWave-native file compaction via compactor-1).
+-- No ENGINE=iceberg table needed — the sink creates the Iceberg table
+-- automatically with create_table_if_not_exists='true'.
+DROP SINK IF EXISTS sink_casino_real_bet;
+DROP SINK IF EXISTS rw_managed_casino_real_bet_sink;
 DROP TABLE IF EXISTS rw_managed_casino_real_bet;
 
-CREATE TABLE rw_managed_casino_real_bet (
-    customer_id                  INT,
-    currency_id                  INT,
-    event_ts                     TIMESTAMPTZ,
-    rolling_14d_real_bet_amount  NUMERIC,
-    PRIMARY KEY (customer_id, currency_id, event_ts)
-) ENGINE = iceberg;
-
-CREATE SINK rw_managed_casino_real_bet_sink
-INTO rw_managed_casino_real_bet
+CREATE SINK sink_casino_real_bet
 FROM mv_casino_real_bet
 WITH (
-    type                        = 'upsert',
-    primary_key                 = 'customer_id,currency_id,event_ts',
-    commit_checkpoint_interval  = 5,
-    force_compaction            = true
+    connector                            = 'iceberg',
+    type                                 = 'upsert',
+    primary_key                          = 'customer_id,currency_id,event_ts',
+    enable_compaction                    = 'true',
+    compaction_interval_sec              = '60',
+    enable_snapshot_expiration           = 'true',
+    connection                           = lakekeeper_catalog_conn,
+    database.name                        = 'public',
+    table.name                           = 'rw_managed_casino_real_bet',
+    create_table_if_not_exists           = 'true',
+    commit_checkpoint_interval           = 40,
+    compaction.trigger_snapshot_count      = '5',
+    compaction.write_parquet_compression = 'zstd'
 );
 
 -- --- Turnover percentage (UC2) -----------------------------------------------
-DROP SINK  IF EXISTS rw_managed_turnover_percentage_sink;
+DROP SINK IF EXISTS sink_turnover_percentage;
+DROP SINK IF EXISTS rw_managed_turnover_percentage_sink;
 DROP TABLE IF EXISTS rw_managed_turnover_percentage;
 
-CREATE TABLE rw_managed_turnover_percentage (
-    customer_id          INT,
-    casino_turnover      NUMERIC,
-    sportsbook_turnover  NUMERIC,
-    total_turnover       NUMERIC,
-    casino_ratio         NUMERIC,
-    sportsbook_ratio     NUMERIC,
-    PRIMARY KEY (customer_id)
-) ENGINE = iceberg;
-
-CREATE SINK rw_managed_turnover_percentage_sink
-INTO rw_managed_turnover_percentage
+CREATE SINK sink_turnover_percentage
 FROM mv_turnover_percentage
 WITH (
-    type                        = 'upsert',
-    primary_key                 = 'customer_id',
-    commit_checkpoint_interval  = 5,
-    force_compaction            = true
+    connector                            = 'iceberg',
+    type                                 = 'upsert',
+    primary_key                          = 'customer_id',
+    enable_compaction                    = 'true',
+    compaction_interval_sec              = '60',
+    enable_snapshot_expiration           = 'true',
+    connection                           = lakekeeper_catalog_conn,
+    database.name                        = 'public',
+    table.name                           = 'rw_managed_turnover_percentage',
+    create_table_if_not_exists           = 'true',
+    commit_checkpoint_interval           = 40,
+    compaction.trigger_snapshot_count      = '5',
+    compaction.write_parquet_compression = 'zstd'
 );
+
+-- NOTE: Iceberg read sources (rw_managed_casino_real_bet, rw_managed_turnover_percentage)
+-- are created by bin/3_run_casino_prd_demo.sh after the first checkpoint commits,
+-- not here. With background_ddl=true, the sinks above return before the Iceberg
+-- tables exist in Lakekeeper, so source creation must be deferred.
 
 -- --- Kafka output sinks (Redpanda — PoC R4 latency measurement) ---------------
 DROP SINK IF EXISTS sink_casino_real_bet_kafka;

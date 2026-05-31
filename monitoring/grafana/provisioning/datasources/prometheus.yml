@@ -36,3 +36,13 @@ datasources:
       postgresVersion: 1500
       sslmode: disable
       timescaledb: false
+
+  - name: Trino
+    uid: trino
+    type: trino-datasource
+    access: proxy
+    url: http://trino:8080
+    editable: true
+    jsonData:
+      catalog: datalake
+      schema: public

@@ -2,7 +2,13 @@
 
 Real-time streaming pipeline that reads live casino and sportsbook data from Kaizen production Kafka clusters into RisingWave, computes two customer-level metrics, and lands results into Lakekeeper-managed Iceberg tables.
 
-> **Status:** working as of 2026-05-31. RisingWave 2.8.4, Lakekeeper `latest-main`, MinIO local. No producer required — the pipeline consumes live production topics directly.
+> **Status:** working as of 2026-05-31. RisingWave **2.7.4**, Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
+>
+> **Architecture notes (read first):**
+> - Sources use `scan.startup.mode = 'latest'` — the pipeline tracks live events from creation time (fast startup). Switch to `'earliest'` only if you need full historical backfill (slow).
+> - Iceberg sinks use `connector = 'iceberg'` (write directly to Lakekeeper), **not** `ENGINE = iceberg` managed tables. The sink auto-creates the Iceberg table.
+> - The `rw_managed_*` Iceberg tables are queried via **Trino** (`datalake` catalog), not RisingWave — there are no RisingWave Iceberg read-sources.
+> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot **expiration does not** prune in 2.7.4 (see §7).
 
 ---
 
@@ -26,13 +32,13 @@ Real-time streaming pipeline that reads live casino and sportsbook data from Kai
 │ bets-out-gh              │                  │       mv_sportsbook_turnover_90d │
 └──────────────────────────┘                  │       → mv_turnover_percentage ──┼──▶ casino_turnover_percentage_output
                                               └────────────┬────────────────────┘     (Redpanda, JSON)
-                                                           │ upsert sinks (≈5s)
+                                                           │ connector='iceberg' upsert sinks (~10s)
                                                            ▼
                                               ┌─────────────────────────────────┐
                                               │ Lakekeeper REST catalog          │
                                               │ + MinIO S3 (hummock001)          │
-                                              │  rw_managed_casino_real_bet      │
-                                              │  rw_managed_turnover_percentage  │
+                                              │  rw_managed_casino_real_bet      │◀── queried via Trino
+                                              │  rw_managed_turnover_percentage  │    (datalake catalog)
                                               └─────────────────────────────────┘
 ```
 
@@ -129,7 +135,7 @@ WITH (
     properties.bootstrap.server   = 'prd2-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol  = 'SSL',
     group.id.prefix               = 'rw-readonly-casino-demo',
-    scan.startup.mode             = 'earliest'
+    scan.startup.mode             = 'latest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',
@@ -145,11 +151,13 @@ FORMAT PLAIN ENCODE PROTOBUF (
 
 | Clause | Why |
 |--------|-----|
-| `CREATE TABLE` (not `SOURCE`) | Persists the Kafka topic into RisingWave's internal state store. This ensures `scan.startup.mode='earliest'` replays full history into downstream MVs, and makes `SELECT COUNT(*)` agree with MV row counts. A `SOURCE` would only see messages arriving after creation. |
+| `CREATE TABLE` (not `SOURCE`) | Persists the Kafka topic into RisingWave's internal state store. A `SOURCE` re-scans Kafka at read time, making batch `SELECT COUNT(*)` disagree with streaming MV counts; a `TABLE` materializes once so both paths agree. |
 | `(*)` | Auto-discovers all columns from the protobuf FileDescriptorSet. No manual schema declaration needed. |
 | `APPEND ONLY` | Casino rounds are never updated or deleted — telling RisingWave this eliminates delete-tracking overhead and enables downstream MVs to skip retraction handling. |
-| `scan.startup.mode = 'earliest'` | Replays full topic history on creation so MVs backfill from the beginning. |
+| `scan.startup.mode = 'latest'` | Tracks live events from creation time — fast startup (MVs materialize in seconds). **Trade-off:** no historical data; the 14-day/90-day windows fill up over time as new events arrive. Use `'earliest'` instead if you need full history immediately (slow backfill — minutes for UC2). |
 | `schema.location = 's3://...'` | RisingWave fetches the compiled `.pb` at DDL time. No container volume mount required. |
+
+> **dbt note:** the dbt models add a `pre_hook` that runs `DROP TABLE IF EXISTS … CASCADE` before recreating the source, so the `scan.startup.mode` change takes effect cleanly on every build.
 
 Top-level columns decoded from protobuf (PascalCase — must be double-quoted in SQL):
 
@@ -176,7 +184,7 @@ Verify the table exists and is ingesting:
 
 ```sql
 SELECT COUNT(*) FROM src_casino_prd;
--- Expected: grows over time as Kafka messages are consumed from 'earliest'
+-- Expected: grows over time as new Kafka messages arrive (from 'latest')
 ```
 
 ### 3.4 Create the bets source table (`src_bets_gh`)
@@ -195,7 +203,7 @@ WITH (
     properties.bootstrap.server       = 'prd4-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol      = 'SSL',
     group.id.prefix                   = 'rw-readonly-bets-demo',
-    scan.startup.mode                 = 'earliest'
+    scan.startup.mode                 = 'latest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location   = 's3://hummock001/proto/betinfo.desc',
@@ -212,10 +220,9 @@ FORMAT PLAIN ENCODE PROTOBUF (
 
 ### 3.5 Iceberg connection and session settings
 
-Set before creating any Iceberg-backed objects:
+The `connector='iceberg'` sinks reference a named `CONNECTION` object that holds the Lakekeeper REST catalog + MinIO S3 credentials. Create it once:
 
 ```sql
--- Required before CREATE TABLE ... ENGINE = iceberg
 CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn WITH (
     type                  = 'iceberg',
     catalog.type          = 'rest',
@@ -227,12 +234,13 @@ CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn WITH (
     s3.endpoint           = 'http://minio-0:9301',
     s3.region             = 'us-east-1'
 );
-SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 
--- Required before creating MVs that share the same source
--- Prevents RisingWave from spawning one Kafka consumer per MV chain
+-- Required before creating MVs that share the same source —
+-- prevents RisingWave from spawning one Kafka consumer per MV chain.
 SET streaming_use_shared_source = true;
 ```
+
+> The sinks reference this connection via `connection = lakekeeper_catalog_conn` in their `WITH (...)` clause (see §4.3). We no longer use `ENGINE = iceberg` managed tables or `SET iceberg_engine_connection`.
 
 ---
 
@@ -351,58 +359,66 @@ WHERE rn = 1
 ORDER BY rolling_14d_real_bet_amount DESC NULLS LAST LIMIT 20;
 ```
 
-### 4.3 `rw_managed_casino_real_bet` — Iceberg output table
+### 4.3 `sink_casino_real_bet` — Iceberg upsert sink
+
+The sink uses `connector = 'iceberg'` and **auto-creates** the `rw_managed_casino_real_bet` Iceberg table in Lakekeeper (`create_table_if_not_exists = 'true'`). There is no separate `CREATE TABLE … ENGINE = iceberg` — that approach was abandoned because `enable_compaction` only works on `connector='iceberg'` sinks (see §7).
 
 ```sql
-SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
-
-CREATE TABLE rw_managed_casino_real_bet (
-    customer_id                  INT,
-    currency_id                  INT,
-    event_ts                     TIMESTAMPTZ,
-    rolling_14d_real_bet_amount  NUMERIC,
-    PRIMARY KEY (customer_id, currency_id, event_ts)
-) ENGINE = iceberg;
-```
-
-The column order must exactly match the upstream MV's `SELECT` projection — Iceberg sinks bind columns positionally, not by name. A mismatch produces a confusing `column type mismatch` error pointing at an unrelated column.
-
-### 4.4 `sink_casino_real_bet` — Upsert sink
-
-```sql
-SET background_ddl = true;  -- Don't block while the initial snapshot commits
+SET background_ddl = true;  -- don't block while the initial snapshot commits
 
 CREATE SINK sink_casino_real_bet
-INTO rw_managed_casino_real_bet
 FROM mv_casino_real_bet
 WITH (
-    type                        = 'upsert',
-    primary_key                 = 'customer_id,currency_id,event_ts',
-    commit_checkpoint_interval  = 5,
-    force_compaction            = true
+    connector                            = 'iceberg',
+    type                                 = 'upsert',
+    primary_key                          = 'customer_id,currency_id,event_ts',
+    enable_compaction                    = 'true',
+    compaction_interval_sec              = '60',
+    compaction.trigger_snapshot_count    = '5',
+    enable_snapshot_expiration           = 'true',
+    connection                           = lakekeeper_catalog_conn,
+    database.name                        = 'public',
+    table.name                           = 'rw_managed_casino_real_bet',
+    create_table_if_not_exists           = 'true',
+    commit_checkpoint_interval           = 40,
+    compaction.write_parquet_compression = 'zstd'
 );
 ```
 
-**`force_compaction = true`:** The sliding-window MV emits a new row for every incoming event within the window scope. Without compaction, every intermediate state is written as a separate Iceberg file. With it, RisingWave deduplicates by PK within each checkpoint and writes only the final state — preventing small-file proliferation.
+**Key options:**
 
-**`background_ddl = true`:** Applied only here (after all MVs are created) so the sink creation returns immediately while the initial Iceberg snapshot of the full backfill commits asynchronously. Using it earlier would prevent downstream MVs from finding their upstream in the catalog.
+| Option | Effect |
+|--------|--------|
+| `connector = 'iceberg'` | Writes directly to Lakekeeper. Required for compaction to work (the `ENGINE = iceberg` managed-table path silently ignores `enable_compaction` in 2.7.4). |
+| `create_table_if_not_exists = 'true'` | Sink creates the Iceberg table on first run — no manual `CREATE TABLE` needed. |
+| `commit_checkpoint_interval = 40` | Commit every 40 checkpoints. With `barrier_interval_ms = 250`, that's **one Iceberg commit every 10 s** (40 × 0.25 s). This is checkpoints, **not seconds** — see §7. |
+| `enable_compaction` + `compaction.trigger_snapshot_count = '5'` | Merges small Parquet files. The `trigger_snapshot_count` is essential — without it compaction triggers unreliably (see §7). |
+| `enable_snapshot_expiration = 'true'` | Intended to prune old snapshots — **does not actually prune in 2.7.4** (see §7). |
+| `compaction.write_parquet_compression = 'zstd'` | Compacted files use zstd (~2-3× smaller than snappy). |
 
-Monitor the sink creation progress:
+**`background_ddl = true`:** Applied only here (after all MVs exist) so the sink returns immediately while the initial snapshot commits asynchronously.
+
+Monitor sink creation:
 
 ```sql
 SELECT ddl_id, ddl_statement, progress FROM rw_catalog.rw_ddl_progress;
+SELECT name, connector, status FROM rw_catalog.rw_sinks WHERE name = 'sink_casino_real_bet';
 ```
 
-Verify:
+### 4.4 Querying the Iceberg output (via Trino)
 
-```sql
-SELECT COUNT(*) FROM rw_managed_casino_real_bet;
--- Slightly behind mv_casino_real_bet due to commit_checkpoint_interval=5s
+The `rw_managed_casino_real_bet` table lives in Lakekeeper and is **not** queryable from RisingWave directly (no read-source is created). Query it through Trino's `datalake` catalog:
 
+```bash
+docker exec trino trino --execute "SELECT COUNT(*) FROM datalake.public.rw_managed_casino_real_bet"
+
+docker exec trino trino --execute "
 SELECT customer_id, currency_id, rolling_14d_real_bet_amount
-FROM rw_managed_casino_real_bet
-ORDER BY rolling_14d_real_bet_amount DESC NULLS LAST LIMIT 10;
+FROM datalake.public.rw_managed_casino_real_bet
+ORDER BY rolling_14d_real_bet_amount DESC NULLS LAST LIMIT 10"
 ```
+
+The Grafana dashboard's Iceberg row-count panels use the Trino datasource for exactly this.
 
 ### 4.5 `sink_casino_real_bet_kafka` — Kafka output sink (PoC R4)
 
@@ -648,48 +664,41 @@ LIMIT 5;
 -- Expected: 0 rows
 ```
 
-### 5.6 `rw_managed_turnover_percentage` — Iceberg output table
+### 5.6 `sink_turnover_percentage` — Iceberg upsert sink
 
-```sql
-SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
-
-CREATE TABLE rw_managed_turnover_percentage (
-    customer_id          INT,
-    casino_turnover      NUMERIC,
-    sportsbook_turnover  NUMERIC,
-    total_turnover       NUMERIC,
-    casino_ratio         NUMERIC,
-    sportsbook_ratio     NUMERIC,
-    PRIMARY KEY (customer_id)
-) ENGINE = iceberg;
-```
-
-Column order must match `mv_turnover_percentage`'s `SELECT` exactly (positional binding).
-
-### 5.7 `sink_turnover_percentage` — Upsert sink
+Same `connector='iceberg'` pattern as UC1 — the sink auto-creates `rw_managed_turnover_percentage` in Lakekeeper.
 
 ```sql
 SET background_ddl = true;
 
 CREATE SINK sink_turnover_percentage
-INTO rw_managed_turnover_percentage
 FROM mv_turnover_percentage
 WITH (
-    type                        = 'upsert',
-    primary_key                 = 'customer_id',
-    commit_checkpoint_interval  = 5,
-    force_compaction            = true
+    connector                            = 'iceberg',
+    type                                 = 'upsert',
+    primary_key                          = 'customer_id',
+    enable_compaction                    = 'true',
+    compaction_interval_sec              = '60',
+    compaction.trigger_snapshot_count    = '5',
+    enable_snapshot_expiration           = 'true',
+    connection                           = lakekeeper_catalog_conn,
+    database.name                        = 'public',
+    table.name                           = 'rw_managed_turnover_percentage',
+    create_table_if_not_exists           = 'true',
+    commit_checkpoint_interval           = 40,
+    compaction.write_parquet_compression = 'zstd'
 );
 ```
 
-Verify:
+### 5.7 Querying the Iceberg output (via Trino)
 
-```sql
-SELECT COUNT(*) FROM rw_managed_turnover_percentage;
+```bash
+docker exec trino trino --execute "SELECT COUNT(*) FROM datalake.public.rw_managed_turnover_percentage"
 
+docker exec trino trino --execute "
 SELECT customer_id, casino_ratio, sportsbook_ratio, total_turnover
-FROM rw_managed_turnover_percentage
-ORDER BY total_turnover DESC NULLS LAST LIMIT 10;
+FROM datalake.public.rw_managed_turnover_percentage
+ORDER BY total_turnover DESC NULLS LAST LIMIT 10"
 ```
 
 ### 5.8 `sink_turnover_percentage_kafka` — Kafka output sink (PoC R4)
@@ -724,38 +733,27 @@ Expected JSON output:
 
 ## 6. End-to-end verification
 
-After ~30 s (initial Iceberg commit takes a few seconds with `commit_checkpoint_interval = 5`):
+**MV counts (RisingWave)** — with `scan.startup.mode='latest'` these start at 0 and grow as live events arrive:
 
 ```sql
 -- UC1
-SELECT 'mv_casino_transactions'       AS object, COUNT(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_casino_real_bet',            COUNT(*) FROM mv_casino_real_bet
-UNION ALL SELECT 'rw_managed_casino_real_bet',    COUNT(*) FROM rw_managed_casino_real_bet;
+SELECT 'mv_casino_transactions' AS object, COUNT(*) FROM mv_casino_transactions
+UNION ALL SELECT 'mv_casino_real_bet',     COUNT(*) FROM mv_casino_real_bet;
 
 -- UC2
-SELECT 'mv_casino_turnover_90d'            AS object, COUNT(*) FROM mv_casino_turnover_90d
-UNION ALL SELECT 'mv_sportsbook_turnover_90d',    COUNT(*) FROM mv_sportsbook_turnover_90d
-UNION ALL SELECT 'mv_casino_turnover_latest',     COUNT(*) FROM mv_casino_turnover_latest
+SELECT 'mv_casino_turnover_90d'        AS object, COUNT(*) FROM mv_casino_turnover_90d
+UNION ALL SELECT 'mv_sportsbook_turnover_90d',  COUNT(*) FROM mv_sportsbook_turnover_90d
+UNION ALL SELECT 'mv_casino_turnover_latest',   COUNT(*) FROM mv_casino_turnover_latest
 UNION ALL SELECT 'mv_sportsbook_turnover_latest', COUNT(*) FROM mv_sportsbook_turnover_latest
-UNION ALL SELECT 'mv_turnover_percentage',        COUNT(*) FROM mv_turnover_percentage
-UNION ALL SELECT 'rw_managed_turnover_percentage',COUNT(*) FROM rw_managed_turnover_percentage;
+UNION ALL SELECT 'mv_turnover_percentage',      COUNT(*) FROM mv_turnover_percentage;
 ```
 
-Expected counts from a live run:
+**Iceberg output counts (Trino)** — the `rw_managed_*` tables aren't in RisingWave; query via Trino, lagging the MVs by up to one commit interval (~10s):
 
-```text
--- UC1
- mv_casino_transactions       | 539895
- mv_casino_real_bet           | 389541   ← one row per event (rolling window)
- rw_managed_casino_real_bet   | 389490   ← slightly behind due to 5s commit interval
-
--- UC2
- mv_casino_turnover_90d            |  ~95000
- mv_sportsbook_turnover_90d        |  ~280000
- mv_casino_turnover_latest         |    8120   ← one per customer
- mv_sportsbook_turnover_latest     |   ~6500   ← one per customer
- mv_turnover_percentage            |   ~9000   ← union of both customer sets
- rw_managed_turnover_percentage    |    8120   ← slightly behind
+```bash
+docker exec trino trino --execute "
+SELECT 'casino_real_bet' AS t, COUNT(*) FROM datalake.public.rw_managed_casino_real_bet
+UNION ALL SELECT 'turnover_pct', COUNT(*) FROM datalake.public.rw_managed_turnover_percentage"
 ```
 
 Open the **Casino PoC — UC1 & UC2 Metrics** dashboard in Grafana at `http://localhost:3001` → Dashboards → RisingWave → **Casino PoC — UC1 & UC2 Metrics**. It auto-refreshes every 10 seconds.
@@ -817,9 +815,48 @@ Both `src_casino_prd` and `src_bets_gh` carry immutable event records. `APPEND O
 
 `DISTINCT ON (customer_id) … ORDER BY customer_id, event_ts DESC` does not work in RisingWave streaming mode — the `ORDER BY` only applies at DDL time, not to ongoing updates. The `ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)` pattern compiles to the stateful `TopN` operator, which correctly maintains the top-1 row per key as new events arrive.
 
-### `force_compaction = true` on upsert sinks
+### `commit_checkpoint_interval` is checkpoints, not seconds
 
-Sliding-window MVs emit one row per incoming event. Without compaction, every intermediate state is written as a separate Iceberg file per checkpoint. With `force_compaction = true`, RisingWave deduplicates by primary key within each checkpoint before writing, dramatically reducing small-file count.
+`commit_checkpoint_interval = 40` does **not** mean "commit every 40 seconds." It means "commit every 40 **checkpoints**." The checkpoint cadence is `barrier_interval_ms` (250 ms in `risingwave.toml` for this cluster):
+
+```
+commit cadence = commit_checkpoint_interval × barrier_interval_ms
+               = 40 × 250 ms = 10 seconds
+```
+
+So to get one Iceberg commit every 10 s, use `40` — not `10`. This caught us out: at the default-ish value of `30` the real cadence was 7.5 s, and the Grafana "commits/min" metric is per-actor (10 actors), so it reads ~10× the true table-level commit rate.
+
+### Iceberg compaction — works via `connector='iceberg'` + `trigger_snapshot_count`
+
+`enable_compaction = 'true'` activates the dedicated `compactor-1` service to merge small Parquet files. Two conditions matter:
+
+1. **Sink must be `connector = 'iceberg'`.** The `ENGINE = iceberg` managed-table path silently ignores `enable_compaction` in 2.7.4 — the DDL is accepted but no compaction ever runs. This is why the pipeline uses `connector='iceberg'` sinks.
+2. **`compaction.trigger_snapshot_count = '5'` is required.** Compaction uses a dual-trigger (time interval AND snapshot count). Without an explicit `trigger_snapshot_count`, the default (16) combined with the interval triggers unreliably. Setting it to `5` makes compaction fire predictably.
+
+Verify compaction is running (look for `replace` operations in the snapshot log via Trino):
+
+```bash
+docker exec trino trino --execute "
+SELECT operation, COUNT(*) FROM datalake.public.\"rw_managed_casino_real_bet\$snapshots\" GROUP BY operation"
+# append  = checkpoint commits ;  replace = compaction merges (should be > 0)
+```
+
+| Option | Value | Effect |
+|--------|-------|--------|
+| `enable_compaction` | `'true'` | Activates `compactor-1` for Parquet file merging |
+| `compaction_interval_sec` | `'60'` | Minimum time between compaction runs |
+| `compaction.trigger_snapshot_count` | `'5'` | Minimum snapshots before compaction fires (both conditions must be met) |
+| `compaction.write_parquet_compression` | `'zstd'` | Compacted output uses zstd compression |
+
+### Snapshot expiration — does NOT work in 2.7.4 (known limitation)
+
+`enable_snapshot_expiration = 'true'` (and `snapshot_expiration_max_age_millis` / `snapshot_expiration_retain_last`) are **accepted in the DDL but do not prune snapshots** with the Lakekeeper REST catalog in RisingWave 2.7.4. We confirmed: snapshot count grows unbounded, no `expire` activity in logs, metadata files accumulate.
+
+**Impact is limited:** compaction (the thing that fixes query performance by merging data files) works. Expiration only removes old snapshot *metadata* — lightweight, cosmetic growth over a demo timeframe.
+
+**If you must expire snapshots:** the funnel pipeline's Spark-based `iceberg_compaction_job` (Dagster, on demand) runs `expire_snapshots` and works — it can be pointed at the casino tables if needed. We chose not to schedule it for casino (RisingWave-native only).
+
+> **Note:** `ALTER SINK SET` does not support changing compaction options in RisingWave 2.7.4. To change options on an existing sink, DROP and recreate it — Iceberg table data in Lakekeeper/MinIO is preserved.
 
 ### Indexes on serving MVs
 
@@ -839,7 +876,17 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **`schema.location` requires binary FDS, not `.proto` text.** Apicurio's native v2 endpoint returns `.proto` text; passing that URL directly to `schema.location` fails. Must compile with `protoc --include_imports` first.
 
-- **`CREATE TABLE` vs `CREATE SOURCE`.** A `SOURCE` only exposes messages arriving after creation to downstream MVs. A `TABLE` persists the topic into RisingWave state, allowing `scan.startup.mode='earliest'` to backfill full history.
+- **`CREATE TABLE` vs `CREATE SOURCE`.** A `SOURCE` re-scans Kafka at read time; a `TABLE` persists the topic into RisingWave state so batch and streaming counts agree. With `scan.startup.mode='earliest'` a TABLE also backfills full history.
+
+- **`scan.startup.mode = 'latest'` vs `'earliest'`.** The pipeline ships with `'latest'` (fast startup, tracks live events; the rolling windows fill over time). Use `'earliest'` for immediate full-history backfill — but UC2's MV chain then takes minutes to materialize. The dbt source models use a `pre_hook` DROP so the mode change applies on rebuild.
+
+- **`connector='iceberg'` sinks, not `ENGINE = iceberg`.** `enable_compaction` is silently ignored on `ENGINE = iceberg` managed tables in 2.7.4. Use `connector='iceberg'` sinks with `create_table_if_not_exists='true'`; query the resulting tables via Trino, not RisingWave.
+
+- **`commit_checkpoint_interval` counts checkpoints, not seconds.** Multiply by `barrier_interval_ms` (250 ms here) to get the real cadence: `40 × 250 ms = 10 s`. See §7.
+
+- **Snapshot expiration doesn't prune in 2.7.4.** `enable_snapshot_expiration` is accepted but ineffective with the REST catalog. Compaction works; expiration doesn't. See §7.
+
+- **Grafana needs the `trino-datasource` plugin + dollar-free views.** Trino's metadata tables (`table$snapshots`) contain a `$`, which Grafana interprets as a variable. The `casino_trino_views` Dagster asset creates dollar-free views (e.g. `casino_real_bet_snapshots`) for the dashboard to query. The plugin auto-installs via `GF_INSTALL_PLUGINS=trino-datasource`, and Trino needs `http-server.process-forwarded=true` to accept Grafana's proxied requests.
 
 - **PascalCase identifiers must be double-quoted.** RisingWave preserves protobuf field names verbatim. Unquoted `CustomerId` folds to `customerid` and fails to resolve.
 
@@ -847,7 +894,7 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **Decimal-as-string proto fields.** `Amount` and similar fields are `string` typed for arbitrary precision. Proto3 encodes absent fields as `''`. Always guard with `NULLIF(field, '')::numeric`.
 
-- **Iceberg sinks bind columns positionally.** The `CREATE TABLE … ENGINE = iceberg` column order must match the upstream MV's `SELECT` projection exactly. A mismatch produces a misleading `column type mismatch` error pointing at the wrong column.
+- **`connector='iceberg'` auto-creates the table from the MV schema.** With `create_table_if_not_exists='true'`, the Iceberg table's columns are derived from the upstream MV's `SELECT` — no manual `CREATE TABLE` to keep in sync. (The old `ENGINE = iceberg` approach required a hand-written table with positionally-matched columns; that's no longer used.)
 
 - **Iceberg sink `primary_key` is lowercased.** `primary_key = 'UniqueId'` looks for a column named `uniqueid`. Always use snake_case column names in the upstream MV and match them in `primary_key`.
 
@@ -894,22 +941,22 @@ The `pre-hook` runs before every model in the subfolder. Because each dbt model 
 
 **Model files:**
 
+13 model files (no separate Iceberg-table models — the `connector='iceberg'` sinks auto-create the tables):
+
 | File | Materialization | Tag(s) | RisingWave object |
 |------|----------------|--------|-------------------|
-| `src_casino_prd.sql` | `kafka_table` | `casino_uc1` | `src_casino_prd` (Kafka TABLE) |
+| `src_casino_prd.sql` | `kafka_table` | `casino_uc1` | `src_casino_prd` (Kafka TABLE, `scan.startup.mode='latest'`) |
 | `src_bets_gh.sql` | `kafka_table` | `casino_uc2` | `src_bets_gh` (Kafka TABLE) |
 | `mv_casino_transactions.sql` | `materialized_view` | `casino_uc1` | `mv_casino_transactions` |
 | `mv_casino_real_bet.sql` | `materialized_view` | `casino_uc1` | `mv_casino_real_bet` |
-| `rw_managed_casino_real_bet.sql` | `iceberg_table` | `casino_uc1` | `rw_managed_casino_real_bet` |
-| `sink_casino_real_bet.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet` |
+| `sink_casino_real_bet.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet` (`connector='iceberg'`, auto-creates `rw_managed_casino_real_bet`) |
+| `sink_casino_real_bet_kafka.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet_kafka` → `casino_real_bet_output` (Redpanda) |
 | `mv_casino_turnover_90d.sql` | `materialized_view` | `casino_uc2` | `mv_casino_turnover_90d` |
 | `mv_sportsbook_turnover_90d.sql` | `materialized_view` | `casino_uc2` | `mv_sportsbook_turnover_90d` |
 | `mv_casino_turnover_latest.sql` | `materialized_view` | `casino_uc2` | `mv_casino_turnover_latest` |
 | `mv_sportsbook_turnover_latest.sql` | `materialized_view` | `casino_uc2` | `mv_sportsbook_turnover_latest` |
 | `mv_turnover_percentage.sql` | `materialized_view` | `casino_uc2` | `mv_turnover_percentage` |
-| `rw_managed_turnover_percentage.sql` | `iceberg_table` | `casino_uc2` | `rw_managed_turnover_percentage` |
-| `sink_turnover_percentage.sql` | `sink` | `casino_uc2` | `sink_turnover_percentage` (Iceberg upsert) |
-| `sink_casino_real_bet_kafka.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet_kafka` → `casino_real_bet_output` (Redpanda) |
+| `sink_turnover_percentage.sql` | `sink` | `casino_uc2` | `sink_turnover_percentage` (`connector='iceberg'`, auto-creates `rw_managed_turnover_percentage`) |
 | `sink_turnover_percentage_kafka.sql` | `sink` | `casino_uc2` | `sink_turnover_percentage_kafka` → `casino_turnover_percentage_output` (Redpanda) |
 
 ### 9.3 Custom dbt materializations
@@ -918,10 +965,11 @@ The standard dbt materializations (`table`, `view`, `incremental`) don't map to 
 
 | Materialization | Used for | Key behaviour |
 |----------------|----------|---------------|
-| `kafka_table` | Kafka-backed source tables | Passes the model SQL verbatim; requires `topic` config. Uses `{{ this }}` as the table name so `{{ ref(...) }}` resolves correctly. |
+| `kafka_table` | Kafka-backed source tables | Passes the model SQL verbatim; requires `topic` config. Uses `{{ this }}` as the table name so `{{ ref(...) }}` resolves correctly. Source models add a `pre_hook` DROP so `scan.startup.mode` changes apply on rebuild. |
 | `materialized_view` | Streaming MVs | Standard dbt MV materialization extended for RisingWave. |
-| `iceberg_table` | `ENGINE = iceberg` tables | Calls `create_iceberg_connection()` before DDL to ensure the Lakekeeper connection exists. |
-| `sink` | RisingWave sinks | Calls `create_iceberg_connection()`, then sets `background_ddl = true` before `CREATE SINK` to avoid blocking while the initial Iceberg snapshot commits. |
+| `sink` | RisingWave sinks (Iceberg + Kafka) | Calls `create_iceberg_connection()`, then sets `background_ddl = true` before `CREATE SINK` to avoid blocking while the initial Iceberg snapshot commits. The Iceberg sinks use `connector='iceberg'` + `create_table_if_not_exists` (no separate table model). |
+
+> The `iceberg_table` materialization still exists in the repo for other pipelines but is **not used** by casino — the `connector='iceberg'` sinks create their own tables.
 
 **Important:** `kafka_table` models use `{{ this }}` (the dbt relation name) as the table name in the DDL — not a hardcoded string. This ensures `{{ ref('src_casino_prd') }}` in downstream models resolves to the same name that was actually created in RisingWave.
 
@@ -964,9 +1012,9 @@ Dagster represents each dbt model as an **asset**. Assets are grouped visually i
 
 | Dagster group | Contents |
 |--------------|----------|
-| `casino_prd_setup` | 3 Python assets: `casino_prd_proto_fetch`, `casino_prd_proto_compile`, `casino_prd_proto_upload` |
-| `casino_uc1` | All dbt models tagged `casino_uc1`: sources, `mv_casino_transactions`, `mv_casino_real_bet`, Iceberg table, sink |
-| `casino_uc2` | All dbt models tagged `casino_uc2`: `mv_casino_turnover_90d`, `mv_sportsbook_turnover_90d`, `*_latest` MVs, `mv_turnover_percentage`, Iceberg table, sink |
+| `casino_prd_setup` | Python assets: `casino_prd_proto_fetch`, `casino_prd_proto_compile`, `casino_prd_proto_upload`, and `casino_trino_views` (creates the dollar-free Trino views the Grafana snapshot/operations panels query — runs after the sinks exist) |
+| `casino_uc1` | All dbt models tagged `casino_uc1`: source, `mv_casino_transactions`, `mv_casino_real_bet`, Iceberg sink, Kafka sink |
+| `casino_uc2` | All dbt models tagged `casino_uc2`: `mv_casino_turnover_90d`, `mv_sportsbook_turnover_90d`, `*_latest` MVs, `mv_turnover_percentage`, Iceberg sink, Kafka sink |
 
 UC2 assets show UC1 assets (`mv_casino_transactions`) as upstream dependencies in the asset graph — cross-group dependency tracking works automatically.
 
@@ -1070,13 +1118,15 @@ SELECT name, connector, status FROM rw_catalog.rw_sinks
 WHERE name LIKE '%casino%' OR name LIKE '%turnover%'
 ORDER BY name;
 
--- UC1 row counts
+-- UC1 / UC2 MV row counts (RisingWave)
 SELECT COUNT(*) FROM mv_casino_real_bet;
-SELECT COUNT(*) FROM rw_managed_casino_real_bet;
-
--- UC2 row counts
 SELECT COUNT(*) FROM mv_turnover_percentage;
-SELECT COUNT(*) FROM rw_managed_turnover_percentage;
+```
+
+The `rw_managed_*` Iceberg tables are queried via Trino, not RisingWave:
+```bash
+docker exec trino trino --execute "SELECT COUNT(*) FROM datalake.public.rw_managed_casino_real_bet"
+docker exec trino trino --execute "SELECT COUNT(*) FROM datalake.public.rw_managed_turnover_percentage"
 ```
 
 **Step 6: Verify Kafka output**
@@ -1096,7 +1146,8 @@ Open `http://localhost:3001` → Dashboards → RisingWave → **Casino PoC — 
 | Most Recently Active Customers (UC1) | Table with Latest Bet, 14-Day Real Bet, Last Event columns; sorted by most recent event |
 | Avg Casino Ratio | Between 0 and 1 |
 | Top 20 Customers (UC2) | casino_ratio + sportsbook_ratio columns sum to ~100% |
-| Casino Sink Activity | Commits/min non-zero (≈12/min at 5s interval); source rows/s shows live event rate |
+| Iceberg Operations / min | `appends` (checkpoint commits) and `compactions` (replace ops) per table — a non-zero `compactions` line confirms compaction is running |
+| Iceberg Commits / min (true cadence) | Per-table commit rate (divided by actor count) — ~6/min at `commit_checkpoint_interval=40` |
 | Source Throughput | Lines for `src_casino_prd` and `src_bets_gh` |
 
 > **Currency note:** UC1 amounts (`rolling_14d_real_bet_amount`, `latest_single_bet`) are in the player's account currency. All observed rows have `currency_id = 16` — the mapping to a named currency (e.g. EUR) has not been confirmed by Kaizen. UC1 amounts are displayed as raw numbers without a currency symbol until this is confirmed. UC2 amounts are correctly in EUR because `mv_sportsbook_turnover_90d` explicitly uses `TotalStake.Euro` from the bets protobuf.
@@ -1137,15 +1188,15 @@ They are not designed to run simultaneously on the same RisingWave instance — 
 | [proto/betinfo.desc](../proto/betinfo.desc) | Compiled FileDescriptorSet for bets; uploaded to `s3://hummock001/proto/` |
 | [sql/casino_prd_source.sql](../sql/casino_prd_source.sql) | Creates `src_casino_prd` |
 | [sql/casino_prd_bets_source.sql](../sql/casino_prd_bets_source.sql) | Creates `src_bets_gh` |
-| [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | UC1 + UC2 MVs + Iceberg sinks |
+| [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | UC1 + UC2 MVs + `connector='iceberg'` sinks + Kafka sinks |
 | [sql/casino_prd_raw_iceberg.sql](../sql/casino_prd_raw_iceberg.sql) | Faithful raw nested archive: `mv_casino_raw` + `rw_managed_casino_raw` |
-| [dbt/models/casino_prd/](../dbt/models/casino_prd/) | dbt models for the casino pipeline (15 SQL files, incl. 2 Kafka sinks) |
+| [dbt/models/casino_prd/](../dbt/models/casino_prd/) | dbt models for the casino pipeline (13 SQL files: 2 sources, 5 MVs, 2 Iceberg sinks, 2 Kafka sinks — no separate table models) |
 | [dbt/dbt_project.yml](../dbt/dbt_project.yml) | dbt project config — casino_prd subfolder config + pre-hook |
-| [dbt/macros/materializations/](../dbt/macros/materializations/) | Custom RisingWave materializations: `kafka_table`, `iceberg_table`, `sink` |
-| [monitoring/grafana/dashboards/casino-uc-metrics.json](../monitoring/grafana/dashboards/casino-uc-metrics.json) | Grafana dashboard: UC1/UC2 business metrics + sink health |
-| [orchestration/assets/casino_prd_setup.py](../orchestration/assets/casino_prd_setup.py) | Dagster prerequisite assets: proto fetch, compile, upload |
+| [dbt/macros/materializations/](../dbt/macros/materializations/) | Custom RisingWave materializations: `kafka_table`, `materialized_view`, `sink` (casino uses these; `iceberg_table` exists for other pipelines) |
+| [monitoring/grafana/dashboards/casino-uc-metrics.json](../monitoring/grafana/dashboards/casino-uc-metrics.json) | Grafana dashboard: UC1/UC2 business metrics + Iceberg/Kafka sink health (uses Trino + Prometheus datasources) |
+| [orchestration/assets/casino_prd_setup.py](../orchestration/assets/casino_prd_setup.py) | Dagster prereq assets: proto fetch/compile/upload + `casino_trino_views` |
 | [orchestration/definitions.py](../orchestration/definitions.py) | Dagster definitions: casino asset functions + jobs |
-| [bin/3_run_casino_prd_demo.sh](../bin/3_run_casino_prd_demo.sh) | End-to-end setup script (proto compile → upload → sources → MVs → verify) |
+| [bin/3_run_casino_prd_demo.sh](../bin/3_run_casino_prd_demo.sh) | End-to-end setup script (proto → sources → MVs → sinks → Trino views → verify) |
 | [docs/RisingWave_PoC_Document.txt](RisingWave_PoC_Document.txt) | Original PoC scope document with UC1/UC2 business definitions |
 
 ---
@@ -1181,20 +1232,22 @@ psql postgresql://root@localhost:4566/dev -f sql/casino_prd_funnel_iceberg.sql
 # If 'database 1 reset' occurs on the first iceberg CREATE TABLE (JVM cold start),
 # just rerun — the DDL is idempotent and succeeds once the JVM is warm.
 
-# 4. Verify
+# 4. Verify MVs (RisingWave)
 psql postgresql://root@localhost:4566/dev <<'SQL'
-SELECT 'mv_casino_transactions'        AS object, COUNT(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_casino_real_bet',             COUNT(*) FROM mv_casino_real_bet
-UNION ALL SELECT 'rw_managed_casino_real_bet',     COUNT(*) FROM rw_managed_casino_real_bet
-UNION ALL SELECT 'mv_turnover_percentage',         COUNT(*) FROM mv_turnover_percentage
-UNION ALL SELECT 'rw_managed_turnover_percentage', COUNT(*) FROM rw_managed_turnover_percentage;
+SELECT 'mv_casino_transactions' AS object, COUNT(*) FROM mv_casino_transactions
+UNION ALL SELECT 'mv_casino_real_bet',     COUNT(*) FROM mv_casino_real_bet
+UNION ALL SELECT 'mv_turnover_percentage', COUNT(*) FROM mv_turnover_percentage;
 SQL
 
-# Verify Kafka output topics
+# 5. Verify Iceberg output (Trino) + Kafka topics
+docker exec trino trino --execute "
+SELECT 'casino_real_bet' AS t, COUNT(*) FROM datalake.public.rw_managed_casino_real_bet
+UNION ALL SELECT 'turnover_pct', COUNT(*) FROM datalake.public.rw_managed_turnover_percentage"
 docker exec redpanda rpk topic list | grep casino
 docker exec redpanda rpk topic consume casino_real_bet_output -n 3
-docker exec redpanda rpk topic consume casino_turnover_percentage_output -n 3
 ```
+
+> The script also creates the dollar-free Trino views (`casino_real_bet_snapshots`, `turnover_pct_snapshots`) that the Grafana snapshot/operations panels depend on.
 
 Or use the all-in-one script:
 

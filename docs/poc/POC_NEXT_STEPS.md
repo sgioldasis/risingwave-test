@@ -2,32 +2,43 @@
 
 ## Context
 
-The UC1 and UC2 pipelines are functionally implemented (sources, MVs, Iceberg sinks, dbt, Dagster). However the PoC document defines specific requirements (R1–R4) and verification items (V1–V3) with a concrete success criterion. Most of these are not yet addressed. This plan identifies exactly what is missing and what needs to be built, tested, and documented to complete the PoC.
+The UC1 and UC2 pipelines are functionally implemented (sources, MVs, Iceberg sinks, dbt, Dagster). The PoC document defines specific requirements (R1–R4) and verification items (V1–V3) with a concrete success criterion. This document tracks what is remaining, what has been completed since the initial plan, and known limitations of the current RisingWave version.
 
 ---
 
 ## Gap Analysis
 
 ### What is done
-- UC1 and UC2 pipelines: Kafka source → MVs → Iceberg sinks
-- dbt models + Dagster orchestration
-- Grafana + Prometheus infrastructure
-- Casino producer script (`scripts/produce_protobuf_casino_rounds.py`)
-- Funnel Kafka sink pattern exists in `dbt/models/sink_funnel_to_kafka.sql`
+- UC1 and UC2 pipelines: Kafka source → MVs → Iceberg sinks (Lakekeeper + MinIO)
+- Kafka output sinks → Redpanda (`casino_real_bet_output`, `casino_turnover_percentage_output`)
+- dbt models + Dagster orchestration (`casino_prd_full_job`)
+- Grafana dashboard: UC1/UC2 business metrics + Iceberg/Kafka sink health panels (Trino + Prometheus datasources)
+- RisingWave-native Iceberg compaction (`connector='iceberg'` + `compaction.trigger_snapshot_count` — no Spark)
+- Iceberg tables queried via Trino (`casino_trino_views` Dagster asset creates the Grafana metadata views)
+
+### Known Limitations (RisingWave 2.7.4)
+
+| Limitation | Detail | Status / Workaround |
+|-----------|--------|--------------------|
+| **Compaction needs `connector='iceberg'` + `trigger_snapshot_count`** | `enable_compaction` is silently ignored on `ENGINE = iceberg` managed tables; and even on `connector='iceberg'` sinks it triggers unreliably without an explicit `compaction.trigger_snapshot_count`. | **Resolved** — pipeline uses `connector='iceberg'` sinks with `compaction.trigger_snapshot_count='5'`. Compaction confirmed working (`replace` ops in the snapshot log). |
+| **Snapshot expiration does not prune** | `enable_snapshot_expiration` (and `snapshot_expiration_max_age_millis`/`_retain_last`) are accepted but never prune snapshots with the Lakekeeper REST catalog. Metadata grows unbounded. | Cosmetic — compaction (data files) works, only snapshot *metadata* accumulates. Spark `expire_snapshots` (funnel pipeline's `iceberg_compaction_job`) works if needed. |
+| **`commit_checkpoint_interval` is checkpoints, not seconds** | `= 40` means 40 checkpoints × `barrier_interval_ms` (250 ms) = 10 s, not 40 s. | Documented; sinks set to `40` for a 10 s commit cadence. |
+| **`ALTER SINK SET` limited** | Cannot change compaction options on a running sink — must DROP and recreate. Iceberg data in Lakekeeper is preserved. | Drop + recreate sinks when changing options. |
+| **No watermarks on nested proto sources** | `transaction_created_at` is derived from a nested protobuf field and cannot be used directly as a watermark column. Window state is unbounded. | Promote `transaction_created_at` as a generated column on the source table (requires schema change). |
 
 ### What is missing
 
 | PoC Item | Status | Gap |
 |----------|--------|-----|
-| **Kafka output sinks** | ❌ Missing | Both UC technical specs say "emit to destination Kafka topic". R4 explicitly requires Kafka→Kafka latency. Currently output is Iceberg only. |
-| **R1 — Catch-up** | ✅ Works (untested) | `scan.startup.mode='earliest'` + TABLE handles this. Needs a scripted test + documented result. |
+| **Kafka output sinks** | ✅ Done | `sink_casino_real_bet_kafka` + `sink_turnover_percentage_kafka` → Redpanda topics. |
+| **R1 — Catch-up** | ✅ Works (untested) | Set `scan.startup.mode='earliest'` + TABLE to replay backlog. Needs a scripted test + documented result. |
 | **R2 — Backfill** | ✅ Works (untested) | DROP + recreate (idempotent DDL) handles this. Needs a scripted test + documented result. |
 | **R3 — Late-Arriving Data** | ⚠️ Known limitation | No watermarks defined. Windows are unbounded. Needs documented position: current behaviour + what would be needed. |
 | **R4 — p95 < 1s latency** | ❌ Missing | Requires Kafka sinks + a latency benchmark using the casino producer against local Redpanda. |
 | **V1 — State Failure Recovery** | ❌ Missing | No checkpoint recovery test documented. |
 | **V2 — Data Spikes** | ❌ Missing | No burst load test documented. |
 | **V3 — Failure Recovery** | ❌ Missing | No end-to-end failure+recovery test documented. |
-| **Casino Grafana dashboard** | ❌ Missing | UC1/UC2 metrics not visible in Grafana. |
+| **Casino Grafana dashboard** | ✅ Done | `casino-uc-metrics.json` — UC1/UC2 business metrics + Iceberg/Kafka sink health. |
 | **PoC results document** | ❌ Missing | No R1–R4 / V1–V3 test results writeup. |
 
 ---
@@ -195,8 +206,23 @@ adopt / conditional adopt / reject + rationale
 ## Prioritisation
 
 If time is limited, the minimum for a complete PoC demo:
-1. **Step 1** — Kafka sinks (required by spec)
-2. **Step 2** — R4 latency benchmark (non-negotiable per PoC)
-3. **Step 8** — Results document (required deliverable)
+1. **Step 2** — R4 latency benchmark (non-negotiable per PoC) — Kafka sinks already done ✅
+2. **Step 8** — Results document (required deliverable)
 
 Steps 3–7 strengthen the PoC but are not blockers if time is constrained.
+
+---
+
+## Version Notes — RisingWave 2.7.4
+
+The pipeline runs on **2.7.4** (downgraded from 2.8.4). On 2.7.4, native Iceberg compaction works via `connector='iceberg'` sinks + `compaction.trigger_snapshot_count` — no Spark needed for compaction. Snapshot **expiration** still doesn't prune (see Known Limitations).
+
+When RisingWave v3.0 stable ships, re-test on it:
+
+1. Change the image tag in `docker-compose.yml`:
+   ```yaml
+   image: ${RW_IMAGE:-risingwavelabs/risingwave:v3.0.0}
+   ```
+2. Restart the stack, run `casino_prd_full_job`
+3. Check whether **snapshot expiration** now prunes (Trino: `SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots"` should stop growing unbounded)
+4. If expiration works, the snapshot-metadata-growth limitation can be closed.

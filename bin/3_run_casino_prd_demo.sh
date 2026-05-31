@@ -163,8 +163,8 @@ else
 fi
 
 echo ""
-echo "=== [3/9] Lakekeeper + MinIO + Trino + Grafana ==="
-docker compose up -d lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino prometheus-0 grafana-0
+echo "=== [3/9] Lakekeeper + MinIO + Trino + Grafana + Redpanda ==="
+docker compose up -d lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino prometheus-0 grafana-0 redpanda
 
 echo ""
 echo "=== [4/9] Upload proto descriptors to MinIO (s3://${MINIO_BUCKET}/proto/) ==="
@@ -203,29 +203,63 @@ echo "=== [8/9] Create raw nested Iceberg archive (mv_casino_raw) ==="
 run_sql_with_retry "$SQL_RAW_SINK"
 
 echo ""
-echo "=== [9/9] Verifying row counts (waiting ~20s for ingest + first Iceberg commit) ==="
-sleep 20
+echo "=== [9/9] Waiting for first Iceberg checkpoint, then creating Trino metadata views ==="
+echo -n "Waiting for rw_managed_casino_real_bet in Lakekeeper "
+for i in $(seq 1 40); do
+    if curl -fsS "http://localhost:8181/catalog/v1/namespaces/public/tables/rw_managed_casino_real_bet" >/dev/null 2>&1; then
+        echo " ready."
+        break
+    fi
+    echo -n "."
+    sleep 3
+    if [ "$i" -eq 40 ]; then
+        echo ""
+        echo "WARNING: Iceberg table not found in Lakekeeper after 120s — view creation may fail" >&2
+    fi
+done
+
+# Dollar-free Trino views over the Iceberg $snapshots metadata tables.
+# Grafana interprets `$` as a variable, so the casino dashboard queries these
+# views (not the raw "table$snapshots" names). Recreated here so they survive
+# a stack restart. The Dagster casino_trino_views asset does the same.
+echo "Creating Trino metadata views (snapshots) ..."
+docker exec trino trino --execute "
+CREATE OR REPLACE VIEW datalake.public.casino_real_bet_snapshots AS
+  SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at
+  FROM datalake.public.\"rw_managed_casino_real_bet\$snapshots\";
+CREATE OR REPLACE VIEW datalake.public.turnover_pct_snapshots AS
+  SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at
+  FROM datalake.public.\"rw_managed_turnover_percentage\$snapshots\";
+" 2>&1 | grep -v "WARNING\|jline\|terminal" || echo "⚠ Trino view creation had issues — check trino is up"
+
+echo ""
+echo "=== Verifying row counts ==="
 psql "$PSQL_URL" <<'SQL'
 \echo '--- UC1 materialized views ---'
-SELECT 'mv_casino_transactions'    AS view, COUNT(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_casino_real_bet',        COUNT(*) FROM mv_casino_real_bet;
+SELECT 'mv_casino_transactions' AS view, COUNT(*) FROM mv_casino_transactions
+UNION ALL SELECT 'mv_casino_real_bet',   COUNT(*) FROM mv_casino_real_bet;
 
 \echo ''
 \echo '--- UC2 materialized views ---'
-SELECT 'mv_casino_turnover_90d',         COUNT(*) FROM mv_casino_turnover_90d
-UNION ALL SELECT 'mv_sportsbook_turnover_90d', COUNT(*) FROM mv_sportsbook_turnover_90d
-UNION ALL SELECT 'mv_turnover_percentage',     COUNT(*) FROM mv_turnover_percentage;
+SELECT 'mv_casino_turnover_90d'       AS view, COUNT(*) FROM mv_casino_turnover_90d
+UNION ALL SELECT 'mv_sportsbook_turnover_90d',  COUNT(*) FROM mv_sportsbook_turnover_90d
+UNION ALL SELECT 'mv_turnover_percentage',      COUNT(*) FROM mv_turnover_percentage;
 
 \echo ''
 \echo '--- Raw archive ---'
-SELECT 'mv_casino_raw', COUNT(*) FROM mv_casino_raw;
+SELECT 'mv_casino_raw' AS view, COUNT(*) FROM mv_casino_raw;
 
 \echo ''
-\echo '--- Iceberg sink tables ---'
-SELECT 'rw_managed_casino_real_bet',     COUNT(*) FROM rw_managed_casino_real_bet
-UNION ALL SELECT 'rw_managed_turnover_percentage', COUNT(*) FROM rw_managed_turnover_percentage
-UNION ALL SELECT 'rw_managed_casino_raw',          COUNT(*) FROM rw_managed_casino_raw;
+\echo '--- Active sinks ---'
+SELECT name, connector, status FROM rw_catalog.rw_sinks
+WHERE name IN ('sink_casino_real_bet','sink_turnover_percentage',
+               'sink_casino_real_bet_kafka','sink_turnover_percentage_kafka')
+ORDER BY name;
+
+\echo ''
+\echo '--- Kafka output topics (check Redpanda has messages) ---'
+\echo 'Run: docker exec redpanda rpk topic list | grep casino'
 SQL
 
 echo ""
-echo "Done. See docs/PRODUCTION_CASINO_DEMO.md for the full walkthrough."
+echo "Done. See docs/poc/PRODUCTION_CASINO_DEMO.md for the full walkthrough."

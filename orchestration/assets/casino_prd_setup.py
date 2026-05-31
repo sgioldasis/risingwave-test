@@ -1,11 +1,13 @@
-"""Casino production prerequisite assets: fetch, compile, and upload proto schemas."""
+"""Casino production prerequisite assets: fetch, compile, upload proto schemas,
+and create Iceberg read sources after sinks have committed their first checkpoint."""
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import boto3
 import httpx
-from dagster import AssetExecutionContext, MetadataValue, asset
+from dagster import AssetDep, AssetExecutionContext, AssetKey, MetadataValue, asset
 
 PROTO_DIR = Path(__file__).parent.parent.parent / "proto"
 
@@ -141,3 +143,75 @@ def casino_prd_proto_upload(context: AssetExecutionContext):
         uploaded.append(uri)
 
     return {"uploaded_uris": MetadataValue.json(uploaded)}
+
+
+TRINO_HOST = "trino"
+TRINO_PORT = 8080
+TRINO_CATALOG = "datalake"
+TRINO_SCHEMA = "public"
+
+# (view_name, DDL select) — dollar-free views over the Iceberg $snapshots
+# metadata tables so Grafana (which interprets $ as a variable) can query them.
+# Used by the casino dashboard's Snapshot Count and Operations/min panels.
+TRINO_VIEWS = [
+    ("casino_real_bet_snapshots",
+     'SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at '
+     'FROM datalake.public."rw_managed_casino_real_bet$snapshots"'),
+    ("turnover_pct_snapshots",
+     'SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at '
+     'FROM datalake.public."rw_managed_turnover_percentage$snapshots"'),
+]
+
+
+@asset(
+    group_name="casino_prd_setup",
+    deps=[
+        # Depend on the two Iceberg sinks — they create the tables in Lakekeeper
+        # that these views read from. The views must be created after the tables exist.
+        AssetDep(AssetKey(["public", "sink_casino_real_bet"])),
+        AssetDep(AssetKey(["public", "sink_turnover_percentage"])),
+    ],
+    description=(
+        "Create dollar-free Trino views over the Iceberg $snapshots and $files metadata tables. "
+        "Grafana panels (snapshot count, live data files) query these views. "
+        "Recreated on every run so they survive a stack restart."
+    ),
+)
+def casino_trino_views(context: AssetExecutionContext):
+    """Poll Trino until the Iceberg tables are queryable, then CREATE OR REPLACE the metadata views."""
+    from trino.dbapi import connect
+
+    def trino_exec(sql: str):
+        conn = connect(host=TRINO_HOST, port=TRINO_PORT, user="dagster",
+                       catalog=TRINO_CATALOG, schema=TRINO_SCHEMA)
+        try:
+            cur = conn.cursor()
+            cur.execute(sql)
+            return cur.fetchall()
+        finally:
+            conn.close()
+
+    # Wait until the base Iceberg tables are queryable via Trino (sinks committed first snapshot)
+    context.log.info("Waiting for Iceberg tables to be queryable via Trino...")
+    for attempt in range(40):
+        try:
+            trino_exec('SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots"')
+            trino_exec('SELECT COUNT(*) FROM datalake.public."rw_managed_turnover_percentage$snapshots"')
+            context.log.info(f"Iceberg tables queryable after ~{attempt * 5}s")
+            break
+        except Exception as e:
+            if attempt == 39:
+                raise RuntimeError(
+                    f"Iceberg tables not queryable via Trino after 200s: {e}. "
+                    "Ensure sinks are running and have committed at least one checkpoint."
+                ) from e
+            time.sleep(5)
+
+    created = []
+    for view_name, select_sql in TRINO_VIEWS:
+        ddl = f"CREATE OR REPLACE VIEW datalake.public.{view_name} AS {select_sql}"
+        context.log.info(f"Creating view {view_name}")
+        trino_exec(ddl)
+        created.append(view_name)
+
+    return {"created_views": MetadataValue.json(created)}

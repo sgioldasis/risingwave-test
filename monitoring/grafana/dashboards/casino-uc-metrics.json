@@ -14,7 +14,7 @@
   },
   "timepicker": {},
   "schemaVersion": 38,
-  "version": 1,
+  "version": 19,
   "panels": [
     {
       "id": 1,
@@ -142,8 +142,8 @@
       "title": "Iceberg Rows (rw_managed_casino_real_bet)",
       "description": "Rows committed to the Iceberg sink \u2014 slightly behind MV due to 5s commit interval.",
       "datasource": {
-        "type": "postgres",
-        "uid": "risingwave-sql"
+        "type": "trino-datasource",
+        "uid": "trino"
       },
       "gridPos": {
         "h": 6,
@@ -178,15 +178,14 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "risingwave-sql"
+            "type": "trino-datasource",
+            "uid": "trino"
           },
           "editorMode": "code",
-          "format": "table",
+          "format": 1,
           "rawQuery": true,
-          "rawCode": true,
           "refId": "A",
-          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM rw_managed_casino_real_bet"
+          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM datalake.public.rw_managed_casino_real_bet"
         }
       ]
     },
@@ -502,8 +501,8 @@
       "title": "Iceberg Rows (rw_managed_turnover_percentage)",
       "description": "Rows in the Iceberg sink \u2014 one row per customer, upserted on each update.",
       "datasource": {
-        "type": "postgres",
-        "uid": "risingwave-sql"
+        "type": "trino-datasource",
+        "uid": "trino"
       },
       "gridPos": {
         "h": 6,
@@ -538,15 +537,14 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "risingwave-sql"
+            "type": "trino-datasource",
+            "uid": "trino"
           },
           "editorMode": "code",
-          "format": "table",
+          "format": 1,
           "rawQuery": true,
-          "rawCode": true,
           "refId": "A",
-          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM rw_managed_turnover_percentage"
+          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM datalake.public.rw_managed_turnover_percentage"
         }
       ]
     },
@@ -608,8 +606,8 @@
     {
       "id": 15,
       "type": "table",
-      "title": "Top 20 Customers by Total Turnover (UC2)",
-      "description": "Casino vs sportsbook turnover ratio per customer over 90 days. Sourced from mv_turnover_percentage.",
+      "title": "Top 20 Customers by Casino Turnover (UC2)",
+      "description": "All customers with casino activity, sorted by casino turnover. Full ratio breakdown shown.",
       "datasource": {
         "type": "postgres",
         "uid": "risingwave-sql"
@@ -731,16 +729,6 @@
               {
                 "id": "displayName",
                 "value": "Casino %"
-              },
-              {
-                "id": "custom.width",
-                "value": 90
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "continuous-BlYlRd"
-                }
               }
             ]
           },
@@ -761,10 +749,6 @@
               {
                 "id": "displayName",
                 "value": "Sportsbook %"
-              },
-              {
-                "id": "custom.width",
-                "value": 110
               }
             ]
           }
@@ -781,7 +765,7 @@
           "rawQuery": true,
           "rawCode": true,
           "refId": "A",
-          "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage ORDER BY total_turnover DESC NULLS LAST LIMIT 20"
+          "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage WHERE casino_turnover > 0 ORDER BY casino_turnover DESC NULLS LAST LIMIT 20"
         }
       ]
     },
@@ -794,7 +778,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 44
       }
     },
     {
@@ -810,7 +794,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 45
       },
       "options": {
         "tooltip": {
@@ -853,23 +837,23 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 53
       }
     },
     {
       "id": 23,
       "type": "timeseries",
-      "title": "Iceberg Sink Commits / min",
-      "description": "Checkpoint commit rate for the two Iceberg upsert sinks. Each commit corresponds to the ~5s checkpoint interval (~12 commits/min). Spiky pattern is normal \u2014 RisingWave batches writes per checkpoint.",
+      "title": "Iceberg Commits / min (true cadence)",
+      "description": "Actual Iceberg commit rate per table. The raw sink_commit_duration_count is per-actor, so it is divided by the actor count to show the true commit cadence. With commit_checkpoint_interval=40 and barrier_interval_ms=250, expect 6/min (one commit every 10s).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 44
+        "y": 70
       },
       "options": {
         "tooltip": {
@@ -897,7 +881,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (sink_name) (rate(sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*\"}[5m]) * 60)",
+          "expr": "sum by (sink_name) (rate(sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*\"}[5m]) * 60)\n/ on (sink_name)\ncount by (sink_name) (sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*\"})",
           "legendFormat": "{{sink_name}}",
           "refId": "A"
         }
@@ -914,9 +898,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 44
+        "w": 24,
+        "x": 0,
+        "y": 86
       },
       "options": {
         "tooltip": {
@@ -959,7 +943,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 94
       }
     },
     {
@@ -975,7 +959,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 95
       },
       "options": {
         "tooltip": {
@@ -1005,6 +989,426 @@
           },
           "expr": "sum by (source_name) (rate(source_partition_input_count{source_name=~\"src_casino_prd|src_bets_gh\"}[5m]))",
           "legendFormat": "{{source_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Iceberg Snapshot Count Over Time",
+      "description": "Total retained snapshots over time for both Iceberg tables. Rises as checkpoints commit; DROPS when snapshot expiration prunes old snapshots after compaction. A continuously rising line with no drops means expiration is not pruning (compaction still runs \u2014 see the per-minute panel).",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS \"casino_real_bet\" FROM datalake.public.casino_real_bet_snapshots GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS \"turnover_pct\" FROM datalake.public.turnover_pct_snapshots GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Iceberg Write Throughput (bytes/s)",
+      "description": "Bytes written to Iceberg per second. Spiky pattern is expected with checkpoint-based writes. During backfill this is high; in steady state it reflects the live event rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 78
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (rate(iceberg_write_bytes{sink_name=~\".*casino.*|.*turnover.*\"}[5m]))",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Iceberg Operations / min \u2014 casino_real_bet",
+      "description": "Snapshot operations per minute. append = checkpoint commits (new files); replace = compaction merges (files reduced). The green compactions line is the time-series proof that files are being merged/dropped after compaction.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "compactions"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "appends"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", COUNT(CASE WHEN operation = 'append' THEN 1 END) AS appends, COUNT(CASE WHEN operation = 'replace' THEN 1 END) AS compactions FROM datalake.public.casino_real_bet_snapshots GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Iceberg Operations / min \u2014 turnover_pct",
+      "description": "Snapshot operations per minute for the turnover_percentage Iceberg table. replace = compaction merges firing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "compactions"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "appends"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", COUNT(CASE WHEN operation = 'append' THEN 1 END) AS appends, COUNT(CASE WHEN operation = 'replace' THEN 1 END) AS compactions FROM datalake.public.turnover_pct_snapshots GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Top 20 Customers by Sportsbook Turnover (UC2)",
+      "description": "All customers with sportsbook activity, sorted by sportsbook turnover. Full ratio breakdown shown.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "customer_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "Customer ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Casino (EUR, 90d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook (EUR, 90d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Total (EUR, 90d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Casino %"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook %"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage WHERE sportsbook_turnover > 0 ORDER BY sportsbook_turnover DESC NULLS LAST LIMIT 20",
+          "format": "table",
+          "rawQuery": true,
           "refId": "A"
         }
       ]

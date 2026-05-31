@@ -4,11 +4,19 @@
 ) }}
 
 CREATE SINK IF NOT EXISTS sink_turnover_percentage
-INTO {{ ref('rw_managed_turnover_percentage') }}
 FROM {{ ref('mv_turnover_percentage') }}
 WITH (
-    type                        = 'upsert',
-    primary_key                 = 'customer_id',
-    commit_checkpoint_interval  = 5,
-    force_compaction            = true
+    connector                            = 'iceberg',
+    type                                 = 'upsert',
+    primary_key                          = 'customer_id',
+    enable_compaction                    = 'true',
+    compaction_interval_sec              = '60',
+    enable_snapshot_expiration           = 'true',
+    connection                           = lakekeeper_catalog_conn,
+    database.name                        = 'public',
+    table.name                           = 'rw_managed_turnover_percentage',
+    create_table_if_not_exists           = 'true',
+    commit_checkpoint_interval           = 40,
+    compaction.trigger_snapshot_count      = '5',
+    compaction.write_parquet_compression = 'zstd'
 )

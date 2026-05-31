@@ -33,7 +33,7 @@ WITH (
     properties.bootstrap.server       = 'prd4-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol      = 'SSL',
     group.id.prefix                   = 'rw-readonly-bets-demo',
-    scan.startup.mode                 = 'earliest'
+    scan.startup.mode                 = 'latest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location   = 's3://hummock001/proto/betinfo.desc',

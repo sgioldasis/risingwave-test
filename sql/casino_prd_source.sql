@@ -28,7 +28,7 @@ WITH (
     properties.bootstrap.server   = 'prd2-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol  = 'SSL',
     group.id.prefix               = 'rw-readonly-casino-demo',
-    scan.startup.mode             = 'earliest'
+    scan.startup.mode             = 'latest'
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',

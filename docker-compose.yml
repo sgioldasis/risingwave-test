@@ -1,5 +1,5 @@
 x-image: &image
-  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.4}
+  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.7.4}
 
 x-lakekeeper-image: &lakekeeper-image
   image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
@@ -637,6 +637,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=false
+      - GF_INSTALL_PLUGINS=trino-datasource
       - GF_AUTH_DISABLE_LOGIN_FORM=false
       # Anonymous access - no login needed for a demo
       - GF_AUTH_ANONYMOUS_ENABLED=true
@@ -780,6 +781,9 @@ services:
       - type: bind
         source: ./trino/catalog
         target: /etc/trino/catalog
+      - type: bind
+        source: ./trino/config.properties
+        target: /etc/trino/config.properties
         read_only: true
     depends_on:
       - lakekeeper

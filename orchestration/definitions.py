@@ -28,6 +28,7 @@ from .assets.casino_prd_setup import (
     casino_prd_proto_fetch,
     casino_prd_proto_compile,
     casino_prd_proto_upload,
+    casino_trino_views,
 )
 
 # Set up logging
@@ -160,7 +161,20 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
                 if new_dep_key not in existing_keys:
                     existing_deps.append(AssetDep(asset=new_dep_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
-        
+
+        # Casino Kafka source tables depend on proto descriptors being in MinIO.
+        # Declaring this here (on the AssetSpec) is required before the function
+        # parameter on @dbt_assets can reference casino_prd_proto_upload.
+        if materialized == "kafka_table" and (
+            "casino_uc1" in tags or "casino_uc2" in tags
+        ):
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            proto_key = AssetKey(["casino_prd_proto_upload"])
+            if proto_key not in {d.asset_key for d in existing_deps}:
+                existing_deps.append(AssetDep(asset=proto_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
         return new_spec
 
 
@@ -310,7 +324,11 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
     select="tag:casino_uc1",
     name="casino_uc1_dbt_assets",
 )
-def casino_uc1_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def casino_uc1_dbt_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    casino_prd_proto_upload,  # ensures proto descriptors are in MinIO before source tables are created
+):
     """dbt assets for Casino UC1 — Real Bet Amount pipeline."""
     yield from dbt.cli(["build"], context=context).stream()
 
@@ -321,7 +339,11 @@ def casino_uc1_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
     select="tag:casino_uc2",
     name="casino_uc2_dbt_assets",
 )
-def casino_uc2_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+def casino_uc2_dbt_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+    casino_prd_proto_upload,  # ensures proto descriptors are in MinIO before source tables are created
+):
     """dbt assets for Casino UC2 — Turnover Percentage pipeline."""
     yield from dbt.cli(["build"], context=context).stream()
 
@@ -414,6 +436,7 @@ casino_prd_setup_job = define_asset_job(
     description="Fetch, compile, and upload casino proto schemas to MinIO",
 )
 
+
 casino_uc1_dbt_job = define_asset_job(
     name="casino_uc1_dbt_job",
     selection=[casino_uc1_dbt_assets],
@@ -436,8 +459,9 @@ casino_prd_full_job = define_asset_job(
         )
         | AssetSelection.groups("casino_uc1")
         | AssetSelection.groups("casino_uc2")
+        | AssetSelection.assets(casino_trino_views)
     ),
-    description="End-to-end casino demo: proto setup → UC1 → UC2",
+    description="End-to-end casino demo: proto setup → UC1 → UC2 → Trino views",
 )
 
 # ML Training Schedule (5 minutes - Production)
@@ -480,6 +504,8 @@ defs = Definitions(
         # Casino dbt assets
         casino_uc1_dbt_assets,
         casino_uc2_dbt_assets,
+        # Trino metadata views for Grafana (snapshot count, live data files)
+        casino_trino_views,
     ],
     jobs=[
         dbt_build_job,
@@ -492,7 +518,10 @@ defs = Definitions(
         casino_uc2_dbt_job,
         casino_prd_full_job,
     ],
-    schedules=[dbt_build_schedule, ml_training_schedule],
+    schedules=[
+        dbt_build_schedule,
+        ml_training_schedule,
+    ],
     sensors=[ml_training_sensor_realtime],
     resources={
         "dbt": DbtCliResource(project_dir=str(dbt_PROJECT_PATH)),
