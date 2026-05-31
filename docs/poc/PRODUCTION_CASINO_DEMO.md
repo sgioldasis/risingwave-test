@@ -20,12 +20,12 @@ Real-time streaming pipeline that reads live casino and sportsbook data from Kai
 │ Kaizen prd2 Kafka        │ ────────────────▶│  RisingWave (compute-node-0)     │
 │ cronus.casino.out.gh     │                  │                                  │
 └──────────────────────────┘                  │  UC1: mv_casino_transactions     │
-                                              │       → mv_casino_real_bet       │
-┌──────────────────────────┐    SSL one-way   │                                  │
+                                              │       → mv_casino_real_bet ──────┼──▶ casino_real_bet_output
+┌──────────────────────────┐    SSL one-way   │                                  │     (Redpanda, JSON)
 │ Kaizen prd4 Kafka        │ ────────────────▶│  UC2: mv_casino_turnover_90d     │
 │ bets-out-gh              │                  │       mv_sportsbook_turnover_90d │
-└──────────────────────────┘                  │       → mv_turnover_percentage   │
-                                              └────────────┬────────────────────┘
+└──────────────────────────┘                  │       → mv_turnover_percentage ──┼──▶ casino_turnover_percentage_output
+                                              └────────────┬────────────────────┘     (Redpanda, JSON)
                                                            │ upsert sinks (≈5s)
                                                            ▼
                                               ┌─────────────────────────────────┐
@@ -248,10 +248,10 @@ SET streaming_use_shared_source = true;
 
 ```
 src_casino_prd
-  → mv_casino_transactions     (flatten nested protobuf: one row per transaction)
-  → mv_casino_real_bet         (filter real bets + rolling 14-day SUM)
-  → rw_managed_casino_real_bet (Iceberg table, ENGINE = iceberg)
-     ← sink_casino_real_bet    (upsert sink)
+  → mv_casino_transactions          (flatten nested protobuf: one row per transaction)
+  → mv_casino_real_bet              (filter real bets + rolling 14-day SUM)
+     ├── sink_casino_real_bet    →  rw_managed_casino_real_bet  (Iceberg, upsert)
+     └── sink_casino_real_bet_kafka → casino_real_bet_output    (Redpanda, JSON, append)
 ```
 
 ### 4.1 `mv_casino_transactions` — Transaction-level flat view
@@ -332,6 +332,8 @@ WHERE message_type_id = 1      -- bet placed
 
 **Window function:** `RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW` = 14 days (14 × 86400 = 1 209 600 s). This is a sliding window — for every new bet event, RisingWave emits an updated row with the sum of all real bets placed by that customer in the preceding 14 days. The result is one row per event, not one row per customer. Consumers should key on `(customer_id, currency_id)` and keep the row with the latest `event_ts`.
 
+> **Currency note:** `currency_id` is an opaque integer from the Kaizen system. All observed rows in the GH dataset have `currency_id = 16`. The mapping to a named currency has not been confirmed — amounts are treated as unitless until Kaizen provides the reference table.
+
 Verify:
 
 ```sql
@@ -402,6 +404,36 @@ FROM rw_managed_casino_real_bet
 ORDER BY rolling_14d_real_bet_amount DESC NULLS LAST LIMIT 10;
 ```
 
+### 4.5 `sink_casino_real_bet_kafka` — Kafka output sink (PoC R4)
+
+Required by the PoC spec: "Emit updates to destination Kafka topic in near-real-time." Also enables the R4 latency benchmark (Kafka source → Kafka sink p95 < 1 s).
+
+```sql
+CREATE SINK sink_casino_real_bet_kafka
+FROM mv_casino_real_bet
+WITH (
+    connector                   = 'kafka',
+    properties.bootstrap.server = 'redpanda:9092',
+    topic                       = 'casino_real_bet_output'
+)
+FORMAT PLAIN ENCODE JSON (
+    force_append_only = 'true'
+);
+```
+
+Each update to `mv_casino_real_bet` is published as a JSON message. `force_append_only = 'true'` emits every row as an insert — consumers receive the latest rolling window value and key on `(customer_id, currency_id)` to keep the most recent.
+
+Verify — consume messages from Redpanda:
+
+```bash
+docker exec redpanda rpk topic consume casino_real_bet_output -n 5
+```
+
+Expected JSON output:
+```json
+{"customer_id":12345,"currency_id":1,"event_ts":"2026-05-31T10:23:45+00:00","rolling_14d_real_bet_amount":"245.50"}
+```
+
 ---
 
 ## 5. UC2 — Casino Turnover Percentage
@@ -417,13 +449,13 @@ Total turnover = casino turnover + sportsbook turnover. Both sides use 90-day ro
 ### Pipeline
 
 ```
-mv_casino_transactions          src_bets_gh
-  → mv_casino_turnover_90d        → mv_sportsbook_turnover_90d
-  → mv_casino_turnover_latest     → mv_sportsbook_turnover_latest
-         ↘                               ↗
+mv_casino_transactions              src_bets_gh
+  → mv_casino_turnover_90d            → mv_sportsbook_turnover_90d
+  → mv_casino_turnover_latest         → mv_sportsbook_turnover_latest
+         ↘                                   ↗
            mv_turnover_percentage
-           → rw_managed_turnover_percentage (Iceberg table)
-              ← sink_turnover_percentage
+              ├── sink_turnover_percentage      → rw_managed_turnover_percentage  (Iceberg, upsert)
+              └── sink_turnover_percentage_kafka → casino_turnover_percentage_output (Redpanda, JSON)
 ```
 
 > **Note:** `mv_casino_transactions` is shared with UC1. UC2 reads it for casino payout events — a different filter than UC1's bet events.
@@ -660,6 +692,34 @@ FROM rw_managed_turnover_percentage
 ORDER BY total_turnover DESC NULLS LAST LIMIT 10;
 ```
 
+### 5.8 `sink_turnover_percentage_kafka` — Kafka output sink (PoC R4)
+
+```sql
+CREATE SINK sink_turnover_percentage_kafka
+FROM mv_turnover_percentage
+WITH (
+    connector                   = 'kafka',
+    properties.bootstrap.server = 'redpanda:9092',
+    topic                       = 'casino_turnover_percentage_output'
+)
+FORMAT PLAIN ENCODE JSON (
+    force_append_only = 'true'
+);
+```
+
+Each update to `mv_turnover_percentage` (triggered by a new casino or sportsbook event for any customer) is published as a JSON message. Consumers key on `customer_id`.
+
+Verify:
+
+```bash
+docker exec redpanda rpk topic consume casino_turnover_percentage_output -n 5
+```
+
+Expected JSON output:
+```json
+{"customer_id":12345,"casino_turnover":"3924.70","sportsbook_turnover":"1200.00","total_turnover":"5124.70","casino_ratio":"0.7659","sportsbook_ratio":"0.2341"}
+```
+
 ---
 
 ## 6. End-to-end verification
@@ -698,12 +758,43 @@ Expected counts from a live run:
  rw_managed_turnover_percentage    |    8120   ← slightly behind
 ```
 
-Check sink health:
+Open the **Casino PoC — UC1 & UC2 Metrics** dashboard in Grafana at `http://localhost:3001` → Dashboards → RisingWave → **Casino PoC — UC1 & UC2 Metrics**. It auto-refreshes every 10 seconds.
+
+The dashboard has three sections:
+- **UC1** — customers tracked, MV row count, Iceberg rows, total real bet volume, top 20 customers table
+- **UC2** — customers tracked, avg casino ratio, Iceberg rows, total turnover, top 20 customers table with casino/sportsbook breakdown
+- **Pipeline Health** — sink throughput (rows/s), Iceberg commit rate, source ingestion rate from both production Kafka topics
+
+Check all sink health (Iceberg + Kafka):
 
 ```sql
 SELECT name, connector, status
 FROM rw_catalog.rw_sinks
-WHERE name IN ('sink_casino_real_bet', 'sink_turnover_percentage');
+WHERE name LIKE '%casino%' OR name LIKE '%turnover%'
+ORDER BY name;
+```
+
+Expected — 4 sinks running:
+```
+ sink_casino_real_bet              | iceberg | RUNNING
+ sink_casino_real_bet_kafka        | kafka   | RUNNING
+ sink_turnover_percentage          | iceberg | RUNNING
+ sink_turnover_percentage_kafka    | kafka   | RUNNING
+```
+
+Verify Kafka topics are receiving messages:
+
+```bash
+# Check topics exist
+docker exec redpanda rpk topic list | grep casino
+
+# Consume a few messages from each topic
+docker exec redpanda rpk topic consume casino_real_bet_output -n 3
+docker exec redpanda rpk topic consume casino_turnover_percentage_output -n 3
+
+# Check message count (offset = total messages published)
+docker exec redpanda rpk topic describe casino_real_bet_output
+docker exec redpanda rpk topic describe casino_turnover_percentage_output
 ```
 
 ---
@@ -817,7 +908,9 @@ The `pre-hook` runs before every model in the subfolder. Because each dbt model 
 | `mv_sportsbook_turnover_latest.sql` | `materialized_view` | `casino_uc2` | `mv_sportsbook_turnover_latest` |
 | `mv_turnover_percentage.sql` | `materialized_view` | `casino_uc2` | `mv_turnover_percentage` |
 | `rw_managed_turnover_percentage.sql` | `iceberg_table` | `casino_uc2` | `rw_managed_turnover_percentage` |
-| `sink_turnover_percentage.sql` | `sink` | `casino_uc2` | `sink_turnover_percentage` |
+| `sink_turnover_percentage.sql` | `sink` | `casino_uc2` | `sink_turnover_percentage` (Iceberg upsert) |
+| `sink_casino_real_bet_kafka.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet_kafka` → `casino_real_bet_output` (Redpanda) |
+| `sink_turnover_percentage_kafka.sql` | `sink` | `casino_uc2` | `sink_turnover_percentage_kafka` → `casino_turnover_percentage_output` (Redpanda) |
 
 ### 9.3 Custom dbt materializations
 
@@ -882,7 +975,7 @@ UC2 assets show UC1 assets (`mv_casino_transactions`) as upstream dependencies i
 Three plain Python `@asset` functions in `orchestration/assets/casino_prd_setup.py` handle the prerequisites that must run before any dbt model:
 
 **`casino_prd_proto_fetch`**
-Fetches `.proto` source files from the Apicurio schema registry native v2 endpoint using `httpx`. Writes to `proto/casinoroundinfodto.proto` and `proto/betinfo.proto`. Idempotent — overwrites existing files.
+Fetches `.proto` source files from the Apicurio schema registry native v2 endpoint using `httpx`. Writes to `proto/casinoroundinfodto.proto` and `proto/betinfo.proto`. Falls back gracefully if the registry is unreachable (e.g. no VPN) and the `.proto` files already exist on disk — in that case it logs a warning and continues. Fails explicitly only if the registry is unreachable AND no local file exists.
 
 ```
 Apicurio native v2 → proto/casinoroundinfodto.proto
@@ -942,19 +1035,82 @@ Four jobs are defined for the casino pipeline:
 
 `casino_prd_full_job` is the recommended entry point for demos. Dagster enforces the correct execution order automatically: setup assets complete before dbt assets start, and UC1 models (including `mv_casino_transactions`) are created before UC2 models that depend on them.
 
-#### Running via Dagster UI
+#### Running via Dagster UI — step by step
 
-1. Open the Dagster UI (default: `http://localhost:3000`)
-2. Navigate to **Jobs** → `casino_prd_full_job`
-3. Click **Materialize all** to run the full pipeline end-to-end
-4. Monitor progress in the **Runs** tab — each asset shows its status individually
-5. Click any asset to see its logs, metadata, and output
+**Step 1: Start the full stack**
+```bash
+./bin/1_up.sh
+```
+This starts RisingWave, MinIO, Lakekeeper, Redpanda, Grafana, and Dagster. Open the Dagster UI at `http://localhost:3000`.
 
-To run only prerequisites (e.g. after a schema change):
-- Jobs → `casino_prd_setup_job` → Materialize all
+**Step 2: Run the full casino pipeline**
+- Navigate to **Jobs** → `casino_prd_full_job`
+- Click **Materialize all**
+- Dagster executes in dependency order: `casino_prd_setup` → `casino_uc1` → `casino_uc2`
 
-To rebuild a single UC:
-- Jobs → `casino_uc1_dbt_job` or `casino_uc2_dbt_job`
+**Step 3: Monitor progress**
+- Go to **Runs** → click the active run
+- Each asset tile turns green on success; click any tile to view logs
+- The setup group (proto fetch/compile/upload) runs first — if it fails due to network (VPN required for Apicurio), the pre-built `.pb`/`.desc` files in `proto/` are used as fallback
+
+**Step 4: Verify in Dagster UI**
+- Go to **Asset catalog** — filter by group `casino_uc1` or `casino_uc2`
+- All assets should show **Materialized** with a green tick and a timestamp
+
+**Step 5: Verify in RisingWave**
+
+After the run completes, connect to RisingWave and check:
+```bash
+psql postgresql://root@localhost:4566/dev
+```
+
+```sql
+-- All 4 sinks should be RUNNING
+SELECT name, connector, status FROM rw_catalog.rw_sinks
+WHERE name LIKE '%casino%' OR name LIKE '%turnover%'
+ORDER BY name;
+
+-- UC1 row counts
+SELECT COUNT(*) FROM mv_casino_real_bet;
+SELECT COUNT(*) FROM rw_managed_casino_real_bet;
+
+-- UC2 row counts
+SELECT COUNT(*) FROM mv_turnover_percentage;
+SELECT COUNT(*) FROM rw_managed_turnover_percentage;
+```
+
+**Step 6: Verify Kafka output**
+```bash
+docker exec redpanda rpk topic consume casino_real_bet_output -n 3
+docker exec redpanda rpk topic consume casino_turnover_percentage_output -n 3
+```
+
+**Step 7: Verify in Grafana**
+
+Open `http://localhost:3001` → Dashboards → RisingWave → **Casino PoC — UC1 & UC2 Metrics**.
+
+| Panel | What to look for |
+|-------|-----------------|
+| Customers Tracked (UC1) | Non-zero, growing during backfill |
+| 14-Day Real Bet Volume | Non-zero total (amounts shown without currency unit — see note below) |
+| Most Recently Active Customers (UC1) | Table with Latest Bet, 14-Day Real Bet, Last Event columns; sorted by most recent event |
+| Avg Casino Ratio | Between 0 and 1 |
+| Top 20 Customers (UC2) | casino_ratio + sportsbook_ratio columns sum to ~100% |
+| Casino Sink Activity | Commits/min non-zero (≈12/min at 5s interval); source rows/s shows live event rate |
+| Source Throughput | Lines for `src_casino_prd` and `src_bets_gh` |
+
+> **Currency note:** UC1 amounts (`rolling_14d_real_bet_amount`, `latest_single_bet`) are in the player's account currency. All observed rows have `currency_id = 16` — the mapping to a named currency (e.g. EUR) has not been confirmed by Kaizen. UC1 amounts are displayed as raw numbers without a currency symbol until this is confirmed. UC2 amounts are correctly in EUR because `mv_sportsbook_turnover_90d` explicitly uses `TotalStake.Euro` from the bets protobuf.
+
+---
+
+**Partial runs (individual UCs):**
+
+| What | How |
+|------|-----|
+| Proto schemas only | Jobs → `casino_prd_setup_job` → Materialize all |
+| UC1 only | Jobs → `casino_uc1_dbt_job` → Materialize all |
+| UC2 only | Jobs → `casino_uc2_dbt_job` → Materialize all |
+| Full pipeline | Jobs → `casino_prd_full_job` → Materialize all |
 
 #### Relationship between dbt and raw SQL
 
@@ -983,9 +1139,10 @@ They are not designed to run simultaneously on the same RisingWave instance — 
 | [sql/casino_prd_bets_source.sql](../sql/casino_prd_bets_source.sql) | Creates `src_bets_gh` |
 | [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | UC1 + UC2 MVs + Iceberg sinks |
 | [sql/casino_prd_raw_iceberg.sql](../sql/casino_prd_raw_iceberg.sql) | Faithful raw nested archive: `mv_casino_raw` + `rw_managed_casino_raw` |
-| [dbt/models/casino_prd/](../dbt/models/casino_prd/) | dbt models for the casino pipeline (13 SQL files) |
+| [dbt/models/casino_prd/](../dbt/models/casino_prd/) | dbt models for the casino pipeline (15 SQL files, incl. 2 Kafka sinks) |
 | [dbt/dbt_project.yml](../dbt/dbt_project.yml) | dbt project config — casino_prd subfolder config + pre-hook |
 | [dbt/macros/materializations/](../dbt/macros/materializations/) | Custom RisingWave materializations: `kafka_table`, `iceberg_table`, `sink` |
+| [monitoring/grafana/dashboards/casino-uc-metrics.json](../monitoring/grafana/dashboards/casino-uc-metrics.json) | Grafana dashboard: UC1/UC2 business metrics + sink health |
 | [orchestration/assets/casino_prd_setup.py](../orchestration/assets/casino_prd_setup.py) | Dagster prerequisite assets: proto fetch, compile, upload |
 | [orchestration/definitions.py](../orchestration/definitions.py) | Dagster definitions: casino asset functions + jobs |
 | [bin/3_run_casino_prd_demo.sh](../bin/3_run_casino_prd_demo.sh) | End-to-end setup script (proto compile → upload → sources → MVs → verify) |
@@ -996,10 +1153,11 @@ They are not designed to run simultaneously on the same RisingWave instance — 
 ## 11. Reproduce from scratch
 
 ```bash
-# 1. Start services
+# 1. Start services (include Redpanda for Kafka output sinks)
 docker compose up -d \
   minio-0 meta-node-0 compute-node-0 compactor-0 frontend-node-0 \
-  lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap
+  lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap \
+  redpanda redpanda-console
 
 # 2. Compile and upload proto schemas
 protoc --include_imports \
@@ -1031,6 +1189,11 @@ UNION ALL SELECT 'rw_managed_casino_real_bet',     COUNT(*) FROM rw_managed_casi
 UNION ALL SELECT 'mv_turnover_percentage',         COUNT(*) FROM mv_turnover_percentage
 UNION ALL SELECT 'rw_managed_turnover_percentage', COUNT(*) FROM rw_managed_turnover_percentage;
 SQL
+
+# Verify Kafka output topics
+docker exec redpanda rpk topic list | grep casino
+docker exec redpanda rpk topic consume casino_real_bet_output -n 3
+docker exec redpanda rpk topic consume casino_turnover_percentage_output -n 3
 ```
 
 Or use the all-in-one script:

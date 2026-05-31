@@ -21,7 +21,11 @@ MINIO_SECRET_KEY = "hummockadmin"
 
 @asset(group_name="casino_prd_setup", description="Fetch .proto files from Apicurio schema registry (native v2)")
 def casino_prd_proto_fetch(context: AssetExecutionContext):
-    """Fetch casino and bets .proto sources from Apicurio native v2 endpoint."""
+    """Fetch casino and bets .proto sources from Apicurio native v2 endpoint.
+
+    Falls back gracefully if the registry is unreachable (e.g. no VPN) and the
+    .proto files already exist on disk — the same pattern as casino_prd_proto_compile.
+    """
     PROTO_DIR.mkdir(parents=True, exist_ok=True)
 
     fetched = []
@@ -31,11 +35,23 @@ def casino_prd_proto_fetch(context: AssetExecutionContext):
     ]:
         dest = PROTO_DIR / filename
         url = f"{APICURIO_BASE}/{artifact}"
-        context.log.info(f"Fetching {url} → {dest}")
-        response = httpx.get(url, headers={"Accept": "text/plain"}, timeout=30, follow_redirects=True)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        context.log.info(f"Saved {dest} ({dest.stat().st_size} bytes)")
+        try:
+            context.log.info(f"Fetching {url} → {dest}")
+            response = httpx.get(url, headers={"Accept": "text/plain"}, timeout=30, follow_redirects=True)
+            response.raise_for_status()
+            dest.write_bytes(response.content)
+            context.log.info(f"Saved {dest} ({dest.stat().st_size} bytes)")
+        except Exception as e:
+            if dest.exists():
+                context.log.warning(
+                    f"Could not reach Apicurio ({e}) — using existing {dest} ({dest.stat().st_size} bytes). "
+                    "Re-run with network access to refresh."
+                )
+            else:
+                raise RuntimeError(
+                    f"Failed to fetch {url} and {dest} does not exist locally. "
+                    "Ensure VPN is active or place the .proto file manually in proto/."
+                ) from e
         fetched.append(str(dest))
 
     return {"fetched_files": MetadataValue.json(fetched)}

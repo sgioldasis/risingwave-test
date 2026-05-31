@@ -22,6 +22,10 @@
 --   rw_managed_casino_real_bet
 --   rw_managed_turnover_percentage
 --
+-- Kafka output sinks (Redpanda — PoC R4 latency benchmark):
+--   sink_casino_real_bet_kafka       → topic casino_real_bet_output
+--   sink_turnover_percentage_kafka   → topic casino_turnover_percentage_output
+--
 -- Idempotent: safe to re-run. DROPs cascade to dependents.
 -- =============================================================================
 
@@ -296,6 +300,32 @@ WITH (
     primary_key                 = 'customer_id',
     commit_checkpoint_interval  = 5,
     force_compaction            = true
+);
+
+-- --- Kafka output sinks (Redpanda — PoC R4 latency measurement) ---------------
+DROP SINK IF EXISTS sink_casino_real_bet_kafka;
+DROP SINK IF EXISTS sink_turnover_percentage_kafka;
+
+CREATE SINK sink_casino_real_bet_kafka
+FROM mv_casino_real_bet
+WITH (
+    connector                   = 'kafka',
+    properties.bootstrap.server = 'redpanda:9092',
+    topic                       = 'casino_real_bet_output'
+)
+FORMAT PLAIN ENCODE JSON (
+    force_append_only = 'true'
+);
+
+CREATE SINK sink_turnover_percentage_kafka
+FROM mv_turnover_percentage
+WITH (
+    connector                   = 'kafka',
+    properties.bootstrap.server = 'redpanda:9092',
+    topic                       = 'casino_turnover_percentage_output'
+)
+FORMAT PLAIN ENCODE JSON (
+    force_append_only = 'true'
 );
 
 -- =============================================================================

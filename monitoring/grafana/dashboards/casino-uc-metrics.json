@@ -1,0 +1,1013 @@
+{
+  "title": "Casino PoC \u2014 UC1 & UC2 Metrics",
+  "uid": "casino-uc-metrics",
+  "description": "Real-time metrics for Casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) streaming pipelines.",
+  "tags": [
+    "casino",
+    "poc",
+    "risingwave"
+  ],
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "schemaVersion": 38,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "UC1 \u2014 Casino Real Bet Amount",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Customers Tracked (UC1)",
+      "description": "Distinct customers with at least one real bet in mv_casino_real_bet.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(DISTINCT customer_id) AS customers FROM mv_casino_real_bet"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "MV Row Count (mv_casino_real_bet)",
+      "description": "Total rows in the rolling 14-day real bet MV \u2014 one row per bet event.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS rows FROM mv_casino_real_bet"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Iceberg Rows (rw_managed_casino_real_bet)",
+      "description": "Rows committed to the Iceberg sink \u2014 slightly behind MV due to 5s commit interval.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM rw_managed_casino_real_bet"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Total Real Bet Volume (14d rolling)",
+      "description": "Sum of all rolling_14d_real_bet_amount across all latest customer rows \u2014 indicates total exposure.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT SUM(rolling_14d_real_bet_amount)::float AS total_volume FROM (SELECT DISTINCT ON (customer_id, currency_id) customer_id, currency_id, rolling_14d_real_bet_amount FROM mv_casino_real_bet ORDER BY customer_id, currency_id, event_ts DESC) t"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Most Recently Active Customers \u2014 14-Day Real Bet Amount (UC1)",
+      "description": "Most recently active customers with their current rolling 14-day real bet total. Sorted by last event time descending.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Last Event",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rolling_14d_real_bet_amount"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "14-Day Real Bet"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "customer_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "Customer ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "currency_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Currency"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event_ts"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Last Event"
+              },
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT customer_id, currency_id, rolling_14d_real_bet_amount, event_ts FROM (   SELECT customer_id, currency_id, rolling_14d_real_bet_amount, event_ts,          ROW_NUMBER() OVER (PARTITION BY customer_id, currency_id ORDER BY event_ts DESC) AS rn   FROM mv_casino_real_bet ) t WHERE rn = 1 ORDER BY event_ts DESC NULLS LAST LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "UC2 \u2014 Casino Turnover Percentage",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Customers Tracked (UC2)",
+      "description": "Distinct customers in mv_turnover_percentage \u2014 union of casino and sportsbook activity.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS customers FROM mv_turnover_percentage"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Avg Casino Ratio",
+      "description": "Average casino_ratio across all customers. Higher = customers prefer casino over sportsbook.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT ROUND(AVG(casino_ratio)::numeric, 4)::float AS avg_casino_ratio FROM mv_turnover_percentage WHERE total_turnover > 0"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Iceberg Rows (rw_managed_turnover_percentage)",
+      "description": "Rows in the Iceberg sink \u2014 one row per customer, upserted on each update.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM rw_managed_turnover_percentage"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Total Tracked Turnover (EUR, 90d rolling)",
+      "description": "Sum of total_turnover across all customers in the latest MV snapshot.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyEUR",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT SUM(total_turnover)::float AS total_volume FROM mv_turnover_percentage"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Top 20 Customers by Total Turnover (UC2)",
+      "description": "Casino vs sportsbook turnover ratio per customer over 90 days. Sourced from mv_turnover_percentage.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Total (EUR, 90d)",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "customer_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "Customer ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Casino (EUR, 90d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook (EUR, 90d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Total (EUR, 90d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Casino %"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-BlYlRd"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook %"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage ORDER BY total_turnover DESC NULLS LAST LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Kafka Output Sinks (PoC R4)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Kafka Sink Throughput (rows/s)",
+      "description": "Input row rate for the two Kafka output sinks. After backfill, reflects the live production event rate. Used for PoC R4 latency benchmark \u2014 higher TPS = more meaningful p95 measurement.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rowsps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name=~\".*kafka.*\"})\n)",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "Iceberg Sinks",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Iceberg Sink Commits / min",
+      "description": "Checkpoint commit rate for the two Iceberg upsert sinks. Each commit corresponds to the ~5s checkpoint interval (~12 commits/min). Spiky pattern is normal \u2014 RisingWave batches writes per checkpoint.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (rate(sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*\"}[5m]) * 60)",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Iceberg Sink Input (rows/s)",
+      "description": "Rows received by the Iceberg connector layer. Low in steady state after backfill \u2014 reflects the live production event rate filtered through the MV chain.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rowsps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name!~\".*kafka.*\", sink_name=~\".*casino.*|.*turnover.*\"})\n)",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "row",
+      "title": "Source Ingestion",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Casino Source Throughput (rows/s)",
+      "description": "Row ingestion rate from the two production Kafka sources: src_casino_prd (prd2) and src_bets_gh (prd4). During initial backfill this is very high; once caught up it reflects the live production event rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rowsps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (source_name) (rate(source_partition_input_count{source_name=~\"src_casino_prd|src_bets_gh\"}[5m]))",
+          "legendFormat": "{{source_name}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

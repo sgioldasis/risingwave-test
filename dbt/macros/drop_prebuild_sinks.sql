@@ -12,6 +12,8 @@
     DROP SINK IF EXISTS funnel_postgres_sink CASCADE;
     DROP SINK IF EXISTS sink_casino_real_bet CASCADE;
     DROP SINK IF EXISTS sink_turnover_percentage CASCADE;
+    DROP SINK IF EXISTS sink_casino_real_bet_kafka CASCADE;
+    DROP SINK IF EXISTS sink_turnover_percentage_kafka CASCADE;
     {% endset %}
 
     {% do run_query(drop_sinks_sql) %}
