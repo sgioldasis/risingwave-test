@@ -164,6 +164,7 @@ fi
 
 echo ""
 echo "=== [3/9] Lakekeeper + MinIO + Trino + Grafana + Redpanda ==="
+# redpanda is required for the Kafka output sinks (PoC R4 latency benchmark).
 docker compose up -d lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino prometheus-0 grafana-0 redpanda
 
 echo ""
@@ -250,15 +251,15 @@ UNION ALL SELECT 'mv_turnover_percentage',      COUNT(*) FROM mv_turnover_percen
 SELECT 'mv_casino_raw' AS view, COUNT(*) FROM mv_casino_raw;
 
 \echo ''
-\echo '--- Active sinks ---'
+\echo '--- Active sinks (2 Iceberg + 2 Kafka) ---'
 SELECT name, connector, status FROM rw_catalog.rw_sinks
 WHERE name IN ('sink_casino_real_bet','sink_turnover_percentage',
                'sink_casino_real_bet_kafka','sink_turnover_percentage_kafka')
 ORDER BY name;
 
 \echo ''
-\echo '--- Kafka output topics (check Redpanda has messages) ---'
-\echo 'Run: docker exec redpanda rpk topic list | grep casino'
+\echo '--- Kafka output topics ---'
+\echo 'Run: docker exec redpanda rpk topic consume casino_real_bet_output -n 5'
 SQL
 
 echo ""

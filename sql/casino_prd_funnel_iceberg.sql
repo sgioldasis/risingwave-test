@@ -310,6 +310,7 @@ WITH (
 -- tables exist in Lakekeeper, so source creation must be deferred.
 
 -- --- Kafka output sinks (Redpanda — PoC R4 latency measurement) ---------------
+-- Requires Redpanda: docker compose up -d redpanda
 DROP SINK IF EXISTS sink_casino_real_bet_kafka;
 DROP SINK IF EXISTS sink_turnover_percentage_kafka;
 

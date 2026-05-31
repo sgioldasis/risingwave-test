@@ -178,48 +178,46 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         return new_spec
 
 
-# Ensure manifest.json exists and is valid before defining the project
+# Always regenerate manifest.json on code load via `dbt parse`, so model
+# enable/disable, tag, and config changes are picked up without a manual
+# recompile (this is what was missing — a stale manifest kept showing
+# disabled models in Dagster).
+#
+# `dbt parse` rebuilds the manifest from the model files. In this project the
+# on-run-start hooks (create_udfs / iceberg connection) may also fire, which
+# touch RisingWave — they are idempotent, but if RisingWave/network is down at
+# code-load time parse may fail. In that case we fall back to the existing
+# manifest so the code location still loads.
 _manifest_path = Path(dbt_PROJECT_PATH) / "target" / "manifest.json"
-_needs_compile = True
+_manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
-if _manifest_path.exists():
-    try:
-        with open(_manifest_path) as f:
-            _existing_manifest = json.load(f)
-        _has_child_map = "child_map" in _existing_manifest
-        _has_nodes = "nodes" in _existing_manifest
-        _nodes = _existing_manifest.get("nodes", {})
-        _has_real_models = len(_nodes) > 0
-        
-        if _has_child_map and _has_nodes and _has_real_models:
-            _needs_compile = False
-            logger.info(f"Valid manifest.json found with {len(_nodes)} models, skipping compile")
-    except Exception as e:
-        logger.warning(f"Error reading existing manifest: {e}, will recreate")
+_dbt_env = os.environ.copy()
+_dbt_env.setdefault("DBT_HOST", "risingwave-frontend")
+_dbt_env.setdefault("DBT_PROFILES_DIR", str(dbt_PROJECT_PATH))
+_dbt_env.setdefault("DBT_PASSWORD", "root")
 
-if _needs_compile:
-    logger.info("manifest.json not found or invalid, running dbt compile...")
-    (_manifest_path.parent).mkdir(parents=True, exist_ok=True)
-    
-    _dbt_env = os.environ.copy()
-    if "DBT_HOST" not in _dbt_env:
-        _dbt_env["DBT_HOST"] = "risingwave-frontend"
-    if "DBT_PROFILES_DIR" not in _dbt_env:
-        _dbt_env["DBT_PROFILES_DIR"] = str(dbt_PROJECT_PATH)
-    if "DBT_PASSWORD" not in _dbt_env:
-        _dbt_env["DBT_PASSWORD"] = "root"
-    
-    result = subprocess.run(
-        ["dbt", "compile", "--project-dir", str(dbt_PROJECT_PATH)],
-        capture_output=True,
-        text=True,
-        cwd=str(dbt_PROJECT_PATH.parent),
-        env=_dbt_env
+logger.info("Running `dbt parse` to refresh manifest.json (picks up enabled/disabled/tag changes)...")
+_parse = subprocess.run(
+    ["dbt", "parse", "--no-partial-parse", "--project-dir", str(dbt_PROJECT_PATH)],
+    capture_output=True,
+    text=True,
+    cwd=str(dbt_PROJECT_PATH.parent),
+    env=_dbt_env,
+)
+if _parse.returncode != 0:
+    logger.warning(
+        f"`dbt parse` failed (using existing manifest if present): {_parse.stderr.strip()[-500:]}"
     )
-    if result.returncode != 0:
-        logger.warning(f"Warning: dbt compile failed: {result.stderr}")
-    else:
-        logger.info("dbt compile completed successfully")
+    if not _manifest_path.exists():
+        # No manifest to fall back to — last resort, try a compile.
+        logger.info("No existing manifest; attempting `dbt compile` as fallback...")
+        subprocess.run(
+            ["dbt", "compile", "--project-dir", str(dbt_PROJECT_PATH)],
+            capture_output=True, text=True,
+            cwd=str(dbt_PROJECT_PATH.parent), env=_dbt_env,
+        )
+else:
+    logger.info("`dbt parse` completed — manifest refreshed")
 
 # Initialize DbtProject with explicit manifest path
 dbt_project = DbtProject(

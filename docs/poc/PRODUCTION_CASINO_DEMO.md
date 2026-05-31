@@ -5,7 +5,7 @@ Real-time streaming pipeline that reads live casino and sportsbook data from Kai
 > **Status:** working as of 2026-05-31. RisingWave **2.7.4**, Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
 >
 > **Architecture notes (read first):**
-> - Sources use `scan.startup.mode = 'latest'` — the pipeline tracks live events from creation time (fast startup). Switch to `'earliest'` only if you need full historical backfill (slow).
+> - Sources use `scan.startup.mode = 'latest'` — fast, history-free startup; the 14-day/90-day windows fill over time as live events arrive. `'earliest'` (full-history backfill) is available but slow/unpredictable on this cluster — run it off-demo, not interactively.
 > - Iceberg sinks use `connector = 'iceberg'` (write directly to Lakekeeper), **not** `ENGINE = iceberg` managed tables. The sink auto-creates the Iceberg table.
 > - The `rw_managed_*` Iceberg tables are queried via **Trino** (`datalake` catalog), not RisingWave — there are no RisingWave Iceberg read-sources.
 > - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot **expiration does not** prune in 2.7.4 (see §7).
@@ -154,7 +154,7 @@ FORMAT PLAIN ENCODE PROTOBUF (
 | `CREATE TABLE` (not `SOURCE`) | Persists the Kafka topic into RisingWave's internal state store. A `SOURCE` re-scans Kafka at read time, making batch `SELECT COUNT(*)` disagree with streaming MV counts; a `TABLE` materializes once so both paths agree. |
 | `(*)` | Auto-discovers all columns from the protobuf FileDescriptorSet. No manual schema declaration needed. |
 | `APPEND ONLY` | Casino rounds are never updated or deleted — telling RisingWave this eliminates delete-tracking overhead and enables downstream MVs to skip retraction handling. |
-| `scan.startup.mode = 'latest'` | Tracks live events from creation time — fast startup (MVs materialize in seconds). **Trade-off:** no historical data; the 14-day/90-day windows fill up over time as new events arrive. Use `'earliest'` instead if you need full history immediately (slow backfill — minutes for UC2). |
+| `scan.startup.mode = 'latest'` | Fast, history-free startup — MVs materialize in seconds and the rolling windows fill over time. Use `'earliest'` for full-history backfill, but on this cluster that grinds under backpressure (UC2's 90-day-window MVs) and can take hours — run it off-demo, not interactively. |
 | `schema.location = 's3://...'` | RisingWave fetches the compiled `.pb` at DDL time. No container volume mount required. |
 
 > **dbt note:** the dbt models add a `pre_hook` that runs `DROP TABLE IF EXISTS … CASCADE` before recreating the source, so the `scan.startup.mode` change takes effect cleanly on every build.
@@ -184,7 +184,7 @@ Verify the table exists and is ingesting:
 
 ```sql
 SELECT COUNT(*) FROM src_casino_prd;
--- Expected: grows over time as new Kafka messages arrive (from 'latest')
+-- Expected: starts near 0 and grows as new Kafka messages arrive (from 'latest')
 ```
 
 ### 3.4 Create the bets source table (`src_bets_gh`)
@@ -422,7 +422,9 @@ The Grafana dashboard's Iceberg row-count panels use the Trino datasource for ex
 
 ### 4.5 `sink_casino_real_bet_kafka` — Kafka output sink (PoC R4)
 
-Required by the PoC spec: "Emit updates to destination Kafka topic in near-real-time." Also enables the R4 latency benchmark (Kafka source → Kafka sink p95 < 1 s).
+> **Requires Redpanda** (`docker compose up -d redpanda`).
+
+Required by the PoC spec: "Emit updates to destination Kafka topic in near-real-time." Enables the R4 latency benchmark (Kafka source → Kafka sink p95 < 1 s).
 
 ```sql
 CREATE SINK sink_casino_real_bet_kafka
@@ -733,7 +735,7 @@ Expected JSON output:
 
 ## 6. End-to-end verification
 
-**MV counts (RisingWave)** — with `scan.startup.mode='latest'` these start at 0 and grow as live events arrive:
+**MV counts (RisingWave)** — with `scan.startup.mode='latest'` these start near 0 and grow as live events arrive:
 
 ```sql
 -- UC1
@@ -783,16 +785,8 @@ Expected — 4 sinks running:
 Verify Kafka topics are receiving messages:
 
 ```bash
-# Check topics exist
-docker exec redpanda rpk topic list | grep casino
-
-# Consume a few messages from each topic
 docker exec redpanda rpk topic consume casino_real_bet_output -n 3
 docker exec redpanda rpk topic consume casino_turnover_percentage_output -n 3
-
-# Check message count (offset = total messages published)
-docker exec redpanda rpk topic describe casino_real_bet_output
-docker exec redpanda rpk topic describe casino_turnover_percentage_output
 ```
 
 ---
@@ -878,7 +872,7 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **`CREATE TABLE` vs `CREATE SOURCE`.** A `SOURCE` re-scans Kafka at read time; a `TABLE` persists the topic into RisingWave state so batch and streaming counts agree. With `scan.startup.mode='earliest'` a TABLE also backfills full history.
 
-- **`scan.startup.mode = 'latest'` vs `'earliest'`.** The pipeline ships with `'latest'` (fast startup, tracks live events; the rolling windows fill over time). Use `'earliest'` for immediate full-history backfill — but UC2's MV chain then takes minutes to materialize. The dbt source models use a `pre_hook` DROP so the mode change applies on rebuild.
+- **`scan.startup.mode = 'latest'` vs `'earliest'`.** The pipeline ships with `'latest'` (fast startup, tracks live events; rolling windows fill over time). `'earliest'` does a full-history backfill, but on this cluster it grinds under backpressure from UC2's 90-day-window MVs and can take hours — use it off-demo only. The dbt source models use a `pre_hook` DROP so the mode change applies on rebuild.
 
 - **`connector='iceberg'` sinks, not `ENGINE = iceberg`.** `enable_compaction` is silently ignored on `ENGINE = iceberg` managed tables in 2.7.4. Use `connector='iceberg'` sinks with `create_table_if_not_exists='true'`; query the resulting tables via Trino, not RisingWave.
 
@@ -1204,11 +1198,10 @@ They are not designed to run simultaneously on the same RisingWave instance — 
 ## 11. Reproduce from scratch
 
 ```bash
-# 1. Start services (include Redpanda for Kafka output sinks)
+# 1. Start services (redpanda is needed for the Kafka output sinks)
 docker compose up -d \
   minio-0 meta-node-0 compute-node-0 compactor-0 frontend-node-0 \
-  lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap \
-  redpanda redpanda-console
+  lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino redpanda
 
 # 2. Compile and upload proto schemas
 protoc --include_imports \
@@ -1239,15 +1232,14 @@ UNION ALL SELECT 'mv_casino_real_bet',     COUNT(*) FROM mv_casino_real_bet
 UNION ALL SELECT 'mv_turnover_percentage', COUNT(*) FROM mv_turnover_percentage;
 SQL
 
-# 5. Verify Iceberg output (Trino) + Kafka topics
+# 5. Verify Iceberg output (Trino)
 docker exec trino trino --execute "
 SELECT 'casino_real_bet' AS t, COUNT(*) FROM datalake.public.rw_managed_casino_real_bet
 UNION ALL SELECT 'turnover_pct', COUNT(*) FROM datalake.public.rw_managed_turnover_percentage"
-docker exec redpanda rpk topic list | grep casino
-docker exec redpanda rpk topic consume casino_real_bet_output -n 3
 ```
 
 > The script also creates the dollar-free Trino views (`casino_real_bet_snapshots`, `turnover_pct_snapshots`) that the Grafana snapshot/operations panels depend on.
+> Kafka output sinks require Redpanda (`docker compose up -d redpanda`) — see §4.5.
 
 Or use the all-in-one script:
 
