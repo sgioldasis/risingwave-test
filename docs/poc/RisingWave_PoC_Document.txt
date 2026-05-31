@@ -1,255 +1,337 @@
-﻿RisingWave
-Proof of Concept — Scope of Work
+================================================================================
+PART 1 — RisingWave Proof of Concept — Scope of Work
+Customer Attributes Platform · Big Data Department · 2026
+================================================================================
+
+Headline targets:
+  < 1 second   p95 Latency Target
+  4            Use Cases
+  4 + 3        Requirements & Verifications
 
 
-Customer Attributes Platform
-Big Data Department
-2026
+1. BACKGROUND
+-------------
+The Risk and Product teams require a centralized, live view of key bonus-related
+metrics across operators and campaigns. Current analysis is fragmented and
+retrospective, limiting strategic and operational decision-making.
+
+Monitoring performance and behavior related to bonus assignments is critical to
+financial and operational control. Without live KPIs, it is difficult to spot
+anomalies in time to react. Common examples include:
+  - High redemption ratios across specific operator segments
+  - Underperforming campaigns that fail to drive intended player engagement
+  - Abuser concentration patterns that expose the platform to financial risk
+
+Strategic Context: This PoC evaluates RisingWave as a real-time streaming engine
+to power the Customer Attributes Platform — a foundational component that enables
+live, customer-level metric delivery across internal Risk and Product stakeholders.
 
 
-< 1 second
-p95 Latency Target
-	4
-Use Cases[a][b]
-	4 + 3
-Requirements & Verifications
-	________________
-
-
-
-
-
-
-
-
-
-
-________________
-
-
-1.  Background
-The Risk and Product teams require a centralized, live view of key bonus-related metrics across operators and campaigns. Current analysis is fragmented and retrospective, limiting strategic and operational decision-making.
-
-
-Monitoring performance and behavior related to bonus assignments is critical to financial and operational control. Without live KPIs, it is difficult to spot anomalies in time to react. Common examples include:
-
-
-* High redemption ratios across specific operator segments
-* Underperforming campaigns that fail to drive intended player engagement
-* Abuser concentration patterns that expose the platform to financial risk
-
-
-Strategic Context
-This PoC evaluates RisingWave as a real-time streaming engine to power the Customer Attributes Platform — a foundational component that enables live, customer-level metric delivery across internal Risk and Product stakeholders.
-	
-
-2.  Objective
+2. OBJECTIVE
+------------
 Evaluate RisingWave as a real-time engine partner by assessing its capability to:
+  - Process streaming data with subsecond latency
+  - Handle stateful computations at scale
+  - Deliver materialized views for customer-level metrics
+  - Integrate with the existing Kafka-based data infrastructure
 
 
-* Process streaming data with subsecond latency
-* Handle stateful computations at scale
-* Deliver materialized views for customer-level metrics
-* Integrate with the existing Kafka-based data infrastructure
+3. SCOPE
+--------
+The PoC is divided into two sequential phases: a Requirements Phase that validates
+core streaming capabilities, and a Verification Phase that stress-tests resilience
+and operational properties.
+
+3.1 Requirements Phase
+  R1  Catch-up            Ability to process accumulated backlog when starting or
+                          resuming a pipeline. Validates readiness after planned
+                          downtime or cold-start scenarios.
+  R2  Backfill            Support for reprocessing historical data to recalculate
+                          metrics. Enables retroactive corrections without a full
+                          pipeline rebuild.
+  R3  Late-Arriving Data  Handle out-of-order events within acceptable time windows.
+                          Ensures aggregation correctness despite network delays or
+                          producer lag.
+  R4  Subsecond Latency   p95 end-to-end latency from Kafka source to Kafka sink must
+                          remain below 1 second. Non-negotiable for live bonus
+                          monitoring and real-time alerting.
+
+3.2 Verification Phase
+  V1  State Failure Recovery  Recover pipeline state from checkpoints without data
+                              loss. Validates RisingWave's checkpoint mechanism and
+                              state-backend durability under failure.
+  V2  Data Spikes             Handle burst traffic spikes without data loss or
+                              significant latency degradation. Simulates high-volume
+                              bonus event bursts typical of promotional campaigns.
+  V3  Failure Recovery        Full pipeline recovery from any failure within some
+                              seconds. Tests end-to-end resilience across source,
+                              processing layer, and sink.
 
 
-3.  Scope
-The PoC is divided into two sequential phases: a Requirements Phase that validates core streaming capabilities, and a Verification Phase that stress-tests resilience and operational properties.
+4. TEST CASES
+-------------
+Two use cases are defined for this PoC (UC1, UC2); a third (UC3) is documented for
+context. They cover windowed aggregation (UC1) and ratio computation (UC2).
+
+4.1 Use Case 1: Casino Real Bet Amount
+  Business Definition: Total amount of real money bets placed by the customer in the
+  casino over the past two weeks. Used to assess recent customer activity, identify
+  trends, and design targeted engagement or retention strategies.
+  Technical Implementation:
+    1. Transform source data from Kafka topic(s)
+    2. Calculate rolling 2-week sum of real bet amounts per customer
+    3. Emit updates to destination Kafka topic in near-real-time
+
+4.2 Use Case 2: Casino Turnover Percentage
+  Business Definition: Ratio of casino betting turnover to total betting turnover.
+  Used to assess a customer's preference for casino activity relative to their
+  overall betting behavior.
+  Technical Implementation:
+    1. Transform source data from Kafka topic(s)
+    2. Calculate ratio of casino turnover to total turnover per customer
+    3. Emit updates to destination Kafka topic in near-real-time
+
+4.3 Use Case 3: Sportsbook Live Trends Engine and Betslip Recommendation Engine
+  Business Definition: An engine that digests single selections, plus combinations
+  of selections (BetBuilders, accumulators) with related entity information
+  (sport-league-zone-event-player(if applicable)-live), able to produce:
+    - Social Proof (times a leg was placed — selection / betbuilder)
+    - Top features per entity (top players / top betbuilders / top betbuilder of top
+      players / most trending accumulators, etc.)
+    - A live Betslip recommendation (Live Betslip Co-occurrence & Affinity Engine
+      (X+1)): leverage live building-betslip data to deliver session-based next-item
+      recommendations (upselling) — dynamically suggesting the most trending next
+      selection combinations (BetBuilders or accumulators) to add to an active
+      betslip, with their "social proof".
+  Technical Implementation:
+    1. Input is currently writes of selection/matchcombo/accumulator deltas in
+       timeframed buckets (e.g. Selection X +5k placements in timeframe Z)
+    2. Querying is a total-timeframe aggregation related to feature and use-case
+       (not fixed) — from 5-10 minutes up to 48 hours.
+  Workload Profile & Data Characteristics:
+    1. Writes rate (adjustable): approx max 1400/sec
+    2. Query rate (Top features): currently ~70/sec, expected 150-200/sec
+    3. Query rate (Betslip Recommendation): estimate 200-250/sec
+    4. Combinations cardinality: selections 55,000; bbs 70,000 × 70 timeframe buckets
+  System Performance Targets:
+    1. Ingestion latency (freshness): acceptable max under 1 min (unless backfill)
+    2. Acceptable response times: Top features 1-2s, social proof 1-2s,
+       Betslip Recommendation 3-5s (approx., based on ClickHouse projections)
 
 
-3.1  Requirements Phase
-The following requirements must be satisfied for RisingWave to be considered a viable candidate. Each item is independently testable and maps directly to a test case or benchmark.
+5. SUCCESS CRITERIA (Scoping)
+-----------------------------
+  Performance              p95 end-to-end latency consistently below 1 second across
+                           sustained load.
+  Functionality            Both use cases (UC1 and UC2) correctly compute and output
+                           the expected metrics.
+  Resilience               All three verification requirements (V1, V2, V3) met
+                           without data loss or SLA breach.
+  Integration              RisingWave successfully connects to the defined Kafka
+                           source and sink topics and emits correct output.
+  Financial (Resource)     What does it mean, in terms of infra and VMs?
+  DevEx                    Developer experience / learning curve.
 
 
-ID
-	Requirement[c][d]
-	Description
-	R1
-	Catch-up
-	Ability to process accumulated backlog when starting or resuming a pipeline. Validates readiness after planned downtime or cold-start scenarios.
-	R2
-	Backfill
-	Support for reprocessing historical data to recalculate metrics. Enables retroactive corrections without a full pipeline rebuild.
-	R3
-	Late-Arriving Data
-	Handle out-of-order events within acceptable time windows. Ensures aggregation correctness despite network delays or producer lag.
-	R4
-	Subsecond Latency
-	p95 end-to-end latency from Kafka source to Kafka sink must remain below 1 second. Non-negotiable for live bonus monitoring and real-time alerting.
-	
-
-3.2  Verification Phase
-Verification items go beyond basic functionality to validate system behaviour under adversarial or degraded conditions. All three verifications must pass for the PoC to be considered successful.
+6. DELIVERABLES
+---------------
+  1. Documented test results for each requirement (R1–R4) and verification (V1–V3)
+  2. Performance metrics: latency percentiles (p50, p95, p99), throughput, resource use
+  3. Integration findings: connector behaviour, schema management, observed limits
+  4. Recommendation summary: adopt / conditional adopt / reject + rationale
 
 
-ID
-	Requirement
-	Description
-	V1
-	State Failure Recovery
-	Recover pipeline state from checkpoints without data loss. Validates RisingWave's checkpoint mechanism and state-backend durability under failure.
-	V2
-	Data Spikes
-	Handle burst traffic[e] spikes without data loss or significant latency degradation. Simulates high-volume bonus event bursts typical of promotional campaigns.
-	V3
-	Failure Recovery
-	Full pipeline recovery from any failure within some seconds. Tests end-to-end resilience across source, processing layer, and sink.
-	
-
-________________
+7. TIMELINE (indicative, 4 weeks)
+---------------------------------
+  Week 1  Environment Setup — Kafka & RisingWave provisioning, pipeline scaffold
+  Week 2  UC Development — implement UC1 & UC2, unit tests & validation
+  Week 3  Requirements Testing — R1–R4 execution, latency benchmarking
+  Week 4  Verification & Report — V1–V3 execution, final report & recommendation
 
 
-4.  Test Cases
-Two use cases are defined for this PoC. They are representative of the broader Customer Attributes Platform workload and cover both windowed aggregation (UC1) and ratio computation (UC2).
+APPENDIX A — GLOSSARY
+  RisingWave        Open-source, cloud-native streaming database, PostgreSQL-
+                    compatible SQL, for real-time analytics on streaming data.
+  Kafka             Distributed event-streaming platform; source and sink in this PoC.
+  Materialized View Pre-computed query result auto-updated as data changes.
+  p95 Latency       95th-percentile end-to-end processing latency.
+  Backfill          Reprocessing historical events to populate/recalculate metrics.
+  Catch-up          Rapidly processing a backlog accumulated during downtime.
+  Checkpoint        Point-in-time state snapshot for loss-free resume after failure.
+  UC                Use Case.
+  CAP               Customer Attributes Platform — target system this PoC feeds into.
 
 
-4.1  Use Case 1: Casino Real Bet Amount
+================================================================================
+PART 2 — STATEMENT OF WORK (RisingWave Proof of Concept)
+Big Data Department · Real-Time Capabilities Initiative · Version 2.0 · May 2026
+================================================================================
+
+Document Version      2.0
+Date                  May 2026
+Department            Big Data
+PoC Duration          4 weeks (1 month)
+Existing Core Stack   Apache Kafka, Apache Spark Streaming
+Wider Ecosystem       Atlan, Databricks, Apache Iceberg, Power BI, Dagster,
+                      incident.io, dbt
+Technology Evaluated  RisingWave (latest stable)
+Classification        Internal — PoC / R&D
 
 
-UC1  Casino Real Bet Amount
-	Business Definition  
-Total amount of real money bets placed by the customer in the casino over the past two weeks. Used to assess recent customer activity, identify trends, and design targeted engagement or retention strategies.
-Technical Implementation
-1. Transform source data from Kafka topic(s)
-2. Calculate rolling 2-week sum of real bet amounts per customer
-3. Emit updates to destination Kafka topic in near-real-time
-	
-
-4.2  Use Case 2: Casino Turnover Percentage
+1. OVERVIEW
+-----------
+Defines scope, objectives, deliverables, and timeline for a PoC evaluating
+RisingWave as a potential addition to the Big Data Department's stack. Focuses on
+enhancing real-time processing alongside the existing Kafka and Spark Streaming
+infrastructure — covering interoperability with the wider tooling ecosystem, data
+type/format support, complex stream handling, scaling economics, and serving-layer
+latency.
 
 
-UC2  Casino Turnover Percentage
-	Business Definition  
-Ratio of casino betting turnover to total betting turnover. Used to assess a customer's preference for casino activity relative to their overall betting behavior.
-Technical Implementation
-1. Transform source data from Kafka topic(s)
-2. Calculate ratio of casino turnover to total turnover per customer
-3. Emit updates to destination Kafka topic in near-real-time
-	
+2. BACKGROUND & MOTIVATION
+--------------------------
+Current stack: Apache Kafka (event streaming) + Apache Spark Streaming (scalable
+real-time processing). Robust but operationally complex, with latency constraints
+and limited native low-latency SQL stream analytics without heavy engineering.
 
-________________
-4.3  Use Case 3: Sportsbook Live Trends Engine and Betslip Recommendation Engine
-
-
-UC3  Casino Turnover Percentage
-	Business Definition  
-An engine that digest single selections, while also combinations of selections (BetBuilders, accumulators)  with related entity information (sport-league-zone-event-player(if applicable)-live) and is able to produce: 
-* Social Proof (times leg was placed- selection/ bb)
-* Top features per entity (top players/top betbuilders,/top betbuilder of top players/ most trending accumulators e.t.c)
-* A live Betslip recommendation (Live Betslip Co-occurrence & Affinity Engine (X+1)) engine:
-        Leverage live building betslip data to deliver session-based next-item recommendations(basically upselling), dynamically suggesting the most trending next selection combinations (Betbuilders or accumulators) to add to an active betslip with their “social proof”.  
-Technical Implementation
-   1. Input is currently writes of selection/matchcombo/ accumulators deltas in timeframed buckets (eg. Selection X +5k placement in timeframe Z)
-   2. Querying is based on a total timeframe aggregation related to feature and use-case (not fixed) and can stem from 5-10 minutes up to 48 hours.
+RisingWave is a distributed SQL streaming database unifying stream ingestion,
+incremental computation, and low-latency serving in one system: PostgreSQL-
+compatible SQL, native Kafka integration, built-in state management, Apache Iceberg
+support. May interoperate with Atlan, Databricks, dbt, Dagster, and more.
 
 
-Workload Profile & Data Characteristics 
-
-   1. Writes rate (adjustable): approx max: 1400/sec
-   2. Query rate (Top features): approx max (currently) : 70/sec (expected): 150-200/sec
-   3. Query rate (Betslip Recommendation): estimate: 200-250/sec.
-   4. Combinations cardinality: selections: 55.000, bbs: 70.000 * times 70 timeframe buckets
-
-System Performance Targets
-
-      1. Ingestion Latency (Freshness): acceptable max under 1 min max delay. (unless backfill).
-      2. Acceptable response time goals: 
-Top features(1-2 sec), 
-social proof (1-2 sec), 
-Betslip Recommendation (3-5  sec) * (since not offered yet, this is an approx. based on clickhouse projected performance)
-	
-
-5.  Success Criteria
-The PoC will be considered successful if all four of the following criteria are met. Partial success on any criterion does not constitute overall pass.
+3. OBJECTIVES
+-------------
+  - Core streaming performance: end-to-end latency, throughput, MV freshness
+  - Kafka integration without major architectural disruption
+  - Interoperability: Atlan, Databricks, Iceberg, Power BI, Dagster, incident.io, dbt
+  - Data type breadth & schema management: complex types, Schema Registry, Avro, Protobuf
+  - Complex stream handling: multi-stream joins, late data, sessionization, out-of-order
+  - Scaling model and its correlation to performance and infrastructure cost
+  - Serving-layer latency from downstream consuming applications
+  - Operational simplicity, fault tolerance, observability
 
 
-Criterion
-	Definition
-	Performance
-	p95 end-to-end latency consistently below 1 second across sustained load.
-	Functionality[f]
-	Both use cases (UC1 and UC2) correctly compute and output the expected metrics.
-	Resilience
-	All three verification requirements (V1, V2, V3) are met without data loss or SLA breach.
-	Integration
-	RisingWave successfully connects to the defined Kafka source and sink topics and emits correct output.
-	Financial (Resource Oriented)
-	What does it mean, in terms of infra and VMs?
-	DevEx
-	Developer experience determines how steep the learning curve is. 
-	
+4. SCOPE OF WORK
+----------------
+4.1 In Scope
+  - Interoperability with Atlan, Databricks, Iceberg, Power BI, Dagster, incident.io,
+    dbt, Prometheus and Grafana
+  - Schema Registry integration (Confluent-compatible), Avro, Protobuf
+  - Complex data types (nested JSON, arrays, maps, structs, UNIONs)
+  - Complex streams: multi-stream joins, windowed aggregations, CDC, late/out-of-order
+  - Scaling experiments: vertical & horizontal under synthetic load with cost tracking
+  - Serving-layer assessment: latency via PG wire / REST / Kafka sink
 
-6.  Deliverables
-Upon completion of the PoC, the following outputs will be produced and shared with stakeholders:
+4.2 Out of Scope
+  - Full production deployment or live pipeline migration
+  - Formal security audit / penetration testing
+  - SLA definition for production
+  - BI tool development beyond connectivity validation
 
 
-         1. Documented test results for each requirement (R1–R4) and verification item (V1–V3)
-         2. Performance metrics including latency percentiles (p50, p95, p99), throughput, and resource utilisation
-         3. Integration findings covering connector behaviour, schema management, and any observed limitations
-         4. Recommendation summary with a clear adopt / conditional adopt / reject decision and supporting rationale
+5. SUCCESS CRITERIA (SOW v2.0)
+------------------------------
+  Validation Area            Success Criteria                                          Priority
+  End-to-End Latency         MVs reflect source events within 500ms under normal       Critical
+                             load (target: sub-100ms)
+  Throughput                 Sustains >=10,000 events/sec ingestion from Kafka         Critical
+                             without degradation
+  Query Latency (Serving)    Downstream apps read MV results within 200ms p99 via      Critical
+                             PG wire protocol
+  Kafka Integration          Stable zero-data-loss ingestion; exactly-once or          Critical
+                             at-least-once verified
+  Schema Registry            Confluent-compatible SR resolves Avro & Protobuf without  Critical
+                             manual intervention
+  Avro & Protobuf            Both ingested/queried end-to-end; schema evolution tested Critical
+  Complex Data Types         Nested JSON, arrays, maps, structs queryable via SQL      High
+  Complex Streams            Multi-stream joins, sessionization, late-data functional  High
+  Interop — Databricks       Read/write via Delta Lake connector                       High
+  Interop — Iceberg          Continuous ingestion into Iceberg with compaction         High
+  Interop — dbt              dbt defines and deploys RisingWave objects                 High
+  Interop — Dagster          Dagster triggers/monitors RW jobs/materializations        High
+  Interop — Power BI         Power BI queries RW via PostgreSQL connector              High
+  Interop — Atlan            RW sources/sinks discoverable in Atlan with lineage        Medium
+  Interop — incident.io      RW metrics/alerts trigger incident.io incidents           Medium
+  Scaling — Performance      Throughput scales linearly (or better) as nodes added     High
+  Scaling — Cost             Cost-per-event-per-second at 1x/2x/4x; no cost cliff       High
+  Fault Recovery             Single-node failure recovery within 60s, no data loss     High
+  SQL Expressiveness         All 3 target use cases expressible without workarounds    High
+  Operational Overhead       Measurably less effort than equivalent Spark/Flink setup  Medium
 
 
-7.  Timeline
-The indicative timeline below assumes a four-week engagement. Exact dates are to be confirmed following kick-off alignment with stakeholders.
+7. ECOSYSTEM INTEROPERABILITY TESTING
+-------------------------------------
+  Tool           Validate                                          Method                    Priority
+  Atlan          Catalog discovery of sources/sinks/MVs; lineage   JDBC / metadata API       Low
+  Databricks     Bidirectional read/write                          Delta connector           High
+  Apache Iceberg Continuous sink; auto compaction; REST catalog    Native Iceberg sink       Medium
+  Power BI       Live/scheduled MV query; refresh lag              PostgreSQL connector      ?
+  Dagster        RW objects as Dagster assets; trigger; monitor    dagster-adaptor/custom op Medium
+  incident.io    Route RW anomaly/monitoring alerts to incidents   Webhook / Prometheus      Low
+  dbt Cloud      Run dbt models targeting RW; incremental support  dbt-risingwave adapter    High
 
 
-Week 1
-	Week 2
-	Week 3
-	Week 4
-	Environment Setup
-Kafka & RisingWave provisioning
-Pipeline scaffold
-	UC Development
-Implement UC1 & UC2
-Unit tests & validation
-	Requirements Testing
-R1–R4 test execution
-Latency benchmarking
-	Verification & Report
-V1–V3 execution
-Final report & recommendation
-	
-
-Note: This timeline is indicative. It will be refined after the kick-off meeting and may be adjusted to reflect infrastructure provisioning lead times or stakeholder availability.
+8. DATA TYPES, FORMATS & SCHEMA REGISTRY
+----------------------------------------
+8.1 Complex Data Types: nested JSON (>=3 levels), arrays & array-of-structs, maps
+   with dynamic keys, union/nullable, timestamp variants (epoch millis, ISO 8601,
+   Avro logical types), large decimal/numeric financial fields.
+8.2 Schema Registry: consume SR-managed topics without custom deserialization;
+   schema evolution (backward-compatible add, removal, type widening); subject
+   naming strategies (TopicNameStrategy, RecordNameStrategy); error handling for
+   unregistered/incompatible versions.
+8.3 Avro & Protobuf: end-to-end Avro ingestion into MVs; end-to-end Protobuf (proto3)
+   incl. nested messages; correctness vs. a reference Spark consumer; perf delta
+   JSON vs Avro vs Protobuf at equal throughput.
 
 
+9. COMPLEX STREAM SCENARIOS
+---------------------------
+  Multi-Stream Joins      Join 3+ streams on shared keys, different rates/cardinalities
+  Temporal/Window Joins   As-of joins between live stream and slowly-changing dimension
+  Tumbling & Sliding      1-min tumbling and 5-min sliding aggregations under load
+  Session Windows         Session aggregation with inactivity gaps (30s, 5min)
+  Late & Out-of-Order     Inject up to 2-min-delayed events; watermark/late-data policy
+  Backpressure            Spike to 3x throughput; observe queue depth, latency, recovery
 
 
-________________
+10. SCALING MODEL, PERFORMANCE & COST
+-------------------------------------
+10.1 Disaggregated compute-storage: compute scales independently of object storage
+   (S3 or compatible); nodes added/removed without downtime; state persisted to
+   object storage (decouples compute cost from state size).
+10.2 Scaling matrix (50k ev/s baseline):
+   1x baseline   2 nodes   50k ev/s    latency, CPU, cost/hr
+   2x            4 nodes   100k ev/s   linear scaling check
+   4x            8 nodes   200k ev/s   efficiency-drop check
+   Scale-down    2 nodes   50k ev/s    recovery time, latency
+10.3 Cost: compute $/hr, object storage $/GB-month, cost-per-million-events per tier,
+   TCO vs equivalent Spark Streaming cluster, identification of cost cliffs.
 
 
-Appendix A — Glossary
+11. SERVING LAYER & APPLICATION LATENCY
+---------------------------------------
+11.1 RisingWave serves MV results via PostgreSQL wire protocol (any Postgres client),
+   plus Kafka sinks and HTTP/REST connectors.
+11.2 Scenarios: direct PG wire (point lookups + range scans, p50/p95/p99);
+   Power BI DirectQuery refresh; Kafka sink source-to-sink lag; 20-50 concurrent reads.
+11.3 Latency Targets:
+   PostgreSQL wire (point lookup)   p50 < 10ms   p99 < 50ms    Critical
+   PostgreSQL wire (range scan)     p50 < 50ms   p99 < 200ms   Critical
+   Kafka sink (source-to-sink lag)  p50 < 500ms  p99 < 1s      High
+   Power BI DirectQuery refresh     p50 < 3s     p99 < 10s     High
+   Concurrent reads (50 conns)      p50 < 50ms   p99 < 300ms   High
 
 
-RisingWave
-	An open-source, cloud-native streaming database built on PostgreSQL-compatible SQL, designed for real-time analytics on streaming data.
-	Kafka
-	Apache Kafka — a distributed event-streaming platform used as the data source and sink in this PoC.
-	Materialized View
-	A pre-computed query result that is automatically updated as underlying data changes, enabling low-latency reads.
-	p95 Latency
-	The 95th-percentile end-to-end processing latency — i.e., 95% of events are processed within this duration.
-	Backfill
-	The process of reprocessing historical events to populate or recalculate metrics for past time windows.
-	Catch-up
-	The ability of a streaming pipeline to rapidly process a backlog of events that accumulated during a downtime period.
-	Checkpoint
-	A point-in-time snapshot of pipeline state used to resume processing without data loss after a failure.
-	UC
-	Use Case — a concrete business scenario implemented as a streaming pipeline for evaluation.
-	CAP
-	Customer Attributes Platform — the target system this PoC feeds into.
-	
+16. APPROVAL & SIGN-OFF
+-----------------------
+Requires sign-off: Head of Big Data; PoC Technical Lead; Infrastructure/Ops Lead;
+Data Governance / Atlan Owner.
 
-[a]@p.kofopoulos@kaizengaming.com @s.sofianopoulou@kaizengaming.com @v.antypas@kaizengaming.com @m.tsakiris@kaizengaming.com 
+Internal use only. RisingWave PoC — Big Data Department — May 2026.
 
-
-I suggest to add two sections (one for each case) to summarize your use cases as well. For the completeness of the PoC. Lets me know what do you think
-1 total reaction
-Marios Tsakiris reacted with 👍 at 2026-05-28 09:51 AM
-[b]Thank you Manos!
-[c]Ecosystem support, use of multiple serialization formats of Kafka messages like Avro, protobuf etc as well as integration with Schema registry. Also integration will Lakehouse, dbt, Atlan .... must be in this section
-[d]There are in other sections! I can move them here for completeness as well.
-[e]Maybe we need to make this explicit in terms of both data producing as well as servicing part meaning multiple data producers trying to consume the information.
-[f]Also add the initial backfilling here
+--------------------------------------------------------------------------------
+Source of truth: Google Doc
+https://docs.google.com/document/d/1Ia2_8v1pn1Syj0xUBLHLzAv4rxSGLDmtUhKTA-MxYlI
+(This text file is a snapshot — re-sync from the Doc when the scope changes.)

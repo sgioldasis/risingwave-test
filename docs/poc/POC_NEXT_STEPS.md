@@ -2,7 +2,11 @@
 
 ## Context
 
-The UC1 and UC2 pipelines are functionally implemented (sources, MVs, Iceberg sinks, dbt, Dagster). The PoC document defines specific requirements (R1–R4) and verification items (V1–V3) with a concrete success criterion. This document tracks what is remaining, what has been completed since the initial plan, and known limitations of the current RisingWave version.
+The UC1 and UC2 pipelines are functionally implemented (sources, MVs, Iceberg sinks, dbt, Dagster). The PoC scope has two layers:
+- **Scoping doc** (`RisingWave_PoC_Document.txt` Part 1): R1–R4 requirements, V1–V3 verifications, UC1–UC3.
+- **Statement of Work v2.0** (Part 2, May 2026): a broader set of success criteria (throughput, serving latency, scaling/cost) and an ecosystem interop matrix (Atlan, Databricks, Power BI, incident.io, …).
+
+This document tracks what is remaining, what is complete, known limitations of the current RisingWave version, and (in the **SOW v2.0 Scope Reconciliation** section) how the casino pipeline maps to the fuller SOW criteria.
 
 ---
 
@@ -40,6 +44,49 @@ The UC1 and UC2 pipelines are functionally implemented (sources, MVs, Iceberg si
 | **V3 — Failure Recovery** | ❌ Missing | No end-to-end failure+recovery test documented. |
 | **Casino Grafana dashboard** | ✅ Done | `casino-uc-metrics.json` — UC1/UC2 business metrics + Iceberg/Kafka sink health. |
 | **PoC results document** | ❌ Missing | No R1–R4 / V1–V3 test results writeup. |
+
+---
+
+## SOW v2.0 Scope Reconciliation
+
+The May 2026 Statement of Work (Part 2 of `RisingWave_PoC_Document.txt`) is broader
+than the original Scoping doc. This maps its success criteria + interop matrix to
+what the casino pipeline currently demonstrates.
+
+### Success criteria (SOW §5)
+
+| Criterion | Priority | Status | Evidence / gap |
+|-----------|----------|--------|----------------|
+| End-to-end latency (MV < 500ms, target <100ms) | Critical | ⚠️ Untested | MVs update in real time; not benchmarked. Tied to R4. |
+| Throughput (≥10k events/sec) | Critical | ❌ Untested | Production topics run far below 10k/s; needs a synthetic-load test (casino producer at high TPS on local Redpanda). |
+| Query latency / serving (200ms p99 via PG wire) | Critical | ❌ Missing | No serving-latency benchmark against the MVs. |
+| Kafka integration (zero-loss, exactly/at-least-once) | Critical | ✅ Demonstrated | Live prd2/prd4 ingestion via `CREATE TABLE` + Kafka output sinks. Loss/semantics not formally measured. |
+| Schema Registry (Confluent-compatible, Avro+Protobuf) | Critical | ◑ Partial | Protobuf via Apicurio (FDS on MinIO) proven for casino+bets. Avro + live SR resolution + evolution still to demo. |
+| Avro & Protobuf end-to-end + evolution | Critical | ◑ Partial | Protobuf done (nested, JSONB fallback). Avro + schema-evolution test outstanding. |
+| Complex data types (nested JSON, arrays, maps, structs) | High | ✅ Demonstrated | Double-UNNEST of nested protobuf structs/arrays in `mv_casino_transactions`. |
+| Complex streams (joins, sessionization, late data) | High | ◑ Partial | UNION-ALL pivot + Top-N + sliding windows done. Multi-stream joins/sessionization/late-data not yet. |
+| Interop — Iceberg (continuous sink + compaction) | High | ✅ Done | `connector='iceberg'` sinks → Lakekeeper; native compaction working. |
+| Interop — dbt (define/deploy RW objects) | High | ✅ Done | `dbt/models/casino_prd/` + custom materializations. |
+| Interop — Dagster (assets, trigger, monitor) | High | ✅ Done | `casino_prd_full_job`, asset groups, `casino_trino_views`. |
+| Interop — Databricks (Delta read/write) | High | ❌ Missing | Not attempted. |
+| Interop — Power BI (PG connector) | High | ❌ Missing | RW is PG-wire compatible; not validated from Power BI. |
+| Interop — Atlan (catalog + lineage) | Medium | ❌ Missing | Not attempted. |
+| Interop — incident.io (alerts → incidents) | Medium | ❌ Missing | Prometheus/Grafana in place; no incident.io webhook. |
+| Scaling — performance (linear w/ nodes) | High | ❌ Missing | No multi-node scaling experiment. |
+| Scaling — cost (1x/2x/4x, no cost cliff) | High | ❌ Missing | No cost tracking. |
+| Fault recovery (single-node < 60s, no loss) | High | ❌ Missing | Maps to V1/V3 — untested. |
+| SQL expressiveness (3 UCs without workarounds) | High | ◑ Partial | UC1 + UC2 expressed in RW SQL. UC3 (betslip recommendation engine) not implemented. |
+| Operational overhead (< Spark/Flink) | Medium | ◑ Anecdotal | dbt+Dagster setup is light; not formally compared. |
+
+### Notable scope items beyond the original plan
+
+- **UC3 — Sportsbook Live Trends / Betslip Recommendation Engine** is in the SOW
+  but not implemented. High write rate (~1400/s) + co-occurrence/affinity queries —
+  a substantially larger build than UC1/UC2.
+- **Serving-layer latency** (PG wire point-lookup <10ms p50 / <50ms p99, range scan,
+  50 concurrent reads) — a distinct benchmark from R4's Kafka→Kafka latency.
+- **Throughput + scaling + cost** experiments need a synthetic load harness; the live
+  production topics alone won't exercise ≥10k/s or multi-node scaling.
 
 ---
 
@@ -205,11 +252,18 @@ adopt / conditional adopt / reject + rationale
 
 ## Prioritisation
 
-If time is limited, the minimum for a complete PoC demo:
+For the original Scoping-doc demo (UC1/UC2 + R/V), the minimum is:
 1. **Step 2** — R4 latency benchmark (non-negotiable per PoC) — Kafka sinks already done ✅
 2. **Step 8** — Results document (required deliverable)
 
-Steps 3–7 strengthen the PoC but are not blockers if time is constrained.
+Steps 3–7 strengthen that but are not blockers if time is constrained.
+
+For the broader **SOW v2.0**, the highest-value additions (see reconciliation table) are:
+1. **Throughput + R4 latency** via a synthetic-load harness (casino producer at high TPS on local Redpanda) — covers two Critical criteria at once.
+2. **Serving-layer latency** benchmark (PG-wire point-lookup / range-scan / concurrent reads against the MVs).
+3. **Avro + schema-evolution** demo (Protobuf already covered) to close the Critical Schema Registry criterion.
+4. **Interop quick wins**: Power BI via PG connector, Databricks Delta — both Medium/High and low-effort connectivity checks.
+UC3 (betslip recommendation engine) is a large separate build — scope it only if explicitly required.
 
 ---
 
