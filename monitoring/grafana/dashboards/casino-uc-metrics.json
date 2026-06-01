@@ -86,7 +86,7 @@
       "id": 3,
       "type": "stat",
       "title": "MV Row Count (mv_casino_real_bet)",
-      "description": "Total rows in the rolling 14-day real bet MV \u2014 one row per bet event.",
+      "description": "Total rows in the rolling 1-day real bet MV \u2014 one row per bet event.",
       "datasource": {
         "type": "postgres",
         "uid": "risingwave-sql"
@@ -248,7 +248,7 @@
       "id": 6,
       "type": "table",
       "title": "Most Recently Active Customers \u2014 1-Day Real Bet Amount (UC1)",
-      "description": "Most recently active customers with their current rolling 14-day real bet total. Sorted by last event time descending.",
+      "description": "Most recently active customers with their current rolling 1-day real bet total. Sorted by last event time descending.",
       "datasource": {
         "type": "postgres",
         "uid": "risingwave-sql"
@@ -551,7 +551,7 @@
     {
       "id": 14,
       "type": "stat",
-      "title": "Total Tracked Turnover (EUR, 90d rolling)",
+      "title": "Total Tracked Turnover (EUR, 7d rolling)",
       "description": "Sum of total_turnover across all customers in the latest MV snapshot.",
       "datasource": {
         "type": "postgres",
@@ -622,7 +622,7 @@
         "showHeader": true,
         "sortBy": [
           {
-            "displayName": "Total (EUR, 90d)",
+            "displayName": "Total (EUR, 7d)",
             "desc": true
           }
         ]
@@ -668,7 +668,7 @@
               },
               {
                 "id": "displayName",
-                "value": "Casino (EUR, 90d)"
+                "value": "Casino (EUR, 7d)"
               }
             ]
           },
@@ -688,7 +688,7 @@
               },
               {
                 "id": "displayName",
-                "value": "Sportsbook (EUR, 90d)"
+                "value": "Sportsbook (EUR, 7d)"
               }
             ]
           },
@@ -708,7 +708,7 @@
               },
               {
                 "id": "displayName",
-                "value": "Total (EUR, 90d)"
+                "value": "Total (EUR, 7d)"
               }
             ]
           },
@@ -1314,7 +1314,7 @@
               },
               {
                 "id": "displayName",
-                "value": "Casino (EUR, 90d)"
+                "value": "Casino (EUR, 7d)"
               }
             ]
           },
@@ -1334,7 +1334,7 @@
               },
               {
                 "id": "displayName",
-                "value": "Sportsbook (EUR, 90d)"
+                "value": "Sportsbook (EUR, 7d)"
               }
             ]
           },
@@ -1354,7 +1354,7 @@
               },
               {
                 "id": "displayName",
-                "value": "Total (EUR, 90d)"
+                "value": "Total (EUR, 7d)"
               }
             ]
           },

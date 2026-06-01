@@ -427,17 +427,6 @@ iceberg_countries_job = define_asset_job(
     description="Create and populate Iceberg countries reference table",
 )
 
-casino_prd_setup_job = define_asset_job(
-    name="casino_prd_setup_job",
-    selection=AssetSelection.assets(
-        casino_prd_proto_fetch,
-        casino_prd_proto_compile,
-        casino_prd_proto_upload,
-    ),
-    description="Fetch, compile, and upload casino proto schemas to MinIO",
-)
-
-
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -500,7 +489,6 @@ defs = Definitions(
         iceberg_countries_job,
         iceberg_compaction_job,
         postgres_sink_job,
-        casino_prd_setup_job,
         casino_prd_full_job,
     ],
     schedules=[

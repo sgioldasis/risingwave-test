@@ -891,7 +891,7 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **Snapshot expiration doesn't prune in 2.7.4.** `enable_snapshot_expiration` is accepted but ineffective with the REST catalog. Compaction works; expiration doesn't. See §7.
 
-- **Grafana needs the `trino-datasource` plugin + dollar-free views.** Trino's metadata tables (`table$snapshots`) contain a `$`, which Grafana interprets as a variable. The `casino_trino_views` Dagster asset creates dollar-free views (e.g. `casino_real_bet_snapshots`) for the dashboard to query. The plugin auto-installs via `GF_INSTALL_PLUGINS=trino-datasource`, and Trino needs `http-server.process-forwarded=true` to accept Grafana's proxied requests.
+- **Grafana needs the `trino-datasource` plugin + dollar-free views.** Trino's metadata tables (`table$snapshots`, `table$partitions`) contain a `$`, which Grafana interprets as a variable. The `casino_trino_views` Dagster asset creates dollar-free views: `casino_real_bet_snapshots` / `turnover_pct_snapshots` (feed the snapshot-count and operations panels) and `casino_real_bet_rowcount` / `turnover_pct_rowcount` (feed the "Iceberg Rows" panels via `SUM(record_count)` over `$partitions` — instant metadata reads instead of a `COUNT(*)` full scan; see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §11). The plugin auto-installs via `GF_INSTALL_PLUGINS=trino-datasource`, and Trino needs `http-server.process-forwarded=true` to accept Grafana's proxied requests.
 
 - **PascalCase identifiers must be double-quoted.** RisingWave preserves protobuf field names verbatim. Unquoted `CustomerId` folds to `customerid` and fails to resolve.
 
@@ -1017,7 +1017,7 @@ Dagster represents each dbt model as an **asset**. Assets are grouped visually i
 
 | Dagster group | Contents |
 |--------------|----------|
-| `casino_prd_setup` | Python assets: `casino_prd_proto_fetch`, `casino_prd_proto_compile`, `casino_prd_proto_upload`, and `casino_trino_views` (creates the dollar-free Trino views the Grafana snapshot/operations panels query — runs after the sinks exist) |
+| `casino_prd_setup` | Python assets: `casino_prd_proto_fetch`, `casino_prd_proto_compile`, `casino_prd_proto_upload`, and `casino_trino_views` (creates the dollar-free Trino views the Grafana snapshot/operations and "Iceberg Rows" panels query — runs after the sinks exist) |
 | `casino_uc1` | All dbt models tagged `casino_uc1`: source, `mv_casino_transactions`, `mv_casino_real_bet`, Iceberg sink, Kafka sink |
 | `casino_uc2` | All dbt models tagged `casino_uc2`: `mv_casino_turnover_90d`, `mv_sportsbook_turnover_90d`, `*_latest` MVs, `mv_turnover_percentage`, Iceberg sink, Kafka sink |
 
@@ -1077,16 +1077,22 @@ The existing `realtime_funnel_dbt_assets` function is scoped with `exclude="casi
 
 #### Jobs
 
-Four jobs are defined for the casino pipeline:
+A single end-to-end job is defined for the casino pipeline:
 
 | Job | What it runs | When to use |
 |-----|-------------|-------------|
-| `casino_prd_setup_job` | `casino_prd_setup` group only | Run once when schemas change or on first deployment |
-| `casino_uc1_dbt_job` | `casino_uc1` group only | Build or rebuild UC1 independently |
-| `casino_uc2_dbt_job` | `casino_uc2` group only | Build or rebuild UC2 independently |
-| `casino_prd_full_job` | All three groups in dependency order | **Full demo run — single click** |
+| `casino_prd_full_job` | proto setup → `casino_prd_dbt_assets` (UC1 + UC2) → `casino_trino_views` | **Full demo run — single click** |
 
-`casino_prd_full_job` is the recommended entry point for demos. Dagster enforces the correct execution order automatically: setup assets complete before dbt assets start, and UC1 models (including `mv_casino_transactions`) are created before UC2 models that depend on them.
+`casino_prd_full_job` is the entry point for demos. Dagster enforces the correct execution
+order automatically: the proto assets complete before the dbt build starts, UC1 models
+(including `mv_casino_transactions`) are created before the UC2 models that depend on them,
+and the Trino metadata views are created last once the Iceberg sinks have committed.
+
+To run just part of the pipeline ad-hoc (e.g. re-upload proto descriptors after a schema
+change), materialize the relevant assets directly from the Dagster asset graph — no
+dedicated job is needed. UC1 and UC2 are built together in the single `casino_prd_dbt_assets`
+step (they were previously split into separate jobs/steps; merging them removed a ~100 s
+inter-step scheduling gap — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §9a).
 
 #### Running via Dagster UI — step by step
 
@@ -1147,25 +1153,30 @@ Open `http://localhost:3001` → Dashboards → RisingWave → **Casino PoC — 
 | Panel | What to look for |
 |-------|-----------------|
 | Customers Tracked (UC1) | Non-zero, growing during backfill |
-| 14-Day Real Bet Volume | Non-zero total (amounts shown without currency unit — see note below) |
-| Most Recently Active Customers (UC1) | Table with Latest Bet, 14-Day Real Bet, Last Event columns; sorted by most recent event |
+| MV Row Count / Iceberg Rows (UC1) | MV count from RisingWave; Iceberg count from the `$partitions` metadata (instant — see §11 of the tuning guide) |
+| Total Real Bet Volume (1d rolling) | Non-zero total (amounts shown without currency unit — see note below) |
+| Most Recently Active Customers — 1-Day Real Bet Amount (UC1) | Table with Latest Bet, 1-Day Real Bet, Last Event columns; sorted by most recent event |
 | Avg Casino Ratio | Between 0 and 1 |
 | Top 20 Customers (UC2) | casino_ratio + sportsbook_ratio columns sum to ~100% |
 | Iceberg Operations / min | `appends` (checkpoint commits) and `compactions` (replace ops) per table — a non-zero `compactions` line confirms compaction is running |
 | Iceberg Commits / min (true cadence) | Per-table commit rate (divided by actor count) — ~1.5–2/min at `commit_checkpoint_interval=20` |
 | Source Throughput | Lines for `src_casino_prd` and `src_bets_br` |
 
-> **Currency note:** UC1 amounts (`rolling_1d_real_bet_amount`, `latest_single_bet`) are in the player's account currency. All observed rows have `currency_id = 16` — the mapping to a named currency (e.g. EUR) has not been confirmed by Kaizen. UC1 amounts are displayed as raw numbers without a currency symbol until this is confirmed. UC2 amounts are correctly in EUR because `mv_sportsbook_turnover_90d` explicitly uses `TotalStake.Euro` from the bets protobuf.
+> **Currency note:** UC1 amounts (`rolling_1d_real_bet_amount`, `latest_single_bet`) are in the player's account currency (`currency_id`), and the mapping from `currency_id` to a named currency has not been confirmed by Kaizen. UC1 amounts are therefore displayed as raw numbers without a currency symbol until this is confirmed. UC2 amounts are correctly in EUR because `mv_sportsbook_turnover_90d` explicitly uses `TotalStake.Euro` from the bets protobuf.
 
 ---
 
-**Partial runs (individual UCs):**
+**Partial runs (ad-hoc, via the asset graph):**
+
+UC1 and UC2 build together in one `casino_prd_dbt_assets` step, so there are no separate
+per-UC jobs. For partial runs, materialize assets directly from the Assets page rather than
+running a job.
 
 | What | How |
 |------|-----|
-| Proto schemas only | Jobs → `casino_prd_setup_job` → Materialize all |
-| UC1 only | Jobs → `casino_uc1_dbt_job` → Materialize all |
-| UC2 only | Jobs → `casino_uc2_dbt_job` → Materialize all |
+| Proto schemas only | Assets → select `casino_prd_proto_fetch`/`compile`/`upload` → Materialize |
+| Casino models only | Assets → filter group `casino_uc1` → Materialize selected |
+| Turnover models only | Assets → filter group `casino_uc2` → Materialize selected |
 | Full pipeline | Jobs → `casino_prd_full_job` → Materialize all |
 
 #### Relationship between dbt and raw SQL
@@ -1249,7 +1260,7 @@ SELECT 'casino_real_bet' AS t, COUNT(*) FROM datalake.public.rw_managed_casino_r
 UNION ALL SELECT 'turnover_pct', COUNT(*) FROM datalake.public.rw_managed_turnover_percentage"
 ```
 
-> The script also creates the dollar-free Trino views (`casino_real_bet_snapshots`, `turnover_pct_snapshots`) that the Grafana snapshot/operations panels depend on.
+> The script also creates the dollar-free Trino views — `casino_real_bet_snapshots`, `turnover_pct_snapshots` (snapshot/operations panels) and `casino_real_bet_rowcount`, `turnover_pct_rowcount` (the "Iceberg Rows" panels) — that the Grafana dashboard depends on.
 > Kafka output sinks require Redpanda (`docker compose up -d redpanda`) — see §4.5.
 
 Or use the all-in-one script:
