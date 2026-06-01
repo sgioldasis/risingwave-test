@@ -344,6 +344,7 @@ docker volume rm -f postgres-0 2>/dev/null || true
 docker volume rm -f minio-0 2>/dev/null || true
 docker volume rm -f lakekeeper-db 2>/dev/null || true
 docker volume rm -f redpanda-data 2>/dev/null || true
+docker volume rm -f hummock-fs-store 2>/dev/null || true   # local-fs Hummock state store (§16)
 
 # Prune all dangling volumes
 docker volume prune -f 2>/dev/null || true

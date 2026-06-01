@@ -332,9 +332,12 @@ def casino_prd_dbt_assets(
     else:
         context.log.info("Pre-build casino sinks dropped")
     yield from dbt.cli(["build"], context=context).stream()
-    # Ramp source rate limit from 1 (build-time) to 200 (steady-state).
-    # Sources are created with rate_limit=1 so no data accumulates during MV
-    # creation, keeping backfill time near zero. We ramp up after all MVs exist.
+    # Ramp source rate limit from 1 (build-time) to 200 (steady-state) after all MVs exist.
+    # Sources are created with rate_limit=1 so no data accumulates during MV creation (backfill ~0).
+    # 200 (×4 actors ≈ 800/s) is the sustainable compute ceiling on this single-node stack: it holds
+    # ~800/s at near-zero backpressure on local-fs Hummock. 400 was tested and OVERSHOT — compute
+    # saturates (~6 cores) and throughput thrashes DOWN to ~515/s. So 200 stays. See §16.
+    # Bets stays 200 (low-volume topic, never approaches it).
     import psycopg2
     try:
         rw_host = os.environ.get("DBT_HOST", "frontend-node-0")

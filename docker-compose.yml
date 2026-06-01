@@ -58,6 +58,8 @@ services:
       - meta-node-0
     volumes:
       - "./risingwave.toml:/risingwave.toml"
+      # Shared local-fs Hummock state store (§16).
+      - "hummock-fs-store:/root/state_store"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
@@ -114,6 +116,8 @@ services:
       - meta-node-0
     volumes:
       - "./risingwave.toml:/risingwave.toml"
+      # Shared local-fs Hummock state store (§16).
+      - "hummock-fs-store:/root/state_store"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
@@ -170,6 +174,8 @@ services:
       # Expose compiled protobuf FileDescriptorSet for ENCODE PROTOBUF
       # (schema.location='file:///proto/events.pb') tests.
       - "./proto:/proto:ro"
+      # Shared local-fs Hummock state store (§16).
+      - "hummock-fs-store:/root/state_store"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
@@ -280,7 +286,9 @@ services:
       - "--sql-endpoint"
       - "postgres://postgres:@postgres-0:5432/metadata"
       - "--state-store"
-      - "hummock+minio://hummockadmin:hummockadmin@minio-0:9301/hummock001"
+      # Local-fs Hummock state store (demo-only) — removes the MinIO/HTTP + CPU layer for the heavy
+      # state-store churn; MinIO stays for Iceberg + proto. See BRAZIL_WORKLOAD_TUNING.md §16.
+      - "hummock+fs:///root/state_store"
       - "--data-directory"
       - "hummock_001"
       - "--config-path"
@@ -299,6 +307,8 @@ services:
       - "./risingwave.toml:/risingwave.toml"
       # See compute-node-0: file-descriptor protobuf schema for tests.
       - "./proto:/proto:ro"
+      # Shared local-fs Hummock state store (§16). Same volume+path on every RW node.
+      - "hummock-fs-store:/root/state_store"
     environment:
       RUST_BACKTRACE: "1"
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
@@ -821,6 +831,8 @@ volumes:
   redpanda-data:
     external: false
   dagster-storage:
+    external: false
+  hummock-fs-store:        # local-fs Hummock state store (§16, demo-only) — shared across RW nodes
     external: false
 
 networks:

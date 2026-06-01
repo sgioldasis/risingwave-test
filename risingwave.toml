@@ -14,8 +14,11 @@ threshold_auto = 0.8999999761581421
 dir = "./"
 
 [meta]
-min_sst_retention_time_sec = 21600
-full_gc_interval_sec = 3600
+# Aggressive SST reclaim for the local-fs Hummock state store (BRAZIL_WORKLOAD_TUNING.md §16):
+# at high throughput the local state dir grows fast (~3 GB/min at 800 rows/s) and the laptop disk
+# is finite, so vacuum stale SSTs quickly instead of holding 6 h. (was 21600 / 3600.)
+min_sst_retention_time_sec = 600
+full_gc_interval_sec = 300
 full_gc_object_limit = 100000
 gc_history_retention_time_sec = 21600
 max_inflight_time_travel_query = 1000
@@ -38,7 +41,7 @@ enable_compaction_deterministic = false
 enable_committed_sst_sanity_check = false
 node_num_monitor_interval_sec = 10
 backend = "Mem"
-periodic_space_reclaim_compaction_interval_sec = 3600
+periodic_space_reclaim_compaction_interval_sec = 60   # §16: reclaim local-fs disk faster (was 3600)
 periodic_ttl_reclaim_compaction_interval_sec = 1800
 periodic_tombstone_reclaim_compaction_interval_sec = 600
 move_table_size_limit = 10737418240

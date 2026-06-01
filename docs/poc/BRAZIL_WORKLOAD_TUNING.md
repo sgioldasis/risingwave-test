@@ -573,6 +573,58 @@ just grows lag and risks the MinIO crash/reset (§1). Exceeding ~380/s needs rel
 
 ---
 
+## 16. Hummock state store → local filesystem (demo-only — implemented, pending measurement)
+
+**Files:** `docker-compose.yml` (state-store arg + shared volume), `bin/6_down.sh` (volume cleanup).
+
+**Why:** MinIO is the ~380/s ceiling and it's **CPU-bound** on per-request processing for the heavy
+Hummock SST flush/compaction churn — not disk-bandwidth-bound. RisingWave's Hummock supports a
+**local-filesystem backend** for single-node deployments, which removes the S3/HTTP + MinIO-CPU layer
+for the bottleneck workload (writes go straight to disk via the OS page cache). MinIO **stays** —
+now lightly loaded — for the Iceberg warehouse + proto files.
+
+**What changed:**
+- `meta-node-0` `--state-store`: `hummock+minio://…@minio-0:9301/hummock001` → **`hummock+fs:///root/state_store`** (`--data-directory hummock_001` kept → subdir under the fs path).
+- New named volume **`hummock-fs-store`** mounted at the **same path `/root/state_store` on every
+  Hummock-touching node**: `meta-node-0`, `compute-node-0`, `compactor-0`, `compactor-1`. (frontend
+  delegates to compute — mount there only if batch queries error.)
+- `bin/6_down.sh` removes `hummock-fs-store` alongside the other volumes; `bin/1_up.sh` needs no
+  change (compose `up` auto-creates the declared volume).
+
+**⚠️ Risk — multi-container local-fs:** docs warn local-fs is "incompatible with distributed mode"
+(separate containers treating their own fs as local → inconsistency). The mitigation is the **shared
+Docker volume** mounted at the same path on all four nodes, giving one coherent fs. This is
+**non-standard** — if MV builds, compaction, or queries throw "object not found"/version errors,
+**revert to MinIO** (see Rollback). Fallback for a real fix: RisingWave `single_node` standalone mode
+(one process, native local-fs).
+
+**Clean slate:** switching the backend abandons the old MinIO-resident Hummock state; the meta store
+(`postgres-0`, SQL-backed) must reset with it. "⛔ Stop Everything" (`bin/6_down.sh`) already removes
+`postgres-0` + all volumes, so the flow is just **Stop Everything → Start Services → run the casino
+job**.
+
+**Measured (2026-06-01) — ✅ decisive win.** ~10 min sustained at **~770–800/s** (the rate-limit
+cap) with **backpressure ~0** and **MinIO idle (~1–7%)** — vs decoupled-rolling's ~380/s bursty at
+bp~5, and §13's ~120/s. **Zero coherence errors** across the run; SSTs wrote cleanly to local disk;
+no instability. The MinIO state-store bottleneck is **eliminated** — the pipeline is now
+**rate-limit-bound**, not storage-bound.
+
+**Follow-on changes (shipped together with the local-fs switch):**
+- **SST reclaim (`risingwave.toml`):** the local state dir grew **~3 GB/min at 800/s** (≈24 GB in
+  8 min — would fill the laptop disk in ~10 min). Lowered `min_sst_retention_time_sec` 21600→600,
+  `full_gc_interval_sec` 3600→300, `periodic_space_reclaim_compaction_interval_sec` 3600→60 so stale
+  SSTs vacuum quickly. **Required for any run longer than a few minutes.**
+- **Rate limit (`orchestration/definitions.py` ramp) — measured, kept at 200:** with MinIO gone the
+  pipeline is rate-limit-bound at bp~0, so the cap finally matters. **Tested 400 (≈1,600/s cap) and it
+  OVERSHOT:** it briefly touched 1,600/s, then compute saturated (~6 of 10 cores — the double-`UNNEST`
+  + window-state + UC2 + round-trip), backpressure rose to ~5, and throughput **thrashed DOWN to
+  ~515/s** (worse than the lower limit), while disk climbed ~2.4 GB/min. **Reverted to 200.**
+  **Conclusion: ~800/s (limit 200) is the sustainable compute ceiling** on this single-node stack —
+  it holds at bp~0 with CPU/disk headroom. The full ~1,500/s topic **cannot** be sustained here
+  (compute-bound, not storage-bound now); **800/s (~6.7× §13's 120/s) is the stable max.**
+
+---
+
 ## Quick reference — final tuned values
 
 | Setting | Location | Value |
