@@ -7,7 +7,7 @@
     "poc",
     "risingwave"
   ],
-  "refresh": "10s",
+  "refresh": "1m",
   "time": {
     "from": "now-1h",
     "to": "now"
@@ -185,15 +185,15 @@
           "format": 1,
           "rawQuery": true,
           "refId": "A",
-          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM datalake.public.rw_managed_casino_real_bet"
+          "rawSql": "SELECT iceberg_rows FROM datalake.public.casino_real_bet_rowcount"
         }
       ]
     },
     {
       "id": 5,
       "type": "stat",
-      "title": "Total Real Bet Volume (14d rolling)",
-      "description": "Sum of all rolling_14d_real_bet_amount across all latest customer rows \u2014 indicates total exposure.",
+      "title": "Total Real Bet Volume (1d rolling)",
+      "description": "Sum of all rolling_1d_real_bet_amount across all latest customer rows \u2014 indicates total exposure.",
       "datasource": {
         "type": "postgres",
         "uid": "risingwave-sql"
@@ -240,14 +240,14 @@
           "rawQuery": true,
           "rawCode": true,
           "refId": "A",
-          "rawSql": "SELECT SUM(rolling_14d_real_bet_amount)::float AS total_volume FROM (SELECT DISTINCT ON (customer_id, currency_id) customer_id, currency_id, rolling_14d_real_bet_amount FROM mv_casino_real_bet ORDER BY customer_id, currency_id, event_ts DESC) t"
+          "rawSql": "SELECT SUM(rolling_1d_real_bet_amount)::float AS total_volume FROM (SELECT DISTINCT ON (customer_id, currency_id) customer_id, currency_id, rolling_1d_real_bet_amount FROM mv_casino_real_bet ORDER BY customer_id, currency_id, event_ts DESC) t"
         }
       ]
     },
     {
       "id": 6,
       "type": "table",
-      "title": "Most Recently Active Customers \u2014 14-Day Real Bet Amount (UC1)",
+      "title": "Most Recently Active Customers \u2014 1-Day Real Bet Amount (UC1)",
       "description": "Most recently active customers with their current rolling 14-day real bet total. Sorted by last event time descending.",
       "datasource": {
         "type": "postgres",
@@ -276,7 +276,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "rolling_14d_real_bet_amount"
+              "options": "rolling_1d_real_bet_amount"
             },
             "properties": [
               {
@@ -289,7 +289,7 @@
               },
               {
                 "id": "displayName",
-                "value": "14-Day Real Bet"
+                "value": "1-Day Real Bet"
               }
             ]
           },
@@ -354,7 +354,7 @@
           "rawQuery": true,
           "rawCode": true,
           "refId": "A",
-          "rawSql": "SELECT customer_id, currency_id, rolling_14d_real_bet_amount, event_ts FROM (   SELECT customer_id, currency_id, rolling_14d_real_bet_amount, event_ts,          ROW_NUMBER() OVER (PARTITION BY customer_id, currency_id ORDER BY event_ts DESC) AS rn   FROM mv_casino_real_bet ) t WHERE rn = 1 ORDER BY event_ts DESC NULLS LAST LIMIT 20"
+          "rawSql": "SELECT customer_id, currency_id, rolling_1d_real_bet_amount, event_ts FROM (   SELECT customer_id, currency_id, rolling_1d_real_bet_amount, event_ts,          ROW_NUMBER() OVER (PARTITION BY customer_id, currency_id ORDER BY event_ts DESC) AS rn   FROM mv_casino_real_bet ) t WHERE rn = 1 ORDER BY event_ts DESC NULLS LAST LIMIT 20"
         }
       ]
     },
@@ -544,7 +544,7 @@
           "format": 1,
           "rawQuery": true,
           "refId": "A",
-          "rawSql": "SELECT COUNT(*) AS iceberg_rows FROM datalake.public.rw_managed_turnover_percentage"
+          "rawSql": "SELECT iceberg_rows FROM datalake.public.turnover_pct_rowcount"
         }
       ]
     },

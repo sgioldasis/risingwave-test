@@ -8,8 +8,8 @@
 #   3. Bring up Lakekeeper + MinIO + Trino + Grafana (idempotent)
 #   4. Upload proto FileDescriptorSets to MinIO (the sources read the schema
 #      from s3://hummock001/proto/ — see docs/PRODUCTION_CASINO_DEMO.md §3.2)
-#   5. Create prod Kafka source `src_casino_prd` (prd2, cronus.casino.out.gh)
-#   6. Create prod Kafka source `src_bets_gh`    (prd4, bets-out-gh)
+#   5. Create prod Kafka source `src_casino_prd` (prd2, cronus.casino.out.br)
+#   6. Create prod Kafka source `src_bets_br`    (prd4, bets-out-br)
 #   7. Create UC1 + UC2 MVs and Iceberg sinks
 #   8. Create faithful nested raw Iceberg archive (mv_casino_raw)
 #   9. Print row counts for verification
@@ -188,11 +188,11 @@ upload_proto "$CASINO_PROTO_PB"
 upload_proto "$BETS_PROTO_DESC"
 
 echo ""
-echo "=== [5/9] Create source src_casino_prd (prd2 — cronus.casino.out.gh) ==="
+echo "=== [5/9] Create source src_casino_prd (prd2 — cronus.casino.out.br) ==="
 psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$SQL_CASINO_SOURCE"
 
 echo ""
-echo "=== [6/9] Create source src_bets_gh (prd4 — bets-out-gh) ==="
+echo "=== [6/9] Create source src_bets_br (prd4 — bets-out-br) ==="
 psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$SQL_BETS_SOURCE"
 
 echo ""
@@ -231,6 +231,12 @@ CREATE OR REPLACE VIEW datalake.public.casino_real_bet_snapshots AS
 CREATE OR REPLACE VIEW datalake.public.turnover_pct_snapshots AS
   SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at
   FROM datalake.public.\"rw_managed_turnover_percentage\$snapshots\";
+CREATE OR REPLACE VIEW datalake.public.casino_real_bet_rowcount AS
+  SELECT SUM(record_count) AS iceberg_rows
+  FROM datalake.public.\"rw_managed_casino_real_bet\$partitions\";
+CREATE OR REPLACE VIEW datalake.public.turnover_pct_rowcount AS
+  SELECT SUM(record_count) AS iceberg_rows
+  FROM datalake.public.\"rw_managed_turnover_percentage\$partitions\";
 " 2>&1 | grep -v "WARNING\|jline\|terminal" || echo "⚠ Trino view creation had issues — check trino is up"
 
 echo ""

@@ -4,6 +4,8 @@ This project demonstrates a real-time e-commerce conversion funnel using RisingW
 
 Quick demo SQL reference: [docs/DEMO_OPERATIONS_SQL.md](docs/DEMO_OPERATIONS_SQL.md)
 
+Casino production demo (UC1/UC2): [docs/poc/PRODUCTION_CASINO_DEMO.md](docs/poc/PRODUCTION_CASINO_DEMO.md) · tuning for high-volume (Brazil) topics on a single-node stack: [docs/poc/BRAZIL_WORKLOAD_TUNING.md](docs/poc/BRAZIL_WORKLOAD_TUNING.md)
+
 ## Prerequisites
 
 ### Required Software

@@ -196,28 +196,20 @@ _dbt_env.setdefault("DBT_HOST", "risingwave-frontend")
 _dbt_env.setdefault("DBT_PROFILES_DIR", str(dbt_PROJECT_PATH))
 _dbt_env.setdefault("DBT_PASSWORD", "root")
 
-logger.info("Running `dbt parse` to refresh manifest.json (picks up enabled/disabled/tag changes)...")
-_parse = subprocess.run(
-    ["dbt", "parse", "--no-partial-parse", "--project-dir", str(dbt_PROJECT_PATH)],
-    capture_output=True,
-    text=True,
-    cwd=str(dbt_PROJECT_PATH.parent),
-    env=_dbt_env,
-)
-if _parse.returncode != 0:
-    logger.warning(
-        f"`dbt parse` failed (using existing manifest if present): {_parse.stderr.strip()[-500:]}"
+if not _manifest_path.exists():
+    # No manifest at all — must parse on first load.
+    logger.info("No manifest found — running `dbt parse` to generate it...")
+    _parse = subprocess.run(
+        ["dbt", "parse", "--no-partial-parse", "--project-dir", str(dbt_PROJECT_PATH)],
+        capture_output=True, text=True,
+        cwd=str(dbt_PROJECT_PATH.parent), env=_dbt_env,
     )
-    if not _manifest_path.exists():
-        # No manifest to fall back to — last resort, try a compile.
-        logger.info("No existing manifest; attempting `dbt compile` as fallback...")
-        subprocess.run(
-            ["dbt", "compile", "--project-dir", str(dbt_PROJECT_PATH)],
-            capture_output=True, text=True,
-            cwd=str(dbt_PROJECT_PATH.parent), env=_dbt_env,
-        )
+    if _parse.returncode != 0:
+        logger.warning(f"`dbt parse` failed: {_parse.stderr.strip()[-300:]}")
+    else:
+        logger.info("`dbt parse` completed — manifest generated")
 else:
-    logger.info("`dbt parse` completed — manifest refreshed")
+    logger.info("Using existing manifest.json (run `dbt parse` manually to refresh after model changes)")
 
 # Initialize DbtProject with explicit manifest path
 dbt_project = DbtProject(
@@ -319,31 +311,42 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
 @dbt_assets(
     manifest=dbt_project.manifest_path,
     dagster_dbt_translator=custom_translator,
-    select="tag:casino_uc1",
-    name="casino_uc1_dbt_assets",
+    select="casino_prd",
+    name="casino_prd_dbt_assets",
 )
-def casino_uc1_dbt_assets(
+def casino_prd_dbt_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
-    casino_prd_proto_upload,  # ensures proto descriptors are in MinIO before source tables are created
+    casino_prd_proto_upload,
 ):
-    """dbt assets for Casino UC1 — Real Bet Amount pipeline."""
+    """dbt assets for Casino production — UC1 (Real Bet Amount) + UC2 (Turnover Percentage) in one step."""
+    drop_result = subprocess.run(
+        ["dbt", "run-operation", "drop_prebuild_sinks",
+         "--project-dir", str(dbt_PROJECT_PATH),
+         "--profiles-dir", str(dbt_PROJECT_PATH)],
+        capture_output=True, text=True,
+        cwd=str(dbt_PROJECT_PATH.parent), env=_dbt_env,
+    )
+    if drop_result.returncode != 0:
+        context.log.warning(f"drop_prebuild_sinks failed (safe on fresh start): {drop_result.stderr[-200:]}")
+    else:
+        context.log.info("Pre-build casino sinks dropped")
     yield from dbt.cli(["build"], context=context).stream()
-
-
-@dbt_assets(
-    manifest=dbt_project.manifest_path,
-    dagster_dbt_translator=custom_translator,
-    select="tag:casino_uc2",
-    name="casino_uc2_dbt_assets",
-)
-def casino_uc2_dbt_assets(
-    context: AssetExecutionContext,
-    dbt: DbtCliResource,
-    casino_prd_proto_upload,  # ensures proto descriptors are in MinIO before source tables are created
-):
-    """dbt assets for Casino UC2 — Turnover Percentage pipeline."""
-    yield from dbt.cli(["build"], context=context).stream()
+    # Ramp source rate limit from 1 (build-time) to 200 (steady-state).
+    # Sources are created with rate_limit=1 so no data accumulates during MV
+    # creation, keeping backfill time near zero. We ramp up after all MVs exist.
+    import psycopg2
+    try:
+        rw_host = os.environ.get("DBT_HOST", "frontend-node-0")
+        conn = psycopg2.connect(host=rw_host, port=4566, user="root", database="dev")
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE src_casino_prd SET source_rate_limit = 200")
+        cur.execute("ALTER TABLE src_bets_br SET source_rate_limit = 200")
+        conn.close()
+        context.log.info("Source rate limits ramped to 200 rows/s")
+    except Exception as e:
+        context.log.warning(f"Failed to ramp source rate limits: {e}")
 
 
 # Define jobs
@@ -435,18 +438,6 @@ casino_prd_setup_job = define_asset_job(
 )
 
 
-casino_uc1_dbt_job = define_asset_job(
-    name="casino_uc1_dbt_job",
-    selection=[casino_uc1_dbt_assets],
-    description="Build Casino UC1 (Real Bet Amount) dbt models",
-)
-
-casino_uc2_dbt_job = define_asset_job(
-    name="casino_uc2_dbt_job",
-    selection=[casino_uc2_dbt_assets],
-    description="Build Casino UC2 (Turnover Percentage) dbt models",
-)
-
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -455,11 +446,10 @@ casino_prd_full_job = define_asset_job(
             casino_prd_proto_compile,
             casino_prd_proto_upload,
         )
-        | AssetSelection.groups("casino_uc1")
-        | AssetSelection.groups("casino_uc2")
+        | AssetSelection.assets(casino_prd_dbt_assets)
         | AssetSelection.assets(casino_trino_views)
     ),
-    description="End-to-end casino demo: proto setup → UC1 → UC2 → Trino views",
+    description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views",
 )
 
 # ML Training Schedule (5 minutes - Production)
@@ -499,9 +489,8 @@ defs = Definitions(
         casino_prd_proto_fetch,
         casino_prd_proto_compile,
         casino_prd_proto_upload,
-        # Casino dbt assets
-        casino_uc1_dbt_assets,
-        casino_uc2_dbt_assets,
+        # Casino dbt assets (UC1 + UC2 in one step)
+        casino_prd_dbt_assets,
         # Trino metadata views for Grafana (snapshot count, live data files)
         casino_trino_views,
     ],
@@ -512,8 +501,6 @@ defs = Definitions(
         iceberg_compaction_job,
         postgres_sink_job,
         casino_prd_setup_job,
-        casino_uc1_dbt_job,
-        casino_uc2_dbt_job,
         casino_prd_full_job,
     ],
     schedules=[

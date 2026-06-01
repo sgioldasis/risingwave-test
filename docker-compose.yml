@@ -138,9 +138,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 1G
         reservations:
-          memory: 8G
+          memory: 512M
     networks:
       iceberg_net:
 
@@ -196,9 +196,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 6G
         reservations:
-          memory: 8G
+          memory: 4G
     networks:
       iceberg_net:
 
@@ -254,9 +254,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
-        reservations:
           memory: 1G
+        reservations:
+          memory: 512M
     networks:
       iceberg_net:
 
@@ -325,9 +325,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
-        reservations:
           memory: 1G
+        reservations:
+          memory: 512M
     networks:
       iceberg_net:
 
@@ -376,7 +376,6 @@ services:
       /bin/sh -c '
       set -e
       mkdir -p "/data/hummock001"
-
       /usr/bin/docker-entrypoint.sh "$$0" "$$@"
       '
     environment:
@@ -386,7 +385,6 @@ services:
       MINIO_ROOT_PASSWORD: hummockadmin
       MINIO_ROOT_USER: hummockadmin
       MINIO_DOMAIN: "minio-0"
-      # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       ALL_PROXY: ""
@@ -404,6 +402,12 @@ services:
       timeout: 5s
       retries: 5
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
     networks:
       iceberg_net:
 
@@ -763,7 +767,6 @@ services:
     ports:
       - "9080:8080"
     environment:
-      - CATALOG_MANAGEMENT=dynamic
       # Disable OrbStack-injected HTTP proxy. The AWS SDK v2 used by Trino's
       # native S3 client honors HTTPS_PROXY/HTTP_PROXY env vars and would route
       # http://minio-0:9301 and http://lakekeeper:8181 calls through
@@ -786,8 +789,10 @@ services:
         target: /etc/trino/config.properties
         read_only: true
     depends_on:
-      - lakekeeper
-      - minio-0
+      lakekeeper-bootstrap:
+        condition: service_completed_successfully
+      minio-0:
+        condition: service_healthy
     networks:
       - iceberg_net
     extra_hosts:

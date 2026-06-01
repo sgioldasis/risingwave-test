@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Prod casino rounds table
 --
--- Reads cronus.casino.out.gh from prd2 Kafka (SSL) and decodes the
+-- Reads cronus.casino.out.br from prd2 Kafka (SSL) and decodes the
 -- CasinoRoundInfoDto protobuf via the compiled FileDescriptorSet at
 -- /proto/casinoroundinfodto.pb (mounted into the RisingWave container).
 --
@@ -24,11 +24,12 @@ CREATE TABLE src_casino_prd (*)
 APPEND ONLY
 WITH (
     connector                     = 'kafka',
-    topic                         = 'cronus.casino.out.gh',
+    topic                         = 'cronus.casino.out.br',
     properties.bootstrap.server   = 'prd2-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol  = 'SSL',
     group.id.prefix               = 'rw-readonly-casino-demo',
-    scan.startup.mode             = 'latest'
+    scan.startup.mode             = 'latest',
+    source_rate_limit             = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',

@@ -7,7 +7,7 @@ SELECT customer_id, casino_turnover, event_ts
 FROM (
     SELECT
         customer_id,
-        rolling_90d_turnover                                                     AS casino_turnover,
+        rolling_7d_turnover                                                      AS casino_turnover,
         event_ts,
         ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)      AS rn
     FROM {{ ref('mv_casino_turnover_90d') }}

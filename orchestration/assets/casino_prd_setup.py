@@ -153,6 +153,13 @@ TRINO_SCHEMA = "public"
 # (view_name, DDL select) — dollar-free views over the Iceberg $snapshots
 # metadata tables so Grafana (which interprets $ as a variable) can query them.
 # Used by the casino dashboard's Snapshot Count and Operations/min panels.
+#
+# The *_rowcount views sum record_count from the $partitions metadata table —
+# a manifest-only lookup, so the dashboard's "Iceberg Rows" panels return
+# instantly instead of running a COUNT(*) full scan (merge-on-read over every
+# data + equality-delete file) on the upsert tables. ($partitions counts
+# data-file records — RisingWave leaves the $snapshots summary map empty, so
+# summary['total-records'] is unavailable.)
 TRINO_VIEWS = [
     ("casino_real_bet_snapshots",
      'SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at '
@@ -160,6 +167,12 @@ TRINO_VIEWS = [
     ("turnover_pct_snapshots",
      'SELECT snapshot_id, operation, CAST(committed_at AS timestamp(6)) AS committed_at '
      'FROM datalake.public."rw_managed_turnover_percentage$snapshots"'),
+    ("casino_real_bet_rowcount",
+     "SELECT SUM(record_count) AS iceberg_rows "
+     'FROM datalake.public."rw_managed_casino_real_bet$partitions"'),
+    ("turnover_pct_rowcount",
+     "SELECT SUM(record_count) AS iceberg_rows "
+     'FROM datalake.public."rw_managed_turnover_percentage$partitions"'),
 ]
 
 
@@ -191,18 +204,30 @@ def casino_trino_views(context: AssetExecutionContext):
         finally:
             conn.close()
 
-    # Wait until the base Iceberg tables are queryable via Trino (sinks committed first snapshot)
+    # Phase 1: wait for Trino to finish initializing (can take 2-3 min on fresh stack)
+    context.log.info("Waiting for Trino to be ready...")
+    for attempt in range(60):
+        try:
+            trino_exec("SELECT 1")
+            context.log.info(f"Trino ready after ~{attempt * 5}s")
+            break
+        except Exception as e:
+            if attempt == 59:
+                raise RuntimeError(f"Trino did not become ready after 300s: {e}") from e
+            time.sleep(5)
+
+    # Phase 2: wait for Iceberg sinks to commit their first snapshot
     context.log.info("Waiting for Iceberg tables to be queryable via Trino...")
-    for attempt in range(40):
+    for attempt in range(60):
         try:
             trino_exec('SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots"')
             trino_exec('SELECT COUNT(*) FROM datalake.public."rw_managed_turnover_percentage$snapshots"')
             context.log.info(f"Iceberg tables queryable after ~{attempt * 5}s")
             break
         except Exception as e:
-            if attempt == 39:
+            if attempt == 59:
                 raise RuntimeError(
-                    f"Iceberg tables not queryable via Trino after 200s: {e}. "
+                    f"Iceberg tables not queryable via Trino after 300s: {e}. "
                     "Ensure sinks are running and have committed at least one checkpoint."
                 ) from e
             time.sleep(5)

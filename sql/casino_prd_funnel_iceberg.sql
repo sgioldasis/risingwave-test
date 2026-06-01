@@ -2,8 +2,8 @@
 -- Prod casino + sportsbook pipeline
 --
 -- Sources (created separately):
---   src_casino_prd  → sql/casino_prd_source.sql     (prd2, cronus.casino.out.gh)
---   src_bets_gh     → sql/casino_prd_bets_source.sql (prd4, bets-out-gh)
+--   src_casino_prd  → sql/casino_prd_source.sql     (prd2, cronus.casino.out.br)
+--   src_bets_br     → sql/casino_prd_bets_source.sql (prd4, bets-out-br)
 --
 -- UC1 — Real Bet Amount:
 --   mv_casino_transactions          one row per transaction (flattened)
@@ -104,8 +104,8 @@ SELECT
     SUM(amount_abs) OVER (
         PARTITION BY customer_id, currency_id
         ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '1209600 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_14d_real_bet_amount
+        RANGE BETWEEN INTERVAL '86400 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_1d_real_bet_amount
 FROM mv_casino_transactions
 WHERE message_type_id = 1
   AND account_id      = 1
@@ -128,8 +128,8 @@ SELECT
     SUM(amount_abs) OVER (
         PARTITION BY customer_id
         ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_90d_turnover
+        RANGE BETWEEN INTERVAL '604800 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_7d_turnover
 FROM mv_casino_transactions
 WHERE message_type_id = 2
   AND account_id      IN (1, 4)
@@ -137,7 +137,7 @@ WHERE message_type_id = 2
   AND amount_raw <> '';
 
 -- ---------------------------------------------------------------------------
--- 4. 90-day rolling sportsbook turnover per customer (from src_bets_gh).
+-- 4. 90-day rolling sportsbook turnover per customer (from src_bets_br).
 --    TotalStake.Euro uses DecimalValue encoding (units + nanos/1e9).
 --    Euro-normalised so casino and sportsbook turnover are comparable.
 -- ---------------------------------------------------------------------------
@@ -149,9 +149,9 @@ SELECT
         + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000) OVER (
         PARTITION BY ("CustomerInfo")."Id"
         ORDER BY TO_TIMESTAMP(("PlacedAt").seconds)
-        RANGE BETWEEN INTERVAL '7776000 SECONDS' PRECEDING AND CURRENT ROW
-    ) AS rolling_90d_turnover
-FROM src_bets_gh
+        RANGE BETWEEN INTERVAL '604800 SECONDS' PRECEDING AND CURRENT ROW
+    ) AS rolling_7d_turnover
+FROM src_bets_br
 WHERE ("CustomerInfo")."Id" IS NOT NULL
   AND ("TotalStake")."Euro" IS NOT NULL;
 
@@ -173,7 +173,7 @@ SELECT customer_id, casino_turnover, event_ts
 FROM (
     SELECT
         customer_id,
-        rolling_90d_turnover                                                     AS casino_turnover,
+        rolling_7d_turnover                                                      AS casino_turnover,
         event_ts,
         ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)      AS rn
     FROM mv_casino_turnover_90d
@@ -185,7 +185,7 @@ SELECT customer_id, sportsbook_turnover, event_ts
 FROM (
     SELECT
         customer_id,
-        rolling_90d_turnover                                                     AS sportsbook_turnover,
+        rolling_7d_turnover                                                      AS sportsbook_turnover,
         event_ts,
         ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC)      AS rn
     FROM mv_sportsbook_turnover_90d
@@ -276,7 +276,7 @@ WITH (
     database.name                        = 'public',
     table.name                           = 'rw_managed_casino_real_bet',
     create_table_if_not_exists           = 'true',
-    commit_checkpoint_interval           = 40,
+    commit_checkpoint_interval           = 20,
     compaction.trigger_snapshot_count      = '5',
     compaction.write_parquet_compression = 'zstd'
 );
@@ -299,7 +299,7 @@ WITH (
     database.name                        = 'public',
     table.name                           = 'rw_managed_turnover_percentage',
     create_table_if_not_exists           = 'true',
-    commit_checkpoint_interval           = 40,
+    commit_checkpoint_interval           = 20,
     compaction.trigger_snapshot_count      = '5',
     compaction.write_parquet_compression = 'zstd'
 );

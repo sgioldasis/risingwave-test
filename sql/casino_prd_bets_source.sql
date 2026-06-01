@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Prod sportsbook bets source (UC2: Casino Turnover Percentage)
 --
--- Reads bets-out-gh from prd4 Kafka (SSL) and decodes PandoraBetInfoVm
+-- Reads bets-out-br from prd4 Kafka (SSL) and decodes PandoraBetInfoVm
 -- protobuf via the compiled FileDescriptorSet at /proto/betinfo.desc
 -- (mounted into the RisingWave container).
 --
@@ -23,17 +23,18 @@
 
 SET client_min_messages = WARNING;
 
-DROP TABLE IF EXISTS src_bets_gh CASCADE;
+DROP TABLE IF EXISTS src_bets_br CASCADE;
 
-CREATE TABLE src_bets_gh (*)
+CREATE TABLE src_bets_br (*)
 APPEND ONLY
 WITH (
     connector                         = 'kafka',
-    topic                             = 'bets-out-gh',
+    topic                             = 'bets-out-br',
     properties.bootstrap.server       = 'prd4-kafka-bootstrap.kaizengaming.net:443',
     properties.security.protocol      = 'SSL',
     group.id.prefix                   = 'rw-readonly-bets-demo',
-    scan.startup.mode                 = 'latest'
+    scan.startup.mode                 = 'latest',
+    source_rate_limit                 = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
     schema.location   = 's3://hummock001/proto/betinfo.desc',
