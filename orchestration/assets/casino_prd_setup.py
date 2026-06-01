@@ -226,27 +226,42 @@ def casino_trino_views(context: AssetExecutionContext):
                 raise RuntimeError(f"Trino did not become ready after 300s: {e}") from e
             time.sleep(5)
 
-    # Phase 2: wait for Iceberg sinks to commit their first snapshot
-    context.log.info("Waiting for Iceberg tables to be queryable via Trino...")
+    # Phase 2: wait for Iceberg output to be queryable. Gate ONLY on the turnover table
+    # (UC2 emits continuously -> commits within ~30-40s). The casino real-bet table can lag
+    # far longer if UC1 uses TUMBLE + EMIT ON WINDOW CLOSE (no output until the first window
+    # closes, ~20 min), so it is NOT part of the gate and is handled best-effort below. On
+    # timeout we warn and proceed rather than raise -- this dashboard-views asset must never
+    # hard-fail the pipeline run.
+    context.log.info("Waiting for the turnover Iceberg table to be queryable via Trino...")
     for attempt in range(60):
         try:
-            trino_exec('SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots"')
             trino_exec('SELECT COUNT(*) FROM datalake.public."rw_managed_turnover_percentage$snapshots"')
-            context.log.info(f"Iceberg tables queryable after ~{attempt * 5}s")
+            context.log.info(f"Iceberg output queryable after ~{attempt * 5}s")
             break
         except Exception as e:
             if attempt == 59:
-                raise RuntimeError(
-                    f"Iceberg tables not queryable via Trino after 300s: {e}. "
-                    "Ensure sinks are running and have committed at least one checkpoint."
-                ) from e
-            time.sleep(5)
+                context.log.warning(
+                    f"Turnover Iceberg table not queryable after 300s: {e}. "
+                    "Proceeding best-effort -- views over not-yet-committed tables are skipped."
+                )
+            else:
+                time.sleep(5)
 
-    created = []
+    # Best-effort view creation: a view over an Iceberg table that hasn't committed yet
+    # (e.g. a TUMBLE/EOWC casino sink before its first window closes) will fail here. Warn
+    # and continue so the asset succeeds; re-materialize it later to backfill skipped views.
+    created, skipped = [], []
     for view_name, select_sql in TRINO_VIEWS:
         ddl = f"CREATE OR REPLACE VIEW datalake.public.{view_name} AS {select_sql}"
-        context.log.info(f"Creating view {view_name}")
-        trino_exec(ddl)
-        created.append(view_name)
+        try:
+            context.log.info(f"Creating view {view_name}")
+            trino_exec(ddl)
+            created.append(view_name)
+        except Exception as e:
+            context.log.warning(f"Skipping view {view_name} (underlying table not ready?): {e}")
+            skipped.append(view_name)
 
-    return {"created_views": MetadataValue.json(created)}
+    return {
+        "created_views": MetadataValue.json(created),
+        "skipped_views": MetadataValue.json(skipped),
+    }

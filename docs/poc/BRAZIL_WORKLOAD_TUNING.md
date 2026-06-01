@@ -403,6 +403,176 @@ bottleneck has moved (likely to the window-MV compute) — pursue lever (a) inst
 
 ---
 
+## 13. Demo window shrink — 1d/7d → 5 min (measured 2026-06-01)
+
+**Files:** `dbt/models/casino_prd/mv_casino_real_bet.sql`, `mv_casino_turnover_90d.sql`,
+`mv_sportsbook_turnover_90d.sql` (+ raw `sql/casino_prd_funnel_iceberg.sql`)
+**Change:** rolling `RANGE` window `86400s`/`604800s` → **`300s` (5 min)** on all three window MVs.
+
+**Why:** For a **short demo** (`scan.startup.mode='latest'`, runs minutes–under an hour), a 1d/7d
+window never evicts, so the `OverWindow` state grows unbounded with every ingested row and
+throughput decays (787→~53/s within ~4 min — see §12). A window *shorter than the demo runtime*
+evicts continuously, capping state. (1h was useless — still longer than the demo; 5 min evicts
+within the run.)
+
+**Measured result (⚠️ modest, not a fix):**
+
+| Metric | 1d/7d (warmed) | 5-min window | 
+|--------|----------------|--------------|
+| casino throughput | ~53–67/s | **~120/s avg** (62–200 range), holds past 5 min |
+| backpressure (max frag) | 4–8 | ~6.9 (**unchanged — still choked**) |
+| MinIO CPU | ~4% (idle) | **175–360% spikes** (new bottleneck) |
+
+- **~1.8× throughput** and it no longer decays — genuine steady state, good for a demo that
+  otherwise collapses to ~53/s.
+- **But the ceiling held.** Still backpressured (~6.9) at ~120/s vs the ~800/s rate cap. The
+  bottleneck **shifted to MinIO**: a 5-min window makes every row enter *and* exit state within
+  5 min → constant **retraction writes** to the state store, which intermittently saturate the
+  single MinIO. Shrinking the window traded "large compute state" for "high eviction write churn."
+- **Semantics:** metric is now a rolling **5-min** real-bet / turnover, not 1d/7d. Column names
+  (`rolling_1d_real_bet_amount`, `rolling_7d_turnover`) were **left unchanged** to avoid a
+  rename cascade through sinks/Iceberg/dashboard — they are now misnomers; rename if adopting
+  permanently.
+
+**The remaining lever:** `TUMBLE`/`HOP` + `EMIT ON WINDOW CLOSE` aggregates per fixed window
+with **no per-event retractions**, which would avoid the eviction churn this change introduced —
+at the cost of a larger semantics change (periodic finals, requires watermarks).
+
+---
+
+## 14. UC1 TUMBLE restructure — ❌ INFEASIBLE on RisingWave 2.7.4 (tested 2026-06-01, reverted)
+
+**Outcome:** Attempted and **reverted.** A `TUMBLE` + `EMIT ON WINDOW CLOSE` aggregation cannot be
+built on the casino transaction data in 2.7.4, because of a hard interaction between the nested
+schema and watermark propagation. The code is back on the §13 5-min rolling window.
+
+**Why it's blocked (the chain):**
+1. The casino metric needs **transaction-level** rows → requires `UNNEST` of the nested
+   `RoundInfo.Messages[].Transactions[]` arrays.
+2. **`UNNEST` (ProjectSet) strips the watermark** in 2.7.4 — a column's watermark property does not
+   survive the unnest, even inside a single CTE/MV.
+3. **`EMIT ON WINDOW CLOSE` requires a watermark column in `GROUP BY`** (`Not supported:
+   Emit-On-Window-Close mode requires a watermark column in GROUP BY`).
+4. → No watermark reaches the TUMBLE → EOWC is rejected at bind time.
+
+**Tested three ways (throwaway MVs):**
+- ✅ `TUMBLE(src_casino_prd, round_created_at, ...)` **direct on the source** binds — the generated
+  `round_created_at` + source watermark are valid.
+- ❌ `TUMBLE(<subquery with UNNEST>, ...)` — rejected: window TVF's first arg must be a table/CTE/view.
+- ❌ `TUMBLE(<CTE with UNNEST>, ...)` — rejected with the EOWC-needs-watermark error → **UNNEST drops
+  the watermark.**
+
+**No SQL workaround on this version:** you cannot re-declare a watermark inside an MV, and the UNNEST
+is unavoidable for the nested arrays. The sportsbook side *could* tumble (`PlacedAt` is top-level, no
+UNNEST) but it isn't the bottleneck, and UC2 casino turnover hits the same UNNEST wall. A RisingWave
+version that propagates watermarks through ProjectSet would unblock this; 2.7.4 does not.
+
+**Conclusion:** the **5-min rolling window (§13, ~120/s)** is the best achievable on this
+hardware+version without breaking semantics or the build. The remaining real lever is horizontal
+storage / more cores, not SQL.
+
+---
+
+### (Original attempt details — kept for reference)
+**Files touched (now reverted):** `src_casino_prd.sql` (+ raw `sql/casino_prd_source.sql`),
+`mv_casino_transactions.sql`, `mv_casino_real_bet.sql`, `sink_casino_real_bet.sql`
+(+ raw `sql/casino_prd_funnel_iceberg.sql`). Scope was UC1 casino only.
+
+**Goal:** §13 showed the 5-min rolling window doubled throughput but introduced **MinIO retraction
+churn** (every row enters *and* exits state within the window → constant state-store writes). A
+`TUMBLE` + `EMIT ON WINDOW CLOSE` aggregation has **no per-event retractions** — it accumulates a
+partial sum per open window and emits once at close — so it should bound state *and* avoid the
+churn. This restructures UC1 to test that.
+
+**What changed:**
+1. **Source watermark.** `src_casino_prd` gains a generated column
+   `round_created_at = TO_TIMESTAMP(RoundInfo.RoundCreated.seconds)` and
+   `WATERMARK FOR round_created_at AS round_created_at - INTERVAL '5 minutes'`. RoundCreated is the
+   only **row-level** timestamp (transaction times are nested in `Messages[]/Transactions[]` arrays,
+   so they can't anchor a watermark) — so the window event-time is an **approximation** of
+   transaction time.
+2. **`mv_casino_transactions`** carries `round_created_at` through (to propagate the watermark).
+3. **`mv_casino_real_bet`** becomes `TUMBLE(..., round_created_at, INTERVAL '15 MINUTES')` +
+   `GROUP BY customer_id, currency_id, window_start, window_end EMIT ON WINDOW CLOSE`. Output shape
+   changed: `event_ts, rolling_1d_real_bet_amount` → `window_start, window_end, windowed_real_bet_amount`.
+4. **`sink_casino_real_bet`** PK → `customer_id,currency_id,window_start`; writes to a **new** Iceberg
+   table `rw_managed_casino_real_bet_windowed` (the old table's schema differs and persists in MinIO).
+
+**⚠️ Must verify after rebuild (in priority order):**
+1. **Watermark propagates through the double `UNNEST`.** If it doesn't, `EMIT ON WINDOW CLOSE` never
+   fires and `mv_casino_real_bet` stays empty. Check: `SELECT count(*) FROM mv_casino_real_bet;`
+   should grow once windows start closing (~window + watermark delay after start).
+2. **No mass data drop.** The source watermark drops rows with `round_created_at < max - 5 min` — for
+   **all** consumers incl. UC2. If `RoundCreated` times are spread out (the earlier ~1-day span in
+   `mv_casino_transactions` is a warning), this could starve UC1 *and* UC2. Compare row growth vs a
+   no-watermark baseline; raise the `INTERVAL` if data is lost.
+3. **Throughput / backpressure / MinIO CPU** vs baselines (1d: ~67/s; 5-min rolling §13: ~120/s with
+   MinIO spiking to 360%). The win would be: throughput holds *and* MinIO CPU drops (no retraction churn).
+
+**Known out-of-scope breakage:** the Grafana UC1 panels query the old columns/table and will error
+until updated — deferred to the full restructure if this prototype proves out. Measure via Prometheus,
+not the dashboard.
+
+---
+
+## 15. UC1 TUMBLE via Kafka round-trip (workaround for §14 — implemented, pending measurement)
+
+**Idea (answers "can we do all unnesting in a first-level MV?"):** Yes — and then **round-trip the
+flat stream through Kafka** to re-acquire a watermark. §14 was blocked because `UNNEST` strips the
+watermark and an MV can't re-declare one. But a *new TABLE* can. So:
+
+```
+mv_casino_transactions   (UNNEST — unchanged, still shared with UC2)
+  → mv_casino_bets_flat            filter UC1 bets + project {customer_id, currency_id,
+                                   transaction_created_at, amount_abs}
+  → sink_casino_bets_flat_kafka    → Redpanda topic 'casino_bets_flat' (JSON, append-only)
+  → src_casino_bets_flat           re-ingest as TABLE: transaction_created_at is now a TOP-LEVEL
+                                   column → WATERMARK FOR it (no UNNEST downstream → survives)
+  → mv_casino_real_bet             TUMBLE(src_casino_bets_flat, transaction_created_at, '15 min')
+                                   + EMIT ON WINDOW CLOSE  ✅ binds
+```
+
+Uses the **true transaction event-time** (better than §14's round-time approximation). Files: new
+`mv_casino_bets_flat.sql`, `sink_casino_bets_flat_kafka.sql`, `src_casino_bets_flat.sql`; rewritten
+`mv_casino_real_bet.sql` (TUMBLE); `sink_casino_real_bet` → PK `...,window_start`, table
+`rw_managed_casino_real_bet_windowed`; raw mirror in `sql/casino_prd_funnel_iceberg.sql`; topic
+`casino_bets_flat` added to `redpanda-init`. **Requires `dbt parse`** (new models + changed ref).
+
+**⚠️ Honest trade-off (must measure):** the round-trip adds load — re-serializing the bet stream to
+JSON, a Redpanda hop, re-parsing, and a second table with its own Hummock state — on an already
+MinIO/compute-bound single-node box. TUMBLE removes retraction churn; the round-trip adds ingestion
+churn. **Net vs the §13 5-min rolling window (~120/s) is unknown until measured.** Verify per the plan:
+(1) windows actually close (`SELECT count(*) FROM mv_casino_real_bet` grows ~window+5min in — else the
+watermark didn't take); (2) `rpk topic consume casino_bets_flat -n 5` shows data; (3) throughput /
+backpressure / MinIO CPU over >15 min vs baselines.
+
+---
+
+### Outcome (measured 2026-06-01) — decoupled-rolling shipped
+
+| Setup | `src_casino_prd` throughput | backpressure | MinIO CPU |
+|-------|------------------------------|--------------|-----------|
+| §13 rolling **inline** (reads `mv_casino_transactions`) | ~120/s | ~6.9 | ~360% |
+| rolling **decoupled** (reads `src_casino_bets_flat`) — **shipped** | **~380/s** (bursty 60–620) | ~5 | ~150% (peaks 328%) |
+| TUMBLE **decoupled** | ~300/s | ~6 | ~400% |
+
+**The lift (120 → ~380/s, ~3×) is the Kafka round-trip DECOUPLING, not TUMBLE.** Putting the UC1 window
+behind a Kafka buffer takes it off `src_casino_prd`'s backpressure path; rolling-decoupled ≈
+TUMBLE-decoupled on throughput, so TUMBLE's 20-min EOWC latency + watermark/UNNEST complexity buys
+nothing here. **Shipped config: decoupled-rolling** — `mv_casino_real_bet` is a 5-min rolling `RANGE`
+window reading `src_casino_bets_flat`, keeping continuous semantics and the original column/table
+schema (Grafana UC1 works). The round-trip infra (`mv_casino_bets_flat` → Kafka `casino_bets_flat` →
+`src_casino_bets_flat`) is retained for the decoupling; the TUMBLE (§14/§15) was reverted.
+
+**~380/s is a MinIO state-store-churn ceiling** — the no-sink rolling-decoupled run still hit ~500%
+MinIO, so the churn is **Hummock state**, not the Iceberg sink (dropping it, option 2, won't help).
+**Raising `source_rate_limit` doesn't help either:** at steady state backpressure sits ~5
+(downstream-bound, not rate-limit-bound — we hit ~800/s only with an empty window), so more input
+just grows lag and risks the MinIO crash/reset (§1). Exceeding ~380/s needs relieving Hummock churn
+(query-time windowing over append-only Iceberg) or horizontal storage — not a laptop move.
+
+---
+
 ## Quick reference — final tuned values
 
 | Setting | Location | Value |

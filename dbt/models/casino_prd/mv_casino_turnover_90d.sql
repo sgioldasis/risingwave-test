@@ -9,7 +9,10 @@ SELECT
     SUM(amount_abs) OVER (
         PARTITION BY customer_id
         ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '604800 SECONDS' PRECEDING AND CURRENT ROW
+        -- Demo window: 300s (5 min). Shrunk from 7 days so the rolling-window
+        -- state evicts within a short demo run and throughput stays bounded.
+        -- See BRAZIL_WORKLOAD_TUNING.md §2 / §13.
+        RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     )                                                     AS rolling_7d_turnover
 FROM {{ ref('mv_casino_transactions') }}
 WHERE message_type_id = 2

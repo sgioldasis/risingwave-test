@@ -10,7 +10,10 @@ SELECT
         + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000) OVER (
         PARTITION BY ("CustomerInfo")."Id"
         ORDER BY TO_TIMESTAMP(("PlacedAt").seconds)
-        RANGE BETWEEN INTERVAL '604800 SECONDS' PRECEDING AND CURRENT ROW
+        -- Demo window: 300s (5 min). Shrunk from 7 days so the rolling-window
+        -- state evicts within a short demo run and throughput stays bounded.
+        -- See BRAZIL_WORKLOAD_TUNING.md §2 / §13.
+        RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     )                                                                            AS rolling_7d_turnover
 FROM {{ ref('src_bets_br') }}
 WHERE ("CustomerInfo")."Id" IS NOT NULL

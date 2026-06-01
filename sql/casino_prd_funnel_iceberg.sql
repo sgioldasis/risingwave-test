@@ -39,6 +39,9 @@ DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_latest    CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_sportsbook_turnover_90d   CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_turnover_90d       CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_real_bet           CASCADE;
+DROP TABLE             IF EXISTS src_casino_bets_flat         CASCADE;  -- §14 round-trip re-ingest
+DROP SINK              IF EXISTS sink_casino_bets_flat_kafka;          -- §14 round-trip leg 1
+DROP MATERIALIZED VIEW IF EXISTS mv_casino_bets_flat          CASCADE;  -- §14
 DROP MATERIALIZED VIEW IF EXISTS mv_casino_transactions      CASCADE;
 
 -- =============================================================================
@@ -90,12 +93,58 @@ FROM
     UNNEST(msg."Transactions")                 AS txn;
 
 -- ---------------------------------------------------------------------------
--- 2. Rolling 14-day real bet total per customer/currency.
---    Filter: MessageTypeId=1 (bet placed), AccountId=1 (real money, not bonus).
---    One output row per event with the updated sum over the preceding 14 days
---    (1 209 600 s). Consumers key on (customer_id, currency_id) and keep the
---    latest row.
+-- 2. UC1 pipeline via Kafka round-trip — DECOUPLING (chosen config, §15).
+--    Flatten UC1 bets, sink to Redpanda, re-ingest as a TABLE, then window on that.
+--    The Kafka buffer takes the UC1 window OFF src_casino_prd's backpressure path,
+--    which lifts throughput ~120/s -> ~300/s (the real win — not TUMBLE; see §15).
+--    (a) filter UC1 bets into a flat MV, (b) sink to Redpanda, (c) re-ingest as a TABLE,
+--    (d) rolling window on that (mv_casino_real_bet below).
 -- ---------------------------------------------------------------------------
+CREATE MATERIALIZED VIEW mv_casino_bets_flat AS
+SELECT
+    customer_id,
+    currency_id,
+    transaction_created_at,
+    amount_abs
+FROM mv_casino_transactions
+WHERE message_type_id = 1
+  AND account_id      = 1
+  AND amount_raw IS NOT NULL
+  AND amount_raw <> '';
+
+-- Round-trip leg 1: publish flat bets to Redpanda.
+CREATE SINK sink_casino_bets_flat_kafka
+FROM mv_casino_bets_flat
+WITH (
+    connector                   = 'kafka',
+    properties.bootstrap.server = 'redpanda:9092',
+    topic                       = 'casino_bets_flat'
+)
+FORMAT PLAIN ENCODE JSON (
+    force_append_only = 'true'
+);
+
+-- Round-trip leg 2: re-ingest with a real watermark on transaction_created_at.
+CREATE TABLE src_casino_bets_flat (
+    customer_id            INT,
+    currency_id            INT,
+    transaction_created_at TIMESTAMPTZ,
+    amount_abs             NUMERIC,
+    WATERMARK FOR transaction_created_at AS transaction_created_at - INTERVAL '5' MINUTE
+)
+APPEND ONLY
+WITH (
+    connector                   = 'kafka',
+    topic                       = 'casino_bets_flat',
+    properties.bootstrap.server = 'redpanda:9092',
+    scan.startup.mode           = 'earliest'
+)
+FORMAT PLAIN ENCODE JSON;
+
+-- UC1 — decoupled rolling window (chosen config; §15). Reads the re-ingested
+-- src_casino_bets_flat (Kafka round-trip) so this window is off src_casino_prd's
+-- backpressure path (the decoupling that lifts throughput ~120/s -> ~300/s).
+-- Continuous emit-on-update; src is already filtered to UC1 bets, so no WHERE.
 CREATE MATERIALIZED VIEW mv_casino_real_bet AS
 SELECT
     customer_id,
@@ -104,13 +153,10 @@ SELECT
     SUM(amount_abs) OVER (
         PARTITION BY customer_id, currency_id
         ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '86400 SECONDS' PRECEDING AND CURRENT ROW
+        -- 5-min demo window (§2/§13). Column name kept for dashboard/Trino-view compatibility.
+        RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     ) AS rolling_1d_real_bet_amount
-FROM mv_casino_transactions
-WHERE message_type_id = 1
-  AND account_id      = 1
-  AND amount_raw IS NOT NULL
-  AND amount_raw <> '';
+FROM src_casino_bets_flat;
 
 -- =============================================================================
 -- UC2 — Casino Turnover Percentage
@@ -128,7 +174,8 @@ SELECT
     SUM(amount_abs) OVER (
         PARTITION BY customer_id
         ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '604800 SECONDS' PRECEDING AND CURRENT ROW
+        -- Demo window: 300s (5 min), shrunk from 7 days. See BRAZIL_WORKLOAD_TUNING.md §13.
+        RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     ) AS rolling_7d_turnover
 FROM mv_casino_transactions
 WHERE message_type_id = 2
@@ -149,7 +196,8 @@ SELECT
         + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000) OVER (
         PARTITION BY ("CustomerInfo")."Id"
         ORDER BY TO_TIMESTAMP(("PlacedAt").seconds)
-        RANGE BETWEEN INTERVAL '604800 SECONDS' PRECEDING AND CURRENT ROW
+        -- Demo window: 300s (5 min), shrunk from 7 days. See BRAZIL_WORKLOAD_TUNING.md §13.
+        RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     ) AS rolling_7d_turnover
 FROM src_bets_br
 WHERE ("CustomerInfo")."Id" IS NOT NULL
