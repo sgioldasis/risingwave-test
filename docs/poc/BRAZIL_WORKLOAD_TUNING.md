@@ -440,7 +440,7 @@ at the cost of a larger semantics change (periodic finals, requires watermarks).
 
 ---
 
-## 14. UC1 TUMBLE restructure — ❌ INFEASIBLE on RisingWave 2.7.4 (tested 2026-06-01, reverted; ⚠️ re-test on 2.8 — §19)
+## 14. UC1 TUMBLE restructure — ❌ INFEASIBLE on RisingWave 2.7.4 (tested 2026-06-01, reverted; ✅ RESOLVED on 2.8 — verified, see §19)
 
 **Outcome:** Attempted and **reverted.** A `TUMBLE` + `EMIT ON WINDOW CLOSE` aggregation cannot be
 built on the casino transaction data in 2.7.4, because of a hard interaction between the nested
@@ -704,15 +704,31 @@ started on a **clean slate** (fresh Postgres meta + fresh local-fs state — no 
 **✅ Validated on 2.8.0:** stack comes up healthy; the casino pipeline builds (16 models + 5 sinks);
 throughput/backpressure behave as on 2.7.4 (~600–800/s, green); coherence clean.
 
-**⚠️ NOT re-verified on 2.8.0 — the 2.7.4-specific findings below may now differ; re-test before relying:**
-- **Snapshot expiration (§7)** — didn't prune with the Lakekeeper REST catalog on 2.7.4; the v2.8 docs
-  claim it prunes. This was the **motivation** for upgrading — worth confirming (watch snapshot/data-file
-  count over time via Trino).
-- **`UNNEST` strips the watermark → TUMBLE+EOWC infeasible (§14)** — if 2.8 propagates watermarks
-  through ProjectSet, the casino TUMBLE becomes viable **without** the Kafka round-trip. High-value,
-  cheap to re-test (the §14 Test-3 CTE-with-UNNEST probe is one query).
-- **`ENGINE=iceberg` ignores `enable_compaction`; `ALTER SINK SET` can't change compaction opts (§7)** —
-  minor; not re-checked.
+**Re-verified on 2.8.0 (2026-06-01):**
+- ✅ **`UNNEST` now PRESERVES the watermark — §14 blocker RESOLVED.** The `TUMBLE`+EOWC-over-a-
+  CTE-with-`UNNEST` probe that errored on 2.7.4 (`...requires a watermark column in GROUP BY`) now
+  **binds** on 2.8 (verified with a throwaway watermarked table + array column). So on 2.8 the casino
+  `TUMBLE` is viable **natively** — the Kafka round-trip is **no longer required for the watermark**.
+  (It remains in the shipped config only for the *decoupling* throughput win — §15 — not for TUMBLE.
+  And decoupled-**rolling** is still the throughput choice; TUMBLE only matters if you want windowed
+  semantics. So this is an *unlock*, not a mandated change.)
+- ❌ **Snapshot expiration — STILL BROKEN on 2.8.0 (definitively tested 2026-06-01).** The §7 2.7.4
+  limitation **persists**. Test: live-recreated `sink_casino_real_bet` with
+  `snapshot_expiration_max_age_millis = '60000'` (1 min) + `snapshot_expiration_retain_last = '2'`, then
+  sampled snapshot count + oldest-snapshot age every 75s via Trino `$snapshots`:
+  ```
+  #1: snapshots=17  oldest=644s
+  #2: snapshots=18  oldest=721s
+  #3: snapshots=20  oldest=798s
+  #4: snapshots=23  oldest=874s
+  ```
+  With a 60s `max_age`, the oldest snapshot should never exceed ~1–2 min and the count should fall to
+  ~2. Instead the count **grew (17→23)** and the oldest snapshot **aged past 14.5 min and kept
+  climbing** — the options are accepted in the DDL but **do not prune** with the Lakekeeper REST catalog,
+  exactly as on 2.7.4. **Verdict: the 2.8 upgrade did NOT fix snapshot expiration.** Compaction works;
+  expiration does not. (The live test sink was reverted to the shipped config — the test options have no
+  effect, so the files keep `enable_snapshot_expiration='true'` only as an aspirational marker.)
+- **`ENGINE=iceberg` / `ALTER SINK SET` compaction opts (§7)** — still not re-checked (minor).
 
 Meta backend stays **Postgres** (the meta store isn't a bottleneck — decided against switching).
 

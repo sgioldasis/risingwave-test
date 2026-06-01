@@ -3,7 +3,7 @@
 Real-time streaming pipeline that reads live casino and sportsbook data from Kaizen production Kafka clusters into RisingWave, computes two customer-level metrics, and lands results into Lakekeeper-managed Iceberg tables.
 
 > **Status:** working as of 2026-06-01. RisingWave **2.8.0** (upgraded from 2.7.4 — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19), Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
-> _Note: the "in 2.7.4" limitations called out below (§7 snapshot expiration; §14-equivalent UNNEST/watermark) were observed on 2.7.4 and have **not yet been re-verified on 2.8.0** — see §19._
+> _Note: the two "in 2.7.4" limitations were re-verified on 2.8.0 (2026-06-01): UNNEST/watermark is **FIXED** (TUMBLE+EOWC now binds over UNNEST); snapshot expiration (§7) is **STILL BROKEN** (definitively tested — snapshots grow, oldest ages past `max_age`, nothing prunes). See §19._
 >
 > **Architecture notes (read first):**
 > - Sources use `scan.startup.mode = 'latest'` — fast, history-free startup; the 5-minute rolling windows fill over time as live events arrive. `'earliest'` (full-history backfill) is available but slow/unpredictable on this cluster — run it off-demo, not interactively.
@@ -440,7 +440,7 @@ WITH (
 | `create_table_if_not_exists = 'true'` | Sink creates the Iceberg table on first run — no manual `CREATE TABLE` needed. |
 | `commit_checkpoint_interval = 20` | Commit every 20 checkpoints. With `barrier_interval_ms = 2000`, that's roughly **one Iceberg commit every ~30–40 s**. This is checkpoints, **not seconds** — see §7. (Reduced from 40 to roughly halve first-commit latency for Brazil — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §8.) |
 | `enable_compaction` + `compaction.trigger_snapshot_count = '5'` | Merges small Parquet files. The `trigger_snapshot_count` is essential — without it compaction triggers unreliably (see §7). |
-| `enable_snapshot_expiration = 'true'` | Intended to prune old snapshots — **does not actually prune in 2.7.4** (see §7). |
+| `enable_snapshot_expiration = 'true'` | Intended to prune old snapshots — **does not actually prune in 2.7.4 or 2.8.0** (see §7). |
 | `compaction.write_parquet_compression = 'zstd'` | Compacted files use zstd (~2-3× smaller than snappy). |
 
 **`background_ddl = true`:** Applied only here (after all MVs exist) so the sink returns immediately while the initial snapshot commits asynchronously.
@@ -889,9 +889,9 @@ SELECT operation, COUNT(*) FROM datalake.public.\"rw_managed_casino_real_bet\$sn
 | `compaction.trigger_snapshot_count` | `'5'` | Minimum snapshots before compaction fires (both conditions must be met) |
 | `compaction.write_parquet_compression` | `'zstd'` | Compacted output uses zstd compression |
 
-### Snapshot expiration — does NOT work in 2.7.4 (known limitation)
+### Snapshot expiration — does NOT work in 2.7.4 OR 2.8.0 (known limitation)
 
-`enable_snapshot_expiration = 'true'` (and `snapshot_expiration_max_age_millis` / `snapshot_expiration_retain_last`) are **accepted in the DDL but do not prune snapshots** with the Lakekeeper REST catalog in RisingWave 2.7.4. We confirmed: snapshot count grows unbounded, no `expire` activity in logs, metadata files accumulate.
+`enable_snapshot_expiration = 'true'` (and `snapshot_expiration_max_age_millis` / `snapshot_expiration_retain_last`) are **accepted in the DDL but do not prune snapshots** with the Lakekeeper REST catalog. First seen on 2.7.4; **re-tested definitively on 2.8.0 (2026-06-01) and still broken** — with a 60s `max_age` set live on `sink_casino_real_bet`, the snapshot count grew (17→23) and the oldest snapshot aged past 14.5 min instead of being pruned to ~1–2 min. Snapshot count grows unbounded, no `expire` activity in logs, metadata files accumulate. **The 2.8 upgrade did not fix this** — see BRAZIL_WORKLOAD_TUNING.md §19 for the sampled data.
 
 **Impact is limited:** compaction (the thing that fixes query performance by merging data files) works. Expiration only removes old snapshot *metadata* — lightweight, cosmetic growth over a demo timeframe.
 
@@ -925,7 +925,7 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **`commit_checkpoint_interval` counts checkpoints, not seconds.** Multiply by `barrier_interval_ms` (2000 ms here) to estimate the real cadence: `20 × 2000 ms ≈ ~30–40 s`. See §7.
 
-- **Snapshot expiration doesn't prune in 2.7.4.** `enable_snapshot_expiration` is accepted but ineffective with the REST catalog. Compaction works; expiration doesn't. See §7.
+- **Snapshot expiration doesn't prune in 2.7.4 or 2.8.0.** `enable_snapshot_expiration` is accepted but ineffective with the REST catalog (re-tested definitively on 2.8). Compaction works; expiration doesn't. See §7.
 
 - **Grafana needs the `trino-datasource` plugin + dollar-free views.** Trino's metadata tables (`table$snapshots`, `table$partitions`) contain a `$`, which Grafana interprets as a variable. The `casino_trino_views` Dagster asset creates dollar-free views: `casino_real_bet_snapshots` / `turnover_pct_snapshots` (feed the snapshot-count and operations panels) and `casino_real_bet_rowcount` / `turnover_pct_rowcount` (feed the "Iceberg Rows" panels via `SUM(record_count)` over `$partitions` — instant metadata reads instead of a `COUNT(*)` full scan; see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §11). The plugin auto-installs via `GF_INSTALL_PLUGINS=trino-datasource`, and Trino needs `http-server.process-forwarded=true` to accept Grafana's proxied requests.
 
