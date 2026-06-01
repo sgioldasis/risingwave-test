@@ -319,6 +319,63 @@ and `turnover_pct_rowcount` views.
 
 ---
 
+## 12. MinIO server-side tuning (experimental — pending measurement, 2026-06)
+
+**File:** `docker-compose.yml` (`minio-0`)
+**Changes:** `MINIO_SCANNER_SPEED: slowest` (new); container memory `2G → 4G`
+
+**Status:** ⚠️ **Unverified.** Unlike §1–§11 (each tested), these two are *cheap, low-risk
+guesses* added to measure whether any MinIO-side knob moves throughput. They have **not** yet
+been confirmed to help. Validate by restarting and re-running the lag/backpressure check below;
+if throughput doesn't move, revert them.
+
+**Context:** MinIO is the established binding constraint for this PoC — `source_rate_limit=200`
+(§1) is "the highest rate the single MinIO sustained," and §1 observed it CPU-bound at
+200–350%. A live diagnosis on 2026-06-01 (10-core / 17 GB host) confirmed the symptom from the
+other side: the source consumed only ~50 rows/s with **large, growing Kafka lag** and **heavy
+output-buffer backpressure** on internal fragments, while the **compute node used only ~2.3 of
+10 cores**. That idle CPU is compute *blocked on state-store flushes to MinIO*, not spare
+capacity — consistent with §6's finding that raising `default_parallelism` ("Full" → 4) gave
+**no throughput gain**. So the lever, if any, is on MinIO itself, not more compute actors.
+
+**Reasoning for each knob:**
+- `MINIO_SCANNER_SPEED = slowest` — frees background-scanner CPU/IO for serving writes.
+  Expected gain is **small**: MinIO already deprioritizes the scanner for read/write by default
+  (waits ~10× the scan-op time between scans), and the demo dataset is tiny, so the scanner
+  isn't a major competitor during write bursts.
+- memory `2G → 4G` — more request-buffer / metadata-cache headroom under bursts. The host has
+  17 GB (the §7 layout assumed a 12 GB VM), so the extra 2 GB is comfortably available.
+
+**Deliberately NOT changed — multi-drive MinIO.** Giving MinIO 4 directories to parallelize its
+write path across the idle cores would enable **erasure-coding parity**, which *adds* CPU and
+write amplification per object. Since MinIO is already CPU-bound, that risks making it slower,
+and it requires wiping `/data`. Rejected unless the cheap knobs above prove insufficient and we
+explicitly want to run that experiment.
+
+**The honest ceiling.** Single-node MinIO is architecturally weak at high small-object write
+rates; the high-value work was already done RisingWave-side (§3–§5: fewer, larger, less-frequent
+writes). These knobs are expected to buy ~10–30% at most, not a multiple. The two real ceiling
+lifts remain: (a) restructure the rolling `RANGE` window MVs into `TUMBLE`/`HOP` +
+`EMIT ON WINDOW CLOSE` to cut per-row work and write volume (changes metric semantics), or
+(b) real distributed storage — not a laptop move.
+
+**How to validate after a restart:**
+```bash
+# 1. MinIO CPU under load (was 200–350% in §1 — is it still the wall after the bump?)
+docker stats --no-stream minio-0
+
+# 2. Source consume rate + backpressure (compare to the ~50 rows/s baseline)
+PROM=http://localhost:9500
+curl -s "$PROM/api/v1/query" --data-urlencode \
+  "query=sum by (source_name) (rate(stream_source_output_rows_counts[1m]))"
+curl -s "$PROM/api/v1/query" --data-urlencode \
+  "query=topk(3, sum by (fragment_id) (rate(stream_actor_output_buffer_blocking_duration_ns[1m]))/1e9)"
+```
+If MinIO CPU is no longer pegged but throughput is unchanged, MinIO is no longer the wall and the
+bottleneck has moved (likely to the window-MV compute) — pursue lever (a) instead.
+
+---
+
 ## Quick reference — final tuned values
 
 | Setting | Location | Value |
@@ -339,7 +396,8 @@ and `turnover_pct_rowcount` views.
 | `iceberg_compaction_write_parquet_max_row_group_rows` | `risingwave.toml` | `10000` |
 | `commit_checkpoint_interval` (casino sinks) | sink models | `20` |
 | compute-node-0 memory | `docker-compose.yml` | `6 G / 4 G` |
-| minio-0 memory | `docker-compose.yml` | `2 G / 1 G` |
+| minio-0 memory | `docker-compose.yml` | `4 G / 1 G` (§12, experimental) |
+| `MINIO_SCANNER_SPEED` | `docker-compose.yml` | `slowest` (§12, experimental) |
 | Trino `depends_on` | `docker-compose.yml` | `lakekeeper-bootstrap` completed |
 | Grafana refresh | `casino-uc-metrics.json` | `1m` |
 

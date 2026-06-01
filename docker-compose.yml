@@ -385,6 +385,11 @@ services:
       MINIO_ROOT_PASSWORD: hummockadmin
       MINIO_ROOT_USER: hummockadmin
       MINIO_DOMAIN: "minio-0"
+      # Experiment (2026-06): deprioritize the background data scanner so more
+      # CPU/IO goes to serving Hummock + Iceberg writes. MinIO already pauses the
+      # scanner for I/O by default, so the gain is expected to be small — kept as
+      # a cheap, low-risk knob to measure. See BRAZIL_WORKLOAD_TUNING.md §12.
+      MINIO_SCANNER_SPEED: slowest
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       ALL_PROXY: ""
@@ -405,7 +410,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          # Experiment (2026-06): 2G -> 4G for more request-buffer / metadata
+          # cache headroom under write bursts. Host has 17 GB. See §12.
+          memory: 4G
         reservations:
           memory: 1G
     networks:
