@@ -613,15 +613,82 @@ no instability. The MinIO state-store bottleneck is **eliminated** — the pipel
 - **SST reclaim (`risingwave.toml`):** the local state dir grew **~3 GB/min at 800/s** (≈24 GB in
   8 min — would fill the laptop disk in ~10 min). Lowered `min_sst_retention_time_sec` 21600→600,
   `full_gc_interval_sec` 3600→300, `periodic_space_reclaim_compaction_interval_sec` 3600→60 so stale
-  SSTs vacuum quickly. **Required for any run longer than a few minutes.**
+  SSTs vacuum quickly. **⚠️ Reverted — see §18:** at 800/s the reclaim couldn't keep pace (disk still
+  grew) *and* the frequent compaction caused backpressure spikes, so loose retention was restored.
 - **Rate limit (`orchestration/definitions.py` ramp) — measured, kept at 200:** with MinIO gone the
   pipeline is rate-limit-bound at bp~0, so the cap finally matters. **Tested 400 (≈1,600/s cap) and it
   OVERSHOT:** it briefly touched 1,600/s, then compute saturated (~6 of 10 cores — the double-`UNNEST`
   + window-state + UC2 + round-trip), backpressure rose to ~5, and throughput **thrashed DOWN to
-  ~515/s** (worse than the lower limit), while disk climbed ~2.4 GB/min. **Reverted to 200.**
+  ~515/s** (worse than the lower limit), while disk climbed ~2.4 GB/min. A later probe at **250
+  (≈1,000/s)** pinned the ceiling more precisely: it reached **~980/s at bp~0** but then **decayed to
+  ~670/s with backpressure climbing to ~6** — so even 1,000/s overshoots. **Reverted to 200.**
   **Conclusion: ~800/s (limit 200) is the sustainable compute ceiling** on this single-node stack —
   it holds at bp~0 with CPU/disk headroom. The full ~1,500/s topic **cannot** be sustained here
   (compute-bound, not storage-bound now); **800/s (~6.7× §13's 120/s) is the stable max.**
+
+---
+
+## 17. E2E best-practices review (applied — pending measurement)
+
+A pass over the full UC1 + UC2 chains against the RisingWave best-practices rules. Already-correct
+patterns left as-is: `APPEND ONLY` sources, shared source, `ROW_NUMBER` top-1 in the `_latest` MVs
+(not `ORDER BY`), `UNION ALL + GROUP BY` for the ratio (avoids the join panic, §5.5), decoupled-rolling
++ local-fs. Three changes applied — all semantics-preserving and each *reduces* write/compute load:
+
+1. **Projection-prune `mv_casino_transactions` 14 → 6 columns** (the **shared** foundation, so it helps
+   both chains). Dropped `message_created_at, transaction_id, amount_raw, bonus_action,
+   game_id/game_type/is_live, company_id` — including the per-row `GameInfo` struct accesses and an
+   unused `TO_TIMESTAMP`. The two consumers' filter `amount_raw IS NOT NULL AND <> ''` → **`amount_abs
+   IS NOT NULL`** (equivalent: `amount_abs` is NULL iff `Amount` was empty/null), which is what lets
+   `amount_raw` be dropped. Cuts per-row width, struct-extraction CPU, and state-store I/O pipeline-wide.
+
+2. **Dropped the two serving-MV indexes** (`idx_casino_real_bet_customer`,
+   `idx_turnover_percentage_customer`). Per `perf-indexes-on-mv`, indexes only help **point lookups** —
+   but the Grafana dashboard does **only full-scan / top-N / aggregate** queries (zero
+   `WHERE customer_id = ?`). So they gave no read benefit while adding incremental-maintenance write
+   overhead on every MV update — pure cost on a write/compute-bound pipeline.
+
+3. **`force_compaction = true` on the two Iceberg upsert sinks** (`sink_casino_real_bet`,
+   `sink_turnover_percentage`). Per `sink-force-compaction`: the rolling sum changes every event, so a
+   key gets many upsert updates per barrier; `force_compaction` collapses them to one-per-key-per-barrier
+   → fewer Iceberg upsert deltas → less MinIO write + compaction. *(Verify the Iceberg sink accepts it;
+   drop the option if it rejects at DDL time.)*
+
+**Expected impact:** modest per-row / per-update savings, not a ceiling-mover (the ~800/s compute
+ceiling is the double-`UNNEST` fan-out + window-state, which these don't remove). **Deferred** options:
+sportsbook `TUMBLE`+EOWC (low-volume, not worth it) and decoupling UC2 casino-turnover (lower ROI;
+it's still inline on the production path but lower-volume and we're compute-bound). **A/B after rebuild.**
+
+---
+
+## 18. SST retention reverted to loose (compaction spikes outweighed the disk benefit)
+
+The §16 aggressive SST reclaim (`min_sst_retention_time_sec=600`, `full_gc_interval_sec=300`,
+`periodic_space_reclaim_compaction_interval_sec=60`) was **reverted to the loose defaults**
+(`21600 / 3600 / 3600`). At the ~800/s steady rate it delivered the **worst of both**:
+
+- it **didn't bound the disk** — reclaim couldn't keep pace; the local-fs state dir grew ~3 GB/min
+  to **~20 GB over a ~12-min run**; and
+- the forced compaction caused backpressure that **escalated from transient spikes into sustained
+  red** (bp 3.5 → ~6, no longer recovering), dragging throughput **down from ~800/s to ~280–450/s**
+  — clearly visible on the §17 Grafana panel. (Measured in the final test, 2026-06-01.)
+
+**Decision:** for a **short demo** (the actual use case — runs ~10 min, then stopped), loose retention
+is better: **smooth throughput** (bp stayed 0–0.85, no compaction spikes) and the disk doesn't fill
+within the run window anyway. The disk-bounding aggressive retention was *meant* to provide only
+matters for long-running deployments — where the real fix is horizontal storage, not retention tuning.
+**Operational note:** on a long run, watch disk and stop/restart before it fills (~10–13 min at 800/s).
+
+**Compaction bursts are inherent to local-fs — and not a retention/rate-limit artifact.** Even on
+**loose retention at 600/s**, the growing local-fs LSM periodically triggers a heavy leveled
+compaction (`compactor-0` ~290%) that momentarily competes with the streaming compute and
+backpressures it — observed **bp spiking to ~4 with throughput dipping to ~170/s, then recovering to
+green within ~1–2 min**. These are **transient and self-recover**; lowering the rate limit only delays
+state growth, it doesn't eliminate them. **Reading the §17 backpressure panel:** a **spike that
+returns to green = a compaction burst (normal, ignore)**; a line that **climbs and stays red = real
+overload** (e.g. rate limit above the ~800/s compute ceiling). This is the local-fs trade-off vs MinIO
+state store: higher throughput (~800/s vs ~380/s) in exchange for occasional self-recovering
+compaction dips.
 
 ---
 

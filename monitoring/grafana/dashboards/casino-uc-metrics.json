@@ -778,7 +778,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 61
       }
     },
     {
@@ -794,7 +794,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 62
       },
       "options": {
         "tooltip": {
@@ -837,7 +837,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 62
+        "y": 70
       }
     },
     {
@@ -853,7 +853,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 63
+        "y": 71
       },
       "options": {
         "tooltip": {
@@ -900,7 +900,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 101
+        "y": 109
       },
       "options": {
         "tooltip": {
@@ -1006,7 +1006,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 79
       },
       "options": {
         "tooltip": {
@@ -1063,7 +1063,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 93
+        "y": 101
       },
       "options": {
         "tooltip": {
@@ -1110,7 +1110,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 79
+        "y": 87
       },
       "options": {
         "tooltip": {
@@ -1189,7 +1189,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 79
+        "y": 87
       },
       "options": {
         "tooltip": {
@@ -1268,7 +1268,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 87
+        "y": 95
       },
       "options": {
         "colorMode": "background",
@@ -1321,7 +1321,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 87
+        "y": 95
       },
       "options": {
         "colorMode": "background",
@@ -1515,6 +1515,80 @@
           "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage WHERE sportsbook_turnover > 0 ORDER BY sportsbook_turnover DESC NULLS LAST LIMIT 20",
           "format": "table",
           "rawQuery": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Streaming Backpressure (max across fragments \u2014 0 healthy, >1 overloaded)",
+      "description": "The single most-blocked streaming fragment's output-buffer-blocking ratio (max over fragments of rate(stream_actor_output_buffer_blocking_duration_ns)/1e9). ~0 = the pipeline is keeping up; climbing toward/above 1 = a stage is blocked on its downstream, i.e. overloaded (rate limit too high / compute saturated). This is the gauge that jumped ~0->~6 when the 1000/s rate-limit probe overshot. To see WHICH stage, switch the query to `sum by (fragment_id)(...)` and map fragment_id via rw_catalog.rw_fragments.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(sum by (fragment_id) (rate(stream_actor_output_buffer_blocking_duration_ns[1m])) / 1000000000)",
+          "legendFormat": "max backpressure",
           "refId": "A"
         }
       ]

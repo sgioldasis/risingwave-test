@@ -71,22 +71,17 @@ SET streaming_use_shared_source = true;
 --    Two chained UNNESTs with explicit row aliases resolve the "Created" field
 --    collision between CasinoMessageInformation and TransactionInformation.
 -- ---------------------------------------------------------------------------
+-- Pruned to the 6 columns the downstream MVs read (§17): dropped 8 unused archive/derived
+-- cols to cut per-row width, struct-extraction CPU and state-store I/O across both chains.
+-- amount_abs is NULL iff Amount was empty/null → downstream uses `amount_abs IS NOT NULL`.
 CREATE MATERIALIZED VIEW mv_casino_transactions AS
 SELECT
     s."CustomerId"                                        AS customer_id,
     msg."MessageTypeId"                                   AS message_type_id,
-    TO_TIMESTAMP((msg."Created").seconds)                 AS message_created_at,
-    txn."TransactionId"                                   AS transaction_id,
     txn."AccountId"                                       AS account_id,
     txn."CurrencyId"                                      AS currency_id,
     TO_TIMESTAMP((txn."Created").seconds)                 AS transaction_created_at,
-    ABS(NULLIF(txn."Amount", '')::numeric)                AS amount_abs,
-    txn."Amount"                                          AS amount_raw,
-    txn."BonusAction"                                     AS bonus_action,
-    (s."GameInfo")."GameId"                               AS game_id,
-    (s."GameInfo")."GameType"                             AS game_type,
-    (s."GameInfo")."IsLive"                               AS is_live,
-    s."CompanyId"                                         AS company_id
+    ABS(NULLIF(txn."Amount", '')::numeric)                AS amount_abs
 FROM
     src_casino_prd                             AS s,
     UNNEST((s."RoundInfo")."Messages")         AS msg,
@@ -109,8 +104,7 @@ SELECT
 FROM mv_casino_transactions
 WHERE message_type_id = 1
   AND account_id      = 1
-  AND amount_raw IS NOT NULL
-  AND amount_raw <> '';
+  AND amount_abs IS NOT NULL;   -- §17 (amount_raw pruned from mv_casino_transactions)
 
 -- Round-trip leg 1: publish flat bets to Redpanda.
 CREATE SINK sink_casino_bets_flat_kafka
@@ -180,8 +174,7 @@ SELECT
 FROM mv_casino_transactions
 WHERE message_type_id = 2
   AND account_id      IN (1, 4)
-  AND amount_raw IS NOT NULL
-  AND amount_raw <> '';
+  AND amount_abs IS NOT NULL;   -- §17 (amount_raw pruned from mv_casino_transactions)
 
 -- ---------------------------------------------------------------------------
 -- 4. 90-day rolling sportsbook turnover per customer (from src_bets_br).
@@ -316,6 +309,7 @@ FROM mv_casino_real_bet
 WITH (
     connector                            = 'iceberg',
     type                                 = 'upsert',
+    force_compaction                     = 'true',
     primary_key                          = 'customer_id,currency_id,event_ts',
     enable_compaction                    = 'true',
     compaction_interval_sec              = '60',
@@ -339,6 +333,7 @@ FROM mv_turnover_percentage
 WITH (
     connector                            = 'iceberg',
     type                                 = 'upsert',
+    force_compaction                     = 'true',
     primary_key                          = 'customer_id',
     enable_compaction                    = 'true',
     compaction_interval_sec              = '60',
@@ -385,19 +380,11 @@ FORMAT PLAIN ENCODE JSON (
 );
 
 -- =============================================================================
--- Indexes on serving MVs
---
--- Terminal MVs queried by Grafana or application code do full heap scans
--- without indexes. customer_id is the primary lookup key for both UC1 and UC2;
--- (customer_id, currency_id) is the natural compound key for real-bet queries.
--- RisingWave indexes are maintained incrementally by the streaming engine —
--- they add write overhead but pay off immediately on point lookups.
+-- Serving-MV indexes: REMOVED (§17). The Grafana dashboard issues only full-scan / top-N /
+-- aggregate queries — zero `WHERE customer_id = ?` point lookups — so these indexes gave no
+-- read benefit while adding incremental write overhead on every MV update (perf-indexes-on-mv).
+-- Re-add a CREATE INDEX here only if a genuine point-lookup serving pattern is introduced.
 -- =============================================================================
-CREATE INDEX IF NOT EXISTS idx_casino_real_bet_customer
-    ON mv_casino_real_bet (customer_id, currency_id);
-
-CREATE INDEX IF NOT EXISTS idx_turnover_percentage_customer
-    ON mv_turnover_percentage (customer_id);
 
 \echo ''
 \echo '=== MVs ==='

@@ -8,6 +8,7 @@ FROM {{ ref('mv_casino_real_bet') }}
 WITH (
     connector                            = 'iceberg',
     type                                 = 'upsert',
+    force_compaction                     = 'true',
     primary_key                          = 'customer_id,currency_id,event_ts',
     enable_compaction                    = 'true',
     compaction_interval_sec              = '60',

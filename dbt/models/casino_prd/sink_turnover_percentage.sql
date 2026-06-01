@@ -8,6 +8,7 @@ FROM {{ ref('mv_turnover_percentage') }}
 WITH (
     connector                            = 'iceberg',
     type                                 = 'upsert',
+    force_compaction                     = 'true',
     primary_key                          = 'customer_id',
     enable_compaction                    = 'true',
     compaction_interval_sec              = '60',

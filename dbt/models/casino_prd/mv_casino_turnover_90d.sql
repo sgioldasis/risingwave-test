@@ -17,5 +17,4 @@ SELECT
 FROM {{ ref('mv_casino_transactions') }}
 WHERE message_type_id = 2
   AND account_id      IN (1, 4)
-  AND amount_raw IS NOT NULL
-  AND amount_raw <> ''
+  AND amount_abs IS NOT NULL   -- §17: NULL iff Amount was empty/null (amount_raw pruned)
