@@ -324,10 +324,37 @@ and `turnover_pct_rowcount` views.
 **File:** `docker-compose.yml` (`minio-0`)
 **Changes:** `MINIO_SCANNER_SPEED: slowest` (new); container memory `2G → 4G`
 
-**Status:** ⚠️ **Unverified.** Unlike §1–§11 (each tested), these two are *cheap, low-risk
-guesses* added to measure whether any MinIO-side knob moves throughput. They have **not** yet
-been confirmed to help. Validate by restarting and re-running the lag/backpressure check below;
-if throughput doesn't move, revert them.
+**Status:** ❌ **Measured — no throughput benefit (2026-06-01).** Both knobs are applied and
+harmless (MinIO now uses ~2.5 GB of the 4 GB for cache), but they do **not** move throughput,
+because measurement proved **MinIO is no longer the bottleneck in this configuration.** Kept as
+inert/near-zero-cost; revert freely if you want minimal config. The real lever is compute-side
+(see "Measured result" below).
+
+### Measured result (2026-06-01, 10-core / 17 GB host)
+After a clean restart with these changes, throughput followed the window-fill curve, not the
+MinIO config:
+
+| Moment | casino consume | MinIO CPU | compute CPU | backpressure |
+|--------|---------------|-----------|-------------|--------------|
+| fresh start (empty windows) | ~787/s | 136% | 461% | ~0 |
+| ~1 min in | ~365/s | 17% | 503% | rising |
+| warmed (~3–4 min, windows filling) | **~53–133/s** | **~4%** | 134% (stalled) | **5.7** |
+
+- The ~787/s at fresh start is the **empty-window artifact** — with nearly no window state to
+  maintain, the source runs near its `200 × ~4-actor` rate cap. It decays to the same ~53/s
+  baseline as state accumulates. Not a MinIO-config effect.
+- In the choked (warmed) state, **MinIO idles at ~4 % CPU** — far from §1's 200–350 %. The
+  backpressure concentrates on **`mv_casino_transactions`** (the double-`UNNEST` fan-out;
+  fragments 10/11/14) and propagates back to the source. Those window operators **stall on
+  state access** (low CPU + high backpressure = blocked, not computing).
+- **Interpretation:** §1's MinIO-bound regime was real *then* (full backfill, 90-day windows,
+  pre-§3–§5). After the window shrink (§2) and write tuning (§3–§5), the bottleneck **migrated
+  to compute window-state**. MinIO-side knobs can no longer help.
+- **Next lever (the only real one on this hardware):** restructure the rolling `RANGE` window
+  MVs (`mv_casino_real_bet`, `mv_casino_turnover_90d`, `mv_sportsbook_turnover_90d`) into
+  `TUMBLE`/`HOP` + `EMIT ON WINDOW CLOSE` to cut per-event state work and write volume. Changes
+  the metric from a continuous rolling sum to periodic window finals — a semantics trade-off to
+  weigh against the throughput gain.
 
 **Context:** MinIO is the established binding constraint for this PoC — `source_rate_limit=200`
 (§1) is "the highest rate the single MinIO sustained," and §1 observed it CPU-bound at
