@@ -440,7 +440,7 @@ at the cost of a larger semantics change (periodic finals, requires watermarks).
 
 ---
 
-## 14. UC1 TUMBLE restructure — ❌ INFEASIBLE on RisingWave 2.7.4 (tested 2026-06-01, reverted)
+## 14. UC1 TUMBLE restructure — ❌ INFEASIBLE on RisingWave 2.7.4 (tested 2026-06-01, reverted; ⚠️ re-test on 2.8 — §19)
 
 **Outcome:** Attempted and **reverted.** A `TUMBLE` + `EMIT ON WINDOW CLOSE` aggregation cannot be
 built on the casino transaction data in 2.7.4, because of a hard interaction between the nested
@@ -689,6 +689,32 @@ returns to green = a compaction burst (normal, ignore)**; a line that **climbs a
 overload** (e.g. rate limit above the ~800/s compute ceiling). This is the local-fs trade-off vs MinIO
 state store: higher throughput (~800/s vs ~380/s) in exchange for occasional self-recovering
 compaction dips.
+
+---
+
+## 19. Upgrade to RisingWave v2.8.0 (working)
+
+Bumped the image **`v2.7.4 → v2.8.0`** (latest stable; v2.9.0 is still pre-release) via the
+`${RW_IMAGE:-risingwavelabs/risingwave:v2.8.0}` anchor in `docker-compose.yml` — applies to all RW
+nodes. It's a single-minor-version step with **no breaking changes** affecting this pipeline
+(`hummock+fs`, protobuf sources, the Iceberg connection/sink, `force_compaction`, `APPEND ONLY` all
+unaffected per the changelog). Because "⛔ Stop Everything" wipes the meta + volumes, the upgrade
+started on a **clean slate** (fresh Postgres meta + fresh local-fs state — no cross-version migration).
+
+**✅ Validated on 2.8.0:** stack comes up healthy; the casino pipeline builds (16 models + 5 sinks);
+throughput/backpressure behave as on 2.7.4 (~600–800/s, green); coherence clean.
+
+**⚠️ NOT re-verified on 2.8.0 — the 2.7.4-specific findings below may now differ; re-test before relying:**
+- **Snapshot expiration (§7)** — didn't prune with the Lakekeeper REST catalog on 2.7.4; the v2.8 docs
+  claim it prunes. This was the **motivation** for upgrading — worth confirming (watch snapshot/data-file
+  count over time via Trino).
+- **`UNNEST` strips the watermark → TUMBLE+EOWC infeasible (§14)** — if 2.8 propagates watermarks
+  through ProjectSet, the casino TUMBLE becomes viable **without** the Kafka round-trip. High-value,
+  cheap to re-test (the §14 Test-3 CTE-with-UNNEST probe is one query).
+- **`ENGINE=iceberg` ignores `enable_compaction`; `ALTER SINK SET` can't change compaction opts (§7)** —
+  minor; not re-checked.
+
+Meta backend stays **Postgres** (the meta store isn't a bottleneck — decided against switching).
 
 ---
 

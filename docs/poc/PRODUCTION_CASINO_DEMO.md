@@ -2,13 +2,14 @@
 
 Real-time streaming pipeline that reads live casino and sportsbook data from Kaizen production Kafka clusters into RisingWave, computes two customer-level metrics, and lands results into Lakekeeper-managed Iceberg tables.
 
-> **Status:** working as of 2026-06-01. RisingWave **2.7.4**, Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
+> **Status:** working as of 2026-06-01. RisingWave **2.8.0** (upgraded from 2.7.4 — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19), Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
+> _Note: the "in 2.7.4" limitations called out below (§7 snapshot expiration; §14-equivalent UNNEST/watermark) were observed on 2.7.4 and have **not yet been re-verified on 2.8.0** — see §19._
 >
 > **Architecture notes (read first):**
 > - Sources use `scan.startup.mode = 'latest'` — fast, history-free startup; the 5-minute rolling windows fill over time as live events arrive. `'earliest'` (full-history backfill) is available but slow/unpredictable on this cluster — run it off-demo, not interactively.
 > - Iceberg sinks use `connector = 'iceberg'` (write directly to Lakekeeper), **not** `ENGINE = iceberg` managed tables. The sink auto-creates the Iceberg table.
 > - The `rw_managed_*` Iceberg tables are queried via **Trino** (`datalake` catalog), not RisingWave — there are no RisingWave Iceberg read-sources.
-> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot **expiration does not** prune in 2.7.4 (see §7).
+> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot **expiration did not** prune on 2.7.4 (see §7) — **not re-verified on 2.8.0** (the v2.8 docs claim it prunes; re-test pending).
 >
 > **High-volume tuning:** for running this demo against the high-volume **Brazil** topics
 > (`cronus.casino.out.br`, `bets-out-br`) on a single-node stack — including the
