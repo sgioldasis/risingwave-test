@@ -778,7 +778,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 53
       }
     },
     {
@@ -794,7 +794,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 54
       },
       "options": {
         "tooltip": {
@@ -837,7 +837,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 62
       }
     },
     {
@@ -853,7 +853,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 63
       },
       "options": {
         "tooltip": {
@@ -900,7 +900,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 101
       },
       "options": {
         "tooltip": {
@@ -943,7 +943,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 44
       }
     },
     {
@@ -959,7 +959,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 95
+        "y": 45
       },
       "options": {
         "tooltip": {
@@ -1006,7 +1006,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 71
       },
       "options": {
         "tooltip": {
@@ -1063,7 +1063,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 78
+        "y": 93
       },
       "options": {
         "tooltip": {
@@ -1110,7 +1110,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 62
+        "y": 79
       },
       "options": {
         "tooltip": {
@@ -1189,7 +1189,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 62
+        "y": 79
       },
       "options": {
         "tooltip": {
@@ -1252,6 +1252,112 @@
           "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", COUNT(CASE WHEN operation = 'append' THEN 1 END) AS appends, COUNT(CASE WHEN operation = 'replace' THEN 1 END) AS compactions FROM datalake.public.turnover_pct_snapshots GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
           "format": 0,
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "Iceberg Live Data Files (rw_managed_casino_real_bet)",
+      "description": "Current count of live data files in the Iceberg table. Drops after compaction merges small Parquet files into fewer large ones. Not a history \u2014 RisingWave leaves the snapshot summary empty, so only the current count is available.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 87
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT file_count FROM datalake.public.casino_real_bet_filecount"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Iceberg Live Data Files (rw_managed_turnover_percentage)",
+      "description": "Current count of live data files in the Iceberg table. Drops after compaction merges small Parquet files into fewer large ones. Not a history \u2014 RisingWave leaves the snapshot summary empty, so only the current count is available.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 87
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT file_count FROM datalake.public.turnover_pct_filecount"
         }
       ]
     },

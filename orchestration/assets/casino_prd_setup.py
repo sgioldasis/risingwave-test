@@ -173,6 +173,16 @@ TRINO_VIEWS = [
     ("turnover_pct_rowcount",
      "SELECT SUM(record_count) AS iceberg_rows "
      'FROM datalake.public."rw_managed_turnover_percentage$partitions"'),
+    # Live data-file count from the $files metadata table — a manifest-only
+    # lookup. This is the current file count (drops after compaction merges small
+    # files), NOT a per-snapshot history: RisingWave leaves the $snapshots summary
+    # map empty (see note above), so summary['total-data-files'] is unavailable.
+    ("casino_real_bet_filecount",
+     "SELECT COUNT(*) AS file_count "
+     'FROM datalake.public."rw_managed_casino_real_bet$files"'),
+    ("turnover_pct_filecount",
+     "SELECT COUNT(*) AS file_count "
+     'FROM datalake.public."rw_managed_turnover_percentage$files"'),
 ]
 
 
