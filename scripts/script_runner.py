@@ -54,6 +54,10 @@ SCRIPTS = [
     ("3_run_avro_demo.sh", "🪶 Avro Demo", "Produce nested Avro orders, create RisingWave source + MV, and sink into managed Iceberg tables"),
     # --- Casino Production Demo (moved to the very bottom) ----------------
     ("3_run_casino_prd_demo.sh", "🏭 Casino Production Demo", "Wire RisingWave to prd2 Kafka (cronus.casino.out.gh), create MVs + Iceberg sinks via Lakekeeper"),
+    # --- Set Brazil source rate limit (live, no teardown) ----------------
+    ("set_source_rate_limit.sh", "🎚️ Set Source Rate Limit",
+     "Set source_rate_limit on both Casino sources (0=pause, -1=unlimited)",
+     "Rate limit (0=pause, -1=unlimited, default 1)"),
     # --- Stop everything (kept last so it's hard to misclick) -------------
     ("6_down.sh", "⛔ Stop Everything", "Stop all services and cleanup"),
 ]
@@ -628,7 +632,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 if (hasParams) {
                     paramHtml = `
                         <div class="param-container" style="margin-top: 8px;" onclick="e => e.stopPropagation()">
-                            <input type="text" id="param-${file}" placeholder="TPS (default 1)" 
+                            <input type="text" id="param-${file}" placeholder="${typeof hasParams === 'string' ? hasParams : 'TPS (default 1)'}"
                                    style="width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--bg-tertiary); background: var(--bg-primary); color: var(--fg-primary); font-size: 0.8rem;"
                                    value="1">
                         </div>

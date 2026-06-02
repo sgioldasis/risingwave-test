@@ -332,22 +332,15 @@ def casino_prd_dbt_assets(
     else:
         context.log.info("Pre-build casino sinks dropped")
     yield from dbt.cli(["build"], context=context).stream()
-    # Ramp source rate limit from 1 (build-time) to 150 (steady-state). 150 (×4 ≈ 600/s) sits
-    # comfortably BELOW the ~800/s compute ceiling — extra headroom/stability and slower disk growth.
-    # (200/800 also holds at bp~0 but is the edge; 250/1000 overshoots into the red even with loose
-    # retention; 400/1600 thrashes — §16/§18.) Bets stays 200 (low-volume, never approaches it).
-    import psycopg2
-    try:
-        rw_host = os.environ.get("DBT_HOST", "frontend-node-0")
-        conn = psycopg2.connect(host=rw_host, port=4566, user="root", database="dev")
-        conn.autocommit = True
-        cur = conn.cursor()
-        cur.execute("ALTER TABLE src_casino_prd SET source_rate_limit = 150")
-        cur.execute("ALTER TABLE src_bets_br SET source_rate_limit = 200")
-        conn.close()
-        context.log.info("Source rate limits ramped to 200 rows/s")
-    except Exception as e:
-        context.log.warning(f"Failed to ramp source rate limits: {e}")
+    # NOTE: sources are intentionally left at their build-time source_rate_limit = 1
+    # (a near-pause) and are NO LONGER auto-ramped here. Raise them manually when ready
+    # via the script-runner button "🎚️ Set Source Rate Limit"
+    # (bin/set_source_rate_limit.sh <N>): 0 = pause, -1 = unlimited, or e.g. 150 / 200 for
+    # steady state (150 ×4 ≈ 600/s sits below the ~800/s compute ceiling — §16/§18).
+    context.log.info(
+        "Sources left at build-time source_rate_limit=1 (no auto-ramp). "
+        "Use bin/set_source_rate_limit.sh <N> (or the 'Set Source Rate Limit' button) to change."
+    )
 
 
 # Define jobs
