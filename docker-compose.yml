@@ -202,9 +202,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 6G
-        reservations:
           memory: 4G
+        reservations:
+          memory: 2G
     networks:
       iceberg_net:
 
@@ -355,6 +355,10 @@ services:
       - "8432:5432"
     volumes:
       - "postgres-0:/var/lib/postgresql/data"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 2s
@@ -420,11 +424,11 @@ services:
     deploy:
       resources:
         limits:
-          # Experiment (2026-06): 2G -> 4G for more request-buffer / metadata
-          # cache headroom under write bursts. Host has 17 GB. See §12.
-          memory: 4G
+          # Trimmed 4G -> 1.5G: 4G was oversized for a local single-node MinIO.
+          # OrbStack caps at ~11.7 GB, so the budget is tight (§12).
+          memory: 1536M
         reservations:
-          memory: 1G
+          memory: 512M
     networks:
       iceberg_net:
 
@@ -445,6 +449,10 @@ services:
     ports:
       - "8181:8181"
     container_name: lakekeeper
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       iceberg_net:
 
@@ -490,6 +498,10 @@ services:
     volumes:
       - "lakekeeper-db:/var/lib/postgresql/data/pgdata"
     container_name: lakekeeper-db
+    deploy:
+      resources:
+        limits:
+          memory: 384M
     networks:
       iceberg_net:
 
@@ -570,6 +582,11 @@ services:
       - REDPANDA_ENABLE_KAFKA_API=true
       - REDPANDA_ENABLE_SCHEMA_REGISTRY=true
     container_name: redpanda
+    deploy:
+      resources:
+        limits:
+          # Redpanda self-caps via --memory=1G; this bounds total RSS incl. page cache.
+          memory: 1280M
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9644/v1/brokers" ]
       interval: 5s
@@ -582,6 +599,10 @@ services:
 
   redpanda-console:
     image: redpandadata/console:latest
+    deploy:
+      resources:
+        limits:
+          memory: 384M
     ports:
       - "9090:8080"  # Access at http://localhost:9090
     environment:
@@ -608,32 +629,13 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases casino_bets_flat; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
-  kafka-head-observer:
-    <<: *dagster-build
-    entrypoint: ["/opt/dagster-venv/bin/python", "/workspace/scripts/kafka_head_observer.py"]
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
-      - OBSERVER_DB_DSN=postgresql://postgres@postgres-0:5432/metadata
-      - MIRROR_RISINGWAVE_ENABLED=false
-      - MIRROR_RISINGWAVE_DSN=postgresql://root:root@frontend-node-0:4566/dev
-      - KAFKA_OBSERVER_POLL_TIMEOUT=1.0
-    volumes:
-      - "./scripts:/workspace/scripts:ro"
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      postgres-0:
-        condition: service_healthy
-      frontend-node-0:
-        condition: service_healthy
-    networks:
-      - iceberg_net
-    container_name: kafka-head-observer
-    restart: always
-
   prometheus-0:
     image: prom/prometheus:latest
     container_name: prometheus-0
+    deploy:
+      resources:
+        limits:
+          memory: 768M
     ports:
       - "9500:9500"
     command:
@@ -649,6 +651,10 @@ services:
   grafana-0:
     image: grafana/grafana:13.0.1
     container_name: grafana-0
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     ports:
       - "3001:3000"
     environment:
@@ -725,6 +731,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     container_name: dagster-webserver
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
       interval: 30s
@@ -775,6 +785,10 @@ services:
       - "host.docker.internal:host-gateway"
     container_name: dagster-daemon
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
 
   # Trino - Iceberg SQL query engine with full CRUD support
   trino:
@@ -803,6 +817,9 @@ services:
         source: ./trino/config.properties
         target: /etc/trino/config.properties
         read_only: true
+      # Scratch volume for spill-to-disk (see trino/config.properties). Backs the
+      # node data dir /data/trino (trino-owned, so /data/trino/spill is writable).
+      - "trino-data:/data/trino"
     depends_on:
       lakekeeper-bootstrap:
         condition: service_completed_successfully
@@ -814,6 +831,13 @@ services:
       - "host.docker.internal:host-gateway"
     container_name: trino
     restart: always
+    deploy:
+      resources:
+        limits:
+          # Trino's image uses -XX:MaxRAMPercentage=80, so heap ≈ 80% of this
+          # limit (~2.4G). WITHOUT a limit it sizes heap to 80% of the host
+          # (~9.4G) and starves everything else. Cap is mandatory here.
+          memory: 3G
 
 volumes:
   postgres-0:
@@ -829,6 +853,8 @@ volumes:
   redpanda-data:
     external: false
   dagster-storage:
+    external: false
+  trino-data:                # Trino node data dir + spill-to-disk scratch (see trino/config.properties)
     external: false
   hummock-fs-store:        # local-fs Hummock state store (§16, demo-only) — shared across RW nodes
     external: false

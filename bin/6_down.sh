@@ -336,17 +336,12 @@ echo ""
 
 docker compose down --volumes
 
-# Explicitly remove ALL volumes to ensure clean state
+# Project volumes (postgres-0, minio-0, trino-data, hummock-fs-store, …) are removed by
+# `docker compose down --volumes` above — Compose creates them project-prefixed
+# (e.g. risingwave-test_postgres-0), so the old bare-name `docker volume rm` calls never
+# matched and were no-ops. Just prune any remaining dangling volumes for a clean slate.
 echo ""
-echo "=== Cleaning up ALL persistent volumes ==="
-docker volume rm -f dagster-storage 2>/dev/null || true
-docker volume rm -f postgres-0 2>/dev/null || true
-docker volume rm -f minio-0 2>/dev/null || true
-docker volume rm -f lakekeeper-db 2>/dev/null || true
-docker volume rm -f redpanda-data 2>/dev/null || true
-docker volume rm -f hummock-fs-store 2>/dev/null || true   # local-fs Hummock state store (§16)
-
-# Prune all dangling volumes
+echo "=== Pruning dangling volumes ==="
 docker volume prune -f 2>/dev/null || true
 
 echo "✅ All volumes cleaned up"
