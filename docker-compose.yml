@@ -1,5 +1,5 @@
 x-image: &image
-  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.0}
+  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.4}
 
 x-lakekeeper-image: &lakekeeper-image
   image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.12.3}
@@ -457,7 +457,7 @@ services:
       iceberg_net:
 
   lakekeeper-bootstrap:
-    image: alpine:3.20
+    image: alpine:3.23.4
     restart: "no"
     depends_on:
       lakekeeper:
@@ -507,7 +507,7 @@ services:
 
   # Redpanda Service - Kafka Compatible
   # redpanda:
-  #   image: redpandadata/redpanda:v25.1.2
+  #   image: redpandadata/redpanda:v26.1.9
   #   command:
   #     - redpanda
   #     - start
@@ -552,7 +552,7 @@ services:
   #   networks:
   #     iceberg_net:
   redpanda:
-    image: redpandadata/redpanda:v25.1.2
+    image: redpandadata/redpanda:v26.1.9
     command:
       - redpanda
       - start
@@ -619,7 +619,7 @@ services:
       iceberg_net:
 
   redpanda-init:
-    image: redpandadata/redpanda:v25.1.2
+    image: redpandadata/redpanda:v26.1.9
     restart: "no"
     depends_on:
       redpanda:
@@ -792,7 +792,7 @@ services:
 
   # Trino - Iceberg SQL query engine with full CRUD support
   trino:
-    image: trinodb/trino:453
+    image: trinodb/trino:481
     ports:
       - "9080:8080"
     environment:
