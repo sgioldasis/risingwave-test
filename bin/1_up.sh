@@ -72,19 +72,12 @@ run_sync_cmd() {
 }
 
 SYNC_DONE=0
+DAGSTER_BUILD_HASH_FILE=".dagster_build_hash"
 
-# Capture uv.lock hash before sync so we can detect dependency changes
-# and trigger an automatic image rebuild when needed.
-hash_lock() {
-    if [ -f uv.lock ]; then
-        if command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 uv.lock | awk '{print $1}'
-        elif command -v sha256sum >/dev/null 2>&1; then
-            sha256sum uv.lock | awk '{print $1}'
-        fi
-    fi
+# Use git's built-in object hashing — available wherever git is.
+hash_lockfile() {
+    [ -f uv.lock ] && git hash-object uv.lock
 }
-LOCK_HASH_BEFORE="$(hash_lock)"
 
 if command -v uv >/dev/null 2>&1; then
     echo "Using local uv binary"
@@ -108,6 +101,18 @@ else
     echo "✅ Local packages synced"
 fi
 
+# Determine whether the Dagster image needs rebuilding by comparing the current
+# uv.lock hash against the hash recorded after the last successful build.
+CURRENT_LOCK_HASH="$(hash_lockfile)"
+SAVED_LOCK_HASH="$(cat "${DAGSTER_BUILD_HASH_FILE}" 2>/dev/null || true)"
+if [ -z "${CURRENT_LOCK_HASH}" ] || [ "${CURRENT_LOCK_HASH}" != "${SAVED_LOCK_HASH}" ]; then
+    NEEDS_BUILD=1
+    echo "uv.lock changed or no previous build recorded → Dagster image will be rebuilt"
+else
+    NEEDS_BUILD=0
+    echo "uv.lock unchanged since last build → skipping Dagster image rebuild"
+fi
+
 echo ""
 echo "=== Pre-flight: Cleaning up any existing Dagster state ==="
 # Stop and remove Dagster containers first to release the volume
@@ -126,29 +131,15 @@ echo "Running docker compose up -d from project root"
 echo ""
 
 # Run from project root (where docker-compose.yml is located)
-# Auto-rebuild images when uv.lock changed during sync (dependency drift),
-# or when explicitly requested via COMPOSE_FORCE_BUILD=1.
-#
-# Offline / VPN escape hatch: SKIP_DAGSTER_BUILD=1 layers an override that
-# strips `build:` from the Dagster services so Compose reuses the locally
-# cached image and never touches Docker Hub / Adoptium / Maven.
-LOCK_HASH_AFTER="$(hash_lock)"
-AUTO_REBUILD=0
-if [ -n "$LOCK_HASH_BEFORE" ] && [ -n "$LOCK_HASH_AFTER" ] && \
-   [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
-    AUTO_REBUILD=1
-    echo "Detected uv.lock changes during sync → will rebuild images to match"
-fi
-
+# Build behaviour is controlled solely by the Offline checkbox (SKIP_DAGSTER_BUILD):
+#   checkbox unchecked → always rebuild the Dagster image (default)
+#   checkbox checked   → skip build, reuse the locally cached image (VPN / offline)
 COMPOSE_ARGS=()
 UP_ARGS=(-d)
 
 if [ "${SKIP_DAGSTER_BUILD:-0}" = "1" ]; then
-    # Image presence + dependency-drift handling are already enforced up front
-    # in the offline-mode preamble; here we only need to layer the override.
     echo "Offline mode (SKIP_DAGSTER_BUILD=1): reusing local image '${DAGSTER_IMAGE:-risingwave-test/dagster:local}'"
     COMPOSE_ARGS+=(-f docker-compose.yml -f docker-compose.dagster-prebuilt.yml)
-    AUTO_REBUILD=0
 fi
 
 # Honor COMPOSE_PULL (defaults to "missing", offline mode sets it to "never").
@@ -156,14 +147,12 @@ if [ -n "${COMPOSE_PULL:-}" ]; then
     UP_ARGS+=(--pull "${COMPOSE_PULL}")
 fi
 
-if [ "${SKIP_DAGSTER_BUILD:-0}" != "1" ] && \
-   ( [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ] || [ "$AUTO_REBUILD" = "1" ] ); then
-    if [ "${COMPOSE_FORCE_BUILD:-0}" = "1" ]; then
-        echo "Build mode enabled (COMPOSE_FORCE_BUILD=1): rebuilding images"
-    fi
+if [ "${SKIP_DAGSTER_BUILD:-0}" = "1" ]; then
+    docker compose "${COMPOSE_ARGS[@]}" up "${UP_ARGS[@]}"
+elif [ "${NEEDS_BUILD}" = "1" ]; then
     docker compose "${COMPOSE_ARGS[@]}" up --build "${UP_ARGS[@]}"
+    echo "${CURRENT_LOCK_HASH}" > "${DAGSTER_BUILD_HASH_FILE}"
 else
-    echo "Build mode disabled: reusing existing local images (set COMPOSE_FORCE_BUILD=1 to force)"
     docker compose "${COMPOSE_ARGS[@]}" up "${UP_ARGS[@]}"
 fi
 

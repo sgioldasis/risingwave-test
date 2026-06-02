@@ -76,3 +76,5 @@ __marimo__/
 
 # Accidental local DuckDB artifact at repo root
 /version
+# Dagster image build state
+/.dagster_build_hash
