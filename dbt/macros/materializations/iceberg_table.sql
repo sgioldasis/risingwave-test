@@ -6,9 +6,6 @@
 
 {% materialization iceberg_table, adapter='risingwave' %}
 
-    {# Create the Iceberg connection first #}
-    {{ create_iceberg_connection() }}
-
     {# Get the target relation #}
     {%- set target_relation = this.incorporate(type='table') -%}
     

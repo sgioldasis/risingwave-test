@@ -8,6 +8,7 @@ from pathlib import Path
 from dagster import (
     Definitions,
     define_asset_job,
+    in_process_executor,
     ScheduleDefinition,
     AssetExecutionContext,
     asset,
@@ -433,6 +434,7 @@ casino_prd_full_job = define_asset_job(
         | AssetSelection.assets(casino_trino_views)
     ),
     description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views",
+    executor_def=in_process_executor,
 )
 
 # ML Training Schedule (5 minutes - Production)

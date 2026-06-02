@@ -9,4 +9,4 @@ funnel_profile:
       dbname: dev
       port: 4566     # RisingWave default port
       schema: public
-      threads: 1
+      threads: 4
