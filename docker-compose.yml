@@ -2,7 +2,7 @@ x-image: &image
   image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.0}
 
 x-lakekeeper-image: &lakekeeper-image
-  image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+  image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.12.3}
 
 x-lakekeeper-environment: &lakekeeper-environment
   - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
@@ -431,15 +431,14 @@ services:
   # Lakekeeper Services
   lakekeeper:
     <<: *lakekeeper-image
-    pull_policy: always
     environment: *lakekeeper-environment
     command: [ "serve" ]
     healthcheck:
       test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
-      interval: 1s
+      interval: 5s
       timeout: 10s
-      retries: 3
-      start_period: 3s
+      retries: 5
+      start_period: 10s
     depends_on:
       lakekeeper-migrate:
         condition: service_completed_successfully
@@ -462,7 +461,6 @@ services:
     command: sh /bootstrap.sh
   lakekeeper-migrate:
     <<: *lakekeeper-image
-    pull_policy: always
     environment: *lakekeeper-environment
     restart: "no"
     command: [ "migrate" ]
