@@ -136,33 +136,33 @@ The UC1 and UC2 aggregation logic that previously lived in RisingWave MVs now ru
 
 ### Accessing `properties` fields
 
-Both tables contain a `properties` STRING column with a JSON object. Use `GET_JSON_OBJECT` to extract individual fields:
+Both tables contain a `properties` STRING column with a JSON object. Use the Databricks colon syntax to extract individual fields:
 
 ```sql
 -- Casino transactions — key properties fields
 SELECT
     customer_id, amount_abs, transaction_created_at,
-    GET_JSON_OBJECT(properties, '$.game_id')             AS game_id,
-    GET_JSON_OBJECT(properties, '$.game_type')           AS game_type,
-    GET_JSON_OBJECT(properties, '$.is_live')             AS is_live,
-    GET_JSON_OBJECT(properties, '$.transaction_id')      AS transaction_id,
-    GET_JSON_OBJECT(properties, '$.transaction_type_id') AS transaction_type_id,
-    GET_JSON_OBJECT(properties, '$.casino_provider_id')  AS casino_provider_id,
-    GET_JSON_OBJECT(properties, '$.round_ref')           AS round_ref,
-    GET_JSON_OBJECT(properties, '$.session_id')          AS session_id,
-    GET_JSON_OBJECT(properties, '$.is_round_closed')     AS is_round_closed
+    properties:game_id              AS game_id,
+    properties:game_type            AS game_type,
+    properties:is_live              AS is_live,
+    properties:transaction_id       AS transaction_id,
+    properties:transaction_type_id  AS transaction_type_id,
+    properties:casino_provider_id   AS casino_provider_id,
+    properties:round_ref            AS round_ref,
+    properties:session_id           AS session_id,
+    properties:is_round_closed      AS is_round_closed
 FROM de_dev.rw_poc.rw_casino_transactions
 LIMIT 10;
 
 -- Sportsbook bets — key properties fields
 SELECT
     bet_id, customer_id, stake_euro, placed_at,
-    GET_JSON_OBJECT(properties, '$.operator_id')              AS operator_id,
-    GET_JSON_OBJECT(properties, '$.bet_type')                 AS bet_type,
-    GET_JSON_OBJECT(properties, '$.in_play')                  AS in_play,
-    GET_JSON_OBJECT(properties, '$.total_odds')               AS total_odds,
-    GET_JSON_OBJECT(properties, '$.potential_returns_euro')   AS potential_returns_euro,
-    GET_JSON_OBJECT(properties, '$.last_updated')             AS last_updated
+    properties:operator_id             AS operator_id,
+    properties:bet_type                AS bet_type,
+    properties:in_play                 AS in_play,
+    properties:total_odds              AS total_odds,
+    properties:potential_returns_euro  AS potential_returns_euro,
+    properties:last_updated            AS last_updated
 FROM de_dev.rw_poc.rw_sportsbook_bets
 LIMIT 10;
 ```
@@ -675,6 +675,8 @@ See §10 for a complete table. The successful path required discovering:
 
 ### Step 1 — Databricks setup (admin, run once)
 
+> **Running SQL**: all statements below can be run directly in the Databricks SQL editor. To run via CLI use `databricks api post /api/2.0/sql/statements --json @file.json` with `{"statement": "...", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}`.
+
 **1a. Register storage credential and external location** (metastore admin required — already done):
 
 ```bash
@@ -690,35 +692,49 @@ TO `3b7f531f-db93-4186-af75-6566c12c076b`;
 ```
 
 **1c. Create schema with managed location at PoC storage** (already done):
-```bash
-databricks api post /api/2.0/sql/statements --json - << 'EOF'
-{"statement": "CREATE SCHEMA IF NOT EXISTS de_dev.rw_poc MANAGED LOCATION 'abfss://cont1@stkznneurwpoccdddevstd.dfs.core.windows.net/iceberg'", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "30s"}
-EOF
+
+```sql
+CREATE SCHEMA IF NOT EXISTS de_dev.rw_poc
+MANAGED LOCATION 'abfss://cont1@stkznneurwpoccdddevstd.dfs.core.windows.net/iceberg';
 ```
 
 **1d. Grant SP privileges on schema** (already done):
-```bash
-for stmt in \
-  "GRANT USE_SCHEMA ON SCHEMA de_dev.rw_poc TO \`3b7f531f-db93-4186-af75-6566c12c076b\`" \
-  "GRANT MODIFY ON SCHEMA de_dev.rw_poc TO \`3b7f531f-db93-4186-af75-6566c12c076b\`" \
-  "GRANT SELECT ON SCHEMA de_dev.rw_poc TO \`3b7f531f-db93-4186-af75-6566c12c076b\`" \
-  "GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.rw_poc TO \`3b7f531f-db93-4186-af75-6566c12c076b\`"; do
-  echo "{\"statement\": \"$stmt\", \"warehouse_id\": \"4d06eca1e71a9ccc\", \"wait_timeout\": \"30s\"}" | \
-    databricks api post /api/2.0/sql/statements --json -
-done
+
+```sql
+GRANT USE_SCHEMA        ON SCHEMA de_dev.rw_poc TO `3b7f531f-db93-4186-af75-6566c12c076b`;
+GRANT MODIFY            ON SCHEMA de_dev.rw_poc TO `3b7f531f-db93-4186-af75-6566c12c076b`;
+GRANT SELECT            ON SCHEMA de_dev.rw_poc TO `3b7f531f-db93-4186-af75-6566c12c076b`;
+GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.rw_poc TO `3b7f531f-db93-4186-af75-6566c12c076b`;
 ```
 
 > **`EXTERNAL USE SCHEMA` is required separately from `MODIFY`/`SELECT`** — without it, IRC writes are silently rejected.
 
 **1e. Create managed Iceberg tables** (already done):
-```bash
-databricks api post /api/2.0/sql/statements --json - << 'EOF'
-{"statement": "CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (customer_id INT NOT NULL, message_type_id INT NOT NULL, account_id INT NOT NULL, currency_id INT NOT NULL, transaction_created_at TIMESTAMP NOT NULL, amount_abs DECIMAL(20,8), properties STRING) USING ICEBERG", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}
-EOF
 
-databricks api post /api/2.0/sql/statements --json - << 'EOF'
-{"statement": "CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (bet_id BIGINT NOT NULL, customer_id INT NOT NULL, customer_segment_id INT, bet_type_id INT, bet_status_id INT, channel_id INT, currency_id INT, placed_at TIMESTAMP NOT NULL, stake_euro DECIMAL(20,8), stake_local DECIMAL(20,8), properties STRING) USING ICEBERG", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}
-EOF
+```sql
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
+    customer_id              INT           NOT NULL,
+    message_type_id          INT           NOT NULL,
+    account_id               INT           NOT NULL,
+    currency_id              INT           NOT NULL,
+    transaction_created_at   TIMESTAMP     NOT NULL,
+    amount_abs               DECIMAL(20,8),
+    properties               STRING
+) USING ICEBERG;
+
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
+    bet_id               BIGINT        NOT NULL,
+    customer_id          INT           NOT NULL,
+    customer_segment_id  INT,
+    bet_type_id          INT,
+    bet_status_id        INT,
+    channel_id           INT,
+    currency_id          INT,
+    placed_at            TIMESTAMP     NOT NULL,
+    stake_euro           DECIMAL(20,8),
+    stake_local          DECIMAL(20,8),
+    properties           STRING
+) USING ICEBERG;
 ```
 
 > **`USING ICEBERG`** — required for RisingWave's Iceberg REST Catalog write path. `USING DELTA` creates a plain Delta table that is not Iceberg-compatible via IRC and causes `not an Iceberg compatible table` error. Managed storage is placed in the schema's MANAGED LOCATION (`stkznneurwpoccdddevstd`).
@@ -791,10 +807,15 @@ docker compose up -d dagster-webserver dagster-daemon
 
 # Trigger the job in Dagster UI: casino_prd_full_job
 
-# Verify after ~30 seconds
-databricks api post /api/2.0/sql/statements --json - << 'EOF'
-{"statement": "SELECT COUNT(*) FROM de_dev.rw_poc.rw_casino_real_bet", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "30s"}
-EOF
+# Verify after ~30 seconds (run in Databricks SQL editor or via CLI)
+```
+
+```sql
+SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
+FROM de_dev.rw_poc.rw_casino_transactions;
+
+SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
+FROM de_dev.rw_poc.rw_sportsbook_bets;
 ```
 
 ---
