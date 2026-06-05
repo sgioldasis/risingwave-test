@@ -1,7 +1,17 @@
 {
   "env": {
-    "UV_PYTHON": "$PWD/.venv/bin/python",
-    "PGHOST":    "localhost"
+    "UV_PYTHON":                    "$PWD/.venv/bin/python",
+    "PGHOST":                       "localhost",
+    "DATABRICKS_AUTH_TYPE":         "azure-client-secret",
+    "RW_LICENSE_KEY":               "$RISINGWAVE_LICENSE_KEY",
+    "DBT_DATABRICKS_HOST":          "https://adb-1608121643336927.7.azuredatabricks.net",
+    "DATABRICKS_CATALOG":           "de_dev",
+    "DATABRICKS_SCHEMA":            "risingwave_poc",
+    "DATABRICKS_AZURE_TENANT_ID":   "78395483-9425-447a-ba64-60b90f6bb16e",
+    "DATABRICKS_AZURE_CLIENT_ID":   "$DATABRICKS_AZURE_CLIENT_ID",
+    "DATABRICKS_AZURE_CLIENT_SECRET": "$DATABRICKS_AZURE_CLIENT_SECRET",
+    "ADLS_ACCOUNT_NAME":              "stkznneurwpoccdddevstd",
+    "ADLS_ACCOUNT_KEY":               "$ADLS_ACCOUNT_KEY"
   },
   "packages": [
     "python@3.13",

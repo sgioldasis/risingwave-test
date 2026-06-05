@@ -188,6 +188,8 @@ services:
       all_proxy: ""
       NO_PROXY: "*"
       no_proxy: "*"
+      AWS_DEFAULT_REGION: "us-east-1"
+      JVM_HEAP_SIZE: "2g"
     container_name: compute-node-0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -314,6 +316,7 @@ services:
       ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-true}
       RW_TELEMETRY_TYPE: ${RW_TELEMETRY_TYPE:-"docker-compose"}
       RW_SECRET_STORE_PRIVATE_KEY_HEX: ${RW_SECRET_STORE_PRIVATE_KEY_HEX:-0123456789abcdef0123456789abcdef}
+      RW_LICENSE_KEY: ${RISINGWAVE_LICENSE_KEY:-}
       # Clear OrbStack-injected HTTP proxy (see compactor-0 above).
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
@@ -698,6 +701,14 @@ services:
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
       - RISINGWAVE_HOST=frontend-node-0
+      - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
+      - DATABRICKS_CATALOG=de_dev
+      - DATABRICKS_SCHEMA=risingwave_poc
+      - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
+      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_SECRET
+      - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
+      - ADLS_ACCOUNT_KEY
       # Disable OrbStack-injected HTTP proxy so in-network HTTP calls
       # (e.g. Trino, Lakekeeper, MinIO) bypass proxyproxy.orb.internal which
       # cannot resolve docker-network hostnames and returns HTTP 502.
@@ -757,6 +768,14 @@ services:
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
       - RISINGWAVE_HOST=frontend-node-0
+      - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
+      - DATABRICKS_CATALOG=de_dev
+      - DATABRICKS_SCHEMA=risingwave_poc
+      - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
+      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_SECRET
+      - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
+      - ADLS_ACCOUNT_KEY
       # Disable OrbStack-injected HTTP proxy (see dagster-webserver above).
       - HTTP_PROXY=
       - HTTPS_PROXY=

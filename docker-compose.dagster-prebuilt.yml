@@ -18,10 +18,6 @@
 # from a remote registry, which would also fail on a blocked network.
 
 services:
-  kafka-head-observer:
-    build: !reset null
-    pull_policy: never
-
   dagster-webserver:
     build: !reset null
     pull_policy: never

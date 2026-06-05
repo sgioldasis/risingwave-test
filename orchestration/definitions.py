@@ -31,6 +31,7 @@ from .assets.casino_prd_setup import (
     casino_prd_proto_upload,
     casino_trino_views,
 )
+from .assets.datafusion_demo import casino_datafusion_demo
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -332,7 +333,8 @@ def casino_prd_dbt_assets(
         context.log.warning(f"drop_prebuild_sinks failed (safe on fresh start): {drop_result.stderr[-200:]}")
     else:
         context.log.info("Pre-build casino sinks dropped")
-    yield from dbt.cli(["build"], context=context).stream()
+    # Exclude datafusion Iceberg read-sources — created AFTER sinks commit; handled by casino_datafusion_demo
+    yield from dbt.cli(["build", "--exclude", "tag:datafusion"], context=context).stream()
     # NOTE: sources are intentionally left at their build-time source_rate_limit = 1
     # (a near-pause) and are NO LONGER auto-ramped here. Raise them manually when ready
     # via the script-runner button "🎚️ Set Source Rate Limit"
@@ -422,6 +424,13 @@ iceberg_countries_job = define_asset_job(
     description="Create and populate Iceberg countries reference table",
 )
 
+casino_datafusion_job = define_asset_job(
+    name="casino_datafusion_job",
+    selection=AssetSelection.assets(casino_datafusion_demo),
+    description="DataFusion batch analytics demo — OLAP queries on casino Iceberg tables",
+    executor_def=in_process_executor,
+)
+
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -478,6 +487,8 @@ defs = Definitions(
         casino_prd_dbt_assets,
         # Trino metadata views for Grafana (snapshot count, live data files)
         casino_trino_views,
+        # DataFusion batch analytics demo — OLAP queries on casino Iceberg tables
+        casino_datafusion_demo,
     ],
     jobs=[
         dbt_build_job,
@@ -486,6 +497,7 @@ defs = Definitions(
         iceberg_compaction_job,
         postgres_sink_job,
         casino_prd_full_job,
+        casino_datafusion_job,
     ],
     schedules=[
         dbt_build_schedule,
