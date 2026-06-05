@@ -187,7 +187,7 @@ TRINO_VIEWS = [
 
 
 @asset(
-    group_name="casino_prd_setup",
+    group_name="trino",
     deps=[
         # Depend on the two Iceberg sinks — they create the tables in Lakekeeper
         # that these views read from. The views must be created after the tables exist.

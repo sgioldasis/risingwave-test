@@ -14,6 +14,8 @@
     DROP SINK IF EXISTS sink_turnover_percentage CASCADE;
     DROP SINK IF EXISTS sink_casino_real_bet_kafka CASCADE;
     DROP SINK IF EXISTS sink_turnover_percentage_kafka CASCADE;
+    DROP SINK IF EXISTS sink_casino_transactions_databricks CASCADE;
+    DROP SINK IF EXISTS sink_sportsbook_bets_databricks CASCADE;
     {% endset %}
 
     {% do run_query(drop_sinks_sql) %}

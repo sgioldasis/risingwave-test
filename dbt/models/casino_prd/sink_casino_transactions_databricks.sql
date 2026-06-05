@@ -1,10 +1,10 @@
 {{ config(
     materialized='sink',
-    tags=['casino_uc2', 'databricks']
+    tags=['databricks']
 ) }}
 
-CREATE SINK IF NOT EXISTS sink_turnover_percentage_databricks
-FROM {{ ref('mv_turnover_percentage') }}
+CREATE SINK IF NOT EXISTS sink_casino_transactions_databricks
+FROM {{ ref('mv_casino_transactions') }}
 WITH (
     connector                            = 'iceberg',
     type                                 = 'append-only',
@@ -16,9 +16,9 @@ WITH (
     catalog.scope                        = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
     warehouse.path                       = '{{ env_var("DATABRICKS_CATALOG") }}',
     database.name                        = 'rw_poc',
-    table.name                           = 'rw_turnover_percentage',
+    table.name                           = 'rw_casino_transactions',
     adlsgen2.account_name                = '{{ env_var("ADLS_ACCOUNT_NAME") }}',
     adlsgen2.account_key                 = '{{ env_var("ADLS_ACCOUNT_KEY") }}',
-    commit_checkpoint_interval           = 20,
+    commit_checkpoint_interval           = 5,
     compaction.write_parquet_compression = 'zstd'
 )

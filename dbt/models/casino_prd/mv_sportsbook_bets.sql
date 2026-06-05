@@ -1,0 +1,21 @@
+{{ config(
+    materialized='materialized_view',
+    tags=['casino_uc2']
+) }}
+
+SELECT
+    "Id"                                                                             AS bet_id,
+    ("CustomerInfo")."Id"                                                            AS customer_id,
+    ("CustomerInfo")."SegmentId"                                                     AS customer_segment_id,
+    "BetTypeId"                                                                      AS bet_type_id,
+    "BetStatusId"                                                                    AS bet_status_id,
+    ("BetslipInfo")."ChannelId"                                                      AS channel_id,
+    ("TotalStake")."Currency"                                                        AS currency_id,
+    TO_TIMESTAMP(("PlacedAt").seconds)                                               AS placed_at,
+    (("TotalStake")."Euro")."units"::NUMERIC
+        + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000                     AS stake_euro,
+    (("TotalStake")."Local")."units"::NUMERIC
+        + (("TotalStake")."Local")."nanos"::NUMERIC / 1000000000                    AS stake_local
+FROM {{ ref('src_bets_br') }}
+WHERE ("CustomerInfo")."Id" IS NOT NULL
+  AND ("PlacedAt").seconds IS NOT NULL

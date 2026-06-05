@@ -2,16 +2,19 @@
 
 RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) into **Databricks Unity Catalog Iceberg tables** running in parallel to the existing Lakekeeper sinks. This document records the full integration path, every gotcha encountered, and the rationale for each decision.
 
-> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed over 6 minutes: 4 new commits, zero gRPC crashes, zero silent stalls. Root cause was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Switch to `type = 'append-only'` + `force_append_only = 'true'` resolves the issue. See §15 for final working config and §16 for the full investigation journey.
+> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §3a for Databricks consumer queries, §15 for infrastructure setup, and §16 for the full investigation history.
 
 ---
 
 ## 1. Architecture
 
 ```
-mv_casino_real_bet     ──► sink_casino_real_bet_databricks     ──► de_dev.rw_poc.rw_casino_real_bet
-mv_turnover_percentage ──► sink_turnover_percentage_databricks ──► de_dev.rw_poc.rw_turnover_percentage
+Kafka: cronus.casino.out.br  ──► src_casino_prd ──► mv_casino_transactions ──► sink_casino_transactions_databricks ──► de_dev.rw_poc.rw_casino_transactions
+Kafka: bets-out-br           ──► src_bets_br    ──► mv_sportsbook_bets     ──► sink_sportsbook_bets_databricks     ──► de_dev.rw_poc.rw_sportsbook_bets
 ```
+
+**Design principle — one table per Kafka topic, flat event facts:**  
+RisingWave handles structural transformation only (UNNEST, type casting, protobuf field extraction). No business-logic aggregation happens before the sink. Databricks consumers own all windowing, filtering, and ratio computation in SQL. This makes the Databricks tables immutable event logs — append-only is semantically correct with no deduplication required.
 
 Both Databricks sinks run **in parallel** with the existing Lakekeeper sinks — the Lakekeeper pipeline is untouched. RisingWave authenticates to Databricks Unity Catalog via the Iceberg REST Catalog (IRC) API using Azure AD OAuth2, and writes Parquet files directly to the PoC Azure storage account using `adlsgen2.account_key`.
 
@@ -21,8 +24,9 @@ Both Databricks sinks run **in parallel** with the existing Lakekeeper sinks —
 
 | File | Purpose |
 |---|---|
-| `dbt/models/casino_prd/sink_casino_real_bet_databricks.sql` | UC1 upsert sink to `rw_casino_real_bet` |
-| `dbt/models/casino_prd/sink_turnover_percentage_databricks.sql` | UC2 upsert sink to `rw_turnover_percentage` |
+| `dbt/models/casino_prd/mv_sportsbook_bets.sql` | Flat MV: one row per sportsbook bet extracted from `src_bets_br` |
+| `dbt/models/casino_prd/sink_casino_transactions_databricks.sql` | Sink: `mv_casino_transactions` → `de_dev.rw_poc.rw_casino_transactions` |
+| `dbt/models/casino_prd/sink_sportsbook_bets_databricks.sql` | Sink: `mv_sportsbook_bets` → `de_dev.rw_poc.rw_sportsbook_bets` |
 
 Modified:
 - `docker-compose.yml` — Databricks env vars passed to both Dagster containers
@@ -35,9 +39,15 @@ No `CREATE CONNECTION` is used — Unity Catalog sinks in RisingWave embed all a
 
 `type = 'append-only'` + `force_append_only = 'true'` is required because **Unity Catalog does not support Iceberg delete files** (upsert mode). `force_append_only` tells RisingWave to drop DELETEs and convert UPDATEs to INSERTs from the retract stream.
 
+Because the sink sources are flat event MVs (not aggregated state), each row is an immutable fact — **no deduplication is needed** in Databricks.
+
+### `sink_casino_transactions_databricks`
+
+Source: `mv_casino_transactions` — one row per casino transaction (all message types, all accounts). Schema: `customer_id, message_type_id, account_id, currency_id, transaction_created_at, amount_abs`.
+
 ```sql
-CREATE SINK IF NOT EXISTS sink_casino_real_bet_databricks
-FROM mv_casino_real_bet
+CREATE SINK IF NOT EXISTS sink_casino_transactions_databricks
+FROM mv_casino_transactions
 WITH (
     connector                            = 'iceberg',
     type                                 = 'append-only',
@@ -49,7 +59,7 @@ WITH (
     catalog.scope                        = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
     warehouse.path                       = 'de_dev',
     database.name                        = 'rw_poc',
-    table.name                           = 'rw_casino_real_bet',
+    table.name                           = 'rw_casino_transactions',
     adlsgen2.account_name                = 'stkznneurwpoccdddevstd',
     adlsgen2.account_key                 = '<ADLS_ACCOUNT_KEY>',
     commit_checkpoint_interval           = 20,
@@ -57,14 +67,116 @@ WITH (
 )
 ```
 
-**Trade-off:** Duplicate rows accumulate in Databricks (each commit writes current state as new rows). Downstream queries must deduplicate:
+### `sink_sportsbook_bets_databricks`
+
+Source: `mv_sportsbook_bets` — one row per sportsbook bet. Schema: `bet_id, customer_id, customer_segment_id, bet_type_id, bet_status_id, channel_id, currency_id, placed_at, stake_euro, stake_local`.
+
 ```sql
-SELECT customer_id, currency_id, event_ts, rolling_1d_real_bet_amount
-FROM de_dev.rw_poc.rw_casino_real_bet
-QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY customer_id, currency_id, event_ts
-    ORDER BY _commit_timestamp DESC
-) = 1
+CREATE SINK IF NOT EXISTS sink_sportsbook_bets_databricks
+FROM mv_sportsbook_bets
+WITH (
+    connector                            = 'iceberg',
+    type                                 = 'append-only',
+    force_append_only                    = 'true',
+    catalog.type                         = 'rest',
+    catalog.uri                          = '<DBT_DATABRICKS_HOST>/api/2.1/unity-catalog/iceberg-rest',
+    catalog.oauth2_server_uri            = 'https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token',
+    catalog.credential                   = '<AZURE_CLIENT_ID>:<AZURE_CLIENT_SECRET>',
+    catalog.scope                        = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
+    warehouse.path                       = 'de_dev',
+    database.name                        = 'rw_poc',
+    table.name                           = 'rw_sportsbook_bets',
+    adlsgen2.account_name                = 'stkznneurwpoccdddevstd',
+    adlsgen2.account_key                 = '<ADLS_ACCOUNT_KEY>',
+    commit_checkpoint_interval           = 20,
+    compaction.write_parquet_compression = 'zstd'
+)
+```
+
+---
+
+## 3a. Databricks consumer queries
+
+The UC1 and UC2 aggregation logic that previously lived in RisingWave MVs now runs as Databricks SQL on top of the flat event tables.
+
+### UC1 — 5-minute rolling real-bet amount per customer
+
+Equivalent to the old `mv_casino_real_bet` output. Filters to `message_type_id = 1` (real bets) and `account_id = 1` (real-money account).
+
+```sql
+SELECT
+    customer_id,
+    currency_id,
+    transaction_created_at,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL 300 SECONDS PRECEDING AND CURRENT ROW
+    ) AS rolling_5m_real_bet_amount
+FROM de_dev.rw_poc.rw_casino_transactions
+WHERE message_type_id = 1
+  AND account_id = 1
+  AND amount_abs IS NOT NULL;
+```
+
+> The window is parameterised — change `300 SECONDS` to any period without touching the RisingWave pipeline.
+
+### UC2 — Turnover percentage per customer (casino vs. sportsbook)
+
+Equivalent to the old `mv_turnover_percentage` output. Joins the two event tables.
+
+```sql
+WITH casino AS (
+    SELECT
+        customer_id,
+        SUM(amount_abs) AS casino_turnover
+    FROM de_dev.rw_poc.rw_casino_transactions
+    WHERE message_type_id = 2
+      AND account_id IN (1, 4)
+      AND amount_abs IS NOT NULL
+    GROUP BY customer_id
+),
+sportsbook AS (
+    SELECT
+        customer_id,
+        SUM(stake_euro) AS sportsbook_turnover
+    FROM de_dev.rw_poc.rw_sportsbook_bets
+    GROUP BY customer_id
+),
+combined AS (
+    SELECT
+        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
+        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
+        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
+    FROM casino c
+    FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
+)
+SELECT
+    customer_id,
+    casino_turnover,
+    sportsbook_turnover,
+    casino_turnover + sportsbook_turnover AS total_turnover,
+    CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
+    END AS casino_ratio,
+    CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE sportsbook_turnover / (casino_turnover + sportsbook_turnover)
+    END AS sportsbook_ratio
+FROM combined
+ORDER BY total_turnover DESC;
+```
+
+### Quick health check
+
+```sql
+-- Verify data is arriving and timestamps are event-level (not state snapshots)
+SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
+FROM de_dev.rw_poc.rw_casino_transactions;
+
+SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
+FROM de_dev.rw_poc.rw_sportsbook_bets;
 ```
 
 ---
@@ -518,46 +630,32 @@ done
 **1e. Create managed Iceberg tables** (already done):
 ```bash
 databricks api post /api/2.0/sql/statements --json - << 'EOF'
-{"statement": "CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_real_bet (customer_id INT NOT NULL, currency_id INT NOT NULL, event_ts TIMESTAMP NOT NULL, rolling_1d_real_bet_amount DECIMAL(38,10)) USING ICEBERG", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}
+{"statement": "CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (customer_id INT NOT NULL, message_type_id INT NOT NULL, account_id INT NOT NULL, currency_id INT NOT NULL, transaction_created_at TIMESTAMP NOT NULL, amount_abs DECIMAL(20,8)) USING ICEBERG", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}
 EOF
 
 databricks api post /api/2.0/sql/statements --json - << 'EOF'
-{"statement": "CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_turnover_percentage (customer_id INT NOT NULL, casino_turnover DECIMAL(38,10), sportsbook_turnover DECIMAL(38,10), total_turnover DECIMAL(38,10), casino_ratio DECIMAL(38,10), sportsbook_ratio DECIMAL(38,10)) USING ICEBERG", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}
+{"statement": "CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (bet_id BIGINT NOT NULL, customer_id INT NOT NULL, customer_segment_id INT, bet_type_id INT, bet_status_id INT, channel_id INT, currency_id INT, placed_at TIMESTAMP NOT NULL, stake_euro DECIMAL(20,8), stake_local DECIMAL(20,8)) USING ICEBERG", "warehouse_id": "4d06eca1e71a9ccc", "wait_timeout": "50s"}
 EOF
 ```
 
-> **`USING ICEBERG` without `LOCATION`** — Databricks manages storage, places it in the schema's managed location (`stkznneurwpoccdddevstd`).
+> **`USING ICEBERG`** — required for RisingWave's Iceberg REST Catalog write path. `USING DELTA` creates a plain Delta table that is not Iceberg-compatible via IRC and causes `not an Iceberg compatible table` error. Managed storage is placed in the schema's MANAGED LOCATION (`stkznneurwpoccdddevstd`).
 
 ---
 
 ### Step 2 — RisingWave sink SQL (final working version)
 
-```sql
-CREATE SINK IF NOT EXISTS sink_casino_real_bet_databricks
-FROM mv_casino_real_bet
-WITH (
-    connector                            = 'iceberg',
-    type                                 = 'upsert',
-    force_compaction                     = 'true',
-    primary_key                          = 'customer_id,currency_id,event_ts',
-    enable_compaction                    = 'true',
-    compaction_interval_sec              = '60',
-    enable_snapshot_expiration           = 'true',
-    catalog.type                         = 'rest',
-    catalog.uri                          = '<DBT_DATABRICKS_HOST>/api/2.1/unity-catalog/iceberg-rest',
-    catalog.oauth2_server_uri            = 'https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token',
-    catalog.credential                   = '<AZURE_CLIENT_ID>:<AZURE_CLIENT_SECRET>',
-    catalog.scope                        = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
-    warehouse.path                       = 'de_dev',
-    database.name                        = 'rw_poc',
-    table.name                           = 'rw_casino_real_bet',
-    adlsgen2.account_name                = 'stkznneurwpoccdddevstd',
-    adlsgen2.account_key                 = '<ADLS_ACCOUNT_KEY>',
-    commit_checkpoint_interval           = 5,
-    compaction.trigger_snapshot_count    = '5',
-    compaction.write_parquet_compression = 'zstd'
-)
+See §3 for full sink SQL. Key parameters:
+
 ```
+type                             = 'append-only'
+force_append_only                = 'true'
+commit_checkpoint_interval       = 20
+compaction.write_parquet_compression = 'zstd'
+adlsgen2.account_name/key        = PoC storage account credentials
+catalog.oauth2_server_uri        = Azure AD token endpoint
+```
+
+Sink sources are flat event MVs (`mv_casino_transactions`, `mv_sportsbook_bets`) — not aggregated. See §3 for complete SQL.
 
 ---
 
@@ -621,10 +719,10 @@ EOF
 ### Production notes
 
 - **Token refresh**: `catalog.oauth2_server_uri` causes the Apache Iceberg Java library to fetch and refresh Azure AD tokens automatically — no manual token management needed.
-- **Sink recreation**: `casino_prd_full_job` drops and recreates sinks on every run via `drop_prebuild_sinks`. This is safe — managed Iceberg tables are not dropped, only the RisingWave sink objects.
-- **Compaction**: `enable_compaction = 'true'` + `compaction.trigger_snapshot_count = '5'` keeps the Iceberg table compact. Databricks will also apply its own auto-optimization.
+- **Sink recreation**: `casino_prd_full_job` drops and recreates all sinks on every run via `drop_prebuild_sinks`, including the Databricks sinks. This ensures config changes (e.g. `commit_checkpoint_interval`) take effect on the next run at the cost of a ~5-10s write gap per job run — acceptable for a PoC.
+- **Compaction**: Databricks `delta.autoOptimize.autoCompact = true` handles file compaction automatically. No RisingWave-level compaction is needed.
 - **Schema `rw_poc` vs `risingwave_poc`**: `rw_poc` has a custom managed location (`stkznneurwpoccdddevstd`). `risingwave_poc` uses Databricks' managed storage — cannot use `adlsgen2.account_key` for it.
-- **Upsert semantics**: `type = 'upsert'` with `primary_key` maintains current state per customer in the Databricks table (rolling window MV produces continuous updates).
+- **No deduplication needed**: Sink sources are immutable event MVs (`mv_casino_transactions`, `mv_sportsbook_bets`). Every row is a unique event — append-only is semantically correct. UC1/UC2 aggregation logic runs in Databricks SQL (see §3a).
 
 ---
 
