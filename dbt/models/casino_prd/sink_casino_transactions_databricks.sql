@@ -4,7 +4,7 @@
 ) }}
 
 CREATE SINK IF NOT EXISTS sink_casino_transactions_databricks
-FROM {{ ref('mv_casino_transactions') }}
+FROM {{ ref('mv_casino_transactions_full') }}
 WITH (
     connector                            = 'iceberg',
     type                                 = 'append-only',

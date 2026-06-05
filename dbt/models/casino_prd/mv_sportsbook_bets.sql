@@ -15,7 +15,20 @@ SELECT
     (("TotalStake")."Euro")."units"::NUMERIC
         + (("TotalStake")."Euro")."nanos"::NUMERIC / 1000000000                     AS stake_euro,
     (("TotalStake")."Local")."units"::NUMERIC
-        + (("TotalStake")."Local")."nanos"::NUMERIC / 1000000000                    AS stake_local
+        + (("TotalStake")."Local")."nanos"::NUMERIC / 1000000000                    AS stake_local,
+    jsonb_build_object(
+        'operator_id',              "OperatorId",
+        'bet_type',                 "BetType",
+        'in_play',                  "InPlay",
+        'total_odds',               ("TotalOdds")."units"::NUMERIC
+                                        + ("TotalOdds")."nanos"::NUMERIC / 1000000000,
+        'potential_returns_euro',   (("PotentialReturns")."Euro")."units"::NUMERIC
+                                        + (("PotentialReturns")."Euro")."nanos"::NUMERIC / 1000000000,
+        'lines',                    "Lines",
+        'bonus_type',               "BonusType",
+        'is_placement',             "IsPlacement",
+        'last_updated',             TO_TIMESTAMP(("LastUpdated").seconds)
+    )::TEXT                                                  AS properties
 FROM {{ ref('src_bets_br') }}
 WHERE ("CustomerInfo")."Id" IS NOT NULL
   AND ("PlacedAt").seconds IS NOT NULL
