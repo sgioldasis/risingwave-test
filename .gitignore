@@ -1,3 +1,6 @@
+# Claude Code
+.claude/
+
 # dbt artifacts and build outputs
 **/target/
 **/logs/

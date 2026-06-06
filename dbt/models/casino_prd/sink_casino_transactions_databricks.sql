@@ -19,6 +19,5 @@ WITH (
     table.name                           = 'rw_casino_transactions',
     adlsgen2.account_name                = '{{ env_var("ADLS_ACCOUNT_NAME") }}',
     adlsgen2.account_key                 = '{{ env_var("ADLS_ACCOUNT_KEY") }}',
-    commit_checkpoint_interval           = 5,
-    compaction.write_parquet_compression = 'zstd'
+    commit_checkpoint_interval           = 5
 )
