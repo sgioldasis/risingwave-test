@@ -32,6 +32,8 @@ from .assets.casino_prd_setup import (
     casino_trino_views,
 )
 from .assets.datafusion_demo import casino_datafusion_demo
+from .assets.databricks_optimize import databricks_optimize
+from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -433,6 +435,13 @@ casino_datafusion_job = define_asset_job(
     executor_def=in_process_executor,
 )
 
+databricks_datafusion_job = define_asset_job(
+    name="databricks_datafusion_job",
+    selection=AssetSelection.assets(databricks_optimize, databricks_datafusion_demo),
+    description="OPTIMIZE Databricks tables + DataFusion analytics via RisingWave",
+    executor_def=in_process_executor,
+)
+
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -444,7 +453,7 @@ casino_prd_full_job = define_asset_job(
         | AssetSelection.assets(casino_prd_dbt_assets)
         | AssetSelection.assets(casino_trino_views)
     ),
-    description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views",
+    description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views → Databricks Iceberg sources",
     executor_def=in_process_executor,
 )
 
@@ -491,6 +500,9 @@ defs = Definitions(
         casino_trino_views,
         # DataFusion batch analytics demo — OLAP queries on casino Iceberg tables
         casino_datafusion_demo,
+        # Databricks OPTIMIZE + DataFusion analytics
+        databricks_optimize,
+        databricks_datafusion_demo,
     ],
     jobs=[
         dbt_build_job,
@@ -500,6 +512,7 @@ defs = Definitions(
         postgres_sink_job,
         casino_prd_full_job,
         casino_datafusion_job,
+        databricks_datafusion_job,
     ],
     schedules=[
         dbt_build_schedule,

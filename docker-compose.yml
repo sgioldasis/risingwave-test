@@ -828,6 +828,10 @@ services:
       - all_proxy=
       - NO_PROXY=*
       - no_proxy=*
+      # Databricks Unity Catalog credentials — used by trino/catalog/databricks.properties
+      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_SECRET
+      - ADLS_ACCOUNT_KEY
     volumes:
       - type: bind
         source: ./trino/catalog

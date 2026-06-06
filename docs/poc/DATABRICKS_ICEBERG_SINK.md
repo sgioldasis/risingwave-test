@@ -138,6 +138,8 @@ The UC1 and UC2 aggregation logic that previously lived in RisingWave MVs now ru
 
 Both tables contain a `properties` STRING column with a JSON object. Use the Databricks colon syntax to extract individual fields:
 
+**Databricks SQL**
+
 ```sql
 -- Casino transactions — key properties fields
 SELECT
@@ -167,6 +169,68 @@ FROM de_dev.rw_poc.rw_sportsbook_bets
 LIMIT 10;
 ```
 
+**Trino** — uses `json_extract_scalar` instead of colon syntax; table ref is `databricks.rw_poc.*`
+
+```sql
+-- Casino transactions — key properties fields
+SELECT
+    customer_id, amount_abs, transaction_created_at,
+    json_extract_scalar(properties, '$.game_id')             AS game_id,
+    json_extract_scalar(properties, '$.game_type')           AS game_type,
+    json_extract_scalar(properties, '$.is_live')             AS is_live,
+    json_extract_scalar(properties, '$.transaction_id')      AS transaction_id,
+    json_extract_scalar(properties, '$.transaction_type_id') AS transaction_type_id,
+    json_extract_scalar(properties, '$.casino_provider_id')  AS casino_provider_id,
+    json_extract_scalar(properties, '$.round_ref')           AS round_ref,
+    json_extract_scalar(properties, '$.session_id')          AS session_id,
+    json_extract_scalar(properties, '$.is_round_closed')     AS is_round_closed
+FROM databricks.rw_poc.rw_casino_transactions
+LIMIT 10;
+
+-- Sportsbook bets — key properties fields
+SELECT
+    bet_id, customer_id, stake_euro, placed_at,
+    json_extract_scalar(properties, '$.operator_id')            AS operator_id,
+    json_extract_scalar(properties, '$.bet_type')               AS bet_type,
+    json_extract_scalar(properties, '$.in_play')                AS in_play,
+    json_extract_scalar(properties, '$.total_odds')             AS total_odds,
+    json_extract_scalar(properties, '$.potential_returns_euro') AS potential_returns_euro,
+    json_extract_scalar(properties, '$.last_updated')           AS last_updated
+FROM databricks.rw_poc.rw_sportsbook_bets
+LIMIT 10;
+```
+
+**RisingWave (psql:4566)** — cast to `jsonb` and use `->>` operator; table ref is `v_databricks_*`
+
+```sql
+-- Casino transactions — key properties fields
+SELECT
+    customer_id, amount_abs, transaction_created_at,
+    (properties::jsonb)->>'game_id'             AS game_id,
+    (properties::jsonb)->>'game_type'           AS game_type,
+    (properties::jsonb)->>'is_live'             AS is_live,
+    (properties::jsonb)->>'transaction_id'      AS transaction_id,
+    (properties::jsonb)->>'transaction_type_id' AS transaction_type_id,
+    (properties::jsonb)->>'casino_provider_id'  AS casino_provider_id,
+    (properties::jsonb)->>'round_ref'           AS round_ref,
+    (properties::jsonb)->>'session_id'          AS session_id,
+    (properties::jsonb)->>'is_round_closed'     AS is_round_closed
+FROM v_databricks_casino_transactions
+LIMIT 10;
+
+-- Sportsbook bets — key properties fields
+SELECT
+    bet_id, customer_id, stake_euro, placed_at,
+    (properties::jsonb)->>'operator_id'            AS operator_id,
+    (properties::jsonb)->>'bet_type'               AS bet_type,
+    (properties::jsonb)->>'in_play'                AS in_play,
+    (properties::jsonb)->>'total_odds'             AS total_odds,
+    (properties::jsonb)->>'potential_returns_euro' AS potential_returns_euro,
+    (properties::jsonb)->>'last_updated'           AS last_updated
+FROM v_databricks_sportsbook_bets
+LIMIT 10;
+```
+
 All `properties` keys for **casino transactions**: `company_id`, `casino_provider_id`, `external_provider_id`, `game_id`, `game_type`, `is_live`, `provider_game_code`, `round_ref`, `round_created_at`, `message_id`, `session_id`, `token_type_id`, `jackpot_win_amount`, `jackpot_contribution_amount`, `is_round_closed`, `transaction_id`, `currency_rate_to_euro`, `source_id`, `bonus_action`, `pandora_journey_id`, `customer_campaign_id`, `campaign_id`, `campaign_type_id`, `transaction_type_id`.
 
 All `properties` keys for **sportsbook bets**: `operator_id`, `bet_type`, `in_play`, `total_odds`, `potential_returns_euro`, `lines`, `bonus_type`, `is_placement`, `last_updated`.
@@ -178,6 +242,8 @@ All `properties` keys for **sportsbook bets**: `operator_id`, `bet_type`, `in_pl
 ### UC1 — 5-minute rolling real-bet amount per customer
 
 Equivalent to the old `mv_casino_real_bet` output. Filters to `message_type_id = 1` (real bets) and `account_id = 1` (real-money account).
+
+**Databricks SQL**
 
 ```sql
 SELECT
@@ -195,11 +261,49 @@ WHERE message_type_id = 1
   AND amount_abs IS NOT NULL;
 ```
 
-> The window is parameterised — change `300 SECONDS` to any period without touching the RisingWave pipeline.
+**Trino** — `INTERVAL '300' SECOND` (quoted value, singular unit)
+
+```sql
+SELECT
+    customer_id,
+    currency_id,
+    transaction_created_at,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '300' SECOND PRECEDING AND CURRENT ROW
+    ) AS rolling_5m_real_bet_amount
+FROM databricks.rw_poc.rw_casino_transactions
+WHERE message_type_id = 1
+  AND account_id = 1
+  AND amount_abs IS NOT NULL;
+```
+
+**RisingWave (psql:4566)** — `INTERVAL '300 seconds'` (PostgreSQL style)
+
+```sql
+SELECT
+    customer_id,
+    currency_id,
+    transaction_created_at,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '300 seconds' PRECEDING AND CURRENT ROW
+    ) AS rolling_5m_real_bet_amount
+FROM v_databricks_casino_transactions
+WHERE message_type_id = 1
+  AND account_id = 1
+  AND amount_abs IS NOT NULL;
+```
+
+> The window is parameterised — change `300 SECONDS` / `'300' SECOND` / `'300 seconds'` to any period without touching the RisingWave pipeline.
 
 ### UC2 — Turnover percentage per customer (casino vs. sportsbook)
 
 Equivalent to the old `mv_turnover_percentage` output. Joins the two event tables.
+
+**Databricks SQL**
 
 ```sql
 WITH casino AS (
@@ -246,7 +350,99 @@ ORDER BY total_turnover DESC;
 -- Note: DECIMAL(20,8) zeros display as "0E-8" in Databricks — ROUND removes that artefact.
 ```
 
+**Trino**
+
+```sql
+WITH casino AS (
+    SELECT
+        customer_id,
+        SUM(amount_abs) AS casino_turnover
+    FROM databricks.rw_poc.rw_casino_transactions
+    WHERE message_type_id = 2
+      AND account_id IN (1, 4)
+      AND amount_abs IS NOT NULL
+    GROUP BY customer_id
+),
+sportsbook AS (
+    SELECT
+        customer_id,
+        SUM(stake_euro) AS sportsbook_turnover
+    FROM databricks.rw_poc.rw_sportsbook_bets
+    GROUP BY customer_id
+),
+combined AS (
+    SELECT
+        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
+        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
+        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
+    FROM casino c
+    FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
+)
+SELECT
+    customer_id,
+    ROUND(casino_turnover, 2)                                   AS casino_turnover,
+    ROUND(sportsbook_turnover, 2)                               AS sportsbook_turnover,
+    ROUND(casino_turnover + sportsbook_turnover, 2)             AS total_turnover,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
+    END, 4)                                                     AS casino_ratio,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE sportsbook_turnover / (casino_turnover + sportsbook_turnover)
+    END, 4)                                                     AS sportsbook_ratio
+FROM combined
+ORDER BY total_turnover DESC;
+```
+
+**RisingWave (psql:4566)** — `::numeric` cast required for `ROUND`
+
+```sql
+WITH casino AS (
+    SELECT
+        customer_id,
+        SUM(amount_abs) AS casino_turnover
+    FROM v_databricks_casino_transactions
+    WHERE message_type_id = 2
+      AND account_id IN (1, 4)
+      AND amount_abs IS NOT NULL
+    GROUP BY customer_id
+),
+sportsbook AS (
+    SELECT
+        customer_id,
+        SUM(stake_euro) AS sportsbook_turnover
+    FROM v_databricks_sportsbook_bets
+    GROUP BY customer_id
+),
+combined AS (
+    SELECT
+        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
+        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
+        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
+    FROM casino c
+    FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
+)
+SELECT
+    customer_id,
+    ROUND(casino_turnover::numeric, 2)                                       AS casino_turnover,
+    ROUND(sportsbook_turnover::numeric, 2)                                   AS sportsbook_turnover,
+    ROUND((casino_turnover + sportsbook_turnover)::numeric, 2)               AS total_turnover,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
+    END::numeric, 4)                                                         AS casino_ratio,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE sportsbook_turnover / (casino_turnover + sportsbook_turnover)
+    END::numeric, 4)                                                         AS sportsbook_ratio
+FROM combined
+ORDER BY total_turnover DESC;
+```
+
 ### Quick health check
+
+**Databricks SQL**
 
 ```sql
 -- Verify rows are arriving and timestamps are event-level (not state snapshots)
@@ -259,6 +455,34 @@ FROM de_dev.rw_poc.rw_sportsbook_bets;
 -- Inspect a raw properties bag
 SELECT customer_id, transaction_created_at, amount_abs, properties
 FROM de_dev.rw_poc.rw_casino_transactions
+LIMIT 5;
+```
+
+**Trino**
+
+```sql
+SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
+FROM databricks.rw_poc.rw_casino_transactions;
+
+SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
+FROM databricks.rw_poc.rw_sportsbook_bets;
+
+SELECT customer_id, transaction_created_at, amount_abs, properties
+FROM databricks.rw_poc.rw_casino_transactions
+LIMIT 5;
+```
+
+**RisingWave (psql:4566)**
+
+```sql
+SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
+FROM v_databricks_casino_transactions;
+
+SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
+FROM v_databricks_sportsbook_bets;
+
+SELECT customer_id, transaction_created_at, amount_abs, properties
+FROM v_databricks_casino_transactions
 LIMIT 5;
 ```
 
