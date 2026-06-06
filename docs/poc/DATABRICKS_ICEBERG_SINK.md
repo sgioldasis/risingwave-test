@@ -598,20 +598,28 @@ Once the catalog name is confirmed, update `DATABRICKS_CATALOG` in `.env`, `devb
 
 ## 13. Delta Lake sink — feasibility analysis
 
-Evaluated as an alternative to the Iceberg approach. **Not recommended.**
+Evaluated as an alternative to the Iceberg approach. **Not feasible for this setup** — blocked by missing ADLS Gen2 support.
 
 ### What the Delta Lake connector supports
 
 ```sql
-CREATE SINK FROM mv WITH (
-    connector = 'deltalake',
-    type      = 'append-only',
-    location  = 's3://bucket/path',   -- s3://, s3a://, gs://, file:// only
-    s3.access.key = '...',
-    s3.secret.key = '...',
-    commit_checkpoint_interval = 10
+CREATE SINK IF NOT EXISTS sink_example_deltalake
+FROM mv_source
+WITH (
+    connector                  = 'deltalake',
+    type                       = 'append-only',
+    force_append_only          = 'true',
+    location                   = 's3a://bucket/path/table',
+    s3.endpoint                = 'http://minio-host:9301',   -- S3-compatible endpoint
+    s3.access.key              = '<access-key>',
+    s3.secret.key              = '<secret-key>',
+    commit_checkpoint_interval = 5
 );
 ```
+
+**Supported location schemes:** `s3://`, `s3a://` (S3 / MinIO), `gs://` (GCS), `file://` (local).
+
+**Not supported:** Azure ADLS Gen2 (`abfss://`). There are no `adlsgen2.*` parameters in the Delta Lake connector.
 
 Docs: https://docs.risingwave.com/integrations/destinations/delta-lake
 
@@ -619,29 +627,35 @@ Docs: https://docs.risingwave.com/integrations/destinations/delta-lake
 
 | Blocker | Detail |
 |---|---|
-| **No Azure ADLS support** | The Delta Lake connector only supports S3/S3-compatible and GCS. No `adlsgen2.*` equivalent exists — same storage problem we solved for Iceberg with `adlsgen2.account_key`. |
-| **No upsert semantics** | Both casino MVs (`mv_casino_real_bet`, `mv_turnover_percentage`) are rolling-window aggregates that produce **updates** on every checkpoint. Delta Lake is append-only — `force_append_only = 'true'` writes every changeset as new rows, producing duplicates and no primary-key deduplication. Downstream queries would need `QUALIFY ROW_NUMBER() OVER (...)` to get current state. |
+| **No Azure ADLS Gen2 support** | The Delta Lake connector only supports S3-compatible storage and GCS. Our Databricks workspace stores data on Azure ADLS Gen2 (`abfss://cont1@stkznneurwpoccdddevstd...`). There is no `adlsgen2.account_key` equivalent for the Delta Lake connector — unlike the Iceberg connector which added ADLS support in RisingWave v2.7.0. |
+| **Databricks cannot reach local MinIO** | The only available S3-compatible target is the MinIO instance running in the local Docker stack. Databricks runs on Azure and has no network path to a developer's local Mac — so Databricks cannot read Delta tables written to local MinIO. |
 
-### One scenario where it could work (not recommended)
+### What a local MinIO sink would look like (for reference)
 
-Pointing the Delta Lake sink at **MinIO** (already in the stack, S3-compatible) would bypass the ADLS issue:
+If the consumer were a local tool (e.g. Trino querying MinIO directly, or DataFusion), a Delta Lake sink to MinIO would work:
 
 ```sql
-connector    = 'deltalake',
-location     = 's3a://hummock001/delta/rw_casino_real_bet',
-s3.endpoint  = 'http://minio-0:9301',
-s3.access.key = 'hummockadmin',
-s3.secret.key = 'hummockadmin'
+CREATE SINK IF NOT EXISTS sink_casino_transactions_deltalake
+FROM mv_casino_transactions_full
+WITH (
+    connector                  = 'deltalake',
+    type                       = 'append-only',
+    force_append_only          = 'true',
+    location                   = 's3a://hummock001/delta/rw_casino_transactions',
+    s3.endpoint                = 'http://minio-0:9301',
+    s3.access.key              = 'hummockadmin',
+    s3.secret.key              = 'hummockadmin',
+    commit_checkpoint_interval = 5
+);
 ```
 
-Databricks could then read from MinIO via a Delta Sharing connector or external location registration. But this still doesn't solve the upsert problem and introduces network complexity (Databricks on Azure reaching MinIO on a local Mac).
+This writes valid Delta Lake format Parquet files. The sink sources (`mv_casino_transactions_full`, `mv_sportsbook_bets`) are flat immutable event MVs so `force_append_only` is semantically correct — no deduplication needed. However, since Databricks on Azure cannot reach local MinIO, this is only useful for local analytics.
 
 ### Conclusion
 
-The Iceberg approach (`type = 'upsert'` + `adlsgen2.account_key`) is the correct tool:
-- Solves storage: `adlsgen2.account_key` writes directly to ADLS
-- Solves semantics: upsert with primary key gives correct rolling-window state
-- Only remaining dependency: admin creates a non-Managed-Iceberg catalog (see §12)
+For Databricks on Azure, the **Iceberg connector with `adlsgen2.account_key`** is the only viable RisingWave sink path (see §3 and §15). The Delta Lake connector would become an option if:
+- RisingWave adds `adlsgen2.*` support to the Delta Lake connector (not available as of v2.8.4), or
+- The target storage moves to S3 (AWS or MinIO accessible from Databricks).
 
 ---
 
