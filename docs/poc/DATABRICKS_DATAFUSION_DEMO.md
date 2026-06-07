@@ -252,11 +252,23 @@ Then paste any of the queries above. Sources and views persist across sessions o
 
 ---
 
+## How query execution works
+
+**No query is sent to Databricks.** The Unity Catalog REST API is used only at source creation time to locate the Iceberg metadata file. After that, RisingWave reads the Parquet files directly from ADLS and executes everything locally via its embedded DataFusion engine. No SQL Warehouse is involved; Databricks compute is completely out of the picture.
+
+At query time, RisingWave does a lightweight metadata refresh (re-fetches the latest snapshot pointer from the Unity Catalog REST API) to get the current file list, then scans all Parquet files from ADLS in-process.
+
+**Predicate pushdown** happens within DataFusion at the Parquet level — column pruning and row-group filtering against Parquet min/max statistics. However, there is no partition pruning: RisingWave 2.8.4 opens every Parquet file regardless of `WHERE` clause filters on partitioned columns (see Known limitations).
+
+---
+
 ## Performance expectations
 
 | Operation | Expected latency | Notes |
 |---|---|---|
-| `CREATE SOURCE` (dbt, once) | 3–8s | Fetches Iceberg metadata from ADLS via IRC (network round-trip to Azure from Mac) |
+| `CREATE SOURCE` (dbt, once) | 3–8s | Fetches Iceberg metadata JSON from ADLS via Unity Catalog REST — schema + snapshot pointer only, no Parquet data read |
+| `CREATE VIEW` | ~0s | Pure catalog registration, no I/O |
+| Snapshot refresh (per query) | <500ms | Re-fetches latest snapshot pointer from Unity Catalog REST before each scan |
 | `OPTIMIZE` (Dagster step) | 2–30s | Compacts small files written by sinks; fast after first run |
 | Aggregation on flat columns | 50–300ms | DataFusion vectorized Arrow scan on DECIMAL/INT columns |
 | Cross-table join (Q3) | 200ms–2s | Both tables in memory; depends on distinct customer count |
@@ -274,5 +286,5 @@ Then paste any of the queries above. Sources and views persist across sessions o
 | **Sources are live, not streaming** | A `CREATE SOURCE` reads the current Iceberg snapshot on each query — data is always fresh. However, it is a batch scan, not a continuous stream; you cannot base a `CREATE MATERIALIZED VIEW` on it for real-time incremental updates. |
 | **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint interval (~10s). `databricks_datafusion_job` runs `OPTIMIZE` before queries to compact files. Increase `commit_checkpoint_interval` in the sink to reduce accumulation rate. |
 | **Not suitable for very large tables** | Full Parquet scan from ADLS. For billion-row tables: OOM risk + slow network I/O. See §13 of `DATABRICKS_ICEBERG_SINK.md` for large-table strategies. |
-| **No partition pruning** | RisingWave 2.8.4 reads all Parquet files in the table regardless of any filters. Partition pruning is a future roadmap item. |
+| **No partition pruning** | RisingWave 2.8.4 opens all Parquet files regardless of `WHERE` clause filters — no partition-level skipping. Row-group pruning via Parquet min/max statistics still applies within each file. Partition pruning is a future roadmap item. |
 | **`properties` JSON is not vectorized** | JSON extraction via `(properties::jsonb)->>'key'` falls back to row-by-row string parsing. Use flat typed columns for high-frequency analytical aggregations. |
