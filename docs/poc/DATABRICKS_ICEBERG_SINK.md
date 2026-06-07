@@ -964,6 +964,23 @@ LIMIT 20;
 
 Note: the system table has a latency of several hours. Operations may not appear immediately.
 
+**Confirmed in testing (2026-06-07)**
+
+After ~1 hour of continuous RisingWave writes, Predictive Optimization fired automatically on `rw_casino_transactions`, compacting ~100 Parquet files. This was confirmed via the Iceberg `$snapshots` system table — a `replace` snapshot appeared alongside the stream of `append` snapshots:
+
+```sql
+-- Run via Trino
+SELECT operation, COUNT(*) AS count
+FROM databricks.rw_poc."rw_casino_transactions$snapshots"
+GROUP BY operation;
+-- append  99
+-- replace  1
+```
+
+A concurrent Trino `ALTER TABLE ... EXECUTE optimize` attempt on the same table failed with a snapshot conflict error (`branch main has changed`) — this was caused by Predictive Optimization committing its own `replace` snapshot at exactly the same moment. The Trino failure was harmless; Predictive Optimization had already done the work.
+
+`rw_sportsbook_bets` was compacted via Trino in the same session (no concurrent conflict), reducing ~917 files to 1. Both tables showed reduced Parquet file counts in Grafana immediately after.
+
 **Layer 2 — Dagster `databricks_optimize` step (on-demand)**
 
 The `databricks_datafusion_job` runs `OPTIMIZE` on both tables via the Databricks SQL API immediately before demo queries, guaranteeing compacted files regardless of Predictive Optimization timing. Controlled by `orchestration/assets/databricks_optimize.py`.
