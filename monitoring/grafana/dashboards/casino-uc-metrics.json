@@ -831,7 +831,7 @@
     {
       "id": 22,
       "type": "row",
-      "title": "Iceberg Sinks",
+      "title": "Lakekeeper Iceberg Sinks",
       "collapsed": false,
       "gridPos": {
         "h": 1,
