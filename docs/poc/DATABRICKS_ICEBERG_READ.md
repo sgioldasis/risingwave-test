@@ -1,354 +1,480 @@
-# Databricks Unity Catalog — Reading from Iceberg Tables in RisingWave
+# Databricks Unity Catalog — Reading Iceberg Tables in RisingWave
 
-This document covers the investigation into reading Databricks Unity Catalog Iceberg tables from RisingWave as a `CREATE SOURCE`, enabling joins between live streaming data and historical Databricks tables.
+RisingWave reads Databricks Unity Catalog Iceberg tables back into itself as `CREATE SOURCE` + `CREATE VIEW` objects, then executes OLAP-style queries through the embedded DataFusion engine. Same psql connection, same SQL dialect — no SQL Warehouse cost, no Databricks compute.
 
-> **Status: BLOCKED — same ADLS vended-credentials issue as writes (2026-06-04).** RisingWave can authenticate to Unity Catalog and load table metadata, but cannot read Parquet files from Databricks' managed ADLS storage (`stkznneucommoncdddevstd`). Unblocked once admin creates non-managed-iceberg catalog backed by `stkznneurwpoccdddevstd`. See §5.
+> **Status: WORKING ✅ (2026-06-07).** Both tables readable via `adlsgen2.account_key`. Sources created in `de_dev.rw_poc` which is backed by `stkznneurwpoccdddevstd`. See §9 for the investigation history and why vended credentials don't work.
 
 ---
 
-## 1. Motivation
+## 1. What you can do with Iceberg sources
 
-Once a RisingWave Iceberg source is created, you can:
+Once a RisingWave Iceberg source is created:
 
 - **Join live streaming MVs with historical Databricks tables** in a single SQL query
 - **Backfill materialized views** from existing Databricks data
 - **Cross-system analytics** without moving data out of Databricks
-
-```
-Databricks UC table  ──► CREATE SOURCE in RisingWave  ──► JOIN with streaming MV
-                                                            ──► New materialized view
-```
+- **Run OLAP queries via DataFusion** — vectorized Arrow execution directly over Parquet files in ADLS
 
 ---
 
-## 2. Iceberg Source vs SQL/JDBC approach
+## 2. Architecture
 
-There are two fundamentally different ways to get Databricks data into RisingWave:
+```
+Kafka → RisingWave streaming → sink_casino_transactions_databricks → de_dev.rw_poc.rw_casino_transactions (ADLS)
+                             → sink_sportsbook_bets_databricks    → de_dev.rw_poc.rw_sportsbook_bets    (ADLS)
+                                                                              ↓
+                                                    Iceberg REST API (Unity Catalog) + adlsgen2 key
+                                                                              ↓
+                                             src_databricks_* (CREATE SOURCE — dbt, live snapshot)
+                                                                              ↓
+                                              v_databricks_* (CREATE VIEW — dbt, stable query surface)
+                                                                              ↓
+                                                      OPTIMIZE (Dagster, compact small files)
+                                                                              ↓
+                                                      DataFusion vectorized execution (Arrow)
+                                                                              ↓
+                                                        SELECT queries via psql:4566
+```
+
+**Why reads work without new Databricks setup:** Both tables are `USING ICEBERG` (pure Iceberg, not Delta+UniForm) and stored in `stkznneurwpoccdddevstd` via the schema's `MANAGED LOCATION`. RisingWave authenticates to the Unity Catalog IRC with the same OAuth2 credentials used for writes, then reads Parquet files directly from ADLS using `adlsgen2.account_key`. No vended credentials needed.
+
+**Sources are live:** each query reads the current Iceberg snapshot — no drop+recreate needed to get fresh data.
+
+---
+
+## 3. How query execution works
+
+**No query is sent to Databricks.** The Unity Catalog REST API is used only at source creation time to locate the Iceberg metadata file. After that, RisingWave reads the Parquet files directly from ADLS and executes everything locally via its embedded DataFusion engine. No SQL Warehouse is involved; Databricks compute is completely out of the picture.
+
+At query time, RisingWave does a lightweight metadata refresh (re-fetches the latest snapshot pointer from the Unity Catalog REST API) to get the current file list, then scans all Parquet files from ADLS in-process.
+
+**Predicate pushdown** happens within DataFusion at the Parquet level — column pruning and row-group filtering against Parquet min/max statistics. There is no partition pruning: RisingWave 2.8.4 opens every Parquet file regardless of `WHERE` clause filters on partitioned columns.
+
+---
+
+## 4. Iceberg Source vs alternatives
 
 ### Approach A — Iceberg Source (this document)
 
-RisingWave reads Parquet files **directly from ADLS/S3** using the Iceberg file format. The Unity Catalog REST API is used only for metadata (table schema, snapshot location). No SQL Warehouse needed.
+RisingWave reads Parquet files **directly from ADLS** using the Iceberg file format. The Unity Catalog REST API is used only for metadata. No SQL Warehouse needed.
 
-### Approach B — Pipeline/bridge (no native connector)
+### Approach B — Pipeline / bridge (no native connector)
 
-RisingWave has **no native connector to Databricks SQL Warehouse**. There is no `CREATE SOURCE` that queries Databricks SQL directly. Alternatives that push data into something RisingWave can consume:
+RisingWave has **no native connector to Databricks SQL Warehouse**. Alternatives:
 
 | Option | How it works | Latency | Complexity |
 |---|---|---|---|
-| **Kafka pipeline** | Databricks streams changes to Redpanda via Delta Live Tables or a Databricks job; RisingWave consumes from Kafka | Near real-time | High — requires Databricks streaming job + network access |
+| **Kafka pipeline** | Databricks streams changes via Delta Live Tables or a job; RisingWave consumes from Kafka | Near real-time | High — requires Databricks streaming job + network access |
 | **Dagster periodic sync** | Dagster asset queries Databricks SQL Warehouse via SDK and writes rows to RisingWave via psycopg2 | Minutes (batch) | Low — pure Python, reuses existing auth |
-| **Trino** | Trino can query Databricks SQL Warehouse; but RisingWave can't consume Trino as a source — Trino remains a query tool for humans, not a RisingWave data feed | N/A | Medium — useful for ad-hoc analysis, not for RisingWave pipelines |
-
-### Why Approach A (Iceberg Source) is better for RisingWave integration
-
-There is no "view over a Databricks table" in RisingWave without first pulling the data through a file format or message queue. The Iceberg Source approach is the only path that is:
-- Native to RisingWave (`CREATE SOURCE`)
-- No SQL Warehouse cost
-- Usable inside streaming pipelines and materialized views
+| **Trino** | Trino queries Databricks via IRC; not a RisingWave data feed — query tool for humans only | N/A | Medium |
 
 ### Comparison
 
 | | Iceberg Source (A) | Kafka pipeline (B1) | Dagster sync (B2) |
 |---|---|---|---|
 | Databricks cost | Storage reads only | Streaming job compute | SQL Warehouse per poll |
-| Data freshness | Last Iceberg snapshot | Near real-time | Minutes |
+| Data freshness | Latest Iceberg snapshot | Near real-time | Minutes |
 | RisingWave native | Yes | Yes (Kafka source) | No (external push) |
-| Usable in MVs | Yes | Yes | No |
-| Setup complexity | High (ADLS credentials) | Very high | Low |
-
-**For this PoC, Approach A is preferred** — no SQL Warehouse cost, native RisingWave integration, and usable inside materialized views.
+| Usable in MVs | Yes (batch scan only) | Yes | No |
+| Setup complexity | Medium (ADLS key needed) | Very high | Low |
 
 ---
 
-## 3. Source SQL pattern
+## 5. CREATE SOURCE SQL
+
+Sources and views are created automatically as dbt models (`src_databricks_*.sql`, `v_databricks_*.sql`) when `casino_prd_full_job` runs. For manual creation:
 
 ```sql
-CREATE SOURCE <source_name>
+CREATE SOURCE IF NOT EXISTS src_databricks_casino_transactions
 WITH (
     connector              = 'iceberg',
     catalog.type           = 'rest',
-    catalog.uri            = 'https://adb-1608121643336927.7.azuredatabricks.net/api/2.1/unity-catalog/iceberg-rest',
-    catalog.oauth2_server_uri = 'https://login.microsoftonline.com/78395483-9425-447a-ba64-60b90f6bb16e/oauth2/v2.0/token',
-    catalog.credential     = '3b7f531f-db93-4186-af75-6566c12c076b:<DATABRICKS_AZURE_CLIENT_SECRET>',
-    catalog.scope          = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
-    warehouse.path         = '<catalog_name>',
-    database.name          = '<schema_name>',
-    table.name             = '<table_name>',
-    -- EITHER vended credentials (for non-managed catalog, when UC vending works):
-    vended_credentials     = 'true'
-    -- OR explicit ADLS key (for tables stored in stkznneurwpoccdddevstd):
-    -- adlsgen2.account_name = 'stkznneurwpoccdddevstd',
-    -- adlsgen2.account_key  = '<ADLS_ACCOUNT_KEY>'
-);
-```
-
-After creation, query it like any table:
-```sql
-SELECT * FROM <source_name> ORDER BY id;
-```
-
----
-
-## 3. Test steps executed
-
-### Step 1.1 — Create test table in Databricks
-
-**Command:**
-```bash
-cat > /tmp/create_test.json << 'EOF'
-{
-  "statement": "CREATE TABLE IF NOT EXISTS de_dev.risingwave_poc.test_rw_read (id INT NOT NULL, label STRING, amount DOUBLE, created_at TIMESTAMP) USING DELTA TBLPROPERTIES ('delta.columnMapping.mode' = 'name', 'delta.enableIcebergCompatV2' = 'true', 'delta.universalFormat.enabledFormats' = 'iceberg', 'delta.enableDeletionVectors' = 'false')",
-  "warehouse_id": "4d06eca1e71a9ccc",
-  "wait_timeout": "30s"
-}
-EOF
-databricks api post /api/2.0/sql/statements --json @/tmp/create_test.json
-```
-
-**Result:** SUCCEEDED
-
-> **Key learning:** Creating a Delta table in `de_dev` (Managed Iceberg catalog) WITHOUT Iceberg compat properties results in a table that is NOT accessible via the Iceberg REST API. You MUST include these four `TBLPROPERTIES` together:
-> - `delta.columnMapping.mode = 'name'` (required by IcebergCompatV2)
-> - `delta.enableIcebergCompatV2 = 'true'`
-> - `delta.universalFormat.enabledFormats = 'iceberg'`
-> - `delta.enableDeletionVectors = 'false'` (required — deletion vectors must be off for IcebergCompatV2)
->
-> Trying to ALTER an existing table to add these properties fails with cascading validation errors. Always create with these properties from the start.
-
----
-
-### Step 1.2 — Insert test data
-
-```bash
-cat > /tmp/insert_test.json << 'EOF'
-{
-  "statement": "INSERT INTO de_dev.risingwave_poc.test_rw_read VALUES (1, 'alice', 100.5, current_timestamp()), (2, 'bob', 250.0, current_timestamp()), (3, 'charlie', 75.25, current_timestamp())",
-  "warehouse_id": "4d06eca1e71a9ccc",
-  "wait_timeout": "30s"
-}
-EOF
-databricks api post /api/2.0/sql/statements --json @/tmp/insert_test.json
-```
-
-**Result:** SUCCEEDED — 3 rows inserted.
-
----
-
-### Step 1.3 — Verify table is visible via Iceberg REST API
-
-The Iceberg REST API uses a prefix derived from the `/config` endpoint. For `de_dev`, the prefix is `catalogs/de_dev`.
-
-```python
-# /tmp/check_iceberg_rest.py
-import urllib.request, urllib.parse, json, os
-
-tenant  = os.environ["DATABRICKS_AZURE_TENANT_ID"]
-client  = os.environ["DATABRICKS_AZURE_CLIENT_ID"]
-secret  = os.environ["DATABRICKS_AZURE_CLIENT_SECRET"]
-host    = "https://adb-1608121643336927.7.azuredatabricks.net"
-base    = f"{host}/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/de_dev"
-
-# Get token first
-payload = urllib.parse.urlencode({
-    "grant_type": "client_credentials", "client_id": client,
-    "client_secret": secret, "scope": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default",
-}).encode()
-with urllib.request.urlopen(urllib.request.Request(
-    f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token", data=payload, method="POST"
-)) as r:
-    token = json.loads(r.read())["access_token"]
-
-headers = {"Authorization": f"Bearer {token}"}
-
-# List tables in namespace
-req = urllib.request.Request(f"{base}/namespaces/risingwave_poc/tables", headers=headers)
-with urllib.request.urlopen(req) as r:
-    print(json.dumps(json.loads(r.read()), indent=2))
-```
-
-```bash
-python3 /tmp/check_iceberg_rest.py
-```
-
-**Result:**
-```json
-{
-  "identifiers": [
-    {
-      "namespace": ["risingwave_poc"],
-      "name": "test_rw_read"
-    }
-  ]
-}
-```
-
-> **Key learning — Iceberg REST API URL structure for Databricks:**
-> - First call `/config?warehouse=<catalog>` to get the prefix
-> - All subsequent calls use `/v1/{prefix}/namespaces/...`
-> - For `de_dev`: prefix = `catalogs/de_dev`
-> - Full namespace list: `GET /api/2.1/unity-catalog/iceberg-rest/v1/catalogs/de_dev/namespaces`
-> - Full table list: `GET /api/2.1/unity-catalog/iceberg-rest/v1/catalogs/de_dev/namespaces/risingwave_poc/tables`
-
----
-
-### Step 1.4 — Grant SP SELECT on the table
-
-```bash
-cat > /tmp/grant_test.json << 'EOF'
-{
-  "statement": "GRANT SELECT ON TABLE de_dev.risingwave_poc.test_rw_read TO `3b7f531f-db93-4186-af75-6566c12c076b`",
-  "warehouse_id": "4d06eca1e71a9ccc",
-  "wait_timeout": "30s"
-}
-EOF
-databricks api post /api/2.0/sql/statements --json @/tmp/grant_test.json
-```
-
-**Result:** SUCCEEDED
-
----
-
-### Step 1.5 — Find storage location
-
-```bash
-cat > /tmp/describe_test.json << 'EOF'
-{
-  "statement": "DESCRIBE EXTENDED de_dev.risingwave_poc.test_rw_read",
-  "warehouse_id": "4d06eca1e71a9ccc",
-  "wait_timeout": "30s"
-}
-EOF
-databricks api post /api/2.0/sql/statements --json @/tmp/describe_test.json \
-  | python3 -c "import sys,json; [print(r) for r in json.load(sys.stdin)['result']['data_array'] if any(k in str(r) for k in ['Location','Provider','Type','Is_managed'])]"
-```
-
-**Result:**
-```
-['Type', 'MANAGED', '']
-['Location', 'abfss://cross-operator@stkznneucommoncdddevstd.dfs.core.windows.net/catalogs/de_dev/__unitystorage/...', '']
-['Provider', 'delta', '']
-['Is_managed_location', 'true', '']
-```
-
-**Key finding:** The table lives in `stkznneucommoncdddevstd` — Databricks' **internal managed ADLS account**. We don't have the key for this account.
-
----
-
-### Step 2 — Attempt 1: vended_credentials (Phase 2)
-
-**Source creation:**
-```python
-# Executed via psycopg2 — create_rw_source.py
-sql = """
-CREATE SOURCE src_databricks_test_read
-WITH (
-    connector              = 'iceberg',
-    catalog.type           = 'rest',
-    catalog.uri            = 'https://adb-1608121643336927.7.azuredatabricks.net/api/2.1/unity-catalog/iceberg-rest',
-    catalog.oauth2_server_uri = 'https://login.microsoftonline.com/78395483-9425-447a-ba64-60b90f6bb16e/oauth2/v2.0/token',
-    catalog.credential     = '3b7f531f-...:...',
+    catalog.uri            = '<DBT_DATABRICKS_HOST>/api/2.1/unity-catalog/iceberg-rest',
+    catalog.oauth2_server_uri = 'https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token',
+    catalog.credential     = '<CLIENT_ID>:<CLIENT_SECRET>',
     catalog.scope          = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
     warehouse.path         = 'de_dev',
-    database.name          = 'risingwave_poc',
-    table.name             = 'test_rw_read',
-    vended_credentials     = 'true'
-)
-"""
-```
-
-**Source creation:** ✅ SUCCEEDED — RisingWave accepted the configuration and authenticated to Unity Catalog.
-
-**SELECT test:**
-```sql
-SELECT * FROM src_databricks_test_read ORDER BY id;
-```
-
-**Result:** ❌ FAILED
-```
-connector error
-IcebergV2 error
-Unexpected => Failed to load manifest list in cache, source
-Unexpected => Failure in doing io operation, source
-Unexpected (persistent) at read, context: { timeout: 10 } => io timeout reached
-```
-
-**Root cause:** `vended_credentials = true` does not provide working Azure credentials for the OpenDAL ADLS read path. Same blocker as writes — RisingWave 2.8.4 cannot consume Unity Catalog's vended Azure credentials for either reads or writes.
-
----
-
-## 4. Summary of what works vs what doesn't
-
-| Step | Status | Detail |
-|---|---|---|
-| Azure AD token auth to Unity Catalog REST API | ✅ Works | `catalog.oauth2_server_uri` + `catalog.credential` + `catalog.scope` |
-| Listing namespaces + tables via Iceberg REST API | ✅ Works | Confirmed `test_rw_read` visible |
-| `CREATE SOURCE` in RisingWave (metadata) | ✅ Works | Source created without error |
-| Reading Parquet files from managed ADLS storage | ❌ Blocked | `vended_credentials` doesn't provide working Azure ADLS credentials |
-| Explicit `adlsgen2.account_key` for managed storage | ⛔ Not possible | Would need key for `stkznneucommoncdddevstd` (Databricks' internal account) |
-
----
-
-## 5. Next steps — what unblocks this
-
-The same admin action that unblocks **writes** also unblocks **reads**: creating a **non-Managed-Iceberg Unity Catalog catalog** backed by `stkznneurwpoccdddevstd` (the PoC storage account we have credentials for).
-
-Once that catalog exists:
-
-1. Create tables in it (external Iceberg tables, not managed Delta)
-2. Both RisingWave SINKS (writes) and SOURCES (reads) use `adlsgen2.account_key` for `stkznneurwpoccdddevstd`
-3. No vended credentials needed
-
-**Full read source after catalog is available:**
-```sql
-CREATE SOURCE src_databricks_casino_real_bet
-WITH (
-    connector              = 'iceberg',
-    catalog.type           = 'rest',
-    catalog.uri            = 'https://adb-1608121643336927.7.azuredatabricks.net/api/2.1/unity-catalog/iceberg-rest',
-    catalog.oauth2_server_uri = 'https://login.microsoftonline.com/78395483-9425-447a-ba64-60b90f6bb16e/oauth2/v2.0/token',
-    catalog.credential     = '3b7f531f-db93-4186-af75-6566c12c076b:<DATABRICKS_AZURE_CLIENT_SECRET>',
-    catalog.scope          = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
-    warehouse.path         = '<new_catalog_name>',
-    database.name          = 'risingwave_poc',
-    table.name             = 'rw_casino_real_bet',
+    database.name          = 'rw_poc',
+    table.name             = 'rw_casino_transactions',
     adlsgen2.account_name  = 'stkznneurwpoccdddevstd',
     adlsgen2.account_key   = '<ADLS_ACCOUNT_KEY>'
 );
+
+CREATE SOURCE IF NOT EXISTS src_databricks_sportsbook_bets
+WITH (
+    connector              = 'iceberg',
+    catalog.type           = 'rest',
+    catalog.uri            = '<DBT_DATABRICKS_HOST>/api/2.1/unity-catalog/iceberg-rest',
+    catalog.oauth2_server_uri = 'https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token',
+    catalog.credential     = '<CLIENT_ID>:<CLIENT_SECRET>',
+    catalog.scope          = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
+    warehouse.path         = 'de_dev',
+    database.name          = 'rw_poc',
+    table.name             = 'rw_sportsbook_bets',
+    adlsgen2.account_name  = 'stkznneurwpoccdddevstd',
+    adlsgen2.account_key   = '<ADLS_ACCOUNT_KEY>'
+);
+
+CREATE VIEW IF NOT EXISTS v_databricks_casino_transactions AS
+    SELECT * FROM src_databricks_casino_transactions;
+
+CREATE VIEW IF NOT EXISTS v_databricks_sportsbook_bets AS
+    SELECT * FROM src_databricks_sportsbook_bets;
 ```
 
-**Grant required for reads:**
+**Creation cost:** `CREATE SOURCE` fetches only Iceberg metadata JSON from ADLS (~3–8s, network round-trip to Azure). No Parquet data is read at creation time. `CREATE VIEW` is free — pure catalog registration.
+
+---
+
+## 6. Queries
+
+All three engines can query the same data. Syntax differences:
+
+| Engine | JSON extraction | Table reference |
+|---|---|---|
+| RisingWave (`psql:4566`) | `(properties::jsonb)->>'key'` | `v_databricks_*` views |
+| Databricks SQL | `properties:key` | `de_dev.rw_poc.*` |
+| Trino (`localhost:9080`) | `json_extract_scalar(properties, '$.key')` | `databricks.rw_poc.*` |
+
+---
+
+### Health check — data volume & freshness
+
+**RisingWave**
 ```sql
-GRANT SELECT ON TABLE <catalog>.risingwave_poc.rw_casino_real_bet
-TO `3b7f531f-db93-4186-af75-6566c12c076b`;
+SELECT
+    'casino_transactions'       AS table_name,
+    COUNT(*)                    AS row_count,
+    MIN(transaction_created_at) AS earliest,
+    MAX(transaction_created_at) AS latest
+FROM v_databricks_casino_transactions
+UNION ALL
+SELECT
+    'sportsbook_bets',
+    COUNT(*),
+    MIN(placed_at),
+    MAX(placed_at)
+FROM v_databricks_sportsbook_bets;
+```
+
+**Databricks SQL**
+```sql
+SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
+FROM de_dev.rw_poc.rw_casino_transactions;
+
+SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
+FROM de_dev.rw_poc.rw_sportsbook_bets;
+```
+
+**Trino**
+```sql
+SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
+FROM databricks.rw_poc.rw_casino_transactions;
 ```
 
 ---
 
-## 6. Reproduce from scratch checklist
+### Accessing `properties` fields
 
-When the new catalog is available, run these steps:
+Both tables have a `properties STRING` column with a JSON object containing all remaining proto fields.
 
-- [ ] Admin creates non-managed-iceberg catalog backed by `stkznneurwpoccdddevstd`
-- [ ] Admin creates schema `risingwave_poc` in new catalog
-- [ ] Admin opens firewall on `stkznneurwpoccdddevstd` (Databricks VNet + developer IP)
-- [ ] Admin grants SP `USE_CATALOG`, `USE_SCHEMA`, `SELECT` on the new catalog/schema
-- [ ] Tables created at `abfss://cont1@stkznneurwpoccdddevstd.dfs.core.windows.net/iceberg/...`
-- [ ] Run `CREATE SOURCE` SQL above (with new catalog name)
-- [ ] Run `SELECT * FROM src_databricks_casino_real_bet LIMIT 10;` to verify
+**RisingWave**
+```sql
+SELECT
+    customer_id, amount_abs, transaction_created_at,
+    (properties::jsonb)->>'game_id'             AS game_id,
+    (properties::jsonb)->>'game_type'           AS game_type,
+    (properties::jsonb)->>'is_live'             AS is_live,
+    (properties::jsonb)->>'transaction_type_id' AS transaction_type_id,
+    (properties::jsonb)->>'casino_provider_id'  AS casino_provider_id
+FROM v_databricks_casino_transactions
+WHERE amount_abs IS NOT NULL AND amount_abs > 0
+ORDER BY transaction_created_at DESC
+LIMIT 10;
+```
+
+**Databricks SQL**
+```sql
+SELECT
+    customer_id, amount_abs, transaction_created_at,
+    properties:game_id             AS game_id,
+    properties:game_type           AS game_type,
+    properties:is_live             AS is_live,
+    properties:transaction_type_id AS transaction_type_id,
+    properties:casino_provider_id  AS casino_provider_id
+FROM de_dev.rw_poc.rw_casino_transactions
+WHERE amount_abs IS NOT NULL AND amount_abs > 0
+ORDER BY transaction_created_at DESC
+LIMIT 10;
+```
+
+**Trino**
+```sql
+SELECT
+    customer_id, amount_abs, transaction_created_at,
+    json_extract_scalar(properties, '$.game_id')             AS game_id,
+    json_extract_scalar(properties, '$.game_type')           AS game_type,
+    json_extract_scalar(properties, '$.is_live')             AS is_live,
+    json_extract_scalar(properties, '$.transaction_type_id') AS transaction_type_id,
+    json_extract_scalar(properties, '$.casino_provider_id')  AS casino_provider_id
+FROM databricks.rw_poc.rw_casino_transactions
+WHERE amount_abs IS NOT NULL AND amount_abs > 0
+ORDER BY transaction_created_at DESC
+LIMIT 10;
+```
+
+All `properties` keys for **casino transactions**: `company_id`, `casino_provider_id`, `external_provider_id`, `game_id`, `game_type`, `is_live`, `provider_game_code`, `round_ref`, `round_created_at`, `message_id`, `session_id`, `token_type_id`, `jackpot_win_amount`, `jackpot_contribution_amount`, `is_round_closed`, `transaction_id`, `currency_rate_to_euro`, `source_id`, `bonus_action`, `pandora_journey_id`, `customer_campaign_id`, `campaign_id`, `campaign_type_id`, `transaction_type_id`.
+
+All `properties` keys for **sportsbook bets**: `operator_id`, `bet_type`, `in_play`, `total_odds`, `potential_returns_euro`, `lines`, `bonus_type`, `is_placement`, `last_updated`.
 
 ---
 
-## 7. What if the Databricks table is in Delta format (not Iceberg)?
+### UC1 — Top customers by real-bet amount (batch)
 
-RisingWave's Iceberg connector **cannot read native Delta format** — it only understands Iceberg file layout (`metadata/*.json`, manifest files). Delta uses a completely different transaction log (`_delta_log/`).
+**RisingWave**
+```sql
+SELECT
+    customer_id,
+    currency_id,
+    SUM(amount_abs)::numeric AS total_real_bet
+FROM v_databricks_casino_transactions
+WHERE message_type_id = 1
+  AND account_id = 1
+  AND amount_abs IS NOT NULL
+GROUP BY customer_id, currency_id
+ORDER BY total_real_bet DESC
+LIMIT 10;
+```
 
-### Databricks UniForm (Universal Format)
+**UC1 — 5-minute rolling real-bet amount (windowed)**
 
-Databricks' **UniForm** feature writes Iceberg metadata *alongside* the Delta log simultaneously, making a Delta table readable by both Delta and Iceberg readers. This is enabled via `delta.universalFormat.enabledFormats = 'iceberg'`.
+**Databricks SQL**
+```sql
+SELECT
+    customer_id, currency_id, transaction_created_at,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL 300 SECONDS PRECEDING AND CURRENT ROW
+    ) AS rolling_5m_real_bet_amount
+FROM de_dev.rw_poc.rw_casino_transactions
+WHERE message_type_id = 1 AND account_id = 1 AND amount_abs IS NOT NULL;
+```
 
-**All four properties must be set together** (as done in step 3.1):
+**Trino** — `INTERVAL '300' SECOND` (quoted value, singular unit)
+```sql
+SELECT
+    customer_id, currency_id, transaction_created_at,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '300' SECOND PRECEDING AND CURRENT ROW
+    ) AS rolling_5m_real_bet_amount
+FROM databricks.rw_poc.rw_casino_transactions
+WHERE message_type_id = 1 AND account_id = 1 AND amount_abs IS NOT NULL;
+```
+
+**RisingWave** — `INTERVAL '300 seconds'` (PostgreSQL style)
+```sql
+SELECT
+    customer_id, currency_id, transaction_created_at,
+    SUM(amount_abs) OVER (
+        PARTITION BY customer_id, currency_id
+        ORDER BY transaction_created_at
+        RANGE BETWEEN INTERVAL '300 seconds' PRECEDING AND CURRENT ROW
+    ) AS rolling_5m_real_bet_amount
+FROM v_databricks_casino_transactions
+WHERE message_type_id = 1 AND account_id = 1 AND amount_abs IS NOT NULL;
+```
+
+> The window is parameterised — change the interval without touching the RisingWave pipeline.
+
+---
+
+### UC2 — Turnover ratio per customer (casino vs sportsbook)
+
+**RisingWave**
+```sql
+WITH casino AS (
+    SELECT customer_id, SUM(amount_abs) AS casino_turnover
+    FROM v_databricks_casino_transactions
+    WHERE message_type_id = 2 AND account_id IN (1, 4) AND amount_abs IS NOT NULL
+    GROUP BY customer_id
+),
+sportsbook AS (
+    SELECT customer_id, SUM(stake_euro) AS sportsbook_turnover
+    FROM v_databricks_sportsbook_bets
+    GROUP BY customer_id
+),
+combined AS (
+    SELECT
+        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
+        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
+        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
+    FROM casino c FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
+)
+SELECT
+    customer_id,
+    ROUND(casino_turnover::numeric, 2)                               AS casino_turnover,
+    ROUND(sportsbook_turnover::numeric, 2)                           AS sportsbook_turnover,
+    ROUND((casino_turnover + sportsbook_turnover)::numeric, 2)       AS total_turnover,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
+    END::numeric, 4)                                                 AS casino_ratio
+FROM combined
+ORDER BY total_turnover DESC
+LIMIT 20;
+```
+
+**Databricks SQL**
+```sql
+WITH casino AS (
+    SELECT customer_id, SUM(amount_abs) AS casino_turnover
+    FROM de_dev.rw_poc.rw_casino_transactions
+    WHERE message_type_id = 2 AND account_id IN (1, 4) AND amount_abs IS NOT NULL
+    GROUP BY customer_id
+),
+sportsbook AS (
+    SELECT customer_id, SUM(stake_euro) AS sportsbook_turnover
+    FROM de_dev.rw_poc.rw_sportsbook_bets
+    GROUP BY customer_id
+),
+combined AS (
+    SELECT
+        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
+        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
+        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
+    FROM casino c FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
+)
+SELECT
+    customer_id,
+    ROUND(casino_turnover, 2)                                    AS casino_turnover,
+    ROUND(sportsbook_turnover, 2)                                AS sportsbook_turnover,
+    ROUND(casino_turnover + sportsbook_turnover, 2)              AS total_turnover,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
+    END, 4)                                                      AS casino_ratio
+FROM combined
+ORDER BY total_turnover DESC;
+```
+
+**Trino**
+```sql
+WITH casino AS (
+    SELECT customer_id, SUM(amount_abs) AS casino_turnover
+    FROM databricks.rw_poc.rw_casino_transactions
+    WHERE message_type_id = 2 AND account_id IN (1, 4) AND amount_abs IS NOT NULL
+    GROUP BY customer_id
+),
+sportsbook AS (
+    SELECT customer_id, SUM(stake_euro) AS sportsbook_turnover
+    FROM databricks.rw_poc.rw_sportsbook_bets
+    GROUP BY customer_id
+),
+combined AS (
+    SELECT
+        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
+        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
+        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
+    FROM casino c FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
+)
+SELECT
+    customer_id,
+    ROUND(casino_turnover, 2)    AS casino_turnover,
+    ROUND(sportsbook_turnover, 2) AS sportsbook_turnover,
+    ROUND(casino_turnover + sportsbook_turnover, 2) AS total_turnover,
+    ROUND(CASE
+        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
+        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
+    END, 4) AS casino_ratio
+FROM combined
+ORDER BY total_turnover DESC;
+```
+
+---
+
+### Sportsbook bet segmentation by type
+
+**RisingWave**
+```sql
+SELECT
+    bet_type_id,
+    COUNT(*)                            AS bet_count,
+    ROUND(SUM(stake_euro)::numeric, 2)  AS total_stake_euro,
+    ROUND(AVG(stake_euro)::numeric, 2)  AS avg_stake_euro
+FROM v_databricks_sportsbook_bets
+GROUP BY bet_type_id
+ORDER BY total_stake_euro DESC;
+```
+
+---
+
+## 7. Running the DataFusion demo
+
+### Option 1 — Dagster UI
+
+1. **Run `casino_prd_full_job`** — sets up the full streaming pipeline and creates the Iceberg sources + views as dbt models (`src_databricks_*`, `v_databricks_*`). Only needed once per stack start.
+
+2. **Run `databricks_datafusion_job`** — runs two steps in order:
+   - `databricks_optimize` — compacts small Parquet files via Databricks SQL API
+   - `databricks_datafusion_demo` — runs all queries against the views and logs results as markdown tables in the compute log
+
+`databricks_datafusion_job` can be re-run any time without re-running `casino_prd_full_job`.
+
+### Option 2 — psql (manual)
+
+```bash
+psql -h localhost -p 4566 -U root -d dev
+```
+
+Sources and views persist across sessions once created by `casino_prd_full_job`.
+
+---
+
+## 8. Performance expectations
+
+| Operation | Expected latency | Notes |
+|---|---|---|
+| `CREATE SOURCE` (dbt, once) | 3–8s | Fetches Iceberg metadata JSON from ADLS via Unity Catalog REST — schema + snapshot pointer only, no Parquet data read |
+| `CREATE VIEW` | ~0s | Pure catalog registration, no I/O |
+| Snapshot refresh (per query) | <500ms | Re-fetches latest snapshot pointer from Unity Catalog REST before each scan |
+| `OPTIMIZE` (Dagster step) | 2–30s | Compacts small files written by sinks; fast after first run |
+| Aggregation on flat columns | 50–300ms | DataFusion vectorized Arrow scan on DECIMAL/INT columns |
+| Cross-table join (UC2) | 200ms–2s | Both tables in memory; depends on distinct customer count |
+| `(properties::jsonb)->>'key'` | 2–5× typed columns | STRING → JSONB parse per row, not vectorized |
+| Data freshness | Current Iceberg snapshot | Source reads the latest committed snapshot on each query |
+
+**At PoC scale** (tens of thousands of rows): all queries complete in well under 1 second after OPTIMIZE.
+
+---
+
+## 9. Known limitations
+
+| Limitation | Detail |
+|---|---|
+| **Sources are live, not streaming** | A `CREATE SOURCE` reads the current Iceberg snapshot on each query — data is always fresh. However, it is a batch scan, not a continuous stream; you cannot base a `CREATE MATERIALIZED VIEW` on it for real-time incremental updates. |
+| **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by Predictive Optimization (enabled on `de_dev.rw_poc`) and the `databricks_optimize` Dagster step. See §17 of `DATABRICKS_ICEBERG_SINK.md`. |
+| **Not suitable for very large tables** | Full Parquet scan from ADLS. For billion-row tables: OOM risk + slow network I/O. See §11 (production viability) below. |
+| **No partition pruning** | RisingWave 2.8.4 opens all Parquet files regardless of `WHERE` clause filters — no partition-level skipping. Row-group pruning via Parquet min/max statistics still applies within each file. Future roadmap item. |
+| **`properties` JSON is not vectorized** | JSON extraction via `(properties::jsonb)->>'key'` falls back to row-by-row string parsing. Use flat typed columns for high-frequency analytical aggregations. |
+
+---
+
+## 10. Reading existing Delta tables (UniForm)
+
+RisingWave's Iceberg connector **cannot read native Delta format** — it only understands Iceberg metadata (`metadata/*.json`, manifest files). Delta uses a different transaction log (`_delta_log/`).
+
+### Databricks UniForm
+
+UniForm writes Iceberg metadata *alongside* the Delta log simultaneously, making a Delta table readable by both Delta and Iceberg readers.
+
+**All four properties must be set at `CREATE TABLE` time** — cannot `ALTER` an existing table:
 
 ```sql
+CREATE TABLE de_dev.rw_poc.my_table ( ... )
+USING DELTA
 TBLPROPERTIES (
     'delta.columnMapping.mode'             = 'name',
     'delta.enableIcebergCompatV2'          = 'true',
@@ -357,83 +483,97 @@ TBLPROPERTIES (
 )
 ```
 
-### Options for pure Delta tables
-
-| Option | When to use | Notes |
-|---|---|---|
-| **Create with UniForm from the start** | New tables you control | Include all four `TBLPROPERTIES` at `CREATE TABLE` time — cleanest approach |
-| **ALTER existing table** | Existing tables | Cascades into validation failures (column mapping mode, deletion vectors). Generally not viable without data migration. |
-| **Recreate the table** | Existing tables where you control the schema | Drop + `CREATE TABLE ... TBLPROPERTIES (...)` + re-load data |
-| **Kafka/Dagster pipeline** | Tables you don't control and can't alter | Push data out of Databricks into Kafka or batch-sync via Dagster |
+Once created, the same `CREATE SOURCE` SQL (§5) works — RisingWave reads the Iceberg metadata layer.
 
 ### Why ALTER fails on existing Delta tables
 
-As discovered in step 3.1, trying to add Iceberg compat to an existing Delta table fails with cascading errors:
-1. `IcebergCompatV2 requires delta.columnMapping.mode = 'name'` — but changing column mapping on an existing table requires a full rewrite
+1. `IcebergCompatV2 requires delta.columnMapping.mode = 'name'` — changing column mapping on an existing table requires a full rewrite
 2. `IcebergCompatV2 requires Deletion Vectors to be disabled` — if DVs were ever used, you'd need `REORG PURGE` first
-3. `REORG PURGE` itself may fail if the table has other constraints
+3. `REORG PURGE` may fail if the table has other constraints
 
 **The clean path for existing tables:** drop, recreate with the four properties, reload data.
 
-### Enabling UniForm on many large existing tables — gotchas
+### Gotchas when enabling UniForm on large existing tables
 
-#### 1. Deletion Vectors (most common blocker)
-
-Modern Databricks tables have deletion vectors enabled by default for MERGE/UPDATE/DELETE operations. UniForm requires them disabled. You must run:
-
-```sql
-REORG TABLE <table> APPLY (PURGE);
-```
-
-This **rewrites all data files** — expensive in time and Databricks compute, and blocks writes while running. For large tables, plan for hours of downtime.
-
-#### 2. Column mapping mode
-
-Tables on `NoMapping` (default for older tables) must migrate to `name` mode. This is a metadata change but can break downstream readers (Spark jobs, BI tools) that depend on column IDs rather than names. Requires coordination across all consumers.
-
-#### 3. Iceberg metadata generation for history
-
-On first enable, Databricks generates Iceberg metadata for the entire existing Delta log. Tables with thousands of commits and TBs of data can take hours for this initial sync, with significant I/O.
-
-#### 4. Per-write overhead after enabling
-
-Every future write also updates Iceberg metadata. High-frequency append tables (streaming ingestion) will see added latency per transaction.
-
-#### 5. Incompatible Delta features — cannot enable UniForm if table uses any of these
-
-- Liquid Clustering
-- V-Order optimization
-- Row tracking
-- Type widening
-- Certain generated column patterns
-
-Tables using any of these features must remove/disable them before UniForm can be enabled.
-
-#### 6. Protocol upgrade
-
-UniForm requires minimum reader version 2, writer version 7. Older Spark jobs or connectors that don't support these versions will fail to read the table after the upgrade.
-
-#### Practical approach for bulk migration
-
-For many tables, use a tiered strategy:
-
-1. **Identify which tables actually need RisingWave reads** — probably a subset, not everything
-2. **Audit each candidate** — `DESCRIBE EXTENDED <table>` → look for deletion vectors, liquid clustering, V-Order
-3. **Schedule REORG PURGE** for tables with deletion vectors during a low-traffic window
-4. **Create new tables with UniForm from the start** for any new pipelines (avoid the migration entirely)
-5. **Use Kafka or Dagster sync** for tables you don't control, can't alter, or that use incompatible features
+| Blocker | Detail |
+|---|---|
+| **Deletion Vectors** | Modern Databricks tables have DVs enabled by default. Must run `REORG TABLE <t> APPLY (PURGE)` — rewrites all data files, blocks writes, can take hours |
+| **Column mapping mode** | Tables on `NoMapping` must migrate to `name` mode — can break Spark jobs that depend on column IDs |
+| **Initial metadata sync** | On first enable, Databricks generates Iceberg metadata for the entire Delta log — can take hours for large tables |
+| **Per-write overhead** | Every future write also updates Iceberg metadata — adds latency on high-frequency append tables |
+| **Incompatible features** | Cannot enable UniForm if table uses: Liquid Clustering, V-Order, row tracking, type widening |
+| **Protocol upgrade** | Requires reader version 2, writer version 7 — older Spark jobs may fail |
 
 ---
 
-### Liquid Clustered tables updated once per day — recommended pattern
+## 11. Production viability for large existing Delta tables
 
-Liquid Clustering is **incompatible with UniForm** — you cannot enable Iceberg compat on a Liquid Clustered table. However, for tables with a daily batch cadence there is no need to switch or lose the clustering. Use an **Iceberg mirror table** instead:
+Maintaining two copies of large tables (one Delta, one Iceberg) is not acceptable at scale. Options without permanent duplication:
 
-**Keep the original** (Liquid Clustered, fast Databricks reads) + **add a daily-refreshed Iceberg copy** (readable by RisingWave):
+### Option 1 — UniForm + drop Liquid Clustering
+
+Keep Delta format, disable Liquid Clustering to enable UniForm. Single table readable by both systems.
+
+- ✅ No duplication, no format migration
+- ⚠️ Databricks query performance degrades without LC — classic partitioning + ZORDER can partially compensate
+- ⚠️ Existing tables need REORG PURGE + recreation (expensive at billions of rows)
+
+### Option 2 — Iceberg as primary format (new pipelines)
+
+Design net-new pipelines with Iceberg from the start. Databricks 13.3+ reads and writes Iceberg natively.
+
+- ✅ No duplication, vendor independence long-term
+- ⚠️ Full rewrite for existing tables — painful at billions of rows
+- ✅ Clean architecture for new work
+
+### Option 3 — Kafka CDC from Databricks (no format change)
+
+Keep Delta + Liquid Clustering exactly as-is. Enable [Databricks Change Data Feed](https://docs.databricks.com/en/delta/delta-change-data-feed.html) and publish changes to Kafka. RisingWave consumes from Kafka.
+
+```
+Delta table → Change Data Feed → Kafka topic → RisingWave streaming table
+```
+
+- ✅ Zero format migration, LC untouched, no duplication
+- ✅ Architecturally natural — RisingWave is a streaming engine
+- ⚠️ Requires engineering to publish CDF to Kafka
+- ⚠️ Bootstrap problem — Kafka only captures changes going forward
+
+**Handling the bootstrap problem (Strategy B — recommended):**
+
+1. Record the current Delta version: `DESCRIBE HISTORY <table> LIMIT 1` → note `version`
+2. One-time full snapshot of the table into RisingWave via a temporary Iceberg mirror
+3. Start Kafka CDC from exactly that version: `startingVersion = <recorded_version>`
+4. Once RisingWave has caught up, drop the Iceberg mirror
+
+The Iceberg mirror is a migration tool used once, not a permanent copy.
+
+**Strategy C — accept partial history:** Enable CDC from today; historical analysis stays in Databricks. Acceptable if RisingWave pipelines only need recent data (rolling windows, last N days).
+
+### Option 4 — Wait for RisingWave Delta connector
+
+File a feature request. No timeline — not in v2.9.0 roadmap.
+
+### Summary
+
+| Option | Format change | Duplication | LC retained | Bootstrap |
+|---|---|---|---|---|
+| UniForm + drop LC | Metadata only | None | ❌ | No |
+| Iceberg primary | Full rewrite | None | ❌ | No |
+| Kafka CDC + snapshot | None | Temporary (1×) | ✅ | Yes — Strategy B |
+| Delta connector (future) | None | None | ✅ | No |
+
+**Option 3 with Strategy B** is the most production-grade path for large existing tables. For net-new pipelines, design with Iceberg from the start (Option 2).
+
+---
+
+## 12. Liquid Clustered tables — Iceberg mirror pattern
+
+Liquid Clustering is **incompatible with UniForm**. For tables with a daily batch cadence, use an Iceberg mirror instead of losing the clustering:
 
 ```sql
--- Step 1: Create the Iceberg mirror once (no liquid clustering)
-CREATE TABLE de_dev.risingwave_poc.my_table_iceberg
+-- Step 1: Create the Iceberg mirror once
+CREATE TABLE de_dev.rw_poc.my_table_iceberg
 TBLPROPERTIES (
     'delta.columnMapping.mode'             = 'name',
     'delta.enableIcebergCompatV2'          = 'true',
@@ -442,132 +582,61 @@ TBLPROPERTIES (
 )
 AS SELECT * FROM de_dev.original_schema.my_table;
 
--- Step 2: Add to the existing daily batch job
-TRUNCATE TABLE de_dev.risingwave_poc.my_table_iceberg;
-INSERT INTO de_dev.risingwave_poc.my_table_iceberg
+-- Step 2: Refresh daily (add to existing batch job)
+TRUNCATE TABLE de_dev.rw_poc.my_table_iceberg;
+INSERT INTO de_dev.rw_poc.my_table_iceberg
 SELECT * FROM de_dev.original_schema.my_table;
 ```
 
-**Why this fits well:**
-- Original Liquid Clustered table is untouched — Databricks query performance unaffected
-- Iceberg mirror refreshes once per day, matching the source update cadence
-- 24-hour lag is acceptable since the source data only changes once per day
-- RisingWave reads the mirror via `CREATE SOURCE` with `adlsgen2.account_key`
-- Storage cost is one full table copy — no ongoing write amplification
-
-**Gotcha — data gap during refresh:** `TRUNCATE + INSERT` leaves the mirror empty between the two operations. If RisingWave must always have data, use one of these alternatives:
+**Data gap during refresh:** `TRUNCATE + INSERT` leaves the mirror empty between operations. Alternatives:
 
 ```sql
--- Option A: MERGE (upsert by primary key — no gap, but slower)
-MERGE INTO de_dev.risingwave_poc.my_table_iceberg AS t
+-- Option A: MERGE (no gap, slower)
+MERGE INTO de_dev.rw_poc.my_table_iceberg AS t
 USING de_dev.original_schema.my_table AS s
 ON t.id = s.id
 WHEN MATCHED THEN UPDATE SET *
 WHEN NOT MATCHED THEN INSERT *;
 
--- Option B: Atomic swap (write to a staging table, rename — no gap)
-CREATE OR REPLACE TABLE de_dev.risingwave_poc.my_table_iceberg_new
-TBLPROPERTIES (...)
-AS SELECT * FROM de_dev.original_schema.my_table;
--- then drop old and rename new (requires DROP + CREATE or clone)
+-- Option B: Atomic swap (write to staging, rename — no gap)
+CREATE OR REPLACE TABLE de_dev.rw_poc.my_table_iceberg_new
+TBLPROPERTIES (...) AS SELECT * FROM de_dev.original_schema.my_table;
+-- then drop old and rename new
 ```
 
 ---
 
-## 8. Production viability assessment — Delta tables + RisingWave
+## 13. Investigation history — why vended credentials don't work
 
-The PoC is being done to assess production use. Maintaining two copies of large Delta tables (one for Databricks, one Iceberg mirror) is not acceptable at scale. The viable production options without permanent duplication are:
+### What was tested
 
----
-
-### Option 1 — UniForm + drop Liquid Clustering
-
-Keep Delta as the format, disable Liquid Clustering to enable UniForm. Single table, single copy, readable by both Databricks and RisingWave.
-
-- ✅ No duplication, no format migration
-- ⚠️ Databricks query performance degrades without Liquid Clustering — classic partitioning + ZORDER can partially compensate but needs benchmarking
-- ⚠️ Existing tables need REORG PURGE + recreation (expensive at billions of rows)
-
----
-
-### Option 2 — Iceberg as primary format (new pipelines)
-
-For pipelines not yet built, design with Iceberg from the start. Databricks 13.3+ reads and writes Iceberg natively. Single table, both systems read it.
-
-- ✅ No duplication, vendor independence long-term
-- ⚠️ No Liquid Clustering equivalent in Iceberg
-- ⚠️ Full rewrite for existing tables — very painful at billions of rows
-- ✅ Clean architecture for net-new work
-
----
-
-### Option 3 — Kafka CDC from Databricks (no format change)
-
-Keep Delta + Liquid Clustering exactly as-is. Enable Databricks [Change Data Feed](https://docs.databricks.com/en/delta/delta-change-data-feed.html) on each table and publish changes to Kafka. RisingWave consumes from Kafka.
+**Step 1 — Test table creation:**
+Created `de_dev.risingwave_poc.test_rw_read` as a Delta+UniForm table. `CREATE SOURCE` in RisingWave succeeded (auth and metadata load worked). `SELECT` failed:
 
 ```
-Delta table (Databricks) → Change Data Feed → Kafka topic → RisingWave streaming table
+IcebergV2 error: Failed to load manifest list in cache
+Unexpected (persistent) at read, context: { timeout: 10 } => io timeout reached
 ```
 
-- ✅ Zero format migration, no duplication, Liquid Clustering untouched
-- ✅ Architecturally the most natural fit — RisingWave is a streaming engine, consuming Kafka is what it does best
-- ⚠️ Requires engineering to publish CDF output to Kafka as part of the daily batch
-- ⚠️ **Bootstrap problem — see below**
+**Root cause:** The table lives in `stkznneucommoncdddevstd` — Databricks' internal managed ADLS account. We don't have the key for this account, and `vended_credentials = true` does not provide working Azure credentials through RisingWave's OpenDAL read path (same limitation as writes — see §7 of `DATABRICKS_ICEBERG_SINK.md`).
 
-#### Historical data / bootstrap problem
+### What works vs what doesn't
 
-Kafka CDC only captures changes **going forward** from when it is enabled. The billions of existing rows don't appear in the topic. RisingWave starts empty and only sees new changes.
+| Step | Status | Detail |
+|---|---|---|
+| Azure AD token auth to Unity Catalog REST API | ✅ Works | `catalog.oauth2_server_uri` + `catalog.credential` + `catalog.scope` |
+| Listing namespaces + tables via Iceberg REST | ✅ Works | Tables visible immediately after creation |
+| `CREATE SOURCE` (metadata load) | ✅ Works | Source created without error |
+| Reading from Databricks' managed ADLS (`stkznneucommoncdddevstd`) | ❌ Blocked | `vended_credentials` doesn't provide working Azure ADLS credentials |
+| Reading from PoC ADLS (`stkznneurwpoccdddevstd`) | ✅ Works | Direct `adlsgen2.account_key` — this is what `de_dev.rw_poc` uses |
 
-Three strategies to handle this:
+### What unblocked reads
 
-**A — Full initial dump then CDC**
-
-Read the entire Delta table → publish all rows to Kafka → RisingWave ingests → switch to CDC for incremental updates.
-Conceptually simple but expensive at billions of rows: high Databricks compute, high Kafka throughput, slow RisingWave ingestion time.
-
-**B — Snapshot + CDC from that version (recommended)**
-
-Delta Change Data Feed supports `startingVersion` (an integer) or `startingTimestamp`. Use this to guarantee no overlap and no gap:
-
-1. Record the current Delta version: `DESCRIBE HISTORY <table> LIMIT 1` → note `version`
-2. Do a **one-time full snapshot** of the table into RisingWave (via Iceberg mirror — the temporary dual-copy is acceptable as a one-time bootstrap, not a permanent fixture)
-3. Start Kafka CDC from exactly that version: `startingVersion = <recorded_version>`
-4. Once RisingWave has caught up, drop the Iceberg mirror
-
-This is the standard production pattern for CDC bootstrapping. The Iceberg mirror becomes a migration tool used once, not a permanent copy.
-
-**C — Accept partial history**
-
-Enable CDC from today. RisingWave sees data from now forward. Historical analysis stays in Databricks (queried via Trino or Dagster). Clean separation: RisingWave for real-time, Databricks for history.
-
-Whether C is acceptable depends on the use case:
-- ✅ Acceptable if RisingWave pipelines only need recent data (rolling windows, last N days)
-- ❌ Not acceptable if full history is needed in materialized views from day one
+The same admin action that unblocked writes: creating `de_dev.rw_poc` as a schema with `MANAGED LOCATION 'abfss://cont1@stkznneurwpoccdddevstd.dfs.core.windows.net/iceberg'`. Tables created in this schema land in our PoC storage account, which we have `adlsgen2.account_key` for. `vended_credentials` is never needed.
 
 ---
 
-### Option 4 — Wait for RisingWave Delta support
-
-File a feature request for a native Delta Lake source connector. Delta is widely used — a reasonable roadmap item. No migration, no duplication, but timeline is uncertain (not available in 2.8.4).
-
----
-
-### Recommendation for billions-of-rows tables
-
-| Option | Format change | Duplication | LC retained | Bootstrap needed |
-|---|---|---|---|---|
-| UniForm + drop LC | Metadata only | None | ❌ | No |
-| Iceberg primary | Full rewrite | None | ❌ | No |
-| Kafka CDC + snapshot | None | Temporary (1×) | ✅ | Yes — Option B |
-| Delta support (future) | None | None | ✅ | No |
-
-**Option 3 with Strategy B** is the most production-grade path for large existing tables: preserves Liquid Clustering, avoids permanent duplication, and handles historical data cleanly. The Iceberg mirror is used once for bootstrapping then discarded.
-
-For **net-new pipelines**, design with Iceberg from the start (Option 2) and avoid the problem entirely.
-
----
-
-## 9. Iceberg REST API reference (for Databricks UC)
+## 14. Iceberg REST API reference
 
 Useful for debugging — get a token first:
 
@@ -592,9 +661,9 @@ BASE="https://adb-1608121643336927.7.azuredatabricks.net/api/2.1/unity-catalog/i
 # Get prefix for a catalog
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/config?warehouse=de_dev" | python3 -m json.tool
 
-# List namespaces (using prefix from config)
+# List namespaces
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/catalogs/de_dev/namespaces" | python3 -m json.tool
 
 # List tables in a namespace
-curl -s -H "Authorization: Bearer $TOKEN" "$BASE/catalogs/de_dev/namespaces/risingwave_poc/tables" | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/catalogs/de_dev/namespaces/rw_poc/tables" | python3 -m json.tool
 ```

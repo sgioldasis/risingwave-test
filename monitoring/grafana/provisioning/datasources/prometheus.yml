@@ -46,3 +46,13 @@ datasources:
     jsonData:
       catalog: datalake
       schema: public
+
+  - name: Databricks via Trino
+    uid: databricks-trino
+    type: trino-datasource
+    access: proxy
+    url: http://trino:8080
+    editable: true
+    jsonData:
+      catalog: databricks
+      schema: rw_poc

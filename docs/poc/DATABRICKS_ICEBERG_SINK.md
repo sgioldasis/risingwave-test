@@ -2,7 +2,7 @@
 
 RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) into **Databricks Unity Catalog Iceberg tables** running in parallel to the existing Lakekeeper sinks. This document records the full integration path, every gotcha encountered, and the rationale for each decision.
 
-> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §3a for Databricks consumer queries, §15 for infrastructure setup, and §16 for the full investigation history.
+> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see `DATABRICKS_ICEBERG_READ.md` §6.
 
 ---
 
@@ -62,7 +62,7 @@ Source: `mv_casino_transactions_full` — one row per casino transaction (all me
 | `currency_id` | INT | |
 | `transaction_created_at` | TIMESTAMP | |
 | `amount_abs` | DECIMAL(20,8) | |
-| `properties` | STRING (JSON) | All other proto fields — see §3a |
+| `properties` | STRING (JSON) | All other proto fields — see `DATABRICKS_ICEBERG_READ.md` §6 |
 
 ```sql
 CREATE SINK IF NOT EXISTS sink_casino_transactions_databricks
@@ -104,7 +104,7 @@ Source: `mv_sportsbook_bets` — one row per sportsbook bet.
 | `placed_at` | TIMESTAMP | |
 | `stake_euro` | DECIMAL(20,8) | |
 | `stake_local` | DECIMAL(20,8) | |
-| `properties` | STRING (JSON) | All other proto fields — see §3a |
+| `properties` | STRING (JSON) | All other proto fields — see `DATABRICKS_ICEBERG_READ.md` §6 |
 
 ```sql
 CREATE SINK IF NOT EXISTS sink_sportsbook_bets_databricks
@@ -126,364 +126,6 @@ WITH (
     commit_checkpoint_interval           = 5,
     compaction.write_parquet_compression = 'zstd'
 )
-```
-
----
-
-## 3a. Databricks consumer queries
-
-The UC1 and UC2 aggregation logic that previously lived in RisingWave MVs now runs as Databricks SQL on top of the flat event tables.
-
-### Accessing `properties` fields
-
-Both tables contain a `properties` STRING column with a JSON object. Use the Databricks colon syntax to extract individual fields:
-
-**Databricks SQL**
-
-```sql
--- Casino transactions — key properties fields
-SELECT
-    customer_id, amount_abs, transaction_created_at,
-    properties:game_id              AS game_id,
-    properties:game_type            AS game_type,
-    properties:is_live              AS is_live,
-    properties:transaction_id       AS transaction_id,
-    properties:transaction_type_id  AS transaction_type_id,
-    properties:casino_provider_id   AS casino_provider_id,
-    properties:round_ref            AS round_ref,
-    properties:session_id           AS session_id,
-    properties:is_round_closed      AS is_round_closed
-FROM de_dev.rw_poc.rw_casino_transactions
-LIMIT 10;
-
--- Sportsbook bets — key properties fields
-SELECT
-    bet_id, customer_id, stake_euro, placed_at,
-    properties:operator_id             AS operator_id,
-    properties:bet_type                AS bet_type,
-    properties:in_play                 AS in_play,
-    properties:total_odds              AS total_odds,
-    properties:potential_returns_euro  AS potential_returns_euro,
-    properties:last_updated            AS last_updated
-FROM de_dev.rw_poc.rw_sportsbook_bets
-LIMIT 10;
-```
-
-**Trino** — uses `json_extract_scalar` instead of colon syntax; table ref is `databricks.rw_poc.*`
-
-```sql
--- Casino transactions — key properties fields
-SELECT
-    customer_id, amount_abs, transaction_created_at,
-    json_extract_scalar(properties, '$.game_id')             AS game_id,
-    json_extract_scalar(properties, '$.game_type')           AS game_type,
-    json_extract_scalar(properties, '$.is_live')             AS is_live,
-    json_extract_scalar(properties, '$.transaction_id')      AS transaction_id,
-    json_extract_scalar(properties, '$.transaction_type_id') AS transaction_type_id,
-    json_extract_scalar(properties, '$.casino_provider_id')  AS casino_provider_id,
-    json_extract_scalar(properties, '$.round_ref')           AS round_ref,
-    json_extract_scalar(properties, '$.session_id')          AS session_id,
-    json_extract_scalar(properties, '$.is_round_closed')     AS is_round_closed
-FROM databricks.rw_poc.rw_casino_transactions
-LIMIT 10;
-
--- Sportsbook bets — key properties fields
-SELECT
-    bet_id, customer_id, stake_euro, placed_at,
-    json_extract_scalar(properties, '$.operator_id')            AS operator_id,
-    json_extract_scalar(properties, '$.bet_type')               AS bet_type,
-    json_extract_scalar(properties, '$.in_play')                AS in_play,
-    json_extract_scalar(properties, '$.total_odds')             AS total_odds,
-    json_extract_scalar(properties, '$.potential_returns_euro') AS potential_returns_euro,
-    json_extract_scalar(properties, '$.last_updated')           AS last_updated
-FROM databricks.rw_poc.rw_sportsbook_bets
-LIMIT 10;
-```
-
-**RisingWave (psql:4566)** — cast to `jsonb` and use `->>` operator; table ref is `v_databricks_*`
-
-```sql
--- Casino transactions — key properties fields
-SELECT
-    customer_id, amount_abs, transaction_created_at,
-    (properties::jsonb)->>'game_id'             AS game_id,
-    (properties::jsonb)->>'game_type'           AS game_type,
-    (properties::jsonb)->>'is_live'             AS is_live,
-    (properties::jsonb)->>'transaction_id'      AS transaction_id,
-    (properties::jsonb)->>'transaction_type_id' AS transaction_type_id,
-    (properties::jsonb)->>'casino_provider_id'  AS casino_provider_id,
-    (properties::jsonb)->>'round_ref'           AS round_ref,
-    (properties::jsonb)->>'session_id'          AS session_id,
-    (properties::jsonb)->>'is_round_closed'     AS is_round_closed
-FROM v_databricks_casino_transactions
-LIMIT 10;
-
--- Sportsbook bets — key properties fields
-SELECT
-    bet_id, customer_id, stake_euro, placed_at,
-    (properties::jsonb)->>'operator_id'            AS operator_id,
-    (properties::jsonb)->>'bet_type'               AS bet_type,
-    (properties::jsonb)->>'in_play'                AS in_play,
-    (properties::jsonb)->>'total_odds'             AS total_odds,
-    (properties::jsonb)->>'potential_returns_euro' AS potential_returns_euro,
-    (properties::jsonb)->>'last_updated'           AS last_updated
-FROM v_databricks_sportsbook_bets
-LIMIT 10;
-```
-
-All `properties` keys for **casino transactions**: `company_id`, `casino_provider_id`, `external_provider_id`, `game_id`, `game_type`, `is_live`, `provider_game_code`, `round_ref`, `round_created_at`, `message_id`, `session_id`, `token_type_id`, `jackpot_win_amount`, `jackpot_contribution_amount`, `is_round_closed`, `transaction_id`, `currency_rate_to_euro`, `source_id`, `bonus_action`, `pandora_journey_id`, `customer_campaign_id`, `campaign_id`, `campaign_type_id`, `transaction_type_id`.
-
-All `properties` keys for **sportsbook bets**: `operator_id`, `bet_type`, `in_play`, `total_odds`, `potential_returns_euro`, `lines`, `bonus_type`, `is_placement`, `last_updated`.
-
-> **Schema evolution**: if new fields are added to the PROTOBUF, they automatically appear as new keys inside `properties` — no `ALTER TABLE` required in Databricks.
-
----
-
-### UC1 — 5-minute rolling real-bet amount per customer
-
-Equivalent to the old `mv_casino_real_bet` output. Filters to `message_type_id = 1` (real bets) and `account_id = 1` (real-money account).
-
-**Databricks SQL**
-
-```sql
-SELECT
-    customer_id,
-    currency_id,
-    transaction_created_at,
-    SUM(amount_abs) OVER (
-        PARTITION BY customer_id, currency_id
-        ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL 300 SECONDS PRECEDING AND CURRENT ROW
-    ) AS rolling_5m_real_bet_amount
-FROM de_dev.rw_poc.rw_casino_transactions
-WHERE message_type_id = 1
-  AND account_id = 1
-  AND amount_abs IS NOT NULL;
-```
-
-**Trino** — `INTERVAL '300' SECOND` (quoted value, singular unit)
-
-```sql
-SELECT
-    customer_id,
-    currency_id,
-    transaction_created_at,
-    SUM(amount_abs) OVER (
-        PARTITION BY customer_id, currency_id
-        ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '300' SECOND PRECEDING AND CURRENT ROW
-    ) AS rolling_5m_real_bet_amount
-FROM databricks.rw_poc.rw_casino_transactions
-WHERE message_type_id = 1
-  AND account_id = 1
-  AND amount_abs IS NOT NULL;
-```
-
-**RisingWave (psql:4566)** — `INTERVAL '300 seconds'` (PostgreSQL style)
-
-```sql
-SELECT
-    customer_id,
-    currency_id,
-    transaction_created_at,
-    SUM(amount_abs) OVER (
-        PARTITION BY customer_id, currency_id
-        ORDER BY transaction_created_at
-        RANGE BETWEEN INTERVAL '300 seconds' PRECEDING AND CURRENT ROW
-    ) AS rolling_5m_real_bet_amount
-FROM v_databricks_casino_transactions
-WHERE message_type_id = 1
-  AND account_id = 1
-  AND amount_abs IS NOT NULL;
-```
-
-> The window is parameterised — change `300 SECONDS` / `'300' SECOND` / `'300 seconds'` to any period without touching the RisingWave pipeline.
-
-### UC2 — Turnover percentage per customer (casino vs. sportsbook)
-
-Equivalent to the old `mv_turnover_percentage` output. Joins the two event tables.
-
-**Databricks SQL**
-
-```sql
-WITH casino AS (
-    SELECT
-        customer_id,
-        SUM(amount_abs) AS casino_turnover
-    FROM de_dev.rw_poc.rw_casino_transactions
-    WHERE message_type_id = 2
-      AND account_id IN (1, 4)
-      AND amount_abs IS NOT NULL
-    GROUP BY customer_id
-),
-sportsbook AS (
-    SELECT
-        customer_id,
-        SUM(stake_euro) AS sportsbook_turnover
-    FROM de_dev.rw_poc.rw_sportsbook_bets
-    GROUP BY customer_id
-),
-combined AS (
-    SELECT
-        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
-        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
-        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
-    FROM casino c
-    FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
-)
-SELECT
-    customer_id,
-    ROUND(casino_turnover, 2)                                   AS casino_turnover,
-    ROUND(sportsbook_turnover, 2)                               AS sportsbook_turnover,
-    ROUND(casino_turnover + sportsbook_turnover, 2)             AS total_turnover,
-    ROUND(CASE
-        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
-        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
-    END, 4)                                                     AS casino_ratio,
-    ROUND(CASE
-        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
-        ELSE sportsbook_turnover / (casino_turnover + sportsbook_turnover)
-    END, 4)                                                     AS sportsbook_ratio
-FROM combined
-ORDER BY total_turnover DESC;
-
--- Note: DECIMAL(20,8) zeros display as "0E-8" in Databricks — ROUND removes that artefact.
-```
-
-**Trino**
-
-```sql
-WITH casino AS (
-    SELECT
-        customer_id,
-        SUM(amount_abs) AS casino_turnover
-    FROM databricks.rw_poc.rw_casino_transactions
-    WHERE message_type_id = 2
-      AND account_id IN (1, 4)
-      AND amount_abs IS NOT NULL
-    GROUP BY customer_id
-),
-sportsbook AS (
-    SELECT
-        customer_id,
-        SUM(stake_euro) AS sportsbook_turnover
-    FROM databricks.rw_poc.rw_sportsbook_bets
-    GROUP BY customer_id
-),
-combined AS (
-    SELECT
-        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
-        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
-        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
-    FROM casino c
-    FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
-)
-SELECT
-    customer_id,
-    ROUND(casino_turnover, 2)                                   AS casino_turnover,
-    ROUND(sportsbook_turnover, 2)                               AS sportsbook_turnover,
-    ROUND(casino_turnover + sportsbook_turnover, 2)             AS total_turnover,
-    ROUND(CASE
-        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
-        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
-    END, 4)                                                     AS casino_ratio,
-    ROUND(CASE
-        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
-        ELSE sportsbook_turnover / (casino_turnover + sportsbook_turnover)
-    END, 4)                                                     AS sportsbook_ratio
-FROM combined
-ORDER BY total_turnover DESC;
-```
-
-**RisingWave (psql:4566)** — `::numeric` cast required for `ROUND`
-
-```sql
-WITH casino AS (
-    SELECT
-        customer_id,
-        SUM(amount_abs) AS casino_turnover
-    FROM v_databricks_casino_transactions
-    WHERE message_type_id = 2
-      AND account_id IN (1, 4)
-      AND amount_abs IS NOT NULL
-    GROUP BY customer_id
-),
-sportsbook AS (
-    SELECT
-        customer_id,
-        SUM(stake_euro) AS sportsbook_turnover
-    FROM v_databricks_sportsbook_bets
-    GROUP BY customer_id
-),
-combined AS (
-    SELECT
-        COALESCE(c.customer_id, s.customer_id)  AS customer_id,
-        COALESCE(c.casino_turnover, 0)           AS casino_turnover,
-        COALESCE(s.sportsbook_turnover, 0)       AS sportsbook_turnover
-    FROM casino c
-    FULL OUTER JOIN sportsbook s ON c.customer_id = s.customer_id
-)
-SELECT
-    customer_id,
-    ROUND(casino_turnover::numeric, 2)                                       AS casino_turnover,
-    ROUND(sportsbook_turnover::numeric, 2)                                   AS sportsbook_turnover,
-    ROUND((casino_turnover + sportsbook_turnover)::numeric, 2)               AS total_turnover,
-    ROUND(CASE
-        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
-        ELSE casino_turnover / (casino_turnover + sportsbook_turnover)
-    END::numeric, 4)                                                         AS casino_ratio,
-    ROUND(CASE
-        WHEN casino_turnover + sportsbook_turnover = 0 THEN 0
-        ELSE sportsbook_turnover / (casino_turnover + sportsbook_turnover)
-    END::numeric, 4)                                                         AS sportsbook_ratio
-FROM combined
-ORDER BY total_turnover DESC;
-```
-
-### Quick health check
-
-**Databricks SQL**
-
-```sql
--- Verify rows are arriving and timestamps are event-level (not state snapshots)
-SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
-FROM de_dev.rw_poc.rw_casino_transactions;
-
-SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
-FROM de_dev.rw_poc.rw_sportsbook_bets;
-
--- Inspect a raw properties bag
-SELECT customer_id, transaction_created_at, amount_abs, properties
-FROM de_dev.rw_poc.rw_casino_transactions
-LIMIT 5;
-```
-
-**Trino**
-
-```sql
-SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
-FROM databricks.rw_poc.rw_casino_transactions;
-
-SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
-FROM databricks.rw_poc.rw_sportsbook_bets;
-
-SELECT customer_id, transaction_created_at, amount_abs, properties
-FROM databricks.rw_poc.rw_casino_transactions
-LIMIT 5;
-```
-
-**RisingWave (psql:4566)**
-
-```sql
-SELECT COUNT(*), MIN(transaction_created_at), MAX(transaction_created_at)
-FROM v_databricks_casino_transactions;
-
-SELECT COUNT(*), MIN(placed_at), MAX(placed_at)
-FROM v_databricks_sportsbook_bets;
-
-SELECT customer_id, transaction_created_at, amount_abs, properties
-FROM v_databricks_casino_transactions
-LIMIT 5;
 ```
 
 ---
@@ -679,9 +321,10 @@ auth_type    = databricks-cli
 
 | Limitation | Detail |
 |---|---|
-| **No Grafana monitoring** | Local Trino only queries the Lakekeeper catalog. Databricks tables are not wired into Grafana. A Trino connector to Unity Catalog or Databricks SQL Warehouse data source would be needed. |
+| **Grafana monitoring** | Wired up via Trino `databricks` catalog — see the "Databricks Iceberg Sinks" row in `casino-uc-metrics.json`. Panels: row counts, data freshness (minutes behind live), Parquet file counts, and snapshot count over time. |
 | **Token handled by Iceberg library** | With `catalog.oauth2_server_uri`, the Azure AD token is fetched and refreshed by the Apache Iceberg Java library inside RisingWave. Token refresh behaviour is library-managed, not controlled at the RisingWave level. |
 | **External tables required** | Databricks managed tables use Databricks' own ADLS account (no credentials available). Tables must be created as external Iceberg tables pointing to the PoC storage account — see §12. |
+| **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by two layers: Predictive Optimization (enabled on `de_dev.rw_poc`, runs automatically) + `databricks_optimize` Dagster step (runs `OPTIMIZE` on-demand before demo queries). See §17. |
 
 ---
 
@@ -789,34 +432,25 @@ export ADLS_ACCOUNT_KEY='<storage-account-key-2-from-platform-team>'
 
 ---
 
-### Will RisingWave be able to write after these steps?
+### Outcome — confirmed working ✅ (2026-06-05)
 
-**Yes, with high confidence.** The two auth concerns are independent:
+**Writes are stable and continuous.** The approach that worked differs from the external-table plan above — see §15 for the full reproduction guide.
 
-| Concern | Handled by | Status |
+| Concern | Handled by | Result |
 |---|---|---|
-| Unity Catalog metadata (load table schema, commit snapshots) | `catalog.oauth2_server_uri` + `catalog.credential` | Already worked in earlier runs |
-| ADLS data writes (Parquet files) | `adlsgen2.account_name` + `adlsgen2.account_key` | Direct storage account key — does not go through UC at all |
+| Unity Catalog metadata (load table schema, commit snapshots) | `catalog.oauth2_server_uri` + `catalog.credential` | ✅ Working |
+| ADLS data writes (Parquet files) | `adlsgen2.account_name` + `adlsgen2.account_key` | ✅ Working |
 
-When RisingWave opens the external table, Unity Catalog returns `table.location = abfss://cont1@stkznneurwpoccdddevstd...`. RisingWave then writes directly to that path using the account key. The UC storage credential (Step 1) is only needed by Databricks to *create* the external table — RisingWave never uses it.
+**What changed from the plan above:** External tables with a custom `LOCATION` are not supported in `de_dev` (Managed Iceberg catalog) — Step 7 fails with `MANAGED_ICEBERG_OPERATION_NOT_SUPPORTED`. No new catalog was needed. The fix was to create schema `de_dev.rw_poc` with a custom `MANAGED LOCATION` pointing to the PoC storage account, then create **managed** Iceberg tables (no `LOCATION` override). Tables land in `stkznneurwpoccdddevstd` via the schema's managed location, and `adlsgen2.account_key` writes to them directly.
 
-**Known risks / blockers encountered:**
+**Blockers encountered during this investigation:**
 
 | Issue | When encountered | Resolution |
 |---|---|---|
 | `storage-credentials create --json azure_storage_credential` returns "Unrecognized storage credential type" | CLI | Admin used the Databricks **UI** (Settings → Unity Catalog → Storage credentials) to create it with the account key |
 | `statement-execution` is not a valid CLI command | CLI | Use `databricks api post /api/2.0/sql/statements --json @file.json` with `wait_timeout` between 5s–50s |
-| Storage account firewall blocks Databricks SQL Warehouse from creating external tables | Step 6 | Admin must open the storage account firewall: Azure Portal → `stkznneurwpoccdddevstd` → Networking → add the Databricks workspace VNet/subnet, **or** set "Allow access from: All networks" for the PoC. RisingWave (running locally on Mac) also needs firewall access — the developer's public IP must be whitelisted or public access must be enabled. |
-| `de_dev` catalog is **Managed Iceberg** — external tables with custom `LOCATION` are not supported | Step 7 | `de_dev` uses Delta with Iceberg compat; all tables are managed and `USING ICEBERG LOCATION '...'` fails with `MANAGED_ICEBERG_OPERATION_NOT_SUPPORTED`. Admin must create a **new catalog** (standard Unity Catalog, not Managed Iceberg) backed by the PoC storage account. See below. |
-
-#### New catalog requirements (for admin)
-
-The admin needs to create a Unity Catalog catalog that:
-- Is **not** a Managed Iceberg catalog
-- Uses `stkznneurwpoccdddevstd` as its storage root (or allows external tables pointing there)
-- Grants the SP `USE_CATALOG`, `USE_SCHEMA`, `CREATE_TABLE`, `MODIFY`, `SELECT` on the new catalog/schema
-
-Once the catalog name is confirmed, update `DATABRICKS_CATALOG` in `.env`, `devbox.json`, and `docker-compose.yml`.
+| Storage account firewall blocks Databricks SQL Warehouse from creating tables | Step 6 | Admin opened the firewall: Azure Portal → `stkznneurwpoccdddevstd` → Networking → allow Databricks workspace VNet/subnet and developer public IP |
+| `de_dev` catalog is Managed Iceberg — `USING ICEBERG LOCATION '...'` fails with `MANAGED_ICEBERG_OPERATION_NOT_SUPPORTED` | Step 7 | Dropped the external-table plan. Instead: created `de_dev.rw_poc` schema with `MANAGED LOCATION 'abfss://cont1@stkznneurwpoccdddevstd...'` and used managed Iceberg tables. See §15 Step 1c. |
 
 ---
 
@@ -1064,7 +698,7 @@ FROM de_dev.rw_poc.rw_sportsbook_bets;
 - **Sink recreation**: `casino_prd_full_job` drops and recreates all sinks on every run via `drop_prebuild_sinks`, including the Databricks sinks. This ensures config changes (e.g. `commit_checkpoint_interval`) take effect on the next run at the cost of a ~5-10s write gap per job run — acceptable for a PoC.
 - **Compaction**: Databricks `delta.autoOptimize.autoCompact = true` handles file compaction automatically. No RisingWave-level compaction is needed.
 - **Schema `rw_poc` vs `risingwave_poc`**: `rw_poc` has a custom managed location (`stkznneurwpoccdddevstd`). `risingwave_poc` uses Databricks' managed storage — cannot use `adlsgen2.account_key` for it.
-- **No deduplication needed**: Sink sources are immutable event MVs (`mv_casino_transactions_full`, `mv_sportsbook_bets`). Every row is a unique event — append-only is semantically correct. UC1/UC2 aggregation logic runs in Databricks SQL (see §3a).
+- **No deduplication needed**: Sink sources are immutable event MVs (`mv_casino_transactions_full`, `mv_sportsbook_bets`). Every row is a unique event — append-only is semantically correct. UC1/UC2 aggregation logic runs in Databricks SQL, Trino, or RisingWave — see `DATABRICKS_ICEBERG_READ.md` §6.
 
 ---
 
@@ -1278,3 +912,62 @@ WITH (
     enable_snapshot_expiration = 'true'
 )
 ```
+
+---
+
+## 17. File compaction
+
+### The small-file problem
+
+RisingWave commits one Parquet file per checkpoint cycle (~20s at `commit_checkpoint_interval = 5`). At steady state this produces ~180 files/hour. Many small files degrade scan performance because each file requires a separate ADLS read request.
+
+### Why RisingWave-native compaction doesn't work
+
+`enable_compaction`, `compaction.trigger_snapshot_count`, and `compaction_interval_sec` are implemented in RisingWave's **upsert/retract code path** (`non_append_only_behavior`). Append-only sinks (`type = 'append-only'` + `force_append_only = 'true'`) have `non_append_only_behavior = None` — the compaction options are parsed and stored but no compaction code path is ever reached. Confirmed via compute node logs:
+
+```
+# Lakekeeper upsert sinks (compaction works):
+Sink executor info sink_id=83 non_append_only_behavior=Some(NonAppendOnlyBehavior { force_compaction: true })
+
+# Databricks append-only sinks (compaction silently ignored):
+Sink executor info sink_id=84 non_append_only_behavior=None
+```
+
+### Solution: two-layer compaction
+
+**Layer 1 — Databricks Predictive Optimization (continuous, automatic)**
+
+Enabled on `de_dev.rw_poc` on 2026-06-07:
+
+```sql
+ALTER SCHEMA de_dev.rw_poc ENABLE PREDICTIVE OPTIMIZATION;
+```
+
+Confirmed with:
+```sql
+DESCRIBE SCHEMA EXTENDED de_dev.rw_poc;
+-- Predictive Optimization: ENABLE
+```
+
+Databricks automatically runs `OPTIMIZE`, `VACUUM`, and `ANALYZE` on the managed Iceberg tables based on write activity, using serverless compute. No maintenance schedule required.
+
+Prerequisites: Premium plan workspace; Unity Catalog **managed tables** only (external tables are not supported).
+
+To monitor operations:
+```sql
+SELECT operation_type, operation_status, table_name, start_time, end_time, operation_metrics
+FROM system.storage.predictive_optimization_operations_history
+WHERE schema_name = 'rw_poc'
+ORDER BY start_time DESC
+LIMIT 20;
+```
+
+Note: the system table has a latency of several hours. Operations may not appear immediately.
+
+**Layer 2 — Dagster `databricks_optimize` step (on-demand)**
+
+The `databricks_datafusion_job` runs `OPTIMIZE` on both tables via the Databricks SQL API immediately before demo queries, guaranteeing compacted files regardless of Predictive Optimization timing. Controlled by `orchestration/assets/databricks_optimize.py`.
+
+### Alternative: increase `commit_checkpoint_interval`
+
+Raising `commit_checkpoint_interval` from `5` to a higher value (e.g. `30` or `60`) reduces the file creation rate proportionally at the cost of higher data latency before each commit is visible. Both approaches can be combined.
