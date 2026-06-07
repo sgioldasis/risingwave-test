@@ -346,7 +346,7 @@ services:
 
   
   postgres-0:
-    image: "postgres:16-alpine"
+    image: "postgres:17-alpine"
     environment:
       - POSTGRES_HOST_AUTH_METHOD=trust
       - POSTGRES_USER=postgres
@@ -483,7 +483,7 @@ services:
       iceberg_net:
 
   lakekeeper-db:
-    image: "postgres:16-alpine"
+    image: "postgres:17-alpine"
     environment:
       - POSTGRES_PASSWORD=postgres
       - PGDATA=/var/lib/postgresql/data/pgdata
