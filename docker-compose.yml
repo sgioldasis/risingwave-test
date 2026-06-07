@@ -257,7 +257,7 @@ services:
       interval: 5s
       timeout: 10s
       retries: 15
-      start_period: 120s
+      start_period: 30s
     restart: always
     deploy:
       resources:
@@ -748,10 +748,10 @@ services:
           memory: 1G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
-      interval: 30s
+      interval: 10s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 6
+      start_period: 30s
     restart: always
 
   dagster-daemon:
@@ -863,56 +863,56 @@ services:
           memory: 3G
 
   # StarRocks — columnar OLAP engine reading Unity Catalog Iceberg tables via IRC
-  starrocks:
-    image: starrocks/allin1-ubuntu:4.0.10
-    container_name: starrocks
-    entrypoint: ["/usr/bin/tini-static", "--", "/starrocks-entrypoint.sh"]
-    ports:
-      - "9030:9030"   # MySQL protocol — Power BI / mysql clients connect here
-      - "8030:8030"   # HTTP API / StarRocks UI
-    volumes:
-      - "./starrocks/docker-entrypoint.sh:/starrocks-entrypoint.sh:ro"
-    environment:
-      - ADLS_ACCOUNT_KEY
-      - HTTP_PROXY=
-      - HTTPS_PROXY=
-      - ALL_PROXY=
-      - http_proxy=
-      - https_proxy=
-      - all_proxy=
-      - NO_PROXY=*
-      - no_proxy=*
-    healthcheck:
-      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -P 9030 -u root --connect-timeout=3 -e 'SELECT 1' 2>/dev/null || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 15
-      start_period: 60s
-    restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-        reservations:
-          memory: 2G
-    networks:
-      iceberg_net:
+  # starrocks:
+  #   image: starrocks/allin1-ubuntu:4.0.10
+  #   container_name: starrocks
+  #   entrypoint: ["/usr/bin/tini-static", "--", "/starrocks-entrypoint.sh"]
+  #   ports:
+  #     - "9030:9030"   # MySQL protocol — Power BI / mysql clients connect here
+  #     - "8030:8030"   # HTTP API / StarRocks UI
+  #   volumes:
+  #     - "./starrocks/docker-entrypoint.sh:/starrocks-entrypoint.sh:ro"
+  #   environment:
+  #     - ADLS_ACCOUNT_KEY
+  #     - HTTP_PROXY=
+  #     - HTTPS_PROXY=
+  #     - ALL_PROXY=
+  #     - http_proxy=
+  #     - https_proxy=
+  #     - all_proxy=
+  #     - NO_PROXY=*
+  #     - no_proxy=*
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "mysql -h 127.0.0.1 -P 9030 -u root --connect-timeout=3 -e 'SELECT 1' 2>/dev/null || exit 1"]
+  #     interval: 10s
+  #     timeout: 10s
+  #     retries: 15
+  #     start_period: 60s
+  #   restart: always
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 3G
+  #       reservations:
+  #         memory: 2G
+  #   networks:
+  #     iceberg_net:
 
-  starrocks-init:
-    image: alpine:3.23.4
-    restart: "no"
-    depends_on:
-      starrocks:
-        condition: service_healthy
-    networks:
-      iceberg_net:
-    environment:
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
-      - DATABRICKS_AZURE_CLIENT_SECRET
-      - ADLS_ACCOUNT_KEY
-    volumes:
-      - "./starrocks/init_catalog.sh:/init_catalog.sh:ro"
-    command: sh /init_catalog.sh
+  # starrocks-init:
+  #   image: alpine:3.23.4
+  #   restart: "no"
+  #   depends_on:
+  #     starrocks:
+  #       condition: service_healthy
+  #   networks:
+  #     iceberg_net:
+  #   environment:
+  #     - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+  #     - DATABRICKS_AZURE_CLIENT_SECRET
+  #     - ADLS_ACCOUNT_KEY
+  #   volumes:
+  #     - "./starrocks/init_catalog.sh:/init_catalog.sh:ro"
+  #   command: sh /init_catalog.sh
 
 volumes:
   postgres-0:
