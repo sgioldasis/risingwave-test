@@ -13,10 +13,11 @@
   {%- set source_name    = config.get('source_name', this.identifier) -%}
 
   {# S3 / MinIO params (optional) #}
-  {%- set s3_endpoint   = config.get('s3_endpoint') -%}
-  {%- set s3_region     = config.get('s3_region', 'us-east-1') -%}
-  {%- set s3_access_key = config.get('s3_access_key') -%}
-  {%- set s3_secret_key = config.get('s3_secret_key') -%}
+  {%- set s3_endpoint         = config.get('s3_endpoint') -%}
+  {%- set s3_region           = config.get('s3_region', 'us-east-1') -%}
+  {%- set s3_access_key       = config.get('s3_access_key') -%}
+  {%- set s3_secret_key       = config.get('s3_secret_key') -%}
+  {%- set s3_path_style_access = config.get('s3_path_style_access', 'false') -%}
 
   {# Azure ADLS Gen2 / OAuth2 params (optional) #}
   {%- set oauth2_server_uri      = config.get('oauth2_server_uri') -%}
@@ -44,10 +45,11 @@
         database.name  = '{{ database_name }}',
         table.name     = '{{ table_name }}'
         {%- if s3_endpoint %},
-        s3.endpoint    = '{{ s3_endpoint }}',
-        s3.region      = '{{ s3_region }}',
-        s3.access.key  = '{{ s3_access_key }}',
-        s3.secret.key  = '{{ s3_secret_key }}'
+        s3.endpoint              = '{{ s3_endpoint }}',
+        s3.region                = '{{ s3_region }}',
+        s3.access.key            = '{{ s3_access_key }}',
+        s3.secret.key            = '{{ s3_secret_key }}',
+        s3.path.style.access     = '{{ s3_path_style_access }}'
         {%- endif %}
         {%- if oauth2_server_uri %},
         catalog.oauth2_server_uri = '{{ oauth2_server_uri }}',

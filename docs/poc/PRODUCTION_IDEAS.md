@@ -222,37 +222,56 @@ Power BI → Databricks SQL Warehouse → Unity Catalog Delta tables
 
 Every dashboard refresh or DirectQuery hit consumes DBUs. This is the standard Databricks-connected Power BI setup and remains correct for historical, well-optimised Delta tables.
 
-### Real-time path (RisingWave tables)
+### Real-time path — Option A: RisingWave direct (live KPI tiles)
+
+```
+Power BI → RisingWave (PostgreSQL connector, port 4566) → Hummock MVs
+```
+
+Pre-computed materialized views served directly from RisingWave's in-memory state store. No I/O at query time — queries return in <10ms. Best for fixed-shape KPI tiles that don't require ad-hoc drill-downs. Power BI connects via any PostgreSQL-compatible ODBC/JDBC driver.
+
+### Real-time path — Option B: StarRocks (ad-hoc analytics)
+
+```
+Power BI → StarRocks (MySQL connector, port 9030) → Lakekeeper Iceberg → MinIO
+```
+
+StarRocks reads the Iceberg tables written by RisingWave sinks. Full ad-hoc SQL flexibility, ~150–400ms warmed latency. No duplicated computation — RisingWave transforms raw Kafka events once; StarRocks reads the result. Power BI connects via the MySQL connector.
+
+Benchmarked (2026-06-07) against RisingWave reading the same Lakekeeper Iceberg data — StarRocks is ~2× faster on casino_transactions and ~3–4× faster on sportsbook_bets for JSON-extraction aggregation queries. See [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) for full benchmark results and setup details.
+
+### Real-time path — Option C: Trino (cross-catalog joins)
 
 ```
 Power BI → Trino (Presto connector) → Unity Catalog Iceberg → ADLS Gen2
+                                    → Lakekeeper Iceberg    → MinIO
 ```
 
-Trino reads Parquet directly from ADLS Gen2 — no SQL Warehouse is started, no DBUs are consumed. Power BI has a built-in **Presto connector** that is protocol-compatible with Trino. Connect via the Presto connector pointing at the Trino coordinator (default port 8080).
+Trino reads Parquet directly from object storage — no SQL Warehouse DBUs consumed. The only option that can join across Unity Catalog tables and Lakekeeper tables in a single query. Power BI has a built-in **Presto connector** (protocol-compatible with Trino, default port 8080).
 
 Data freshness is limited only by how quickly RisingWave writes new checkpoints — typically seconds.
 
-### Trade-offs of routing Power BI through Trino
+### Trade-offs
 
-| Concern | Detail |
+| Concern | RisingWave (A) | StarRocks (B) | Trino (C) |
+|---|---|---|---|
+| Query latency | <10ms | ~150–400ms | ~500ms–5s |
+| Ad-hoc flexibility | Low (pre-defined MVs) | High | High |
+| Cross-catalog joins | No | No | Yes |
+| PBI connector | PostgreSQL (ODBC) | MySQL | Presto |
+| Governance | None beyond RW | None | None |
+| Infrastructure to own | RisingWave (already in stack) | StarRocks | Trino (already in stack) |
+
+### Recommendation — three-tier setup
+
+| Table type / use case | Query layer for Power BI |
 |---|---|
-| **DBU cost reduction** | SQL Warehouse DBU charges eliminated for queries routed through Trino |
-| **Infrastructure ownership** | Trino becomes a production service you own — availability, scaling, upgrades |
-| **Power BI connector maturity** | The Presto connector works but is less mature than the native Databricks connector; DirectQuery mode has known limitations |
-| **Small-file performance** | Trino reads raw Iceberg Parquet; without regular compaction, large aggregations over RisingWave sink tables will be slower than SQL Warehouse on optimised Delta |
-| **Governance gap** | Unity Catalog enforces column-level security and row filters at the SQL Warehouse layer — Trino bypasses this; access control must be replicated in Trino separately |
+| Live KPI tiles (pre-defined aggregations) | **RisingWave** (Option A) |
+| Ad-hoc analytics / drill-downs on real-time data | **StarRocks** (Option B) |
+| Historical Delta tables (existing) | **Databricks SQL Warehouse** |
+| Cross-catalog joins (real-time + historical) | **Trino** (Option C) |
 
-### Recommendation — two-tier setup
-
-Do not replace SQL Warehouse wholesale. Use each layer for what it is optimised for:
-
-| Table type | Query layer for Power BI |
-|---|---|
-| Historical Delta tables (existing) | Databricks SQL Warehouse |
-| RisingWave real-time Iceberg sinks | Trino (Presto connector) |
-| Cross-catalog joins (real-time + historical) | Trino |
-
-Power BI supports multiple data source connections in a single report. Dashboard pages that mix historical context with real-time metrics connect to both sources independently.
+Power BI supports multiple data source connections in a single report. Dashboard pages can combine all four sources independently.
 
 ### Compaction requirement for Trino performance
 
@@ -274,5 +293,9 @@ RisingWave appends small Iceberg files on every checkpoint. A Power BI query run
 - [ ] Databricks cluster init script configured for `lakekeeper` Spark catalog (for Jobs/notebooks that need cross-catalog reads)
 - [ ] Predictive Optimization enabled on `de_dev.rw_poc` Unity Catalog schema (already done in PoC — `ALTER SCHEMA ... ENABLE PREDICTIVE OPTIMIZATION`)
 - [ ] Dagster `databricks_optimize` step wired into production orchestration for on-demand compaction before heavy reads
-- [ ] Power BI Presto connector configured to point at Trino coordinator (port 8080) for real-time table access
-- [ ] Power BI reports split: SQL Warehouse datasource for historical Delta tables, Trino datasource for RisingWave real-time tables
+- [ ] Power BI Presto connector configured to point at Trino coordinator (port 8080) for cross-catalog joins
+- [ ] Power BI PostgreSQL connector configured to point at RisingWave (port 4566) for live KPI tiles
+- [ ] Power BI MySQL connector configured to point at StarRocks (port 9030) for ad-hoc analytics
+- [ ] StarRocks memory sized at ≥4G in production; metadata cache TTL tuned for warm query latency
+- [ ] StarRocks `core-site.xml` injection verified for both FE and BE (required for ADLS scans — see [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) §2)
+- [ ] Power BI reports split: SQL Warehouse for historical Delta tables, RisingWave for live KPIs, StarRocks for ad-hoc analytics, Trino for cross-catalog joins
