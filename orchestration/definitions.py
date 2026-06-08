@@ -29,6 +29,7 @@ from .assets.casino_prd_setup import (
     casino_prd_proto_fetch,
     casino_prd_proto_compile,
     casino_prd_proto_upload,
+    casino_avro_schema_register,
     casino_trino_views,
 )
 from .assets.datafusion_demo import casino_datafusion_demo
@@ -140,10 +141,14 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             spec = spec.replace_attributes(kinds=frozenset(kinds))
         
         # Casino UC models get their own groups; shared sources go to casino_uc1
-        if "casino_uc2" in tags and "casino_uc1" not in tags:
+        if "casino_prd_setup" in tags:
+            new_spec = spec.replace_attributes(group_name="casino_prd_setup")
+        elif "casino_uc2" in tags and "casino_uc1" not in tags:
             new_spec = spec.replace_attributes(group_name="casino_uc2")
         elif "casino_uc1" in tags:
             new_spec = spec.replace_attributes(group_name="casino_uc1")
+        elif "casino_avro" in tags:
+            new_spec = spec.replace_attributes(group_name="casino_avro")
         elif "databricks" in tags:
             new_spec = spec.replace_attributes(group_name="databricks")
         # Assign group based on where the model runs (not its target)
@@ -179,6 +184,18 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             proto_key = AssetKey(["casino_prd_proto_upload"])
             if proto_key not in {d.asset_key for d in existing_deps}:
                 existing_deps.append(AssetDep(asset=proto_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
+        # Avro sink and source both need the schema pre-registered in Redpanda before
+        # RisingWave can validate/create them. Declaring the dep here on the AssetSpec
+        # is what allows casino_avro_schema_register to be a function parameter on
+        # @dbt_assets without triggering DagsterInvalidDefinitionError.
+        if materialized in ["sink", "kafka_table"] and "casino_avro" in tags:
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            schema_key = AssetKey(["casino_avro_schema_register"])
+            if schema_key not in {d.asset_key for d in existing_deps}:
+                existing_deps.append(AssetDep(asset=schema_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         return new_spec
@@ -324,6 +341,7 @@ def casino_prd_dbt_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
     casino_prd_proto_upload,
+    casino_avro_schema_register,
 ):
     """dbt assets for Casino production — UC1 (Real Bet Amount) + UC2 (Turnover Percentage) in one step."""
     drop_result = subprocess.run(
@@ -442,6 +460,7 @@ databricks_datafusion_job = define_asset_job(
     executor_def=in_process_executor,
 )
 
+
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -449,6 +468,7 @@ casino_prd_full_job = define_asset_job(
             casino_prd_proto_fetch,
             casino_prd_proto_compile,
             casino_prd_proto_upload,
+            casino_avro_schema_register,
         )
         | AssetSelection.assets(casino_prd_dbt_assets)
         | AssetSelection.assets(casino_trino_views)
@@ -494,6 +514,7 @@ defs = Definitions(
         casino_prd_proto_fetch,
         casino_prd_proto_compile,
         casino_prd_proto_upload,
+        casino_avro_schema_register,
         # Casino dbt assets (UC1 + UC2 in one step)
         casino_prd_dbt_assets,
         # Trino metadata views for Grafana (snapshot count, live data files)

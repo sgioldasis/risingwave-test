@@ -1,5 +1,6 @@
 """Casino production prerequisite assets: fetch, compile, upload proto schemas,
 and create Iceberg read sources after sinks have committed their first checkpoint."""
+import json
 import shutil
 import subprocess
 import time
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import boto3
 import httpx
+import requests
 from dagster import AssetDep, AssetExecutionContext, AssetKey, MetadataValue, asset
 
 PROTO_DIR = Path(__file__).parent.parent.parent / "proto"
@@ -143,6 +145,164 @@ def casino_prd_proto_upload(context: AssetExecutionContext):
         uploaded.append(uri)
 
     return {"uploaded_uris": MetadataValue.json(uploaded)}
+
+
+REDPANDA_SCHEMA_REGISTRY = "http://redpanda:8081"
+
+# Proto descriptor compiled by casino_prd_proto_compile
+CASINO_PROTO_PB = PROTO_DIR / "casinoroundinfodto.pb"
+CASINO_ROOT_MESSAGE = "Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto"
+
+# Proto field type → primitive Avro type
+_PROTO_SCALAR_TO_AVRO = {
+    1:  "double",   # TYPE_DOUBLE
+    2:  "float",    # TYPE_FLOAT
+    3:  "long",     # TYPE_INT64
+    4:  "long",     # TYPE_UINT64
+    5:  "int",      # TYPE_INT32
+    6:  "long",     # TYPE_FIXED64
+    7:  "int",      # TYPE_FIXED32
+    8:  "boolean",  # TYPE_BOOL
+    9:  "string",   # TYPE_STRING
+    12: "bytes",    # TYPE_BYTES
+    13: "int",      # TYPE_UINT32
+    15: "int",      # TYPE_SFIXED32
+    16: "long",     # TYPE_SFIXED64
+    17: "int",      # TYPE_SINT32
+    18: "long",     # TYPE_SINT64
+}
+_PROTO_TYPE_MESSAGE = 11
+_PROTO_TYPE_ENUM    = 14
+_PROTO_LABEL_REPEATED = 3
+
+
+def _proto_descriptor_to_avro(pb_path: Path, root_message_fqn: str) -> dict:
+    """Parse a compiled FileDescriptorSet and return an Avro schema for root_message_fqn.
+
+    All fields are represented as nullable unions (["null", <type>]) with default null.
+    Named types (records) are defined only once; subsequent uses are referenced by name
+    to satisfy Avro's uniqueness constraint.
+    google.protobuf.Timestamp is mapped to a record {seconds: long, nanos: int} — the
+    same struct shape RisingWave uses internally when decoding proto timestamps.
+    """
+    from google.protobuf.descriptor_pb2 import FileDescriptorSet
+
+    with open(pb_path, "rb") as f:
+        fds = FileDescriptorSet.FromString(f.read())
+
+    # Build a flat map: fully-qualified message name → descriptor
+    msg_by_fqn: dict[str, object] = {}
+    for file_proto in fds.file:
+        pkg = file_proto.package  # e.g. "Cronus.CasinoService.RoundInfo.Abstractions"
+        for msg in file_proto.message_type:
+            fqn = f"{pkg}.{msg.name}" if pkg else msg.name
+            msg_by_fqn[fqn] = msg
+
+    defined: set[str] = set()  # short names already emitted as full record defs
+
+    def short_name(fqn: str) -> str:
+        return fqn.split(".")[-1]
+
+    def convert_message(fqn: str) -> dict | str:
+        """Return a full Avro record dict, or just the short name if already defined."""
+        sname = short_name(fqn)
+        if sname in defined:
+            return sname  # Avro back-reference
+        defined.add(sname)
+
+        msg = msg_by_fqn.get(fqn) or msg_by_fqn.get(sname)
+        if msg is None:
+            # Unknown type — treat as opaque string
+            return {"type": "record", "name": sname, "fields": []}
+
+        fields = []
+        for field in msg.field:
+            avro_base = convert_field_type(field)
+            # wrap repeated → array
+            if field.label == _PROTO_LABEL_REPEATED:
+                avro_base = {"type": "array", "items": avro_base, "default": []}
+            # all fields nullable
+            avro_type = ["null", avro_base]
+            fields.append({"name": field.name, "type": avro_type, "default": None})
+
+        return {"type": "record", "name": sname, "fields": fields}
+
+    def convert_field_type(field) -> object:
+        if field.type == _PROTO_TYPE_ENUM:
+            return "string"  # flatten enums to string for simplicity
+        if field.type == _PROTO_TYPE_MESSAGE:
+            fqn = field.type_name.lstrip(".")
+            return convert_message(fqn)
+        return _PROTO_SCALAR_TO_AVRO.get(field.type, "string")
+
+    return convert_message(root_message_fqn)
+
+
+@asset(
+    group_name="casino_prd_setup",
+    deps=["casino_prd_proto_compile"],
+    description=(
+        "Derive a full Avro schema from the CasinoRoundInfoDto Protobuf descriptor "
+        "and register it as casino_out_avro-value in Redpanda's built-in schema registry. "
+        "Idempotent — skips registration if the subject already exists."
+    ),
+)
+def casino_avro_schema_register(context: AssetExecutionContext):
+    """Convert the full CasinoRoundInfoDto proto schema to Avro and register to Redpanda.
+
+    Uses the compiled .pb descriptor (produced by casino_prd_proto_compile) so the schema
+    is always derived from the authoritative proto source, not from downstream MV columns.
+    The resulting Avro schema preserves the full nested structure — GameInfo, RoundInfo,
+    Messages[], Transactions[], Timestamps — mirroring what RisingWave uses internally
+    when it decodes the Protobuf Kafka topic.
+
+    RisingWave validates the schema registry subject at CREATE SINK / CREATE TABLE time
+    and fails with 40401 if the subject is absent. This asset must run before the dbt
+    build step that creates sink_casino_avro_redpanda and src_casino_avro.
+    """
+    subject = "casino_out_avro-value"
+
+    # --- 1. Check whether schema is already registered ---
+    check = requests.get(
+        f"{REDPANDA_SCHEMA_REGISTRY}/subjects/{subject}/versions/latest", timeout=10
+    )
+    if check.status_code == 200:
+        info = check.json()
+        context.log.info(
+            f"Schema already registered for {subject} "
+            f"(id={info.get('id')}, version={info.get('version')})"
+        )
+        return {
+            "subject":  MetadataValue.text(subject),
+            "action":   MetadataValue.text("skipped — already exists"),
+            "schema_id": MetadataValue.int(info.get("id", 0)),
+        }
+
+    # --- 2. Derive Avro schema from proto descriptor ---
+    if not CASINO_PROTO_PB.exists():
+        raise FileNotFoundError(
+            f"{CASINO_PROTO_PB} not found. Run casino_prd_proto_compile first."
+        )
+    avro_schema = _proto_descriptor_to_avro(CASINO_PROTO_PB, CASINO_ROOT_MESSAGE)
+    context.log.info(f"Derived Avro schema:\n{json.dumps(avro_schema, indent=2)}")
+
+    # --- 3. Register schema ---
+    resp = requests.post(
+        f"{REDPANDA_SCHEMA_REGISTRY}/subjects/{subject}/versions",
+        headers={"Content-Type": "application/vnd.schemaregistry.v1+json"},
+        json={"schema": json.dumps(avro_schema), "schemaType": "AVRO"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    schema_id = resp.json().get("id")
+    context.log.info(f"Registered Avro schema for {subject}: id={schema_id}")
+
+    return {
+        "subject":    MetadataValue.text(subject),
+        "action":     MetadataValue.text("registered"),
+        "schema_id":  MetadataValue.int(schema_id),
+        "avro_schema": MetadataValue.json(avro_schema),
+    }
 
 
 TRINO_HOST = "trino"

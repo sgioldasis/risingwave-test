@@ -18,6 +18,6 @@ SELECT
     TO_TIMESTAMP((txn."Created").seconds)                AS transaction_created_at,
     ABS(NULLIF(txn."Amount", '')::numeric)               AS amount_abs
 FROM
-    {{ ref('src_casino_prd') }}                AS s,
+    {{ ref('src_casino_avro') }}               AS s,
     UNNEST((s."RoundInfo")."Messages")         AS msg,
     UNNEST(msg."Transactions")                 AS txn

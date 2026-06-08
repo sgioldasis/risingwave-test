@@ -1,6 +1,6 @@
 {{ config(
     materialized='kafka_table',
-    tags=['casino_uc1'],
+    tags=['casino_prd_setup', 'casino_uc1'],
     topic='cronus.casino.out.br',
     pre_hook=['DROP TABLE IF EXISTS ' ~ this ~ ' CASCADE']
 ) }}
