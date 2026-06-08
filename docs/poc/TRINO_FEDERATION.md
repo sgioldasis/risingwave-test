@@ -295,3 +295,99 @@ This is only needed in DBeaver. Trino CLI, DataGrip, and most other JDBC clients
 | **DBeaver `number` type** | See §7 above — requires explicit `CAST(... AS DOUBLE)` for RisingWave numeric columns. |
 | **ADLS credential vending** | Credential vending (IRC-vended SAS tokens) does not work on Azure for Trino. Account key via `azure.access-key` in `databricks.properties` is required. |
 | **Deletion vectors block UniForm** | Modern Databricks tables have `delta.enableDeletionVectors=true` by default. UniForm (IcebergCompatV2) is incompatible — must disable deletion vectors and row tracking before enabling UniForm on existing tables. |
+
+---
+
+## 9. Delta Sharing — alternative access without modifying tables
+
+Delta Sharing is an open protocol that lets Databricks serve Delta tables to external consumers without any table-level changes. It is the right choice when you cannot touch the tables at all (e.g., owned by another team). UniForm requires two `ALTER TABLE` statements; Delta Sharing requires only admin-level setup on the Databricks side.
+
+> **Limitation**: Delta Sharing supports Delta tables only. Native Iceberg tables (`rw_casino_transactions`, `rw_sportsbook_bets`) are not shareable via Delta Sharing — use the existing `databricks` Trino catalog (IRC) for those.
+
+### 9a. Prerequisites
+
+`CREATE SHARE` is a metastore-level admin privilege. A Unity Catalog metastore admin must either run the setup below, or grant the privilege first:
+
+```sql
+-- Run as metastore admin to allow the service principal to create shares
+GRANT CREATE SHARE ON METASTORE TO `3b7f531f-db93-4186-af75-6566c12c076b`;
+```
+
+### 9b. Databricks setup (run as admin in Databricks SQL editor)
+
+```sql
+-- 1. Create the share
+CREATE SHARE rw_poc_share
+COMMENT 'Delta Sharing share for rw_poc Delta tables';
+
+-- 2. Add Delta tables (Iceberg tables are not supported by Delta Sharing)
+ALTER SHARE rw_poc_share ADD TABLE de_dev.rw_poc.delta_currency_codes;
+ALTER SHARE rw_poc_share ADD TABLE de_dev.rw_poc.uniform_currency_codes;
+
+-- 3. Create a recipient for Trino
+CREATE RECIPIENT rw_poc_trino_recipient
+COMMENT 'Trino Delta Sharing connector access';
+
+-- 4. Grant read access
+GRANT SELECT ON SHARE rw_poc_share TO RECIPIENT rw_poc_trino_recipient;
+
+-- 5. Get the credential activation link
+DESCRIBE RECIPIENT rw_poc_trino_recipient;
+```
+
+Step 5 returns an `activation_link` URL. Open it in a browser to download a JSON credential file. Store it somewhere accessible to the Trino container (e.g., `trino/delta-sharing/rw_poc_trino_recipient.json`).
+
+### 9c. Trino catalog configuration
+
+Create `trino/catalog/deltasharing.properties`:
+
+```properties
+connector.name=delta_sharing
+delta.sharing.security-key-path=/etc/trino/delta-sharing/rw_poc_trino_recipient.json
+```
+
+Mount the credential file into the Trino container in `docker-compose.yml`:
+
+```yaml
+trino:
+  volumes:
+    - ./trino/catalog:/etc/trino/catalog
+    - ./trino/delta-sharing:/etc/trino/delta-sharing  # add this line
+```
+
+Restart Trino to pick up the new catalog.
+
+### 9d. Querying via Trino
+
+The share name becomes the schema, the table names are as shared:
+
+```sql
+-- List available tables
+SHOW TABLES FROM deltasharing.rw_poc_share;
+
+-- Query a shared table
+SELECT * FROM deltasharing.rw_poc_share.delta_currency_codes ORDER BY currency_id;
+
+-- Join shared Delta table with live RisingWave MV
+SELECT
+    c.iso_code,
+    c.currency_name,
+    c.region,
+    CAST(COUNT(*) AS BIGINT) AS transactions
+FROM deltasharing.rw_poc_share.delta_currency_codes c
+JOIN datalake.public.rw_casino_transactions t
+    ON c.currency_id = t.currency_id
+GROUP BY c.iso_code, c.currency_name, c.region
+ORDER BY transactions DESC;
+```
+
+### 9e. UniForm vs Delta Sharing — when to use which
+
+| | UniForm | Delta Sharing |
+|---|---|---|
+| **Table changes required** | Yes — 2 `ALTER TABLE` statements | No |
+| **Admin privileges required** | No | Yes — metastore admin |
+| **Works with Iceberg tables** | N/A (they're already Iceberg) | No |
+| **Trino connector** | Existing `databricks` (Iceberg IRC) | New `deltasharing` catalog |
+| **Cross-catalog joins** | Yes — same Trino session | Yes — same Trino session |
+| **Credential management** | ADLS account key + OAuth SP | Recipient credential file (time-limited) |
