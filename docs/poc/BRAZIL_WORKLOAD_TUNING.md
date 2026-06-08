@@ -40,7 +40,7 @@ MinIO**, **shrink the in-memory/state footprint so the compute node fits its bud
   (observed 200–350 %) and produced the upload-timeout → cluster-reset failures.
 - We landed on a **two-phase strategy** rather than a single steady value:
   - **`1` during the dbt build.** When the source tables are (re)created, a near-zero rate
-    means almost no rows accumulate in `mv_casino_transactions` while the 6 downstream MVs
+    means almost no rows accumulate in `mv_casino_transactions_full` while the 6 downstream MVs
     are being created one-by-one (`max_concurrent_creating_streaming_jobs = 1`). Each MV
     therefore backfills against an almost-empty upstream, so creation is near-instant. This
     is what cut `casino_prd_dbt_assets` from 500 s+ (compounding backfill) down to ~50–70 s.
@@ -344,7 +344,7 @@ MinIO config:
   maintain, the source runs near its `200 × ~4-actor` rate cap. It decays to the same ~53/s
   baseline as state accumulates. Not a MinIO-config effect.
 - In the choked (warmed) state, **MinIO idles at ~4 % CPU** — far from §1's 200–350 %. The
-  backpressure concentrates on **`mv_casino_transactions`** (the double-`UNNEST` fan-out;
+  backpressure concentrates on **`mv_casino_transactions_full`** (the double-`UNNEST` fan-out;
   fragments 10/11/14) and propagates back to the source. Those window operators **stall on
   state access** (low CPU + high backpressure = blocked, not computing).
 - **Interpretation:** §1's MinIO-bound regime was real *then* (full backfill, 90-day windows,
@@ -515,54 +515,31 @@ not the dashboard.
 
 ---
 
-## 15. UC1 TUMBLE via Kafka round-trip (workaround for §14 — implemented, pending measurement)
+## 15. UC1 TUMBLE via Kafka round-trip (workaround for §14 — superseded)
 
-**Idea (answers "can we do all unnesting in a first-level MV?"):** Yes — and then **round-trip the
-flat stream through Kafka** to re-acquire a watermark. §14 was blocked because `UNNEST` strips the
-watermark and an MV can't re-declare one. But a *new TABLE* can. So:
+**Historical context:** §14 was blocked because `UNNEST` strips the watermark and an MV can't
+re-declare one. The workaround was to filter UC1 bets into a thin MV, sink to Redpanda, and
+re-ingest as a watermarked TABLE (`mv_casino_bets_flat` → `casino_bets_flat` → `src_casino_bets_flat`).
 
-```
-mv_casino_transactions   (UNNEST — unchanged, still shared with UC2)
-  → mv_casino_bets_flat            filter UC1 bets + project {customer_id, currency_id,
-                                   transaction_created_at, amount_abs}
-  → sink_casino_bets_flat_kafka    → Redpanda topic 'casino_bets_flat' (JSON, append-only)
-  → src_casino_bets_flat           re-ingest as TABLE: transaction_created_at is now a TOP-LEVEL
-                                   column → WATERMARK FOR it (no UNNEST downstream → survives)
-  → mv_casino_real_bet             TUMBLE(src_casino_bets_flat, transaction_created_at, '15 min')
-                                   + EMIT ON WINDOW CLOSE  ✅ binds
-```
+This approach was implemented and measured. The round-trip infra was **removed** because:
+1. The throughput lift (~120/s → ~380/s) came from **decoupling** the window from `src_casino_prd`'s
+   backpressure path — not from TUMBLE or the watermark specifically.
+2. `mv_casino_transactions` now reads from `src_casino_avro` (a Kafka round-trip in the Avro
+   pipeline), which already provides the same backpressure decoupling from `src_casino_prd`.
+3. The UNNEST watermark stripping bug was **fixed in RisingWave 2.8**, making the workaround
+   unnecessary for any future TUMBLE/EOWC usage.
+4. The `casino_bets_flat` Kafka round-trip was redundant overhead on top of the existing Avro buffer.
 
-Uses the **true transaction event-time** (better than §14's round-time approximation). Files: new
-`mv_casino_bets_flat.sql`, `sink_casino_bets_flat_kafka.sql`, `src_casino_bets_flat.sql`; rewritten
-`mv_casino_real_bet.sql` (TUMBLE); `sink_casino_real_bet` → PK `...,window_start`, table
-`rw_managed_casino_real_bet_windowed`; raw mirror in `sql/casino_prd_funnel_iceberg.sql`; topic
-`casino_bets_flat` added to `redpanda-init`. **Requires `dbt parse`** (new models + changed ref).
+**Current config:** `mv_casino_real_bet` reads directly from `mv_casino_transactions_full` with UC1 filters
+inlined (`message_type_id = 1`, `account_id = 1`, `amount_abs IS NOT NULL`).
 
-**⚠️ Honest trade-off (must measure):** the round-trip adds load — re-serializing the bet stream to
-JSON, a Redpanda hop, re-parsing, and a second table with its own Hummock state — on an already
-MinIO/compute-bound single-node box. TUMBLE removes retraction churn; the round-trip adds ingestion
-churn. **Net vs the §13 5-min rolling window (~120/s) is unknown until measured.** Verify per the plan:
-(1) windows actually close (`SELECT count(*) FROM mv_casino_real_bet` grows ~window+5min in — else the
-watermark didn't take); (2) `rpk topic consume casino_bets_flat -n 5` shows data; (3) throughput /
-backpressure / MinIO CPU over >15 min vs baselines.
-
----
-
-### Outcome (measured 2026-06-01) — decoupled-rolling shipped
+### Outcome (measured 2026-06-01) — for reference
 
 | Setup | `src_casino_prd` throughput | backpressure | MinIO CPU |
 |-------|------------------------------|--------------|-----------|
 | §13 rolling **inline** (reads `mv_casino_transactions`) | ~120/s | ~6.9 | ~360% |
-| rolling **decoupled** (reads `src_casino_bets_flat`) — **shipped** | **~380/s** (bursty 60–620) | ~5 | ~150% (peaks 328%) |
+| rolling **decoupled** (reads `src_casino_bets_flat`) | **~380/s** (bursty 60–620) | ~5 | ~150% (peaks 328%) |
 | TUMBLE **decoupled** | ~300/s | ~6 | ~400% |
-
-**The lift (120 → ~380/s, ~3×) is the Kafka round-trip DECOUPLING, not TUMBLE.** Putting the UC1 window
-behind a Kafka buffer takes it off `src_casino_prd`'s backpressure path; rolling-decoupled ≈
-TUMBLE-decoupled on throughput, so TUMBLE's 20-min EOWC latency + watermark/UNNEST complexity buys
-nothing here. **Shipped config: decoupled-rolling** — `mv_casino_real_bet` is a 5-min rolling `RANGE`
-window reading `src_casino_bets_flat`, keeping continuous semantics and the original column/table
-schema (Grafana UC1 works). The round-trip infra (`mv_casino_bets_flat` → Kafka `casino_bets_flat` →
-`src_casino_bets_flat`) is retained for the decoupling; the TUMBLE (§14/§15) was reverted.
 
 **~380/s is a MinIO state-store-churn ceiling** — the no-sink rolling-decoupled run still hit ~500%
 MinIO, so the churn is **Hummock state**, not the Iceberg sink (dropping it, option 2, won't help).
@@ -635,12 +612,7 @@ patterns left as-is: `APPEND ONLY` sources, shared source, `ROW_NUMBER` top-1 in
 (not `ORDER BY`), `UNION ALL + GROUP BY` for the ratio (avoids the join panic, §5.5), decoupled-rolling
 + local-fs. Three changes applied — all semantics-preserving and each *reduces* write/compute load:
 
-1. **Projection-prune `mv_casino_transactions` 14 → 6 columns** (the **shared** foundation, so it helps
-   both chains). Dropped `message_created_at, transaction_id, amount_raw, bonus_action,
-   game_id/game_type/is_live, company_id` — including the per-row `GameInfo` struct accesses and an
-   unused `TO_TIMESTAMP`. The two consumers' filter `amount_raw IS NOT NULL AND <> ''` → **`amount_abs
-   IS NOT NULL`** (equivalent: `amount_abs` is NULL iff `Amount` was empty/null), which is what lets
-   `amount_raw` be dropped. Cuts per-row width, struct-extraction CPU, and state-store I/O pipeline-wide.
+1. **Projection-prune shared foundation to 6 core columns + `properties` JSON blob** — now `mv_casino_transactions_full` (the **shared** foundation for UC1, UC2, and Databricks/Lakekeeper sinks). The 6 typed columns (`customer_id`, `message_type_id`, `account_id`, `currency_id`, `transaction_created_at`, `amount_abs`) are the only ones needed inline by downstream filters and window aggregations; remaining fields (`message_created_at`, `transaction_id`, `amount_raw`, `bonus_action`, `game_id/game_type/is_live`, `company_id`) are packed into a `properties` JSONB blob instead of being dropped entirely. The two consumers' filter `amount_raw IS NOT NULL AND <> ''` → **`amount_abs IS NOT NULL`** (equivalent: `amount_abs` is NULL iff `Amount` was empty/null). Cuts per-row struct-extraction CPU and state-store I/O on the hot path while preserving all fields for the Databricks/Lakekeeper sinks.
 
 2. **Dropped the two serving-MV indexes** (`idx_casino_real_bet_customer`,
    `idx_turnover_percentage_customer`). Per `perf-indexes-on-mv`, indexes only help **point lookups** —

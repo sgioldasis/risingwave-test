@@ -20,11 +20,6 @@ Real-time streaming pipeline that reads live casino and sportsbook data from Kai
 >   single-node demo — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §13). Object/column
 >   names keep their historical labels (`mv_casino_turnover_90d`, `mv_sportsbook_turnover_90d`,
 >   `rolling_1d_real_bet_amount`) — only the `RANGE` interval changed.
-> - **UC1 runs through a Kafka round-trip** (`mv_casino_bets_flat` → Redpanda `casino_bets_flat` →
->   `src_casino_bets_flat`) so its rolling window reads a re-ingested table instead of
->   `mv_casino_transactions` directly. This **decouples** the window from the production-ingestion
->   backpressure path and is what lifts throughput ~120/s → ~380/s — see §15 of the tuning guide.
-
 ---
 
 ## 1. Architecture
@@ -40,10 +35,7 @@ Real-time streaming pipeline that reads live casino and sportsbook data from Kai
 ┌──────────────────────────┐    SSL one-way   ┌──────────────────────────────────────────────┐
 │ Kaizen prd2 Kafka        │ ────────────────▶│  RisingWave (compute-node-0)                 │
 │ cronus.casino.out.br     │                  │                                              │
-└──────────────────────────┘                  │  UC1: mv_casino_transactions                 │
-                                              │       → mv_casino_bets_flat                   │
-                                              │       → [sink → Redpanda 'casino_bets_flat']  │  Kafka round-trip
-                                              │       → src_casino_bets_flat (re-ingest, WM)  │  decouples the
+└──────────────────────────┘                  │  UC1: mv_casino_transactions_full            │
                                               │       → mv_casino_real_bet (rolling 5m) ──────┼──▶ casino_real_bet_output
 ┌──────────────────────────┐    SSL one-way   │                                              │     (Redpanda, JSON)
 │ Kaizen prd4 Kafka        │ ────────────────▶│  UC2: mv_casino_turnover_90d (5m)            │
@@ -275,38 +267,37 @@ SET streaming_use_shared_source = true;
 
 ```
 src_casino_prd
-  → mv_casino_transactions          (flatten nested protobuf: one row per transaction)
-  → mv_casino_bets_flat             (filter UC1 real bets + project the 4 cols the window needs)
-  → sink_casino_bets_flat_kafka  →  Redpanda 'casino_bets_flat'   ┐ Kafka round-trip: re-ingest as a
-  → src_casino_bets_flat            (watermarked TABLE)           ┘ TABLE to decouple the window (§15)
-  → mv_casino_real_bet              (rolling 5-min real-bet SUM on the decoupled source)
+  → mv_casino_transactions_full     (flatten nested protobuf: one row per transaction + properties JSON blob)
+  → mv_casino_real_bet              (filter UC1 bets + rolling 5-min real-bet SUM)
      ├── sink_casino_real_bet    →  rw_managed_casino_real_bet  (Iceberg, upsert)
      └── sink_casino_real_bet_kafka → casino_real_bet_output    (Redpanda, JSON, append)
 ```
 
-### 4.1 `mv_casino_transactions` — Transaction-level flat view
+### 4.1 `mv_casino_transactions_full` — Transaction-level flat view
 
-This is the shared foundation for both UC1 and UC2. The casino protobuf message has a deeply nested structure: each `CasinoRoundInfoDto` contains a `RoundInfo.Messages[]` array, and each message contains a `Transactions[]` array. This MV unnests both levels to produce one flat row per transaction.
+This is the shared foundation for UC1, UC2, and the Databricks/Lakekeeper sinks. The casino protobuf message has a deeply nested structure: each `CasinoRoundInfoDto` contains a `RoundInfo.Messages[]` array, and each message contains a `Transactions[]` array. This MV unnests both levels to produce one flat row per transaction. It exposes 6 core typed columns plus a `properties` JSONB blob that carries all other proto fields.
 
 ```sql
 SET streaming_use_shared_source = true;
 
-CREATE MATERIALIZED VIEW mv_casino_transactions AS
+CREATE MATERIALIZED VIEW mv_casino_transactions_full AS
 SELECT
     s."CustomerId"                                        AS customer_id,
     msg."MessageTypeId"                                   AS message_type_id,
-    TO_TIMESTAMP((msg."Created").seconds)                 AS message_created_at,
-    txn."TransactionId"                                   AS transaction_id,
     txn."AccountId"                                       AS account_id,
     txn."CurrencyId"                                      AS currency_id,
     TO_TIMESTAMP((txn."Created").seconds)                 AS transaction_created_at,
     ABS(NULLIF(txn."Amount", '')::numeric)                AS amount_abs,
-    txn."Amount"                                          AS amount_raw,
-    txn."BonusAction"                                     AS bonus_action,
-    (s."GameInfo")."GameId"                               AS game_id,
-    (s."GameInfo")."GameType"                             AS game_type,
-    (s."GameInfo")."IsLive"                               AS is_live,
-    s."CompanyId"                                         AS company_id
+    JSONB_BUILD_OBJECT(
+        'message_created_at', TO_TIMESTAMP((msg."Created").seconds),
+        'transaction_id',     txn."TransactionId",
+        'amount_raw',         txn."Amount",
+        'bonus_action',       txn."BonusAction",
+        'game_id',            (s."GameInfo")."GameId",
+        'game_type',          (s."GameInfo")."GameType",
+        'is_live',            (s."GameInfo")."IsLive",
+        'company_id',         s."CompanyId"
+    )                                                     AS properties
 FROM
     src_casino_prd                             AS s,
     UNNEST((s."RoundInfo")."Messages")         AS msg,
@@ -324,49 +315,15 @@ FROM
 Verify:
 
 ```sql
-SELECT COUNT(*) FROM mv_casino_transactions;
+SELECT COUNT(*) FROM mv_casino_transactions_full;
 -- Expected: higher than src_casino_prd because each round has multiple transactions
 
-SELECT message_type_id, COUNT(*) FROM mv_casino_transactions GROUP BY 1 ORDER BY 1;
+SELECT message_type_id, COUNT(*) FROM mv_casino_transactions_full GROUP BY 1 ORDER BY 1;
 -- MessageTypeId=1 → bet placed
 -- MessageTypeId=2 → payout/withdrawal
 ```
 
-### 4.2 Kafka round-trip — `mv_casino_bets_flat` → `casino_bets_flat` → `src_casino_bets_flat`
-
-UC1's rolling window does **not** read `mv_casino_transactions` directly. The UC1 bet rows are
-filtered into a thin MV, sunk to a Redpanda topic, and **re-ingested as a watermarked TABLE**. The
-Kafka topic is a buffer that takes the UC1 window **off `src_casino_prd`'s backpressure path** — the
-change that lifts sustained throughput ~120/s → ~380/s. (Full rationale + measurements:
-[BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §15.)
-
-```sql
--- (a) filter UC1 bets + project only what the window needs
-CREATE MATERIALIZED VIEW mv_casino_bets_flat AS
-SELECT customer_id, currency_id, transaction_created_at, amount_abs
-FROM mv_casino_transactions
-WHERE message_type_id = 1 AND account_id = 1
-  AND amount_raw IS NOT NULL AND amount_raw <> '';
-
--- (b) publish to Redpanda (topic 'casino_bets_flat' is pre-created by redpanda-init)
-CREATE SINK sink_casino_bets_flat_kafka FROM mv_casino_bets_flat
-WITH (connector = 'kafka', properties.bootstrap.server = 'redpanda:9092', topic = 'casino_bets_flat')
-FORMAT PLAIN ENCODE JSON (force_append_only = 'true');
-
--- (c) re-ingest as a TABLE — transaction_created_at is now a top-level, watermarkable column
-CREATE TABLE src_casino_bets_flat (
-    customer_id INT, currency_id INT, transaction_created_at TIMESTAMPTZ, amount_abs NUMERIC,
-    WATERMARK FOR transaction_created_at AS transaction_created_at - INTERVAL '5' MINUTE
-) APPEND ONLY
-WITH (connector = 'kafka', topic = 'casino_bets_flat',
-      properties.bootstrap.server = 'redpanda:9092', scan.startup.mode = 'earliest')
-FORMAT PLAIN ENCODE JSON;
-```
-
-> The watermark isn't required for a rolling window (it's harmless); it remains from the TUMBLE
-> experiment (§14/§15) and would re-enable a windowed variant if ever wanted.
-
-### 4.3 `mv_casino_real_bet` — Rolling 5-min real bet total (decoupled)
+### 4.2 `mv_casino_real_bet` — Rolling 5-min real bet total
 
 ```sql
 CREATE MATERIALIZED VIEW mv_casino_real_bet AS
@@ -379,13 +336,15 @@ SELECT
         ORDER BY transaction_created_at
         RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     )                                                     AS rolling_1d_real_bet_amount
-FROM src_casino_bets_flat;   -- already filtered to UC1 real bets in mv_casino_bets_flat (§4.2)
+FROM mv_casino_transactions_full
+WHERE message_type_id = 1
+  AND account_id      = 1
+  AND amount_abs IS NOT NULL;
 ```
 
-**Filters** are applied upstream in `mv_casino_bets_flat` (§4.2) — `message_type_id = 1` (bet placed),
-`account_id = 1` (real money, not bonus), non-empty `amount` — so this MV needs no `WHERE`.
+**Filters:** `message_type_id = 1` (bet placed), `account_id = 1` (real money, not bonus), `amount_abs IS NOT NULL` (excludes empty/null amounts).
 
-**Window function:** `RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW` = 5 minutes. A sliding window — for every new bet event RisingWave emits an updated row with that customer's real-bet sum over the preceding 5 minutes. One row per event, not per customer; consumers key on `(customer_id, currency_id)` and keep the latest `event_ts`. It reads the **decoupled** `src_casino_bets_flat` (§4.2), not `mv_casino_transactions`. (Window reduced 14d → 1d → 5min for the high-volume single-node demo — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §2/§13; the `rolling_1d_real_bet_amount` column name is a kept misnomer.)
+**Window function:** `RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW` = 5 minutes. A sliding window — for every new bet event RisingWave emits an updated row with that customer's real-bet sum over the preceding 5 minutes. One row per event, not per customer; consumers key on `(customer_id, currency_id)` and keep the latest `event_ts`. (Window reduced 14d → 1d → 5min for the high-volume single-node demo — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §2/§13; the `rolling_1d_real_bet_amount` column name is a kept misnomer.)
 
 > **Currency note:** `currency_id` is an opaque integer from the Kaizen system. All observed rows in the GH dataset have `currency_id = 16`. The mapping to a named currency has not been confirmed — amounts are treated as unitless until Kaizen provides the reference table.
 
@@ -393,7 +352,7 @@ Verify:
 
 ```sql
 SELECT COUNT(*) FROM mv_casino_real_bet;
--- Same count as the filtered bets in mv_casino_transactions (one row per bet event)
+-- Same count as the filtered bets in mv_casino_transactions_full (one row per bet event)
 
 -- Top customers by current rolling real bet (deduped to latest per customer/currency)
 SELECT customer_id, currency_id, rolling_1d_real_bet_amount
@@ -514,7 +473,7 @@ Total turnover = casino turnover + sportsbook turnover. Both sides use 5-minute 
 ### Pipeline
 
 ```
-mv_casino_transactions              src_bets_br
+mv_casino_transactions_full         src_bets_br
   → mv_casino_turnover_90d            → mv_sportsbook_turnover_90d
   → mv_casino_turnover_latest         → mv_sportsbook_turnover_latest
          ↘                                   ↗
@@ -523,7 +482,7 @@ mv_casino_transactions              src_bets_br
               └── sink_turnover_percentage_kafka → casino_turnover_percentage_output (Redpanda, JSON)
 ```
 
-> **Note:** `mv_casino_transactions` is shared with UC1. UC2 reads it for casino payout events — a different filter than UC1's bet events.
+> **Note:** `mv_casino_transactions_full` is shared with UC1. UC2 reads it for casino payout events — a different filter (`message_type_id = 2`) than UC1's bet events (`message_type_id = 1`).
 
 ### 5.1 `mv_casino_turnover_90d` — Rolling 5-min casino turnover
 
@@ -537,11 +496,10 @@ SELECT
         ORDER BY transaction_created_at
         RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     )                                                     AS rolling_7d_turnover
-FROM mv_casino_transactions
+FROM mv_casino_transactions_full
 WHERE message_type_id = 2         -- payout/withdrawal events
   AND account_id      IN (1, 4)   -- real money (1) and bonus (4) accounts
-  AND amount_raw IS NOT NULL
-  AND amount_raw <> '';
+  AND amount_abs IS NOT NULL;
 ```
 
 **Filters:**
@@ -582,7 +540,7 @@ WHERE ("CustomerInfo")."Id" IS NOT NULL
 ```
 
 **Key points:**
-- Reads directly from `src_bets_br` (not from `mv_casino_transactions`).
+- Reads directly from `src_bets_br` (not from `mv_casino_transactions_full`).
 - `TotalStake.Euro` uses the `DecimalValue` encoding: `units` (integer part) + `nanos / 1e9` (fractional part). This reconstructs the Euro amount as a single `NUMERIC`.
 - Euro-normalised amounts make casino and sportsbook directly comparable regardless of the player's operating currency.
 - The `PlacedAt` proto timestamp is `STRUCT<seconds BIGINT, nanos INT>` — converted with `TO_TIMESTAMP(...)`.
@@ -786,8 +744,8 @@ Expected JSON output:
 
 ```sql
 -- UC1
-SELECT 'mv_casino_transactions' AS object, COUNT(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_casino_real_bet',     COUNT(*) FROM mv_casino_real_bet;
+SELECT 'mv_casino_transactions_full' AS object, COUNT(*) FROM mv_casino_transactions_full
+UNION ALL SELECT 'mv_casino_real_bet',           COUNT(*) FROM mv_casino_real_bet;
 
 -- UC2
 SELECT 'mv_casino_turnover_90d'        AS object, COUNT(*) FROM mv_casino_turnover_90d
@@ -846,7 +804,7 @@ Both `src_casino_prd` and `src_bets_br` carry immutable event records. `APPEND O
 
 ### Shared Kafka source (`streaming_use_shared_source`)
 
-`src_casino_prd` is consumed by three independent MV chains: `mv_casino_transactions` (and its descendants), `mv_casino_raw` (raw archive), and potentially others. Without `SET streaming_use_shared_source = true`, RisingWave spawns a separate Kafka consumer per chain — multiplying broker connections and network bandwidth. With it, a single consumer fans out internally.
+`src_casino_prd` is consumed by three independent MV chains: `mv_casino_transactions_full` (and its descendants), `mv_casino_raw` (raw archive), and potentially others. Without `SET streaming_use_shared_source = true`, RisingWave spawns a separate Kafka consumer per chain — multiplying broker connections and network bandwidth. With it, a single consumer fans out internally.
 
 ### Selective `background_ddl`
 
@@ -988,11 +946,8 @@ The `pre-hook` runs before every model in the subfolder. Because each dbt model 
 |------|----------------|--------|-------------------|
 | `src_casino_prd.sql` | `kafka_table` | `casino_uc1` | `src_casino_prd` (Kafka TABLE, `scan.startup.mode='latest'`) |
 | `src_bets_br.sql` | `kafka_table` | `casino_uc2` | `src_bets_br` (Kafka TABLE) |
-| `mv_casino_transactions.sql` | `materialized_view` | `casino_uc1` | `mv_casino_transactions` |
-| `mv_casino_bets_flat.sql` | `materialized_view` | `casino_uc1` | `mv_casino_bets_flat` (filtered UC1 bets — round-trip leg 1, §4.2) |
-| `sink_casino_bets_flat_kafka.sql` | `sink` | `casino_uc1` | `sink_casino_bets_flat_kafka` → `casino_bets_flat` (Redpanda — round-trip leg 2) |
-| `src_casino_bets_flat.sql` | `kafka_table` | `casino_uc1` | `src_casino_bets_flat` (re-ingest TABLE + watermark — round-trip leg 3) |
-| `mv_casino_real_bet.sql` | `materialized_view` | `casino_uc1` | `mv_casino_real_bet` (rolling 5-min on `src_casino_bets_flat`) |
+| `mv_casino_transactions_full.sql` | `materialized_view` | `casino_uc1` | `mv_casino_transactions_full` (shared foundation: 6 core columns + `properties` JSON blob) |
+| `mv_casino_real_bet.sql` | `materialized_view` | `casino_uc1` | `mv_casino_real_bet` (rolling 5-min on `mv_casino_transactions_full`) |
 | `sink_casino_real_bet.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet` (`connector='iceberg'`, auto-creates `rw_managed_casino_real_bet`) |
 | `sink_casino_real_bet_kafka.sql` | `sink` | `casino_uc1` | `sink_casino_real_bet_kafka` → `casino_real_bet_output` (Redpanda) |
 | `mv_casino_turnover_90d.sql` | `materialized_view` | `casino_uc2` | `mv_casino_turnover_90d` |
@@ -1027,7 +982,7 @@ dbt compile --select casino_prd
 # Build UC1 only
 dbt build --select tag:casino_uc1
 
-# Build UC2 only (UC1 must already be materialised — mv_casino_transactions is a UC1 model)
+# Build UC2 only (UC1 must already be materialised — mv_casino_transactions_full is a UC1 model)
 dbt build --select tag:casino_uc2
 
 # Build everything in the casino_prd folder
@@ -1057,10 +1012,10 @@ Dagster represents each dbt model as an **asset**. Assets are grouped visually i
 | Dagster group | Contents |
 |--------------|----------|
 | `casino_prd_setup` | Python assets: `casino_prd_proto_fetch`, `casino_prd_proto_compile`, `casino_prd_proto_upload`, and `casino_trino_views` (creates the dollar-free Trino views the Grafana snapshot/operations and "Iceberg Rows" panels query — runs after the sinks exist) |
-| `casino_uc1` | All dbt models tagged `casino_uc1`: source, `mv_casino_transactions`, `mv_casino_real_bet`, Iceberg sink, Kafka sink |
+| `casino_uc1` | All dbt models tagged `casino_uc1`: source, `mv_casino_transactions_full`, `mv_casino_real_bet`, Iceberg sink, Kafka sink |
 | `casino_uc2` | All dbt models tagged `casino_uc2`: `mv_casino_turnover_90d`, `mv_sportsbook_turnover_90d`, `*_latest` MVs, `mv_turnover_percentage`, Iceberg sink, Kafka sink |
 
-UC2 assets show UC1 assets (`mv_casino_transactions`) as upstream dependencies in the asset graph — cross-group dependency tracking works automatically.
+UC2 assets show UC1 assets (`mv_casino_transactions_full`) as upstream dependencies in the asset graph — cross-group dependency tracking works automatically.
 
 #### Setup assets (`casino_prd_setup` group)
 
@@ -1124,7 +1079,7 @@ A single end-to-end job is defined for the casino pipeline:
 
 `casino_prd_full_job` is the entry point for demos. Dagster enforces the correct execution
 order automatically: the proto assets complete before the dbt build starts, UC1 models
-(including `mv_casino_transactions`) are created before the UC2 models that depend on them,
+(including `mv_casino_transactions_full`) are created before the UC2 models that depend on them,
 and the Trino metadata views are created last once the Iceberg sinks have committed.
 
 To run just part of the pipeline ad-hoc (e.g. re-upload proto descriptors after a schema
@@ -1225,7 +1180,7 @@ Both approaches create the same RisingWave objects with the same names:
 | Object | Raw SQL script | dbt model |
 |--------|---------------|-----------|
 | `src_casino_prd` | `sql/casino_prd_source.sql` | `dbt/models/casino_prd/src_casino_prd.sql` |
-| `mv_casino_transactions` | `sql/casino_prd_funnel_iceberg.sql` | `dbt/models/casino_prd/mv_casino_transactions.sql` |
+| `mv_casino_transactions_full` | `sql/casino_prd_funnel_iceberg.sql` | `dbt/models/casino_prd/mv_casino_transactions_full.sql` |
 | `mv_casino_real_bet` | `sql/casino_prd_funnel_iceberg.sql` | `dbt/models/casino_prd/mv_casino_real_bet.sql` |
 | … | … | … |
 
@@ -1245,7 +1200,7 @@ They are not designed to run simultaneously on the same RisingWave instance — 
 | [sql/casino_prd_bets_source.sql](../sql/casino_prd_bets_source.sql) | Creates `src_bets_br` |
 | [sql/casino_prd_funnel_iceberg.sql](../sql/casino_prd_funnel_iceberg.sql) | UC1 + UC2 MVs + `connector='iceberg'` sinks + Kafka sinks |
 | [sql/casino_prd_raw_iceberg.sql](../sql/casino_prd_raw_iceberg.sql) | Faithful raw nested archive: `mv_casino_raw` + `rw_managed_casino_raw` |
-| [dbt/models/casino_prd/](../dbt/models/casino_prd/) | dbt models for the casino pipeline (16 SQL files: 3 sources/tables, 8 MVs, 2 Iceberg sinks, 3 Kafka sinks — incl. the UC1 Kafka round-trip; no separate table models) |
+| [dbt/models/casino_prd/](../dbt/models/casino_prd/) | dbt models for the casino pipeline (sources, MVs, Iceberg sinks, Kafka sinks) |
 | [dbt/dbt_project.yml](../dbt/dbt_project.yml) | dbt project config — casino_prd subfolder config + pre-hook |
 | [dbt/macros/materializations/](../dbt/macros/materializations/) | Custom RisingWave materializations: `kafka_table`, `materialized_view`, `sink` (casino uses these; `iceberg_table` exists for other pipelines) |
 | [monitoring/grafana/dashboards/casino-uc-metrics.json](../monitoring/grafana/dashboards/casino-uc-metrics.json) | Grafana dashboard: UC1/UC2 business metrics + Iceberg/Kafka sink health (uses Trino + Prometheus datasources) |
@@ -1288,9 +1243,9 @@ psql postgresql://root@localhost:4566/dev -f sql/casino_prd_funnel_iceberg.sql
 
 # 4. Verify MVs (RisingWave)
 psql postgresql://root@localhost:4566/dev <<'SQL'
-SELECT 'mv_casino_transactions' AS object, COUNT(*) FROM mv_casino_transactions
-UNION ALL SELECT 'mv_casino_real_bet',     COUNT(*) FROM mv_casino_real_bet
-UNION ALL SELECT 'mv_turnover_percentage', COUNT(*) FROM mv_turnover_percentage;
+SELECT 'mv_casino_transactions_full' AS object, COUNT(*) FROM mv_casino_transactions_full
+UNION ALL SELECT 'mv_casino_real_bet',           COUNT(*) FROM mv_casino_real_bet
+UNION ALL SELECT 'mv_turnover_percentage',       COUNT(*) FROM mv_turnover_percentage;
 SQL
 
 # 5. Verify Iceberg output (Trino)

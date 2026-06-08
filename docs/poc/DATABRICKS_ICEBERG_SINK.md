@@ -20,7 +20,7 @@ RisingWave handles structural transformation only (UNNEST, type casting, protobu
 
 This means new fields added to the PROTOBUF automatically appear in `properties` with zero schema changes in Databricks. Common analytical queries hit typed columns; deeper enrichment uses `GET_JSON_OBJECT(properties, '$.field')`.
 
-Both Databricks sinks run **in parallel** with the existing Lakekeeper sinks — the Lakekeeper pipeline is untouched. The UC1/UC2 streaming aggregation chain (`mv_casino_transactions`, `mv_casino_bets_flat`, `mv_casino_real_bet`, etc.) is also untouched — `mv_casino_transactions_full` reads directly from `src_casino_prd` independently.
+Both Databricks sinks run **in parallel** with the existing Lakekeeper sinks — the Lakekeeper pipeline is untouched. The UC1/UC2 streaming aggregation chain (`mv_casino_transactions_full`, `mv_casino_real_bet`, etc.) is also untouched.
 
 Both Databricks sinks run **in parallel** with the existing Lakekeeper sinks — the Lakekeeper pipeline is untouched. RisingWave authenticates to Databricks Unity Catalog via the Iceberg REST Catalog (IRC) API using Azure AD OAuth2, and writes Parquet files directly to the PoC Azure storage account using `adlsgen2.account_key`.
 

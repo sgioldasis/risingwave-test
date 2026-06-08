@@ -13,5 +13,5 @@
     adlsgen2_account_name=env_var('ADLS_ACCOUNT_NAME'),
     adlsgen2_account_key=env_var('ADLS_ACCOUNT_KEY')
 ) }}
-
+-- depends_on: {{ ref('sink_sportsbook_bets_databricks') }}
 SELECT 'bet_id' AS bet_id WHERE 1=0

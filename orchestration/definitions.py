@@ -151,6 +151,8 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             new_spec = spec.replace_attributes(group_name="casino_avro")
         elif "databricks" in tags:
             new_spec = spec.replace_attributes(group_name="databricks")
+        elif "lakekeeper" in tags:
+            new_spec = spec.replace_attributes(group_name="lakekeeper")
         # Assign group based on where the model runs (not its target)
         # Models materialized as sinks, materialized_views, or tables in RisingWave
         # go to the "risingwave" group, even if they target Iceberg

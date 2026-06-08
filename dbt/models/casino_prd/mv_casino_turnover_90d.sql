@@ -14,7 +14,7 @@ SELECT
         -- See BRAZIL_WORKLOAD_TUNING.md §2 / §13.
         RANGE BETWEEN INTERVAL '300 SECONDS' PRECEDING AND CURRENT ROW
     )                                                     AS rolling_7d_turnover
-FROM {{ ref('mv_casino_transactions') }}
+FROM {{ ref('mv_casino_transactions_full') }}
 WHERE message_type_id = 2
   AND account_id      IN (1, 4)
   AND amount_abs IS NOT NULL   -- §17: NULL iff Amount was empty/null (amount_raw pruned)

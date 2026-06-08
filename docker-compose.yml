@@ -630,7 +630,7 @@ services:
     networks:
       iceberg_net:
     entrypoint: ["/bin/bash", "-c"]
-    command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases casino_bets_flat casino_out_avro; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
+    command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases casino_out_avro; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
   prometheus-0:
     image: prom/prometheus:latest
