@@ -357,7 +357,25 @@ This is consistent with `rw_casino_transactions` (the live PROTOBUF-decoded path
 
 ---
 
-## 10. Re-processing Workflow (Schema Change)
+## 10. Automatic Optimization (Databricks Predictive Optimization)
+
+Predictive Optimization is **enabled at the `de_dev.rw_poc` schema level**, so all three landing/bronze tables inherit it automatically — no per-table configuration is required.
+
+```
+DESCRIBE SCHEMA EXTENDED de_dev.rw_poc;
+-- Predictive Optimization | ENABLE
+```
+
+What this means in practice:
+
+- **OPTIMIZE (compaction)** — Databricks automatically compacts small Parquet files in the background. This is especially important for the landing tables: RisingWave commits on a 5-second `commit_checkpoint_interval`, producing one small file per checkpoint. Without compaction, read performance degrades quickly.
+- **VACUUM** — Databricks automatically removes orphaned files and expired snapshots, keeping storage costs under control without manual maintenance.
+
+The `gc.enabled = false` property visible in `SHOW TBLPROPERTIES` is the Iceberg-level garbage-collection flag. Predictive Optimization operates at the Databricks/UC layer above this and is not affected by it.
+
+---
+
+## 11. Re-processing Workflow (Schema Change)
 
 1. Update the `.proto` file and recompile the descriptor:
    ```bash

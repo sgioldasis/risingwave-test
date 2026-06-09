@@ -538,6 +538,16 @@ support — they exercise complementary surface area.
   table — the sink `WITH` clause only takes `type`, `primary_key`, and
   maintenance options.
 
+## Landing layer and bronze re-processing
+
+The pipeline described above decodes Protobuf at ingestion time. If the schema changes after the source is created, any new or renamed fields are silently dropped for all messages already in Kafka — RisingWave cannot re-decode them.
+
+To guard against this, a parallel `ENCODE BYTES` source runs on the same production topics, storing raw wire-format bytes in append-only Iceberg tables on Databricks (`rw_casino_landing`, `rw_sportsbook_landing`). When a schema change occurs, the binary descriptor file is updated and a Dagster job re-decodes the entire landing table into a typed bronze table (`rw_casino_landing_bronze`).
+
+The two paths run on separate consumer groups and are fully independent — a rebuild of the landing/bronze path does not affect the live `rw_casino_transactions` stream.
+
+See [LANDING_TO_BRONZE_ARCHITECTURE.md](LANDING_TO_BRONZE_ARCHITECTURE.md) for the full architecture, DDL, notebook walkthrough, and re-processing runbook.
+
 ## Schema evolution (optional)
 
 Add an optional field to `proto/casinoroundinfodto.proto`, e.g.:

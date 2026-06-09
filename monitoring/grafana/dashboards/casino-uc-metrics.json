@@ -14,7 +14,7 @@
   },
   "timepicker": {},
   "schemaVersion": 38,
-  "version": 20,
+  "version": 21,
   "panels": [
     {
       "id": 1,
@@ -1172,7 +1172,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (sink_name) (rate(sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*\"}[5m]) * 60)\n/ on (sink_name)\ncount by (sink_name) (sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*\"})",
+          "expr": "sum by (sink_name) (rate(sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"}[5m]) * 60)\n/ on (sink_name)\ncount by (sink_name) (sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"})",
           "legendFormat": "{{sink_name}}",
           "refId": "A"
         }
@@ -1540,7 +1540,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name!~\".*kafka.*\", sink_name=~\".*casino.*|.*turnover.*\"})\n)",
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name!~\".*kafka.*\", sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"})\n)",
           "legendFormat": "{{sink_name}}",
           "refId": "A"
         }
@@ -1587,7 +1587,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (sink_name) (rate(iceberg_write_bytes{sink_name=~\".*casino.*|.*turnover.*\"}[5m]))",
+          "expr": "sum by (sink_name) (rate(iceberg_write_bytes{sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"}[5m]))",
           "legendFormat": "{{sink_name}}",
           "refId": "A"
         }
@@ -2219,6 +2219,478 @@
             "uid": "databricks-trino"
           },
           "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS sportsbook_bets FROM databricks.rw_poc.\"rw_sportsbook_bets$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "type": "row",
+      "title": "Databricks Landing Layer",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 168
+      }
+    },
+    {
+      "id": 66,
+      "type": "stat",
+      "title": "Casino Landing \u2014 Row Count",
+      "description": "Total raw Protobuf bytes rows in de_dev.rw_poc.rw_casino_landing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 169
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_landing"
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "type": "stat",
+      "title": "Casino Landing \u2014 Minutes Since Last Event",
+      "description": "Staleness of rw_casino_landing based on kafka_timestamp. Green <5 min, yellow <15 min, red stalled.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 169
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(kafka_timestamp), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_casino_landing"
+        }
+      ]
+    },
+    {
+      "id": 68,
+      "type": "stat",
+      "title": "Sportsbook Landing \u2014 Row Count",
+      "description": "Total raw Protobuf bytes rows in de_dev.rw_poc.rw_sportsbook_landing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 169
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_sportsbook_landing"
+        }
+      ]
+    },
+    {
+      "id": 69,
+      "type": "stat",
+      "title": "Sportsbook Landing \u2014 Minutes Since Last Event",
+      "description": "Staleness of rw_sportsbook_landing based on kafka_timestamp. Green <5 min, yellow <15 min, red stalled.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 169
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(kafka_timestamp), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_sportsbook_landing"
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "type": "stat",
+      "title": "Casino Landing Bronze \u2014 Row Count",
+      "description": "Total rows in de_dev.rw_poc.rw_casino_landing_bronze after last Dagster re-process run.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 175
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_landing_bronze"
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "type": "stat",
+      "title": "Casino Landing \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots committed to rw_casino_landing. Each step = one RisingWave checkpoint.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 175
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_casino_landing$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "type": "stat",
+      "title": "Sportsbook Landing \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots committed to rw_sportsbook_landing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 175
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_sportsbook_landing$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "type": "timeseries",
+      "title": "Landing Layer \u2014 Snapshot Count Over Time",
+      "description": "Cumulative Iceberg snapshots per landing table. Each step = one RisingWave checkpoint commit. Flat line = stalled.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 181
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS casino_landing FROM databricks.rw_poc.\"rw_casino_landing$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS sportsbook_landing FROM databricks.rw_poc.\"rw_sportsbook_landing$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
           "format": 0,
           "refId": "B"
         }

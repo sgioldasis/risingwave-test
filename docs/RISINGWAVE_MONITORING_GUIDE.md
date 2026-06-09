@@ -71,6 +71,7 @@ Provisioned dashboards:
 * `RisingWave Overview`
 * `RisingWave Pipeline Health`
 * `RisingWave Funnel Business Health`
+* `Casino PoC — UC1 & UC2 Metrics`
 
 ## What The Dashboards Show
 
@@ -160,6 +161,24 @@ Prerequisite:
 
 > [!IMPORTANT]
 > `Kafka → RisingWave Lag` is event-time lag, not transport RTT. If producer event timestamps are skewed or delayed, this metric reflects that skew.
+
+## Casino PoC — UC1 & UC2 Metrics
+
+This dashboard is business-level and covers the Brazil casino PoC end-to-end. It combines SQL-backed panels (querying RisingWave and Databricks via Trino) with Prometheus-backed panels.
+
+It is organised into rows:
+
+* **UC1 — Casino Real Bet Amount** — customer count, MV row count, Iceberg row count, total rolling bet volume, and a top-customers table
+* **UC2 — Casino Turnover Percentage** — customer count, average casino ratio, Iceberg row count, total turnover, and two top-customers tables
+* **Source Ingestion** — casino and sportsbook source throughput (rows/s) and streaming backpressure
+* **Kafka Output Sinks** — Kafka sink throughput (rows/s)
+* **Lakekeeper Iceberg Sinks** — commit cadence, snapshot count over time, operations per minute (appends vs compactions), live file count, sink input row rate, write throughput (bytes/s)
+* **Databricks Iceberg Sinks** — row counts, minutes since last event, snapshot counts, live Parquet file counts, and snapshot count over time for `rw_casino_transactions` and `rw_sportsbook_bets`
+* **Databricks Landing Layer** — row counts and staleness for `rw_casino_landing` and `rw_sportsbook_landing` (raw Protobuf bytes), row count for `rw_casino_landing_bronze` (re-processed), snapshot counts, and snapshot count over time
+
+The Prometheus panels on this dashboard use `sink_name=~".*casino.*|.*turnover.*|.*sportsbook.*"` so all casino and sportsbook sinks (including landing sinks) appear automatically without manual panel updates.
+
+See [LANDING_TO_BRONZE_ARCHITECTURE.md](LANDING_TO_BRONZE_ARCHITECTURE.md) for details on the landing layer and bronze re-processing pipeline.
 
 ## Accessing Prometheus
 
