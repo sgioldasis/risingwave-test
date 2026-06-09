@@ -34,6 +34,7 @@ from .assets.casino_prd_setup import (
 )
 from .assets.datafusion_demo import casino_datafusion_demo
 from .assets.databricks_optimize import databricks_optimize
+from .assets.landing_to_bronze import landing_to_bronze_casino
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 
 # Set up logging
@@ -526,6 +527,8 @@ defs = Definitions(
         # Databricks OPTIMIZE + DataFusion analytics
         databricks_optimize,
         databricks_datafusion_demo,
+        # Landing → Bronze re-processing notebook
+        landing_to_bronze_casino,
     ],
     jobs=[
         dbt_build_job,
@@ -536,6 +539,12 @@ defs = Definitions(
         casino_prd_full_job,
         casino_datafusion_job,
         databricks_datafusion_job,
+        define_asset_job(
+            name="landing_to_bronze_job",
+            selection=AssetSelection.assets(landing_to_bronze_casino),
+            description="Decode rw_casino_landing raw Protobuf bytes into rw_casino_landing_bronze",
+            executor_def=in_process_executor,
+        ),
     ],
     schedules=[
         dbt_build_schedule,

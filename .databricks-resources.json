@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "type": "volume",
+      "name": "de_dev.rw_poc.proto",
+      "id": "de_dev.rw_poc.proto",
+      "created_at": "2026-06-09T04:09:30.453910+00:00",
+      "updated_at": "2026-06-09T04:09:30.453910+00:00"
+    }
+  ]
+}
