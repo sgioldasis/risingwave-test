@@ -41,8 +41,8 @@ from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Note: RisingWave native Iceberg source is working via Trino-written tables
-# See ICEBERG_RISINGWAVE_INTEGRATION.md for details
+# Note: RisingWave native Iceberg source is working via Trino-written tables.
+# Keep runtime setup lightweight; avoid dropping/recreating Iceberg tables on each dbt run.
 
 
 def _ensure_valid_manifest():
@@ -330,6 +330,31 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
         raise Exception(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
     context.log.info("Pre-build sinks dropped successfully")
     
+    # Optional emergency refresh for Iceberg sources.
+    # Set FORCE_ICEBERG_SOURCE_REFRESH=true in Dagster env when a manual refresh is needed.
+    force_iceberg_refresh = os.environ.get("FORCE_ICEBERG_SOURCE_REFRESH", "false").lower() in {"1", "true", "yes"}
+    if force_iceberg_refresh:
+        context.log.info("FORCE_ICEBERG_SOURCE_REFRESH=true: dropping Iceberg sources before dbt build...")
+        iceberg_drop_result = subprocess.run(
+            [
+                "dbt",
+                "run-operation",
+                "drop_stale_iceberg_sources",
+                "--project-dir",
+                str(dbt_PROJECT_PATH),
+                "--profiles-dir",
+                str(dbt_PROJECT_PATH),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(dbt_PROJECT_PATH.parent),
+            env=_dbt_env,
+        )
+        if iceberg_drop_result.returncode != 0:
+            context.log.warning(f"dbt run-operation drop_stale_iceberg_sources failed (non-fatal): {iceberg_drop_result.stderr[-200:]}")
+        else:
+            context.log.info("Stale Iceberg sources dropped successfully")
+    
     # Run dbt build and stream events
     yield from dbt.cli(["build"], context=context).stream()
 
@@ -348,16 +373,17 @@ def casino_prd_dbt_assets(
 ):
     """dbt assets for Casino production — UC1 (Real Bet Amount) + UC2 (Turnover Percentage) in one step."""
     drop_result = subprocess.run(
-        ["dbt", "run-operation", "drop_prebuild_sinks",
+        ["dbt", "run-operation", "drop_prebuild_sinks_casino",
          "--project-dir", str(dbt_PROJECT_PATH),
          "--profiles-dir", str(dbt_PROJECT_PATH)],
         capture_output=True, text=True,
         cwd=str(dbt_PROJECT_PATH.parent), env=_dbt_env,
     )
     if drop_result.returncode != 0:
-        context.log.warning(f"drop_prebuild_sinks failed (safe on fresh start): {drop_result.stderr[-200:]}")
+        context.log.warning(f"drop_prebuild_sinks_casino failed (safe on fresh start): {drop_result.stderr[-200:]}")
     else:
         context.log.info("Pre-build casino sinks dropped")
+    
     # Exclude datafusion Iceberg read-sources — created AFTER sinks commit; handled by casino_datafusion_demo
     yield from dbt.cli(["build", "--exclude", "tag:datafusion"], context=context).stream()
     # NOTE: sources are intentionally left at their build-time source_rate_limit = 1
