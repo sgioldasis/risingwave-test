@@ -173,7 +173,7 @@ It is organised into rows:
 * **Source Ingestion** — casino and sportsbook source throughput (rows/s) and streaming backpressure
 * **Kafka Output Sinks** — Kafka sink throughput (rows/s)
 * **Lakekeeper Iceberg Sinks** — commit cadence, snapshot count over time, operations per minute (appends vs compactions), live file count, sink input row rate, write throughput (bytes/s)
-* **Databricks Iceberg Sinks** — row counts, minutes since last event, snapshot counts, live Parquet file counts, and snapshot count over time for `rw_casino_transactions` and `rw_sportsbook_bets`
+* **Databricks Iceberg Sinks** — row counts, minutes since last event, snapshot counts, live Parquet file counts, and snapshot count over time for `rw_casino_transactions`, `rw_sportsbook_bets`, and `rw_casino_turnover_90d` (the append-only table behind the upsert-via-view pattern; see `poc/DATABRICKS_ICEBERG_READ.md` §6). The **Turnover 90d — Snapshots vs Current Customers** panel shows the dedup at a glance: total append-only snapshots vs distinct customers after the `QUALIFY` collapse (= rows in `v_casino_turnover_latest`)
 * **Databricks Landing Layer** — row counts and staleness for `rw_casino_landing` and `rw_sportsbook_landing` (raw Protobuf bytes), row count for `rw_casino_landing_bronze` (re-processed), snapshot counts, and snapshot count over time
 
 The Prometheus panels on this dashboard use `sink_name=~".*casino.*|.*turnover.*|.*sportsbook.*"` so all casino and sportsbook sinks (including landing sinks) appear automatically without manual panel updates.

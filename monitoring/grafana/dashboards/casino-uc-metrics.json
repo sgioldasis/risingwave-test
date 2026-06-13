@@ -2225,6 +2225,388 @@
       ]
     },
     {
+      "id": 74,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Row Count",
+      "description": "Total rows in de_dev.rw_poc.rw_casino_transactions. Grows with each RisingWave checkpoint commit.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_turnover_90d"
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Minutes Since Last Event",
+      "description": "Staleness of the latest event in rw_casino_transactions. Green = fresh (<5 min), yellow = delayed, red = stalled (>15 min).",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(event_ts), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_casino_turnover_90d"
+        }
+      ]
+    },
+    {
+      "id": 76,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Live Parquet Files",
+      "description": "Current Parquet file count. High = small-file accumulation. Drops after Predictive Optimization or Dagster OPTIMIZE.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS file_count FROM databricks.rw_poc.\"rw_casino_turnover_90d$files\""
+        }
+      ]
+    },
+    {
+      "id": 77,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots retained. One per RisingWave checkpoint commit. Drops after VACUUM.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_casino_turnover_90d$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 78,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Latest Snapshot",
+      "description": "Timestamp of the most recent Iceberg snapshot committed for rw_casino_transactions. Stale value means RisingWave checkpoints are not reaching Databricks.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 174
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT to_unixtime(MAX(committed_at)) * 1000 AS latest_snapshot FROM databricks.rw_poc.\"rw_casino_turnover_90d$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 79,
+      "type": "timeseries",
+      "title": "Databricks Turnover 90d \u2014 Snapshot Count Over Time",
+      "description": "Cumulative snapshots per table. Each step up = one RisingWave checkpoint commit reaching Databricks. Flat line = commits stalled. Drops after VACUUM prunes old snapshots.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 178
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS turnover_90d FROM databricks.rw_poc.\"rw_casino_turnover_90d$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY 1",
+          "format": 0,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 80,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Snapshots vs Current Customers",
+      "description": "Append-only snapshots in rw_casino_turnover_90d vs distinct customers after the QUALIFY collapse (= rows in v_casino_turnover_latest). Visualizes upsert-via-view with no Iceberg delete files.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 174
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshots, COUNT(DISTINCT customer_id) AS current_customers FROM databricks.rw_poc.rw_casino_turnover_90d"
+        }
+      ]
+    },
+    {
       "id": 65,
       "type": "row",
       "title": "Databricks Landing Layer",
@@ -2233,7 +2615,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 168
+        "y": 186
       }
     },
     {
@@ -2249,7 +2631,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 169
+        "y": 187
       },
       "options": {
         "colorMode": "background",
@@ -2302,7 +2684,7 @@
         "h": 6,
         "w": 6,
         "x": 6,
-        "y": 169
+        "y": 187
       },
       "options": {
         "colorMode": "background",
@@ -2371,7 +2753,7 @@
         "h": 6,
         "w": 6,
         "x": 12,
-        "y": 169
+        "y": 187
       },
       "options": {
         "colorMode": "background",
@@ -2424,7 +2806,7 @@
         "h": 6,
         "w": 6,
         "x": 18,
-        "y": 169
+        "y": 187
       },
       "options": {
         "colorMode": "background",
@@ -2493,7 +2875,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 175
+        "y": 193
       },
       "options": {
         "colorMode": "background",
@@ -2546,7 +2928,7 @@
         "h": 6,
         "w": 6,
         "x": 6,
-        "y": 175
+        "y": 193
       },
       "options": {
         "colorMode": "background",
@@ -2599,7 +2981,7 @@
         "h": 6,
         "w": 6,
         "x": 12,
-        "y": 175
+        "y": 193
       },
       "options": {
         "colorMode": "background",
@@ -2652,7 +3034,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 181
+        "y": 199
       },
       "options": {
         "tooltip": {

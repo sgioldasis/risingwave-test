@@ -34,6 +34,7 @@ from .assets.casino_prd_setup import (
 )
 from .assets.datafusion_demo import casino_datafusion_demo
 from .assets.databricks_optimize import databricks_optimize
+from .assets.databricks_turnover_views import databricks_turnover_latest_view
 from .assets.landing_to_bronze import landing_to_bronze_casino
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 
@@ -501,8 +502,9 @@ casino_prd_full_job = define_asset_job(
         )
         | AssetSelection.assets(casino_prd_dbt_assets)
         | AssetSelection.assets(casino_trino_views)
+        | AssetSelection.assets(databricks_turnover_latest_view)
     ),
-    description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views → Databricks Iceberg sources",
+    description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views → Databricks turnover view → Iceberg sources",
     executor_def=in_process_executor,
 )
 
@@ -553,6 +555,8 @@ defs = Definitions(
         # Databricks OPTIMIZE + DataFusion analytics
         databricks_optimize,
         databricks_datafusion_demo,
+        # Databricks "latest turnover per customer" view (QUALIFY over append-only table)
+        databricks_turnover_latest_view,
         # Landing → Bronze re-processing notebook
         landing_to_bronze_casino,
     ],

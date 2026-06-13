@@ -3,6 +3,8 @@
 RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) into **Databricks Unity Catalog Iceberg tables** running in parallel to the existing Lakekeeper sinks. This document records the full integration path, every gotcha encountered, and the rationale for each decision.
 
 > **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see `DATABRICKS_ICEBERG_READ.md` §6.
+>
+> **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and `DATABRICKS_ICEBERG_READ.md` §6 for the view.
 
 ---
 
@@ -11,7 +13,16 @@ RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) in
 ```
 Kafka: cronus.casino.out.br  ──► src_casino_prd ──► mv_casino_transactions_full ──► sink_casino_transactions_databricks ──► de_dev.rw_poc.rw_casino_transactions
 Kafka: bets-out-br           ──► src_bets_br    ──► mv_sportsbook_bets          ──► sink_sportsbook_bets_databricks     ──► de_dev.rw_poc.rw_sportsbook_bets
+
+mv_casino_transactions_full ──► mv_casino_turnover_90d ──► sink_casino_turnover_90d_databricks ──► de_dev.rw_poc.rw_casino_turnover_90d (append-only)
+                                                                                                  └─► view v_casino_turnover_latest (QUALIFY = latest per customer)
 ```
+
+The turnover flow demonstrates **upsert semantics without Iceberg delete files**: an
+upserting MV (`mv_casino_turnover_latest`, one row per customer) cannot sink to UC
+directly because UC rejects delete files (§16). Instead the per-event snapshots land
+append-only and a read-side view applies the "latest per customer" collapse. See
+`DATABRICKS_ICEBERG_READ.md` §6 for the view.
 
 **Design principle — one table per Kafka topic, hybrid schema:**  
 RisingWave handles structural transformation only (UNNEST, type casting, protobuf field extraction). No business-logic aggregation happens before the sink. Each Databricks table has:
@@ -34,6 +45,8 @@ Both Databricks sinks run **in parallel** with the existing Lakekeeper sinks —
 | `dbt/models/casino_prd/mv_sportsbook_bets.sql` | Hybrid MV: 10 flat columns + `properties` JSON bag from `src_bets_br` |
 | `dbt/models/casino_prd/sink_casino_transactions_databricks.sql` | Sink: `mv_casino_transactions_full` → `de_dev.rw_poc.rw_casino_transactions` |
 | `dbt/models/casino_prd/sink_sportsbook_bets_databricks.sql` | Sink: `mv_sportsbook_bets` → `de_dev.rw_poc.rw_sportsbook_bets` |
+| `dbt/models/casino_prd/sink_casino_turnover_90d_databricks.sql` | Append-only sink: `mv_casino_turnover_90d` → `de_dev.rw_poc.rw_casino_turnover_90d` (read-side upsert via view, §16) |
+| `orchestration/assets/databricks_turnover_views.py` | Dagster asset: creates the `v_casino_turnover_latest` view (QUALIFY = latest row per customer) after the sink commits |
 
 Modified:
 - `docker-compose.yml` — Databricks env vars passed to both Dagster containers
@@ -609,6 +622,19 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
     stake_local          DECIMAL(20,8),
     properties           STRING
 ) USING ICEBERG;
+
+-- Per-event rolling-turnover snapshots (sink_casino_turnover_90d_databricks).
+-- Append-only; the "latest per customer" collapse happens in the read-side view
+-- v_casino_turnover_latest (see DATABRICKS_ICEBERG_READ.md §6). RisingWave's
+-- sink loads this schema and casts to it, so the table MUST exist before the
+-- dbt build creates the sink — otherwise: "Table ... not found [ErrorCode: 3000]".
+-- rolling_7d_turnover is DECIMAL(38,8): scale 8 matches amount_abs, precision 38
+-- prevents overflow when summing a window.
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_turnover_90d (
+    customer_id          INT           NOT NULL,
+    event_ts             TIMESTAMP     NOT NULL,
+    rolling_7d_turnover  DECIMAL(38,8)
+) USING ICEBERG;
 ```
 
 > **`USING ICEBERG`** — required for RisingWave's Iceberg REST Catalog write path. `USING DELTA` creates a plain Delta table that is not Iceberg-compatible via IRC and causes `not an Iceberg compatible table` error. Managed storage is placed in the schema's MANAGED LOCATION (`stkznneurwpoccdddevstd`).
@@ -985,7 +1011,7 @@ A concurrent Trino `ALTER TABLE ... EXECUTE optimize` attempt on the same table 
 
 **Layer 2 — Dagster `databricks_optimize` step (on-demand)**
 
-The `databricks_datafusion_job` runs `OPTIMIZE` on both tables via the Databricks SQL API immediately before demo queries, guaranteeing compacted files regardless of Predictive Optimization timing. Controlled by `orchestration/assets/databricks_optimize.py`.
+The `databricks_datafusion_job` runs `OPTIMIZE` on all three tables (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`) via the Databricks SQL API immediately before demo queries, guaranteeing compacted files regardless of Predictive Optimization timing. Controlled by `orchestration/assets/databricks_optimize.py` (`TABLES` list). The turnover table accumulates files fastest (one commit per ~10s of rolling-window updates), so on-demand `OPTIMIZE` matters most there for a snappy demo.
 
 ### Alternative: increase `commit_checkpoint_interval`
 

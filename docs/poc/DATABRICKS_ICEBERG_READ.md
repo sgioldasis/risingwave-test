@@ -395,6 +395,76 @@ ORDER BY total_turnover DESC;
 
 ---
 
+### Latest rolling turnover per customer (upsert semantics without delete files)
+
+This is the read-time replacement for an upsert sink. Unity Catalog does not
+support Iceberg delete files, so an upserting `mv_casino_turnover_latest` sink
+stalls silently (see `DATABRICKS_ICEBERG_SINK.md` §16). Instead, RisingWave
+lands the per-event rolling-turnover snapshots **append-only** into
+`de_dev.rw_poc.rw_casino_turnover_90d` (sink `sink_casino_turnover_90d_databricks`),
+and the "latest row per customer" collapse happens here via `QUALIFY` — no
+delete files, no window recompute on the read side.
+
+The view `de_dev.rw_poc.v_casino_turnover_latest` is created automatically by
+the Dagster asset `databricks_turnover_latest_view` (part of `casino_prd_full_job`,
+recreated each run). It reproduces the RisingWave MV `mv_casino_turnover_latest`
+exactly:
+
+**Databricks SQL** (the view definition)
+```sql
+CREATE OR REPLACE VIEW de_dev.rw_poc.v_casino_turnover_latest AS
+SELECT
+    customer_id,
+    rolling_7d_turnover AS casino_turnover,
+    event_ts
+FROM de_dev.rw_poc.rw_casino_turnover_90d
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY customer_id
+    ORDER BY event_ts DESC
+) = 1;
+```
+
+Query it like any table — one current row per customer:
+```sql
+SELECT customer_id, ROUND(casino_turnover, 2) AS casino_turnover, event_ts
+FROM de_dev.rw_poc.v_casino_turnover_latest
+ORDER BY casino_turnover DESC
+LIMIT 20;
+```
+
+**Trino** — two caveats vs Databricks SQL (both verified against this stack):
+1. Trino **cannot query the view** `v_casino_turnover_latest`: its Iceberg federation
+   connector can't load Unity Catalog views (`Failed to load table ... in rw_poc
+   namespace`). Query the base table instead.
+2. Trino has **no `QUALIFY`** — use a `ROW_NUMBER()` subquery with `WHERE rn = 1`.
+
+```sql
+-- Dedup the base table in Trino (equivalent to the view)
+SELECT customer_id, rolling_7d_turnover AS casino_turnover, event_ts
+FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_ts DESC) AS rn
+    FROM databricks.rw_poc.rw_casino_turnover_90d
+) t
+WHERE rn = 1
+ORDER BY casino_turnover DESC
+LIMIT 20;
+```
+
+Notes:
+- **Why append-only is correct here:** each `rolling_7d_turnover` value is fixed
+  once emitted — a later transaction at `t'` never falls inside an earlier row's
+  `[t-window, t]` frame — so `force_append_only` on the sink drops nothing
+  meaningful. The append-only table is the immutable event log; the view is the
+  current-state projection.
+- **Storage grows unbounded.** The append-only table keeps every snapshot, so
+  the view scans the full history each query. Compact it with `OPTIMIZE`
+  (see `databricks_optimize`) and prune old rows on the Databricks side if the
+  retention isn't needed — the view only ever surfaces the latest per customer.
+- **Tie behavior** matches the MV: rows sharing a customer's max `event_ts` are
+  broken arbitrarily by `ROW_NUMBER`.
+
+---
+
 ### Sportsbook bet segmentation by type
 
 **RisingWave**

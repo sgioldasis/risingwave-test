@@ -20,6 +20,7 @@ WAREHOUSE_ID    = "4d06eca1e71a9ccc"
 TABLES = [
     "de_dev.rw_poc.rw_casino_transactions",
     "de_dev.rw_poc.rw_sportsbook_bets",
+    "de_dev.rw_poc.rw_casino_turnover_90d",
 ]
 
 
@@ -77,12 +78,12 @@ def _poll(token: str, statement_id: str, poll_interval: int = 5, max_wait: int =
         AssetDep(AssetKey(["public", "sink_sportsbook_bets_databricks"])),
     ],
     description=(
-        "OPTIMIZE both Databricks Iceberg tables to compact small files written by RisingWave sinks. "
+        "OPTIMIZE the Databricks Iceberg tables (see TABLES) to compact small files written by RisingWave sinks. "
         "Runs before DataFusion queries to keep query latency low."
     ),
 )
 def databricks_optimize(context: AssetExecutionContext):
-    """Compact small Parquet files in both Databricks Iceberg tables."""
+    """Compact small Parquet files in each Databricks Iceberg table in TABLES."""
     missing = [k for k, v in {
         "DBT_DATABRICKS_HOST":            DATABRICKS_HOST,
         "DATABRICKS_AZURE_TENANT_ID":     TENANT_ID,

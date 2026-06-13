@@ -17,6 +17,7 @@
         DROP SINK IF EXISTS sink_sportsbook_bets_databricks CASCADE;
         DROP SINK IF EXISTS sink_casino_landing_databricks CASCADE;
         DROP SINK IF EXISTS sink_sportsbook_landing_databricks CASCADE;
+        DROP SINK IF EXISTS sink_casino_turnover_90d_databricks CASCADE;
 
         DROP SINK IF EXISTS sink_casino_transactions_lakekeeper CASCADE;
         DROP SINK IF EXISTS sink_sportsbook_bets_lakekeeper CASCADE;
