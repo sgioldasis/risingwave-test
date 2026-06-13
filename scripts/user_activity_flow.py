@@ -70,11 +70,8 @@ def _():
     # Iceberg version - must match the runtime JAR version.
     # Spark 4.0 requires Iceberg >= 1.8 and the Scala 2.13 runtime jar.
     #
-    # NOTE: Spark version is gated by this jar. Iceberg currently publishes
-    # only `iceberg-spark-runtime-4.0_2.13`; there is no 4.1 build yet.
-    # When Apache Iceberg ships `iceberg-spark-runtime-4.1_2.13`, bump
-    # pyproject.toml to pyspark>=4.1.0,<4.2.0 and change "4.0_2.13" below.
-    ICEBERG_VERSION = "1.10.1"
+    # Iceberg 1.11.0 ships `iceberg-spark-runtime-4.1_2.13` on Maven Central.
+    ICEBERG_VERSION = "1.11.0"
 
     # Java 17+ reflection opens. Spark 4's launcher already injects the
     # standard set; we only add what Iceberg/Arrow/Netty need beyond that.
@@ -104,7 +101,7 @@ def _():
         # needed: master=local[*] runs executors in the driver JVM.
         .config("spark.driver.extraJavaOptions", java_opts)
         # Add Iceberg packages (Spark 4.0 ships with Scala 2.13 only)
-        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
+        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
         # Reproducible Ivy cache (independent of $HOME, survives container runs)
         .config("spark.jars.ivy", "/tmp/.ivy2")
         # Iceberg extensions

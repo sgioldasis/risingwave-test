@@ -700,9 +700,54 @@ throughput/backpressure behave as on 2.7.4 (~600–800/s, green); coherence clea
   exactly as on 2.7.4. **Verdict: the 2.8 upgrade did NOT fix snapshot expiration.** Compaction works;
   expiration does not. (The live test sink was reverted to the shipped config — the test options have no
   effect, so the files keep `enable_snapshot_expiration='true'` only as an aspirational marker.)
+  **✅ FIXED in v3.0.0 — see §20.**
 - **`ENGINE=iceberg` / `ALTER SINK SET` compaction opts (§7)** — still not re-checked (minor).
 
 Meta backend stays **Postgres** (the meta store isn't a bottleneck — decided against switching).
+
+---
+
+## 20. Upgrade to RisingWave v3.0.0 (2026-06-13)
+
+Bumped **`v2.8.4 → v3.0.0`** (direct — no v2.9.x or v2.10.x intermediaries exist; RW jumped straight
+from the 2.8.x patch series to 3.0.0). Also bumped Redpanda `v26.1.9 → v26.1.10`, Grafana
+`13.0.1 → 13.0.2`, Apache Iceberg runtime `1.10.1 → 1.11.0`, PySpark `4.0.3 → 4.1.2` (the Iceberg
+1.11.0 Spark 4.1 runtime JAR finally ships on Maven Central — the `<4.1.0` pyproject constraint is
+lifted).
+
+**✅ Validated on v3.0.0 (2026-06-13):** stack comes up healthy; the casino pipeline builds (10 MVs +
+14 sinks); data flows on Brazil topics; both Lakekeeper Iceberg sinks commit and are queryable via Trino.
+
+**Re-verified on v3.0.0 (2026-06-13):**
+
+- ✅ **Snapshot expiration — FIXED.** PRs #25700, #25723, #25749, #25902 in v3.0.0 ship a complete
+  rework: expiration now actually prunes with the Lakekeeper REST catalog. It is **on by default**
+  (1 h max age, retain last 12 snapshots) and compaction snapshots are protected from GC. The sinks
+  already carry `enable_snapshot_expiration='true'` — no config change needed. The §7 and §19
+  workaround (Trino `expire_snapshots`) is no longer required.
+
+- ❌ **`enable_pk_index = 'true'` — executor NOT shipped in v3.0.0.** v3.0.0 added the frontend
+  planner support (PR #25346) for a deletion-vector upsert path that would eventually unblock Unity
+  Catalog (which rejects equality-delete files). But the streaming executor side was described as a
+  follow-up PR and did not ship. Symptom: the sink DDL is accepted but the compute node crashes
+  within seconds of the sink starting. Keep `enable_pk_index` out of all sink configs until a future
+  v3.x patch confirms it.
+
+- ❌ **`CREATE VIEW` over Iceberg source — broken by default in v3.0.0.** PR #25198 flipped
+  `enable_datafusion_engine` to `true` as the default. `CREATE VIEW ... AS SELECT * FROM
+  <iceberg_source>` now fails with `Expected RisingWave plan in BatchPlanChoice, but got DataFusion
+  plan` because `create_view.rs` calls `unwrap_rw()` which hard-errors on a DataFusion plan.
+  `handle_query()` (plain `SELECT`) was updated to handle the `Df` variant; `CREATE VIEW` was not.
+  **Workaround:** `SET enable_datafusion_engine = false` before the `CREATE VIEW`. Applied
+  automatically in dbt via `pre_hook="SET enable_datafusion_engine = false"` on the two affected
+  models (`v_databricks_casino_transactions`, `v_databricks_sportsbook_bets`). Bug filed upstream:
+  https://github.com/risingwavelabs/risingwave/issues/25968.
+
+- ❌ **dbt `threads: 4` crashes meta node.** With 4 parallel dbt threads, concurrent DDL spawns
+  too many JVM threads in the connector node (thread IDs observed climbing past 2600+) as each
+  model's Iceberg catalog interaction — across both Lakekeeper and Unity Catalog — opens its own
+  JVM thread pool. Under load the meta node panics on `pthread_create`. **Fix:** `dbt/profiles.yml`
+  reduced to `threads: 1`. DDL serialisation is the safe path on a single-node demo stack.
 
 ---
 

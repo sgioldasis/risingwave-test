@@ -37,12 +37,12 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Pre-stage Iceberg Spark runtime + AWS bundle jars so the Spark session uses
 # spark.jars (local paths) instead of spark.jars.packages (Ivy fetch at run time).
-# Versions must match scripts/user_activity_flow.py and pyspark 4.0 (Scala 2.13).
-ARG ICEBERG_VERSION=1.10.1
+# Versions must match scripts/user_activity_flow.py and pyspark 4.1 (Scala 2.13).
+ARG ICEBERG_VERSION=1.11.0
 ENV ICEBERG_JARS_DIR=/opt/iceberg-jars
 RUN set -eux; \
     mkdir -p ${ICEBERG_JARS_DIR}; \
-    for artifact in iceberg-spark-runtime-4.0_2.13 iceberg-aws-bundle; do \
+    for artifact in iceberg-spark-runtime-4.1_2.13 iceberg-aws-bundle; do \
         base="https://repo1.maven.org/maven2/org/apache/iceberg/${artifact}/${ICEBERG_VERSION}"; \
         jar="${artifact}-${ICEBERG_VERSION}.jar"; \
         curl -fsSL "${base}/${jar}" -o "${ICEBERG_JARS_DIR}/${jar}"; \

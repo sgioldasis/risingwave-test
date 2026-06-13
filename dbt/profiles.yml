@@ -9,4 +9,8 @@ funnel_profile:
       dbname: dev
       port: 4566     # RisingWave default port
       schema: public
-      threads: 4
+      # threads=1: concurrent DDL (4 threads) causes JVM thread exhaustion in the RisingWave
+      # connector node (thread IDs climb past 2600+) when multiple Iceberg catalog sinks
+      # (Lakekeeper + Unity Catalog) run in parallel, crashing the meta node. Serialised DDL
+      # is required on a single-node stack. Re-test before raising this. (v3.0.0, 2026-06-13)
+      threads: 1

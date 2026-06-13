@@ -1,5 +1,5 @@
 x-image: &image
-  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.4}
+  image: ${RW_IMAGE:-risingwavelabs/risingwave:v3.0.0}
 
 x-lakekeeper-image: &lakekeeper-image
   image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.12.3}
@@ -510,7 +510,7 @@ services:
 
   # Redpanda Service - Kafka Compatible
   # redpanda:
-  #   image: redpandadata/redpanda:v26.1.9
+  #   image: redpandadata/redpanda:v26.1.10
   #   command:
   #     - redpanda
   #     - start
@@ -555,7 +555,7 @@ services:
   #   networks:
   #     iceberg_net:
   redpanda:
-    image: redpandadata/redpanda:v26.1.9
+    image: redpandadata/redpanda:v26.1.10
     command:
       - redpanda
       - start
@@ -622,7 +622,7 @@ services:
       iceberg_net:
 
   redpanda-init:
-    image: redpandadata/redpanda:v26.1.9
+    image: redpandadata/redpanda:v26.1.10
     restart: "no"
     depends_on:
       redpanda:
@@ -652,7 +652,7 @@ services:
       - iceberg_net
 
   grafana-0:
-    image: grafana/grafana:13.0.1
+    image: grafana/grafana:13.0.2
     container_name: grafana-0
     deploy:
       resources:

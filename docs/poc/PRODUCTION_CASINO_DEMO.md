@@ -2,14 +2,14 @@
 
 Real-time streaming pipeline that reads live casino and sportsbook data from Kaizen production Kafka clusters into RisingWave, computes two customer-level metrics, and lands results into Lakekeeper-managed Iceberg tables.
 
-> **Status:** working as of 2026-06-01. RisingWave **2.8.0** (upgraded from 2.7.4 — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19), Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
-> _Note: the two "in 2.7.4" limitations were re-verified on 2.8.0 (2026-06-01): UNNEST/watermark is **FIXED** (TUMBLE+EOWC now binds over UNNEST); snapshot expiration (§7) is **STILL BROKEN** (definitively tested — snapshots grow, oldest ages past `max_age`, nothing prunes). See §19._
+> **Status:** working as of 2026-06-13. RisingWave **v3.0.0** (upgraded from 2.7.4 → 2.8.0 → 3.0.0 — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19, §20), Lakekeeper v0.12.3, MinIO local, Trino 481. No producer required — the pipeline consumes live production topics directly.
+> _Known limitations re-verified on v3.0.0 (2026-06-13): UNNEST/watermark **FIXED** (since 2.8.0); snapshot expiration **FIXED** (v3.0.0 — see §20); `CREATE VIEW` over Iceberg sources **broken by default** (DataFusion plan error — workaround: `SET enable_datafusion_engine = false`, auto-applied via dbt `pre_hook`); `enable_pk_index = 'true'` causes compute node crash (executor not yet shipped in v3.0.0)._
 >
 > **Architecture notes (read first):**
 > - Sources use `scan.startup.mode = 'latest'` — fast, history-free startup; the 5-minute rolling windows fill over time as live events arrive. `'earliest'` (full-history backfill) is available but slow/unpredictable on this cluster — run it off-demo, not interactively.
 > - Iceberg sinks use `connector = 'iceberg'` (write directly to Lakekeeper), **not** `ENGINE = iceberg` managed tables. The sink auto-creates the Iceberg table.
 > - The `rw_managed_*` Iceberg tables are queried via **Trino** (`datalake` catalog), not RisingWave — there are no RisingWave Iceberg read-sources.
-> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot **expiration did not** prune on 2.7.4 (see §7) — **not re-verified on 2.8.0** (the v2.8 docs claim it prunes; re-test pending).
+> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot expiration also works as of v3.0.0 (was broken through v2.8.4 — see §7 and BRAZIL_WORKLOAD_TUNING.md §20).
 >
 > **High-volume tuning:** for running this demo against the high-volume **Brazil** topics
 > (`cronus.casino.out.br`, `bets-out-br`) on a single-node stack — including the
@@ -847,15 +847,20 @@ SELECT operation, COUNT(*) FROM datalake.public.\"rw_managed_casino_real_bet\$sn
 | `compaction.trigger_snapshot_count` | `'5'` | Minimum snapshots before compaction fires (both conditions must be met) |
 | `compaction.write_parquet_compression` | `'zstd'` | Compacted output uses zstd compression |
 
-### Snapshot expiration — does NOT work in 2.7.4 OR 2.8.0 (known limitation)
+### Snapshot expiration — ✅ FIXED in v3.0.0
 
-`enable_snapshot_expiration = 'true'` (and `snapshot_expiration_max_age_millis` / `snapshot_expiration_retain_last`) are **accepted in the DDL but do not prune snapshots** with the Lakekeeper REST catalog. First seen on 2.7.4; **re-tested definitively on 2.8.0 (2026-06-01) and still broken** — with a 60s `max_age` set live on `sink_casino_real_bet`, the snapshot count grew (17→23) and the oldest snapshot aged past 14.5 min instead of being pruned to ~1–2 min. Snapshot count grows unbounded, no `expire` activity in logs, metadata files accumulate. **The 2.8 upgrade did not fix this** — see BRAZIL_WORKLOAD_TUNING.md §19 for the sampled data.
+`enable_snapshot_expiration = 'true'` now actually prunes snapshots with the Lakekeeper REST catalog
+as of RisingWave v3.0.0 (PRs #25700/#25723/#25749/#25902). It is **on by default** (1 h max age,
+retain last 12 snapshots) and compaction snapshots are protected from GC. The sinks already carry
+`enable_snapshot_expiration='true'` — no config change needed.
 
-**Impact is limited:** compaction (the thing that fixes query performance by merging data files) works. Expiration only removes old snapshot *metadata* — lightweight, cosmetic growth over a demo timeframe.
+**Historical note (2.7.4–2.8.4):** `enable_snapshot_expiration` and related options were accepted
+in the DDL but had no effect with the Lakekeeper REST catalog. Definitively tested on 2.8.0
+(2026-06-01): with `max_age='60000'` (1 min), snapshot count grew 17→23 and oldest aged past 14.5
+min — nothing pruned. See BRAZIL_WORKLOAD_TUNING.md §19 for the sampled data. The Trino
+`expire_snapshots` workaround is no longer needed.
 
-**If you must expire snapshots:** the funnel pipeline's Spark-based `iceberg_compaction_job` (Dagster, on demand) runs `expire_snapshots` and works — it can be pointed at the casino tables if needed. We chose not to schedule it for casino (RisingWave-native only).
-
-> **Note:** `ALTER SINK SET` does not support changing compaction options in RisingWave 2.7.4. To change options on an existing sink, DROP and recreate it — Iceberg table data in Lakekeeper/MinIO is preserved.
+> **Note:** To change options on an existing sink, DROP and recreate it — Iceberg table data in Lakekeeper/MinIO is preserved.
 
 ### Indexes on serving MVs
 
@@ -879,11 +884,15 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **`scan.startup.mode = 'latest'` vs `'earliest'`.** The pipeline ships with `'latest'` (fast startup, tracks live events; rolling windows fill over time). `'earliest'` does a full-history backfill, but on this cluster it grinds under backpressure from UC2's rolling-window MVs and can take hours — use it off-demo only. The dbt source models use a `pre_hook` DROP so the mode change applies on rebuild.
 
+- **`CREATE VIEW` over Iceberg source fails in v3.0.0 with DataFusion enabled.** `enable_datafusion_engine` defaulted to `true` in v3.0.0. `CREATE VIEW ... AS SELECT * FROM <iceberg_source>` fails with `Expected RisingWave plan in BatchPlanChoice, but got DataFusion plan`. Workaround: `SET enable_datafusion_engine = false` before the `CREATE VIEW`. Applied automatically in dbt via `pre_hook`. Bug filed: https://github.com/risingwavelabs/risingwave/issues/25968.
+
+- **`enable_pk_index = 'true'` crashes compute node in v3.0.0.** The frontend planning for deletion-vector upserts (PR #25346) shipped in v3.0.0 but the streaming executor did not. The sink DDL is accepted, then the compute node crashes seconds later. Do not use `enable_pk_index` until a future v3.x patch.
+
 - **`connector='iceberg'` sinks, not `ENGINE = iceberg`.** `enable_compaction` is silently ignored on `ENGINE = iceberg` managed tables in 2.7.4. Use `connector='iceberg'` sinks with `create_table_if_not_exists='true'`; query the resulting tables via Trino, not RisingWave.
 
 - **`commit_checkpoint_interval` counts checkpoints, not seconds.** Multiply by `barrier_interval_ms` (2000 ms here) to estimate the real cadence: `20 × 2000 ms ≈ ~30–40 s`. See §7.
 
-- **Snapshot expiration doesn't prune in 2.7.4 or 2.8.0.** `enable_snapshot_expiration` is accepted but ineffective with the REST catalog (re-tested definitively on 2.8). Compaction works; expiration doesn't. See §7.
+- **Snapshot expiration works as of v3.0.0.** Was broken through v2.8.4 (accepted in DDL, no effect with REST catalog). Fixed in v3.0.0 — see §7.
 
 - **Grafana needs the `trino-datasource` plugin + dollar-free views.** Trino's metadata tables (`table$snapshots`, `table$partitions`) contain a `$`, which Grafana interprets as a variable. The `casino_trino_views` Dagster asset creates dollar-free views: `casino_real_bet_snapshots` / `turnover_pct_snapshots` (feed the snapshot-count and operations panels) and `casino_real_bet_rowcount` / `turnover_pct_rowcount` (feed the "Iceberg Rows" panels via `SUM(record_count)` over `$partitions` — instant metadata reads instead of a `COUNT(*)` full scan; see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §11). The plugin auto-installs via `GF_INSTALL_PLUGINS=trino-datasource`, and Trino needs `http-server.process-forwarded=true` to accept Grafana's proxied requests.
 
