@@ -17,7 +17,7 @@ WITH (
     database.name                        = 'public',
     table.name                           = 'rw_managed_turnover_percentage',
     create_table_if_not_exists           = 'true',
-    commit_checkpoint_interval           = 20,
+    commit_checkpoint_interval           = 5,
     compaction.trigger_snapshot_count      = '5',
     compaction.write_parquet_compression = 'zstd'
 )
