@@ -31,11 +31,12 @@ from .assets.casino_prd_setup import (
     casino_prd_proto_upload,
     casino_avro_schema_register,
     casino_trino_views,
+    databricks_uc_tables_setup,
 )
 from .assets.datafusion_demo import casino_datafusion_demo
 from .assets.databricks_optimize import databricks_optimize
 from .assets.databricks_turnover_views import databricks_turnover_latest_view
-from .assets.landing_to_bronze import landing_to_bronze_casino
+from .assets.landing_to_bronze import casino_landing_to_bronze
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 
 # Set up logging
@@ -152,9 +153,9 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         elif "casino_avro" in tags:
             new_spec = spec.replace_attributes(group_name="casino_avro")
         elif "databricks" in tags:
-            new_spec = spec.replace_attributes(group_name="databricks")
+            new_spec = spec.replace_attributes(group_name="casino_databricks")
         elif "lakekeeper" in tags:
-            new_spec = spec.replace_attributes(group_name="lakekeeper")
+            new_spec = spec.replace_attributes(group_name="casino_lakekeeper")
         # Assign group based on where the model runs (not its target)
         # Models materialized as sinks, materialized_views, or tables in RisingWave
         # go to the "risingwave" group, even if they target Iceberg
@@ -200,6 +201,17 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             schema_key = AssetKey(["casino_avro_schema_register"])
             if schema_key not in {d.asset_key for d in existing_deps}:
                 existing_deps.append(AssetDep(asset=schema_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
+        # Databricks sinks require the UC tables to exist before RisingWave creates
+        # them. All UC sink models carry the 'databricks' tag, so this wires the dep
+        # automatically for every current and future Databricks sink.
+        if materialized == "sink" and "databricks" in tags:
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            uc_key = AssetKey(["databricks_uc_tables_setup"])
+            if uc_key not in {d.asset_key for d in existing_deps}:
+                existing_deps.append(AssetDep(asset=uc_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         return new_spec
@@ -479,7 +491,15 @@ iceberg_countries_job = define_asset_job(
 casino_datafusion_job = define_asset_job(
     name="casino_datafusion_job",
     selection=AssetSelection.assets(casino_datafusion_demo),
-    description="DataFusion batch analytics demo — OLAP queries on casino Iceberg tables",
+    description=(
+        "Runs OLAP-style queries on the Lakekeeper Iceberg tables directly from RisingWave "
+        "using the DataFusion engine, showcasing the unified stream + batch capability where "
+        "RisingWave queries its own Iceberg output tables as a batch query engine. Runs a "
+        "handful of analytical queries (top customers by bet amount, turnover ratio "
+        "segmentation, etc.) against src_iceberg_casino_real_bet and similar Iceberg sources, "
+        "logging results as Dagster metadata. Separate from casino_prd_full_job — run "
+        "on-demand as a demo/showcase step after the core pipeline has populated the tables."
+    ),
     executor_def=in_process_executor,
 )
 
@@ -499,6 +519,7 @@ casino_prd_full_job = define_asset_job(
             casino_prd_proto_compile,
             casino_prd_proto_upload,
             casino_avro_schema_register,
+            databricks_uc_tables_setup,
         )
         | AssetSelection.assets(casino_prd_dbt_assets)
         | AssetSelection.assets(casino_trino_views)
@@ -546,6 +567,7 @@ defs = Definitions(
         casino_prd_proto_compile,
         casino_prd_proto_upload,
         casino_avro_schema_register,
+        databricks_uc_tables_setup,
         # Casino dbt assets (UC1 + UC2 in one step)
         casino_prd_dbt_assets,
         # Trino metadata views for Grafana (snapshot count, live data files)
@@ -558,7 +580,7 @@ defs = Definitions(
         # Databricks "latest turnover per customer" view (QUALIFY over append-only table)
         databricks_turnover_latest_view,
         # Landing → Bronze re-processing notebook
-        landing_to_bronze_casino,
+        casino_landing_to_bronze,
     ],
     jobs=[
         dbt_build_job,
@@ -570,9 +592,16 @@ defs = Definitions(
         casino_datafusion_job,
         databricks_datafusion_job,
         define_asset_job(
-            name="landing_to_bronze_job",
-            selection=AssetSelection.assets(landing_to_bronze_casino),
-            description="Decode rw_casino_landing raw Protobuf bytes into rw_casino_landing_bronze",
+            name="casino_landing_to_bronze_job",
+            selection=AssetSelection.assets(casino_landing_to_bronze),
+            description=(
+                "Landing → Bronze layer for casino events. Triggers the Databricks notebook "
+                "/Workspace/Shared/rw_poc/landing_to_bronze_casino on an existing cluster. "
+                "The notebook reads raw Protobuf bytes written by sink_casino_landing_databricks "
+                "into the rw_casino_landing Iceberg table, decodes them into typed columns, and "
+                "writes the result into rw_casino_landing_bronze. Run on-demand after the core "
+                "streaming pipeline (casino_prd_full_job) has landed data."
+            ),
             executor_def=in_process_executor,
         ),
     ],

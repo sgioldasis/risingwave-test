@@ -335,6 +335,7 @@ auth_type    = databricks-cli
 | Limitation | Detail |
 |---|---|
 | **Grafana monitoring** | Wired up via Trino `databricks` catalog — see the "Databricks Iceberg Sinks" row in `casino-uc-metrics.json`. Panels: row counts, data freshness (minutes behind live), Parquet file counts, and snapshot count over time. |
+| **UC snapshot accumulation** | Unity Catalog forces `gc.enabled=false` on all managed Iceberg tables, so Iceberg's built-in GC never runs automatically. RisingWave's `enable_snapshot_expiration` sink option has **no effect** on UC tables — it only works with the Lakekeeper catalog. Snapshots accumulate indefinitely; Trino's `$snapshots` metadata table caps at 100 rows, so Grafana shows a flat "100 snapshots" once the table reaches that count. UC tables are created with `TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')` (see §15.1e); to actually prune, call `CALL rw_poc.system.expire_snapshots(...)` in Databricks SQL or run `VACUUM` manually. |
 | **Token handled by Iceberg library** | With `catalog.oauth2_server_uri`, the Azure AD token is fetched and refreshed by the Apache Iceberg Java library inside RisingWave. Token refresh behaviour is library-managed, not controlled at the RisingWave level. |
 | **External tables required** | Databricks managed tables use Databricks' own ADLS account (no credentials available). Tables must be created as external Iceberg tables pointing to the PoC storage account — see §12. |
 | **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by two layers: Predictive Optimization (enabled on `de_dev.rw_poc`, runs automatically) + `databricks_optimize` Dagster step (runs `OPTIMIZE` on-demand before demo queries). See §17. |
@@ -598,6 +599,8 @@ GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.rw_poc TO `3b7f531f-db93-4186-af75-65
 
 **1e. Create managed Iceberg tables** (already done):
 
+> All five tables are also in `sql/databricks_setup.sql` — the canonical runnable script. The `databricks_uc_tables_setup` Dagster asset (group `casino_prd_setup`) runs these DDLs automatically at the start of `casino_prd_full_job`, creating any missing tables before the dbt build creates the RisingWave sinks.
+
 ```sql
 CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
     customer_id              INT           NOT NULL,
@@ -607,7 +610,8 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
     transaction_created_at   TIMESTAMP     NOT NULL,
     amount_abs               DECIMAL(20,8),
     properties               STRING
-) USING ICEBERG;
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
 
 CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
     bet_id               BIGINT        NOT NULL,
@@ -621,7 +625,8 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
     stake_euro           DECIMAL(20,8),
     stake_local          DECIMAL(20,8),
     properties           STRING
-) USING ICEBERG;
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
 
 -- Per-event rolling-turnover snapshots (sink_casino_turnover_90d_databricks).
 -- Append-only; the "latest per customer" collapse happens in the read-side view
@@ -634,7 +639,32 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_turnover_90d (
     customer_id          INT           NOT NULL,
     event_ts             TIMESTAMP     NOT NULL,
     rolling_7d_turnover  DECIMAL(38,8)
-) USING ICEBERG;
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
+```
+
+-- Raw Protobuf landing tables (sink_casino_landing_databricks, sink_sportsbook_landing_databricks).
+-- Payload is binary (undecoded Protobuf bytes); decoding to typed bronze happens via the
+-- casino_landing_to_bronze Databricks notebook (casino_landing_to_bronze_job in Dagster).
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
+
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
 ```
 
 > **`USING ICEBERG`** — required for RisingWave's Iceberg REST Catalog write path. `USING DELTA` creates a plain Delta table that is not Iceberg-compatible via IRC and causes `not an Iceberg compatible table` error. Managed storage is placed in the schema's MANAGED LOCATION (`stkznneurwpoccdddevstd`).

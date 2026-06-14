@@ -11,7 +11,144 @@ import httpx
 import requests
 from dagster import AssetDep, AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from .databricks_optimize import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    DATABRICKS_HOST,
+    TENANT_ID,
+    _get_token,
+    _poll,
+    _submit,
+)
+
 PROTO_DIR = Path(__file__).parent.parent.parent / "proto"
+
+# UC tables that must exist before RisingWave sinks are created by dbt.
+# Each tuple: (fully-qualified table name, CREATE TABLE DDL without TBLPROPERTIES).
+# TBLPROPERTIES are appended uniformly below.
+_UC_TABLES = [
+    (
+        "de_dev.rw_poc.rw_casino_transactions",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
+    customer_id              INT           NOT NULL,
+    message_type_id          INT           NOT NULL,
+    account_id               INT           NOT NULL,
+    currency_id              INT           NOT NULL,
+    transaction_created_at   TIMESTAMP     NOT NULL,
+    amount_abs               DECIMAL(20,8),
+    properties               STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_sportsbook_bets",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
+    bet_id               BIGINT        NOT NULL,
+    customer_id          INT           NOT NULL,
+    customer_segment_id  INT,
+    bet_type_id          INT,
+    bet_status_id        INT,
+    channel_id           INT,
+    currency_id          INT,
+    placed_at            TIMESTAMP     NOT NULL,
+    stake_euro           DECIMAL(20,8),
+    stake_local          DECIMAL(20,8),
+    properties           STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_casino_turnover_90d",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_turnover_90d (
+    customer_id          INT           NOT NULL,
+    event_ts             TIMESTAMP     NOT NULL,
+    rolling_7d_turnover  DECIMAL(38,8)
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_casino_landing",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_sportsbook_landing",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+]
+
+
+def _run_sql(token: str, statement: str) -> dict:
+    data = _submit(token, statement)
+    state = data.get("status", {}).get("state", "")
+    if state not in ("SUCCEEDED", "FAILED", "CANCELED", "CLOSED"):
+        data = _poll(token, data["statement_id"])
+    return data
+
+
+@asset(
+    group_name="casino_prd_setup",
+    description=(
+        "Ensure the three Unity Catalog Iceberg tables exist before dbt creates the "
+        "RisingWave sinks that write into them. Creates each table only if absent; "
+        "a no-op when all tables already exist. See sql/databricks_setup.sql for the DDL."
+    ),
+)
+def databricks_uc_tables_setup(context: AssetExecutionContext):
+    """CREATE TABLE IF NOT EXISTS for each UC table required by the RisingWave sinks."""
+    missing_vars = [k for k, v in {
+        "DBT_DATABRICKS_HOST":            DATABRICKS_HOST,
+        "DATABRICKS_AZURE_TENANT_ID":     TENANT_ID,
+        "DATABRICKS_AZURE_CLIENT_ID":     CLIENT_ID,
+        "DATABRICKS_AZURE_CLIENT_SECRET": CLIENT_SECRET,
+    }.items() if not v]
+    if missing_vars:
+        raise ValueError(f"Missing required env vars: {missing_vars}")
+
+    token = _get_token()
+    created, existed, failed = [], [], []
+
+    for table_fqn, ddl in _UC_TABLES:
+        # Probe first so we can report "created" vs "already existed" in metadata.
+        probe = _run_sql(token, f"SELECT 1 FROM {table_fqn} LIMIT 0")
+        if probe.get("status", {}).get("state") == "SUCCEEDED":
+            context.log.info(f"✓ {table_fqn} already exists — skipping")
+            existed.append(table_fqn)
+            continue
+
+        context.log.info(f"Creating {table_fqn}...")
+        result = _run_sql(token, ddl)
+        state = result.get("status", {}).get("state", "")
+        if state == "SUCCEEDED":
+            context.log.info(f"✓ Created {table_fqn}")
+            created.append(table_fqn)
+        else:
+            error = result.get("status", {}).get("error", {}).get("message", state)
+            context.log.error(f"✗ Failed to create {table_fqn}: {error}")
+            failed.append(f"{table_fqn}: {error}")
+
+    if failed:
+        raise RuntimeError(f"Failed to create {len(failed)} table(s):\n" + "\n".join(failed))
+
+    return {
+        "created":       MetadataValue.json(created),
+        "already_existed": MetadataValue.json(existed),
+    }
 
 APICURIO_BASE = "http://staging-schema-registry.kaizengaming.net/apis/registry/v2/groups/bigdata/artifacts"
 CASINO_ARTIFACT = "casinoroundinfo"
@@ -347,7 +484,7 @@ TRINO_VIEWS = [
 
 
 @asset(
-    group_name="trino",
+    group_name="casino_trino",
     deps=[
         # Depend on the two Iceberg sinks — they create the tables in Lakekeeper
         # that these views read from. The views must be created after the tables exist.

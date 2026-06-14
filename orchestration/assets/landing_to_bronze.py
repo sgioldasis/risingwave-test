@@ -86,16 +86,16 @@ def _poll_run(token: str, run_id: int, poll_interval: int = 10, max_wait: int = 
 
 
 @asset(
-    group_name="databricks",
+    group_name="casino_databricks",
     deps=[
         AssetDep(AssetKey(["public", "sink_casino_landing_databricks"])),
     ],
     description=(
         "Decode raw Protobuf bytes from rw_casino_landing into typed bronze table "
-        "rw_casino_landing_bronze. Runs the landing_to_bronze_casino Databricks notebook."
+        "rw_casino_landing_bronze. Runs the casino_landing_to_bronze Databricks notebook."
     ),
 )
-def landing_to_bronze_casino(context: AssetExecutionContext):
+def casino_landing_to_bronze(context: AssetExecutionContext):
     """Submit and wait for the landing-to-bronze Databricks notebook run."""
     missing = [k for k, v in {
         "DBT_DATABRICKS_HOST":            DATABRICKS_HOST,

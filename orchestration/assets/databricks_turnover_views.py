@@ -52,7 +52,7 @@ def _run(token: str, statement: str) -> dict:
 
 
 @asset(
-    group_name="databricks",
+    group_name="casino_databricks",
     deps=[AssetDep(AssetKey(["public", "sink_casino_turnover_90d_databricks"]))],
     description=(
         "CREATE OR REPLACE the Databricks view v_casino_turnover_latest — latest "

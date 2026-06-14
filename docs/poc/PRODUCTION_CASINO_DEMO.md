@@ -1028,7 +1028,7 @@ UC2 assets show UC1 assets (`mv_casino_transactions_full`) as upstream dependenc
 
 #### Setup assets (`casino_prd_setup` group)
 
-Three plain Python `@asset` functions in `orchestration/assets/casino_prd_setup.py` handle the prerequisites that must run before any dbt model:
+Python `@asset` functions in `orchestration/assets/casino_prd_setup.py` handle the prerequisites that must run before any dbt model:
 
 **`casino_prd_proto_fetch`**
 Fetches `.proto` source files from the Apicurio schema registry native v2 endpoint using `httpx`. Writes to `proto/casinoroundinfodto.proto` and `proto/betinfo.proto`. Falls back gracefully if the registry is unreachable (e.g. no VPN) and the `.proto` files already exist on disk — in that case it logs a warning and continues. Fails explicitly only if the registry is unreachable AND no local file exists.
@@ -1054,42 +1054,50 @@ proto/casinoroundinfodto.pb → s3://hummock001/proto/casinoroundinfodto.pb
 proto/betinfo.desc          → s3://hummock001/proto/betinfo.desc
 ```
 
-#### dbt assets (`casino_uc1` and `casino_uc2` groups)
+**`databricks_uc_tables_setup`**
+Ensures all five Unity Catalog Iceberg tables exist before the dbt build creates the RisingWave sinks that write into them. For each table it probes with `SELECT 1 ... LIMIT 0` first and only runs `CREATE TABLE IF NOT EXISTS` if the table is absent — so it is a no-op on warm restarts. The DDL (from `sql/databricks_setup.sql`) includes `TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')`. All dbt models tagged `databricks` automatically depend on this asset via `CustomDagsterDbtTranslator`.
 
-Two `@dbt_assets`-decorated functions in `orchestration/definitions.py` wrap the dbt models. The `select=` parameter on the decorator tells Dagster which dbt models belong to this asset function, and also scopes the dbt CLI invocation:
-
-```python
-@dbt_assets(manifest=dbt_project.manifest_path,
-            select="tag:casino_uc1",
-            dagster_dbt_translator=custom_translator)
-def casino_uc1_dbt_assets(context, dbt):
-    yield from dbt.cli(["build"], context=context).stream()
-
-@dbt_assets(manifest=dbt_project.manifest_path,
-            select="tag:casino_uc2",
-            dagster_dbt_translator=custom_translator)
-def casino_uc2_dbt_assets(context, dbt):
-    yield from dbt.cli(["build"], context=context).stream()
+```
+de_dev.rw_poc.rw_casino_transactions   (sink_casino_transactions_databricks)
+de_dev.rw_poc.rw_sportsbook_bets       (sink_sportsbook_bets_databricks)
+de_dev.rw_poc.rw_casino_turnover_90d   (sink_casino_turnover_90d_databricks)
+de_dev.rw_poc.rw_casino_landing        (sink_casino_landing_databricks)
+de_dev.rw_poc.rw_sportsbook_landing    (sink_sportsbook_landing_databricks)
 ```
 
-The `CustomDagsterDbtTranslator` assigns assets to groups based on their dbt tags:
-- Models tagged `casino_uc1` → group `casino_uc1`
-- Models tagged `casino_uc2` only → group `casino_uc2`
+#### dbt assets
+
+A single `@dbt_assets`-decorated function in `orchestration/definitions.py` wraps all casino dbt models. The `CustomDagsterDbtTranslator` assigns assets to groups based on their dbt tags:
+
+| dbt tag | Dagster group |
+|---|---|
+| `casino_prd_setup` | `casino_prd_setup` |
+| `casino_uc1` | `casino_uc1` |
+| `casino_uc2` | `casino_uc2` |
+| `casino_avro` | `casino_avro` |
+| `databricks` | `casino_databricks` |
+| `lakekeeper` | `casino_lakekeeper` |
+
+The translator also auto-wires upstream asset dependencies:
+- Models materialized as `kafka_table` with `casino_uc1`/`casino_uc2` tags → depend on `casino_prd_proto_upload`
+- Models materialized as `sink` or `kafka_table` with `casino_avro` tag → depend on `casino_avro_schema_register`
+- Models materialized as `sink` with `databricks` tag → depend on `databricks_uc_tables_setup`
 
 The existing `realtime_funnel_dbt_assets` function is scoped with `exclude="casino_prd"` so casino models don't appear in the funnel asset graph.
 
 #### Jobs
 
-A single end-to-end job is defined for the casino pipeline:
-
 | Job | What it runs | When to use |
 |-----|-------------|-------------|
-| `casino_prd_full_job` | proto setup → `casino_prd_dbt_assets` (UC1 + UC2) → `casino_trino_views` | **Full demo run — single click** |
+| `casino_prd_full_job` | `casino_prd_setup` → dbt (UC1 + UC2) → `casino_trino_views` → `databricks_turnover_latest_view` | **Full demo run — single click** |
+| `casino_landing_to_bronze_job` | `casino_landing_to_bronze` | Decode raw Protobuf bytes from `rw_casino_landing` into typed bronze table via Databricks notebook |
+| `casino_datafusion_job` | `casino_datafusion_demo` | OLAP analytics on Lakekeeper Iceberg tables via RisingWave's DataFusion engine |
 
 `casino_prd_full_job` is the entry point for demos. Dagster enforces the correct execution
-order automatically: the proto assets complete before the dbt build starts, UC1 models
-(including `mv_casino_transactions_full`) are created before the UC2 models that depend on them,
-and the Trino metadata views are created last once the Iceberg sinks have committed.
+order automatically: UC tables are created first, proto assets upload before the dbt build
+starts, UC1 models (including `mv_casino_transactions_full`) are created before the UC2
+models that depend on them, and the Trino metadata views are created last once the Iceberg
+sinks have committed.
 
 To run just part of the pipeline ad-hoc (e.g. re-upload proto descriptors after a schema
 change), materialize the relevant assets directly from the Dagster asset graph — no
