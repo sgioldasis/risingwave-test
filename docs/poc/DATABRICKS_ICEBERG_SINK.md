@@ -206,6 +206,18 @@ GRANT SELECT        ON SCHEMA de_dev.risingwave_poc TO `3b7f531f-db93-4186-af75-
 
 ## 7. Azure ADLS Gen2 — the S3FileIO blocker and how `vended_credentials` solves it
 
+### S3 vs ADLS Gen2 — RisingWave Iceberg sink compatibility summary
+
+| | S3 / MinIO | Azure ADLS Gen2 |
+|---|---|---|
+| **`vended_credentials = true`** | ✅ Works — UC vends S3 credentials, OpenDAL consumes them | ❌ UC vends Azure credentials, OpenDAL cannot consume them (RisingWave ≤ 2.8.4) |
+| **Default S3FileIO (no vended creds)** | ✅ Works natively | ❌ S3FileIO only understands S3-compatible endpoints; `abfss://` URIs cause silent write timeouts |
+| **Explicit storage key** | ✅ (`s3.access.key` / `s3.secret.key`) | ⚠️ Works as a workaround (`adlsgen2.account_name` + `adlsgen2.account_key`) but bypasses UC credential vending entirely |
+| **Lakekeeper upsert sinks** | ✅ Full support | N/A — Lakekeeper uses MinIO (S3-compatible) |
+| **Auth complexity** | Low | High — Azure AD OAuth2 for catalog + separate account key for storage |
+
+**Conclusion:** S3-compatible storage (MinIO locally, AWS S3 in production) is the path of least resistance for RisingWave Iceberg sinks. ADLS Gen2 requires the explicit account key workaround and is blocked for `vended_credentials` until RisingWave's OpenDAL layer adds Azure support.
+
 ### The problem (discovered during investigation)
 
 Without `vended_credentials = true`, RisingWave's Iceberg connector always loads `org.apache.iceberg.aws.s3.S3FileIO`. When Unity Catalog returns an ADLS Gen2 storage location (`abfss://` URI scheme), S3FileIO cannot authenticate to Azure storage — it only understands S3-compatible endpoints. Writes silently time out and no Iceberg snapshots are committed even though the connection and metadata API calls succeed.
