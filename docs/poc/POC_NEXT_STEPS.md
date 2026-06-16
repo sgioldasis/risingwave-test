@@ -19,16 +19,20 @@ This document tracks what is remaining, what is complete, known limitations of t
 - Grafana dashboard: UC1/UC2 business metrics + Iceberg/Kafka sink health panels (Trino + Prometheus datasources)
 - RisingWave-native Iceberg compaction (`connector='iceberg'` + `compaction.trigger_snapshot_count` — no Spark)
 - Iceberg tables queried via Trino (`casino_trino_views` Dagster asset creates the Grafana metadata views)
+- **Databricks Unity Catalog**: append-only Iceberg sinks working (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`); Azure AD OAuth2 + explicit ADLS Gen2 account key; Trino federation for reads; `QUALIFY ROW_NUMBER()` VIEW workaround for upsert semantics (UC rejects delete files — see `DATABRICKS_ICEBERG_SINK.md §16`)
+- **Staging Kafka verified**: `stg-ocp-kfk01-bootstrap.kaizengaming.net:9096` SASL_SSL/SCRAM-SHA-512 confirmed; both `cronus.casino.out.br` and `bets-out-br` topics present
+- **SASL support in SQL**: `sql/casino_prd_source.sql` and `sql/casino_prd_bets_source.sql` use `\if :USE_SASL` conditional; `.env`-driven via `KAFKA_CASINO_BOOTSTRAP`, `KAFKA_BETS_BOOTSTRAP`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`
+- **R4 latency**: sub-second source-to-sink confirmed on production data (~1,500 msg/s); formal benchmark at ≥10k/s still outstanding
 
-### Known Limitations (RisingWave 2.7.4)
+### Known Limitations (RisingWave 3.0.0)
 
 | Limitation | Detail | Status / Workaround |
 |-----------|--------|--------------------|
-| **Compaction needs `connector='iceberg'` + `trigger_snapshot_count`** | `enable_compaction` is silently ignored on `ENGINE = iceberg` managed tables; and even on `connector='iceberg'` sinks it triggers unreliably without an explicit `compaction.trigger_snapshot_count`. | **Resolved** — pipeline uses `connector='iceberg'` sinks with `compaction.trigger_snapshot_count='5'`. Compaction confirmed working (`replace` ops in the snapshot log). |
-| **Snapshot expiration does not prune** | `enable_snapshot_expiration` (and `snapshot_expiration_max_age_millis`/`_retain_last`) are accepted but never prune snapshots with the Lakekeeper REST catalog. Metadata grows unbounded. | Cosmetic — compaction (data files) works, only snapshot *metadata* accumulates. Spark `expire_snapshots` (funnel pipeline's `iceberg_compaction_job`) works if needed. |
-| **`commit_checkpoint_interval` is checkpoints, not seconds** | `= 40` means 40 checkpoints × `barrier_interval_ms` (250 ms) = 10 s, not 40 s. | Documented; sinks set to `40` for a 10 s commit cadence. |
-| **`ALTER SINK SET` limited** | Cannot change compaction options on a running sink — must DROP and recreate. Iceberg data in Lakekeeper is preserved. | Drop + recreate sinks when changing options. |
-| **No watermarks on nested proto sources** | `transaction_created_at` is derived from a nested protobuf field and cannot be used directly as a watermark column. Window state is unbounded. | Promote `transaction_created_at` as a generated column on the source table (requires schema change). |
+| **Snapshot expiration unverified** | `enable_snapshot_expiration = 'true'` is set on both Iceberg sinks. Was broken with the Lakekeeper REST catalog in ≤ v2.8.0 (snapshots accumulated unbounded). In v3.0.0 the option is accepted — **not yet verified** whether pruning actually occurs. | Monitor with `SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots"` over time. If count keeps growing, fall back to Spark `expire_snapshots`. |
+| **`commit_checkpoint_interval` is checkpoints, not seconds** | `= 5` on `sink_turnover_percentage` means 5 × 250 ms barrier = ~1.25 s commit cadence. `= 20` on `sink_casino_real_bet` = ~5 s. The unit is checkpoints, not wall-clock seconds. | Documented; current values intentional. Adjust `barrier_interval_ms` in `risingwave.toml` if cadence needs changing. |
+| **`ALTER SINK SET` limited** | Cannot change compaction or expiration options on a running Iceberg sink — must DROP and recreate. Iceberg data in Lakekeeper is preserved across the drop. | Drop + recreate sinks when changing options. |
+| **No watermarks on nested proto source directly** | `transaction_created_at` is buried inside a nested protobuf struct — cannot be used as a watermark column on `src_casino_prd` directly. | **Resolved via Kafka round-trip**: `mv_casino_transactions` flattens and sinks to `casino_bets_flat` Redpanda topic; `src_casino_bets_flat` re-ingests as a TABLE with `WATERMARK FOR transaction_created_at`. Sliding-window MVs read from the re-ingested table. |
+| **UNNEST blocks `TUMBLE` + `EMIT ON WINDOW CLOSE`** | In ≤ v2.7.4, `TUMBLE` over an `UNNEST`-ed nested source was blocked. | **Fixed in v2.8** — resolved in our v3.0.0 stack. |
 
 ### What is missing
 
@@ -57,24 +61,24 @@ what the casino pipeline currently demonstrates.
 
 | Criterion | Priority | Status | Evidence / gap |
 |-----------|----------|--------|----------------|
-| End-to-end latency (MV < 500ms, target <100ms) | Critical | ⚠️ Untested | MVs update in real time; not benchmarked. Tied to R4. |
+| End-to-end latency (MV < 500ms, target <100ms) | Critical | ⚠️ Partial | Sub-second confirmed on production at ~1,500 msg/s. Formal benchmark at ≥10k/s still outstanding. |
 | Throughput (≥10k events/sec) | Critical | ❌ Untested | Production topics run far below 10k/s; needs a synthetic-load test (casino producer at high TPS on local Redpanda). |
 | Query latency / serving (200ms p99 via PG wire) | Critical | ❌ Missing | No serving-latency benchmark against the MVs. |
-| Kafka integration (zero-loss, exactly/at-least-once) | Critical | ✅ Demonstrated | Live prd2/prd4 ingestion via `CREATE TABLE` + Kafka output sinks. Loss/semantics not formally measured. |
-| Schema Registry (Confluent-compatible, Avro+Protobuf) | Critical | ◑ Partial | Protobuf via Apicurio (FDS on MinIO) proven for casino+bets. Avro + live SR resolution + evolution still to demo. |
-| Avro & Protobuf end-to-end + evolution | Critical | ◑ Partial | Protobuf done (nested, JSONB fallback). Avro + schema-evolution test outstanding. |
+| Kafka integration (zero-loss, exactly/at-least-once) | Critical | ✅ Demonstrated | Live prd2/prd4 (SSL) + staging (SASL_SSL/SCRAM-SHA-512) ingestion via `CREATE TABLE` + Kafka output sinks. Loss/semantics not formally measured. |
+| Schema Registry (Confluent-compatible, Avro+Protobuf) | Critical | ◑ Partial | Protobuf via Apicurio (FDS on MinIO) proven for casino+bets. Avro round-trip (`src_casino_avro`) working. Schema evolution test outstanding. |
+| Avro & Protobuf end-to-end + evolution | Critical | ◑ Partial | Protobuf done (nested, JSONB fallback). Avro end-to-end done. Schema evolution scenario not yet tested. |
 | Complex data types (nested JSON, arrays, maps, structs) | High | ✅ Demonstrated | Double-UNNEST of nested protobuf structs/arrays in `mv_casino_transactions`. |
 | Complex streams (joins, sessionization, late data) | High | ◑ Partial | UNION-ALL pivot + Top-N + sliding windows done. Multi-stream joins/sessionization/late-data not yet. |
 | Interop — Iceberg (continuous sink + compaction) | High | ✅ Done | `connector='iceberg'` sinks → Lakekeeper; native compaction working. |
 | Interop — dbt (define/deploy RW objects) | High | ✅ Done | `dbt/models/casino_prd/` + custom materializations. |
 | Interop — Dagster (assets, trigger, monitor) | High | ✅ Done | `casino_prd_full_job`, asset groups, `casino_trino_views`. |
-| Interop — Databricks (Delta read/write) | High | ❌ Missing | Not attempted. |
+| Interop — Databricks (Iceberg read/write) | High | ⚠️ Partial | Append-only Iceberg sinks to UC working. Upsert blocked (UC rejects delete files). Read from Databricks into RW not tested. See `DATABRICKS_ICEBERG_SINK.md §16–18`. |
 | Interop — Power BI (PG connector) | High | ❌ Missing | RW is PG-wire compatible; not validated from Power BI. |
-| Interop — Atlan (catalog + lineage) | Medium | ❌ Missing | Not attempted. |
-| Interop — incident.io (alerts → incidents) | Medium | ❌ Missing | Prometheus/Grafana in place; no incident.io webhook. |
-| Scaling — performance (linear w/ nodes) | High | ❌ Missing | No multi-node scaling experiment. |
+| Interop — Atlan (catalog + lineage) | Medium | ❌ Missing | See Step 9 below. Two paths: PG connector + dbt lineage import. |
+| Interop — incident.io (alerts → incidents) | Medium | ❌ Missing | Prometheus/Grafana in place. See Step 10 below. |
+| Scaling — performance (linear w/ nodes) | High | ❌ Missing | No multi-node scaling experiment. Requires OpenShift deployment. |
 | Scaling — cost (1x/2x/4x, no cost cliff) | High | ❌ Missing | No cost tracking. |
-| Fault recovery (single-node < 60s, no loss) | High | ❌ Missing | Maps to V1/V3 — untested. |
+| Fault recovery (single-node < 60s, no loss) | High | ❌ Missing | Maps to V1/V3 — untested. Local Mac not meaningful (`DatabaseFailureIsolation` disabled). |
 | SQL expressiveness (3 UCs without workarounds) | High | ◑ Partial | UC1 + UC2 expressed in RW SQL. UC3 (betslip recommendation engine) not implemented. |
 | Operational overhead (< Spark/Flink) | Medium | ◑ Anecdotal | dbt+Dagster setup is light; not formally compared. |
 
@@ -212,6 +216,53 @@ adopt / conditional adopt / reject + rationale
 
 ---
 
+### Step 9 — Atlan catalog + lineage
+
+Atlan has two practical integration paths; the dbt route is lower-risk and higher-value.
+
+**Path A — dbt lineage import (recommended first)**
+
+1. Generate dbt docs from the casino pipeline:
+   ```bash
+   cd dbt
+   dbt docs generate   # produces target/manifest.json + target/catalog.json
+   ```
+2. In Atlan, configure a dbt integration pointing at those JSON artifacts (upload directly or via S3/GCS).
+3. Verify Atlan surfaces the full lineage graph: Kafka source → dbt model (source) → MV → Iceberg sink → Trino view.
+4. Check column-level lineage if supported (Atlan can often derive it from dbt's column tests and refs).
+
+**Path B — PostgreSQL connector**
+
+1. In Atlan, add a new connection: PostgreSQL connector, `host:4566`, database `dev`, user `root` (no password).
+2. Run a metadata crawl — Atlan should discover `src_casino_prd`, `mv_casino_real_bet`, `mv_turnover_percentage`, sinks, and any tables.
+3. Verify RisingWave-specific object types (materialized views, sinks) appear correctly vs being misclassified as standard tables/views.
+
+**What we need:** Access to a Kaizen Atlan workspace. Path A requires no Atlan connector compatibility — just JSON files.
+
+---
+
+### Step 10 — incident.io alert routing
+
+The infrastructure (Prometheus + Grafana) is already running. The integration adds a Grafana contact point that fires an incident.io incident when a RisingWave alert triggers.
+
+**Setup:**
+
+1. In incident.io, create an inbound webhook (Settings → Integrations → Inbound webhooks). Copy the webhook URL.
+2. In Grafana (http://localhost:3000), add a Contact Point:
+   - Type: **Webhook**
+   - URL: the incident.io webhook URL
+   - Method: POST
+3. Create an Alert Rule against one of the existing panels, for example:
+   - **"Casino ingestion stopped"**: `increase(rw_source_rows_received_total[2m]) == 0` (Prometheus metric from the RW meta node on `:1250`)
+   - Or simpler: a Grafana SQL alert on `SELECT COUNT(*) FROM mv_casino_transactions` returning 0
+4. Assign the Contact Point to the alert rule.
+5. Test: use Grafana's **"Test"** button on the contact point to fire a synthetic alert, then verify an incident appears in incident.io.
+6. Optionally test a real condition: pause the Kafka source (`ALTER TABLE src_casino_prd SET PARALLELISM = 0` or just stop Redpanda), wait for the alert to fire.
+
+**What we need:** A Kaizen incident.io workspace with permission to create inbound webhooks. Grafana is already provisioned at `http://localhost:3000`.
+
+---
+
 ## Prioritisation
 
 For the original Scoping-doc demo (UC1/UC2 + R/V), the minimum is:
@@ -223,22 +274,30 @@ Steps 3–7 strengthen that but are not blockers if time is constrained.
 For the broader **SOW v2.0**, the highest-value additions (see reconciliation table) are:
 1. **Throughput + R4 latency** via a synthetic-load harness (casino producer at high TPS on local Redpanda) — covers two Critical criteria at once.
 2. **Serving-layer latency** benchmark (PG-wire point-lookup / range-scan / concurrent reads against the MVs).
-3. **Avro + schema-evolution** demo (Protobuf already covered) to close the Critical Schema Registry criterion.
-4. **Interop quick wins**: Power BI via PG connector, Databricks Delta — both Medium/High and low-effort connectivity checks.
+3. **Avro + schema-evolution** demo (Protobuf + Avro ingestion already done) to close the Critical Schema Registry criterion.
+4. **Interop quick wins** (no new infrastructure needed):
+   - **Power BI** via PG connector — connect to `localhost:4566`, open `mv_casino_real_bet`
+   - **Atlan** — dbt `manifest.json` upload (Step 9 Path A); requires Atlan workspace access
+   - **incident.io** — Grafana webhook contact point (Step 10); requires incident.io webhook URL
+5. **Databricks read path** — test reading from Unity Catalog back into RisingWave to close the "bidirectional" criterion.
 UC3 (betslip recommendation engine) is a large separate build — scope it only if explicitly required.
 
 ---
 
-## Version Notes — RisingWave 2.7.4
+## Version Notes — RisingWave 3.0.0
 
-The pipeline runs on **2.7.4** (downgraded from 2.8.4). On 2.7.4, native Iceberg compaction works via `connector='iceberg'` sinks + `compaction.trigger_snapshot_count` — no Spark needed for compaction. Snapshot **expiration** still doesn't prune (see Known Limitations).
+The pipeline runs on **v3.0.0** (`risingwavelabs/risingwave:v3.0.0` in `docker-compose.yml`).
 
-When RisingWave v3.0 stable ships, re-test on it:
+**Changes from 2.7.4:**
+- `enable_compaction = 'true'` + `compaction_interval_sec` + `force_compaction = 'true'` is the working compaction pattern (replacing the `compaction.trigger_snapshot_count`-only approach needed in 2.7.4). Both options are set in the current sinks for belt-and-suspenders.
+- `TUMBLE` + `EMIT ON WINDOW CLOSE` over `UNNEST`-ed sources works (fixed in v2.8).
+- `enable_snapshot_expiration = 'true'` is set on both Iceberg sinks — **not yet confirmed** whether pruning occurs with the Lakekeeper REST catalog. Monitor and verify.
 
-1. Change the image tag in `docker-compose.yml`:
-   ```yaml
-   image: ${RW_IMAGE:-risingwavelabs/risingwave:v3.0.0}
-   ```
-2. Restart the stack, run `casino_prd_full_job`
-3. Check whether **snapshot expiration** now prunes (Trino: `SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots"` should stop growing unbounded)
-4. If expiration works, the snapshot-metadata-growth limitation can be closed.
+**Outstanding re-test item:**
+Verify snapshot expiration is now pruning in v3.0.0:
+```sql
+-- Run via Trino; count should plateau rather than grow indefinitely
+SELECT COUNT(*) FROM datalake.public."rw_managed_casino_real_bet$snapshots";
+SELECT COUNT(*) FROM datalake.public."rw_managed_turnover_percentage$snapshots";
+```
+If counts are still growing after 24h of operation, fall back to Spark `expire_snapshots` or the `iceberg_compaction_job` Dagster asset.
