@@ -25,7 +25,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Load .env for Kafka bootstrap overrides (PRD_CASINO_BOOTSTRAP, PRD_BETS_BOOTSTRAP)
+# Load .env for Kafka bootstrap overrides (KAFKA_CASINO_BOOTSTRAP, KAFKA_BETS_BOOTSTRAP)
 if [ -f .env ]; then
     set -a
     # shellcheck source=/dev/null
@@ -33,8 +33,8 @@ if [ -f .env ]; then
     set +a
 fi
 
-PRD_CASINO_BOOTSTRAP="${PRD_CASINO_BOOTSTRAP:-prd2-kafka-bootstrap.kaizengaming.net:443}"
-PRD_BETS_BOOTSTRAP="${PRD_BETS_BOOTSTRAP:-prd4-kafka-bootstrap.kaizengaming.net:443}"
+: "${KAFKA_CASINO_BOOTSTRAP:?KAFKA_CASINO_BOOTSTRAP must be set in .env}"
+: "${KAFKA_BETS_BOOTSTRAP:?KAFKA_BETS_BOOTSTRAP must be set in .env}"
 KAFKA_SASL_USERNAME="${KAFKA_SASL_USERNAME:-}"
 KAFKA_SASL_PASSWORD="${KAFKA_SASL_PASSWORD:-}"
 
@@ -207,18 +207,18 @@ upload_proto "$CASINO_PROTO_PB"
 upload_proto "$BETS_PROTO_DESC"
 
 echo ""
-echo "=== [5/9] Create source src_casino_prd (${PRD_CASINO_BOOTSTRAP} — cronus.casino.out.br, SASL=${USE_SASL}) ==="
+echo "=== [5/9] Create source src_casino_prd (${KAFKA_CASINO_BOOTSTRAP} — cronus.casino.out.br, SASL=${USE_SASL}) ==="
 psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 \
-    -v "PRD_CASINO_BOOTSTRAP=${PRD_CASINO_BOOTSTRAP}" \
+    -v "KAFKA_CASINO_BOOTSTRAP=${KAFKA_CASINO_BOOTSTRAP}" \
     -v "USE_SASL=${USE_SASL}" \
     -v "KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME}" \
     -v "KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}" \
     -f "$SQL_CASINO_SOURCE"
 
 echo ""
-echo "=== [6/9] Create source src_bets_br (${PRD_BETS_BOOTSTRAP} — bets-out-br, SASL=${USE_SASL}) ==="
+echo "=== [6/9] Create source src_bets_br (${KAFKA_BETS_BOOTSTRAP} — bets-out-br, SASL=${USE_SASL}) ==="
 psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 \
-    -v "PRD_BETS_BOOTSTRAP=${PRD_BETS_BOOTSTRAP}" \
+    -v "KAFKA_BETS_BOOTSTRAP=${KAFKA_BETS_BOOTSTRAP}" \
     -v "USE_SASL=${USE_SASL}" \
     -v "KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME}" \
     -v "KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}" \

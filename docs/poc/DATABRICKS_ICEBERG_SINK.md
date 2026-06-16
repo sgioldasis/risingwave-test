@@ -1046,3 +1046,26 @@ The `databricks_datafusion_job` runs `OPTIMIZE` on all three tables (`rw_casino_
 ### Alternative: increase `commit_checkpoint_interval`
 
 Raising `commit_checkpoint_interval` from `5` to a higher value (e.g. `30` or `60`) reduces the file creation rate proportionally at the cost of higher data latency before each commit is visible. Both approaches can be combined.
+
+## 18. Lakekeeper vs Unity Catalog — comparison from PoC experiments
+
+Both catalogs were run in parallel throughout the PoC. The key findings:
+
+| Capability | Lakekeeper (REST + MinIO) | Databricks Unity Catalog |
+|---|---|---|
+| **Upsert sinks** | ✅ Native — `type = 'upsert'` works out of the box | ❌ Rejects Iceberg delete files; `type = 'upsert'` stalls silently after initial burst |
+| **Append-only sinks** | ✅ | ✅ |
+| **Upsert workaround** | Not needed | Append-only + read-side `QUALIFY ROW_NUMBER()` VIEW (`v_casino_turnover_latest`) |
+| **Snapshot expiration** | ❌ `enable_snapshot_expiration` has no effect with REST catalog (RisingWave 2.7.4–2.8.x) | ❌ `gc.enabled=false` forced on all UC managed tables; manual `CALL system.expire_snapshots(...)` required |
+| **File compaction** | ✅ RisingWave-native `force_compaction` works | ❌ Silently ignored; requires external Trino `OPTIMIZE` or Databricks `OPTIMIZE` |
+| **Ecosystem / governance** | Local / self-hosted only | Full Databricks compute, Unity Catalog sharing, column-level security, audit logs |
+| **Auth complexity** | None (local MinIO) | Azure AD OAuth2 + ADLS Gen2 account key; `vended_credentials` only works for S3 backends |
+| **Trino federation** | ✅ via `datalake` catalog | ✅ via `databricks` catalog (separate Trino connector) |
+
+### Summary
+
+Lakekeeper wins on **write semantics**: upsert, compaction, and snapshot expiration all work natively, making it the better choice for streaming sinks where RisingWave continuously updates rows (e.g. rolling-window MVs like `mv_casino_real_bet` and `mv_turnover_percentage`).
+
+Unity Catalog wins on **ecosystem integration**: Databricks SQL, Delta Sharing, Unity Catalog governance, and existing organisational data access controls. It is the right target for **archival / append-only** workloads (raw landing tables like `rw_casino_transactions`, `rw_sportsbook_bets`) where the delete-file limitation does not apply.
+
+The current PoC architecture reflects this split: upsert aggregations go to Lakekeeper; raw event facts go to Unity Catalog.

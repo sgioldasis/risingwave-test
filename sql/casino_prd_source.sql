@@ -16,7 +16,7 @@
 -- rebuilt cleanly. Re-run the MV/sink DDL afterwards.
 --
 -- Variables (passed via psql -v):
---   PRD_CASINO_BOOTSTRAP  Kafka bootstrap server (default: prd2-kafka-bootstrap.kaizengaming.net:443)
+--   KAFKA_CASINO_BOOTSTRAP  Kafka bootstrap server (default: prd2-kafka-bootstrap.kaizengaming.net:443)
 --   USE_SASL              true → SASL_SSL with SCRAM-SHA-512; false → SSL only
 --   KAFKA_SASL_USERNAME   SASL username (only used when USE_SASL=true)
 --   KAFKA_SASL_PASSWORD   SASL password (only used when USE_SASL=true)
@@ -32,7 +32,7 @@ APPEND ONLY
 WITH (
     connector                     = 'kafka',
     topic                         = 'cronus.casino.out.br',
-    properties.bootstrap.server   = :'PRD_CASINO_BOOTSTRAP',
+    properties.bootstrap.server   = :'KAFKA_CASINO_BOOTSTRAP',
     properties.security.protocol  = 'SASL_SSL',
     properties.sasl.mechanism     = 'SCRAM-SHA-512',
     properties.sasl.username      = :'KAFKA_SASL_USERNAME',
@@ -55,7 +55,7 @@ APPEND ONLY
 WITH (
     connector                     = 'kafka',
     topic                         = 'cronus.casino.out.br',
-    properties.bootstrap.server   = :'PRD_CASINO_BOOTSTRAP',
+    properties.bootstrap.server   = :'KAFKA_CASINO_BOOTSTRAP',
     properties.security.protocol  = 'SSL',
     group.id.prefix               = 'rw-readonly-casino-demo',
     scan.startup.mode             = 'latest',
