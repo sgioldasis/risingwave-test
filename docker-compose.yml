@@ -673,6 +673,14 @@ services:
       - GF_AUTH_BASIC_ENABLED=false
       # Dark mode
       - GF_USERS_DEFAULT_THEME=dark
+      # RisingWave datasource connection.
+      # GRAFANA_RISINGWAVE_HOST defaults to the Docker-network hostname for local stacks.
+      # Set GRAFANA_RISINGWAVE_HOST in .env when pointing at a remote RisingWave instance.
+      - RISINGWAVE_HOST=${GRAFANA_RISINGWAVE_HOST:-frontend-node-0}
+      - RISINGWAVE_PORT=${RISINGWAVE_PORT:-4566}
+      - RISINGWAVE_USER=${RISINGWAVE_USER:-root}
+      - RISINGWAVE_PASSWORD=${RISINGWAVE_PASSWORD:-}
+      - RISINGWAVE_DB=${RISINGWAVE_DB:-dev}
     volumes:
       - "grafana-0:/var/lib/grafana"
       - "./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro"

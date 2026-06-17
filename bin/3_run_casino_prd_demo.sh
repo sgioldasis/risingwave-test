@@ -63,7 +63,11 @@ SQL_BETS_SOURCE="sql/casino_prd_bets_source.sql"
 SQL_PIPELINE="sql/casino_prd_funnel_iceberg.sql"
 SQL_RAW_SINK="sql/casino_prd_raw_iceberg.sql"
 
-PSQL_URL="postgresql://root@localhost:4566/dev"
+: "${RISINGWAVE_HOST:?RISINGWAVE_HOST must be set in .env}"
+_RW_USER="${RISINGWAVE_USER:-root}"
+_RW_PASS="${RISINGWAVE_PASSWORD:-}"
+_RW_USERINFO="${_RW_USER}${_RW_PASS:+:${_RW_PASS}}"
+PSQL_URL="${PSQL_URL:-postgresql://${_RW_USERINFO}@${RISINGWAVE_HOST}:${RISINGWAVE_PORT:-4566}/${RISINGWAVE_DB:-dev}}"
 
 # Upload a local proto descriptor to ADLS Gen2 cont1/proto/<basename>.
 # Requires az CLI on PATH and ADLS_ACCOUNT_NAME / ADLS_ACCOUNT_KEY in env.

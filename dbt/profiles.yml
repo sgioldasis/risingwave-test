@@ -3,11 +3,11 @@ funnel_profile:
   outputs:
     dev:
       type: risingwave
-      host: "{{ env_var('DBT_HOST', '127.0.0.1') }}"
-      user: root
-      password: "{{ env_var('DBT_PASSWORD', 'root') }}"
-      dbname: dev
-      port: 4566     # RisingWave default port
+      host:     "{{ env_var('RISINGWAVE_HOST',     '127.0.0.1') }}"
+      port:      "{{ env_var('RISINGWAVE_PORT',     '4566') | int }}"
+      user:     "{{ env_var('RISINGWAVE_USER',     'root') }}"
+      password: "{{ env_var('RISINGWAVE_PASSWORD', '') }}"
+      dbname:   "{{ env_var('RISINGWAVE_DB',       'dev') }}"
       schema: public
       # threads=2: raised from 1 on 2026-06-14 for testing. Was 1 due to JVM thread exhaustion
       # (concurrent Iceberg catalog calls across Lakekeeper + Unity Catalog crashing meta node).

@@ -1,5 +1,6 @@
 """Dagster asset for creating Python UDFs in RisingWave."""
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -50,10 +51,11 @@ def risingwave_python_udfs(context: AssetExecutionContext) -> str:
     
     # Connect to RisingWave
     conn = psycopg2.connect(
-        host="frontend-node-0",
-        port=4566,
-        database="dev",
-        user="root",
+        host=os.environ.get("RISINGWAVE_HOST",     "frontend-node-0"),
+        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
+        database=os.environ.get("RISINGWAVE_DB",   "dev"),
+        user=os.environ.get("RISINGWAVE_USER",     "root"),
+        password=os.environ.get("RISINGWAVE_PASSWORD", ""),
     )
 
     try:

@@ -248,9 +248,8 @@ _manifest_path = Path(dbt_PROJECT_PATH) / "target" / "manifest.json"
 _manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
 _dbt_env = os.environ.copy()
-_dbt_env.setdefault("DBT_HOST", "risingwave-frontend")
+_dbt_env.setdefault("DBT_HOST", os.environ.get("RISINGWAVE_HOST", "risingwave-frontend"))
 _dbt_env.setdefault("DBT_PROFILES_DIR", str(dbt_PROJECT_PATH))
-_dbt_env.setdefault("DBT_PASSWORD", "root")
 
 if not _manifest_path.exists():
     # No manifest at all — must parse on first load.
@@ -310,7 +309,7 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
         context.log.info("No dbt models found in manifest. Running dbt compile first...")
         _dbt_env = os.environ.copy()
         if "DBT_HOST" not in _dbt_env:
-            _dbt_env["DBT_HOST"] = "risingwave-frontend"
+            _dbt_env["DBT_HOST"] = os.environ.get("RISINGWAVE_HOST", "risingwave-frontend")
         if "DBT_PROFILES_DIR" not in _dbt_env:
             _dbt_env["DBT_PROFILES_DIR"] = str(dbt_PROJECT_PATH)
         if "DBT_PASSWORD" not in _dbt_env:

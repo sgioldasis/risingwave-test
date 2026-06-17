@@ -13,16 +13,16 @@ datasources:
     uid: risingwave-sql
     type: postgres
     access: proxy
-    url: frontend-node-0:4566
-    user: root
+    url: "${RISINGWAVE_HOST}:${RISINGWAVE_PORT}"
+    user: "${RISINGWAVE_USER}"
     editable: true
     jsonData:
-      database: dev
+      database: "${RISINGWAVE_DB}"
       postgresVersion: 1500
       sslmode: disable
       timescaledb: false
     secureJsonData:
-      password: root
+      password: "${RISINGWAVE_PASSWORD}"
 
   - name: Metadata Postgres
     uid: metadata-postgres
