@@ -43,6 +43,23 @@ from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Load .env into the process so dbt picks up ADLS/Kafka vars.
+# Dagster does not auto-source .env; without this the SAS token is absent and
+# RisingWave rejects the schema.location HTTPS request with 409.
+# Only sets vars not already present — existing process-level vars take precedence.
+_env_file = Path(__file__).parent.parent / ".env"
+if _env_file.exists():
+    import re as _re
+    _env_re = _re.compile(r'^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*"?(.*?)"?\s*$')
+    with open(_env_file) as _ef:
+        for _line in _ef:
+            _line = _line.strip()
+            if _line and not _line.startswith('#'):
+                _m = _env_re.match(_line)
+                if _m and _m.group(1) not in os.environ:
+                    os.environ[_m.group(1)] = _m.group(2)
+    del _re, _env_re, _ef
+
 # Note: RisingWave native Iceberg source is working via Trino-written tables.
 # Keep runtime setup lightweight; avoid dropping/recreating Iceberg tables on each dbt run.
 

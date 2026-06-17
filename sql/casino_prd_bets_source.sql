@@ -2,8 +2,8 @@
 -- Prod sportsbook bets source (UC2: Casino Turnover Percentage)
 --
 -- Reads bets-out-br from prd4 Kafka (SSL) and decodes PandoraBetInfoVm
--- protobuf via the compiled FileDescriptorSet at /proto/betinfo.desc
--- (mounted into the RisingWave container).
+-- protobuf via the compiled FileDescriptorSet fetched from ADLS Gen2
+-- (cont1/proto/betinfo.desc) via HTTPS + SAS token.
 --
 -- PlayerSubstitutionInfoVm is self-referential (contains itself recursively)
 -- so RisingWave cannot decode it as a native struct — stored as JSONB instead
@@ -21,10 +21,11 @@
 -- Idempotent: CASCADE drops dependent MVs/sinks so the table can be rebuilt.
 --
 -- Variables (passed via psql -v):
---   KAFKA_BETS_BOOTSTRAP    Kafka bootstrap server (default: prd4-kafka-bootstrap.kaizengaming.net:443)
+--   KAFKA_BETS_BOOTSTRAP    Kafka bootstrap server
 --   USE_SASL              true → SASL_SSL with SCRAM-SHA-512; false → SSL only
 --   KAFKA_SASL_USERNAME   SASL username (only used when USE_SASL=true)
 --   KAFKA_SASL_PASSWORD   SASL password (only used when USE_SASL=true)
+--   PROTO_BETS_URL        HTTPS URL to betinfo.desc in ADLS (with SAS token)
 -- =============================================================================
 
 SET client_min_messages = WARNING;
@@ -47,13 +48,9 @@ WITH (
     source_rate_limit                 = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location   = 's3://hummock001/proto/betinfo.desc',
+    schema.location   = :'PROTO_BETS_URL',
     message           = 'PandoraBetInfoVm',
-    messages_as_jsonb = 'PlayerSubstitutionInfoVm',
-    s3.region         = 'us-east-1',
-    s3.endpoint       = 'http://minio-0:9301',
-    s3.access.key     = 'hummockadmin',
-    s3.secret.key     = 'hummockadmin'
+    messages_as_jsonb = 'PlayerSubstitutionInfoVm'
 );
 \else
 CREATE TABLE src_bets_br (*)
@@ -68,12 +65,8 @@ WITH (
     source_rate_limit                 = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location   = 's3://hummock001/proto/betinfo.desc',
+    schema.location   = :'PROTO_BETS_URL',
     message           = 'PandoraBetInfoVm',
-    messages_as_jsonb = 'PlayerSubstitutionInfoVm',
-    s3.region         = 'us-east-1',
-    s3.endpoint       = 'http://minio-0:9301',
-    s3.access.key     = 'hummockadmin',
-    s3.secret.key     = 'hummockadmin'
+    messages_as_jsonb = 'PlayerSubstitutionInfoVm'
 );
 \endif

@@ -17,11 +17,7 @@ WITH (
     source_rate_limit                 = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location   = 's3://hummock001/proto/betinfo.desc',
+    schema.location   = '{{ "https://" ~ env_var("ADLS_ACCOUNT_NAME", "stkznneurwpoccdddevstd") ~ ".blob.core.windows.net/" ~ env_var("ADLS_CONTAINER", "cont1") ~ "/proto/betinfo.desc?" ~ env_var("ADLS_PROTO_SAS_TOKEN", "") }}',
     message           = 'PandoraBetInfoVm',
-    messages_as_jsonb = 'PlayerSubstitutionInfoVm',
-    s3.region         = 'us-east-1',
-    s3.endpoint       = 'http://minio-0:9301',
-    s3.access.key     = 'hummockadmin',
-    s3.secret.key     = 'hummockadmin'
+    messages_as_jsonb = 'PlayerSubstitutionInfoVm'
 )

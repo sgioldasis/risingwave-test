@@ -2,8 +2,8 @@
 -- Prod casino rounds table
 --
 -- Reads cronus.casino.out.br from prd2 Kafka (SSL) and decodes the
--- CasinoRoundInfoDto protobuf via the compiled FileDescriptorSet at
--- /proto/casinoroundinfodto.pb (mounted into the RisingWave container).
+-- CasinoRoundInfoDto protobuf via the compiled FileDescriptorSet fetched
+-- from ADLS Gen2 (cont1/proto/casinoroundinfodto.pb) via HTTPS + SAS token.
 --
 -- Using a TABLE (not SOURCE) so RisingWave persists ingested rows in its
 -- internal state store. This way:
@@ -16,10 +16,11 @@
 -- rebuilt cleanly. Re-run the MV/sink DDL afterwards.
 --
 -- Variables (passed via psql -v):
---   KAFKA_CASINO_BOOTSTRAP  Kafka bootstrap server (default: prd2-kafka-bootstrap.kaizengaming.net:443)
+--   KAFKA_CASINO_BOOTSTRAP  Kafka bootstrap server
 --   USE_SASL              true → SASL_SSL with SCRAM-SHA-512; false → SSL only
 --   KAFKA_SASL_USERNAME   SASL username (only used when USE_SASL=true)
 --   KAFKA_SASL_PASSWORD   SASL password (only used when USE_SASL=true)
+--   PROTO_CASINO_URL      HTTPS URL to casinoroundinfodto.pb in ADLS (with SAS token)
 -- =============================================================================
 
 SET client_min_messages = WARNING;
@@ -42,12 +43,8 @@ WITH (
     source_rate_limit             = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',
-    message          = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto',
-    s3.region        = 'us-east-1',
-    s3.endpoint      = 'http://minio-0:9301',
-    s3.access.key    = 'hummockadmin',
-    s3.secret.key    = 'hummockadmin'
+    schema.location  = :'PROTO_CASINO_URL',
+    message          = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
 );
 \else
 CREATE TABLE src_casino_prd (*)
@@ -62,11 +59,7 @@ WITH (
     source_rate_limit             = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
-    schema.location  = 's3://hummock001/proto/casinoroundinfodto.pb',
-    message          = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto',
-    s3.region        = 'us-east-1',
-    s3.endpoint      = 'http://minio-0:9301',
-    s3.access.key    = 'hummockadmin',
-    s3.secret.key    = 'hummockadmin'
+    schema.location  = :'PROTO_CASINO_URL',
+    message          = 'Cronus.CasinoService.RoundInfo.Abstractions.CasinoRoundInfoDto'
 );
 \endif

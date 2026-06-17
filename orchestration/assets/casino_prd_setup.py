@@ -6,7 +6,8 @@ import subprocess
 import time
 from pathlib import Path
 
-import boto3
+import os
+
 import httpx
 import requests
 from dagster import AssetDep, AssetExecutionContext, AssetKey, MetadataValue, asset
@@ -154,10 +155,8 @@ APICURIO_BASE = "http://staging-schema-registry.kaizengaming.net/apis/registry/v
 CASINO_ARTIFACT = "casinoroundinfo"
 BETS_ARTIFACT = "betinfo"
 
-MINIO_ENDPOINT = "http://minio-0:9301"
-MINIO_BUCKET = "hummock001"
-MINIO_ACCESS_KEY = "hummockadmin"
-MINIO_SECRET_KEY = "hummockadmin"
+ADLS_ACCOUNT_NAME = os.environ.get("ADLS_ACCOUNT_NAME", "stkznneurwpoccdddevstd")
+ADLS_CONTAINER = os.environ.get("ADLS_CONTAINER", "cont1")
 
 
 @asset(group_name="casino_prd_setup", description="Fetch .proto files from Apicurio schema registry (native v2)")
@@ -256,17 +255,21 @@ def casino_prd_proto_compile(context: AssetExecutionContext):
 @asset(
     group_name="casino_prd_setup",
     deps=[casino_prd_proto_compile],
-    description="Upload compiled proto descriptors to MinIO at s3://hummock001/proto/",
+    description="Upload compiled proto descriptors to ADLS Gen2 at cont1/proto/",
 )
 def casino_prd_proto_upload(context: AssetExecutionContext):
-    """Upload .pb/.desc files to MinIO so RisingWave can fetch them at CREATE TABLE time."""
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name="us-east-1",
+    """Upload .pb/.desc files to ADLS so RisingWave can fetch them at CREATE TABLE time."""
+    from azure.storage.blob import BlobServiceClient
+
+    account_key = os.environ.get("ADLS_ACCOUNT_KEY")
+    if not account_key:
+        raise RuntimeError("ADLS_ACCOUNT_KEY must be set in the environment")
+
+    client = BlobServiceClient(
+        account_url=f"https://{ADLS_ACCOUNT_NAME}.blob.core.windows.net",
+        credential=account_key,
     )
+    container = client.get_container_client(ADLS_CONTAINER)
 
     uploaded = []
     for filename in ["casinoroundinfodto.pb", "betinfo.desc"]:
@@ -274,10 +277,11 @@ def casino_prd_proto_upload(context: AssetExecutionContext):
         if not local_path.exists():
             raise FileNotFoundError(f"{local_path} not found. Run casino_prd_proto_compile first.")
 
-        s3_key = f"proto/{filename}"
-        context.log.info(f"Uploading {local_path} → s3://{MINIO_BUCKET}/{s3_key}")
-        s3.upload_file(str(local_path), MINIO_BUCKET, s3_key)
-        uri = f"s3://{MINIO_BUCKET}/{s3_key}"
+        blob_name = f"proto/{filename}"
+        context.log.info(f"Uploading {local_path} → {ADLS_CONTAINER}/{blob_name}")
+        with open(local_path, "rb") as f:
+            container.upload_blob(blob_name, f, overwrite=True)
+        uri = f"https://{ADLS_ACCOUNT_NAME}.blob.core.windows.net/{ADLS_CONTAINER}/{blob_name}"
         context.log.info(f"Uploaded {uri}")
         uploaded.append(uri)
 
