@@ -908,7 +908,7 @@ def query_funnel_data(
     end_time: str = Query(..., description="End time in ISO format")
 ):
     """
-    Query funnel_summary_with_country view directly from RisingWave using SQLAlchemy.
+    Query funnel_summary joined with src_iceberg_countries inline via DataFusion.
     
     Returns per-minute records with country breakdown from the pre-aggregated 1-minute windows.
     """

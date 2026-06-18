@@ -70,9 +70,10 @@ def _(mo, pd, refresh_button, risingwave_engine, text, time):
     # Query RisingWave
     rw_df = pd.read_sql(
         text("""
-            SELECT window_start, country, country_name, viewers, carters, purchasers
-            FROM funnel_summary_with_country
-            ORDER BY window_start DESC
+            SELECT f.window_start, f.country, c.country_name, f.viewers, f.carters, f.purchasers
+            FROM funnel_summary f
+            LEFT JOIN datalake.public.iceberg_countries c ON f.country = c.country
+            ORDER BY f.window_start DESC
             LIMIT 50
         """),
         risingwave_engine
