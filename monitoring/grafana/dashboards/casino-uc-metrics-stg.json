@@ -1,0 +1,2655 @@
+{
+  "title": "Casino UC Metrics (STG)",
+  "uid": "casino-uc-metrics-stg",
+  "description": "Real-time metrics for Casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) streaming pipelines.",
+  "tags": [
+    "casino",
+    "poc",
+    "risingwave"
+  ],
+  "refresh": "1m",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "schemaVersion": 38,
+  "version": 21,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "UC1 \u2014 Casino Real Bet Amount",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Customers Tracked (UC1)",
+      "description": "Distinct customers with at least one real bet in mv_casino_real_bet.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(DISTINCT customer_id) AS customers FROM mv_casino_real_bet"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "MV Row Count (mv_casino_real_bet)",
+      "description": "Total rows in the rolling 1-day real bet MV \u2014 one row per bet event.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS rows FROM mv_casino_real_bet"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Total Real Bet Volume (1d rolling)",
+      "description": "Sum of all rolling_1d_real_bet_amount across all latest customer rows \u2014 indicates total exposure.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT SUM(rolling_1d_real_bet_amount)::float AS total_volume FROM (SELECT DISTINCT ON (customer_id, currency_id) customer_id, currency_id, rolling_1d_real_bet_amount FROM mv_casino_real_bet ORDER BY customer_id, currency_id, event_ts DESC) t"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Most Recently Active Customers \u2014 1-Day Real Bet Amount (UC1)",
+      "description": "Most recently active customers with their current rolling 1-day real bet total. Sorted by last event time descending.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Last Event",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rolling_1d_real_bet_amount"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "1-Day Real Bet"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "customer_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "Customer ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "currency_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Currency"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event_ts"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Last Event"
+              },
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT customer_id, currency_id, rolling_1d_real_bet_amount, event_ts FROM (   SELECT customer_id, currency_id, rolling_1d_real_bet_amount, event_ts,          ROW_NUMBER() OVER (PARTITION BY customer_id, currency_id ORDER BY event_ts DESC) AS rn   FROM mv_casino_real_bet ) t WHERE rn = 1 ORDER BY event_ts DESC NULLS LAST LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "UC2 \u2014 Casino Turnover Percentage",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Customers Tracked (UC2)",
+      "description": "Distinct customers in mv_turnover_percentage \u2014 union of casino and sportsbook activity.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS customers FROM mv_turnover_percentage"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Avg Casino Ratio",
+      "description": "Average casino_ratio across all customers. Higher = customers prefer casino over sportsbook.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT ROUND(AVG(casino_ratio)::numeric, 4)::float AS avg_casino_ratio FROM mv_turnover_percentage WHERE total_turnover > 0"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Total Tracked Turnover (EUR, 7d rolling)",
+      "description": "Sum of total_turnover across all customers in the latest MV snapshot.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 18
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyEUR",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT SUM(total_turnover)::float AS total_volume FROM mv_turnover_percentage"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Top 20 Customers by Casino Turnover (UC2)",
+      "description": "All customers with casino activity, sorted by casino turnover. Full ratio breakdown shown.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Total (EUR, 7d)",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "customer_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "Customer ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Casino (EUR, 7d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook (EUR, 7d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Total (EUR, 7d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Casino %"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook %"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawCode": true,
+          "refId": "A",
+          "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage WHERE casino_turnover > 0 ORDER BY casino_turnover DESC NULLS LAST LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Top 20 Customers by Sportsbook Turnover (UC2)",
+      "description": "All customers with sportsbook activity, sorted by sportsbook turnover. Full ratio breakdown shown.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "risingwave-sql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "customer_id"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "displayName",
+                "value": "Customer ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Casino (EUR, 7d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook (EUR, 7d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_turnover"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "Total (EUR, 7d)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "casino_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Casino %"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sportsbook_ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "displayName",
+                "value": "Sportsbook %"
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "risingwave-sql"
+          },
+          "rawSql": "SELECT customer_id, casino_turnover, sportsbook_turnover, total_turnover, casino_ratio, sportsbook_ratio FROM mv_turnover_percentage WHERE sportsbook_turnover > 0 ORDER BY sportsbook_turnover DESC NULLS LAST LIMIT 20",
+          "format": "table",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "row",
+      "title": "Source Ingestion",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Casino Source Throughput (rows/s)",
+      "description": "Row ingestion rate from the two production Kafka sources: src_casino_prd (prd2) and src_bets_gh (prd4). During initial backfill this is very high; once caught up it reflects the live production event rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rowsps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (source_name) (rate(source_partition_input_count{source_name=~\"src_casino_prd|src_bets_gh\"}[5m]))",
+          "legendFormat": "{{source_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Streaming Backpressure (max across fragments \u2014 0 healthy, >1 overloaded)",
+      "description": "The single most-blocked streaming fragment's output-buffer-blocking ratio (max over fragments of rate(stream_actor_output_buffer_blocking_duration_ns)/1e9). ~0 = the pipeline is keeping up; climbing toward/above 1 = a stage is blocked on its downstream, i.e. overloaded (rate limit too high / compute saturated). This is the gauge that jumped ~0->~6 when the 1000/s rate-limit probe overshot. To see WHICH stage, switch the query to `sum by (fragment_id)(...)` and map fragment_id via rw_catalog.rw_fragments.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 79
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(sum by (fragment_id) (rate(stream_actor_output_buffer_blocking_duration_ns[1m])) / 1000000000)",
+          "legendFormat": "max backpressure",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Kafka Output Sinks (PoC R4)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 87
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Kafka Sink Throughput (rows/s)",
+      "description": "Input row rate for the two Kafka output sinks. After backfill, reflects the live production event rate. Used for PoC R4 latency benchmark \u2014 higher TPS = more meaningful p95 measurement.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 88
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rowsps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name=~\".*kafka.*\"})\n)",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "Lakekeeper Iceberg Sinks",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Iceberg Commits / min (true cadence)",
+      "description": "Actual Iceberg commit rate per table. The raw sink_commit_duration_count is per-actor, so it is divided by the actor count to show the true commit cadence. With commit_checkpoint_interval=40 and barrier_interval_ms=250, expect 6/min (one commit every 10s).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 97
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (rate(sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"}[5m]) * 60)\n/ on (sink_name)\ncount by (sink_name) (sink_commit_duration_count{sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"})",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Iceberg Sink Input (rows/s)",
+      "description": "Rows received by the Iceberg connector layer. Low in steady state after backfill \u2014 reflects the live production event rate filtered through the MV chain.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 127
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rowsps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name!~\".*kafka.*\", sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"})\n)",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Iceberg Write Throughput (bytes/s)",
+      "description": "Bytes written to Iceberg per second. Spiky pattern is expected with checkpoint-based writes. During backfill this is high; in steady state it reflects the live event rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 135
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (sink_name) (rate(iceberg_write_bytes{sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"}[5m]))",
+          "legendFormat": "{{sink_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "type": "row",
+      "title": "Databricks Iceberg Sinks",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 143
+      }
+    },
+    {
+      "id": 44,
+      "type": "stat",
+      "title": "Casino Transactions \u2014 Row Count",
+      "description": "Total rows in de_dev.rw_poc.rw_casino_transactions. Grows with each RisingWave checkpoint commit.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 144
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_transactions"
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "type": "stat",
+      "title": "Casino Transactions \u2014 Minutes Since Last Event",
+      "description": "Staleness of the latest event in rw_casino_transactions. Green = fresh (<5 min), yellow = delayed, red = stalled (>15 min).",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 144
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(transaction_created_at), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_casino_transactions"
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "type": "stat",
+      "title": "Sportsbook Bets \u2014 Row Count",
+      "description": "Total rows in de_dev.rw_poc.rw_sportsbook_bets. Grows with each RisingWave checkpoint commit.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 144
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_sportsbook_bets"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "type": "stat",
+      "title": "Sportsbook Bets \u2014 Minutes Since Last Event",
+      "description": "Staleness of the latest bet in rw_sportsbook_bets. Green = fresh (<5 min), yellow = delayed, red = stalled (>15 min).",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 144
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(placed_at), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_sportsbook_bets"
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "type": "stat",
+      "title": "Casino \u2014 Live Parquet Files",
+      "description": "Current Parquet file count. High = small-file accumulation. Drops after Predictive Optimization or Dagster OPTIMIZE.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 150
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS file_count FROM databricks.rw_poc.\"rw_casino_transactions$files\""
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "type": "stat",
+      "title": "Casino \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots retained. One per RisingWave checkpoint commit. Drops after VACUUM.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 150
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_casino_transactions$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "type": "stat",
+      "title": "Sportsbook \u2014 Live Parquet Files",
+      "description": "Current Parquet file count. High = small-file accumulation. Drops after Predictive Optimization or Dagster OPTIMIZE.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 150
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS file_count FROM databricks.rw_poc.\"rw_sportsbook_bets$files\""
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "type": "stat",
+      "title": "Sportsbook \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots retained. One per RisingWave checkpoint commit. Drops after VACUUM.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 150
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_sportsbook_bets$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 63,
+      "type": "stat",
+      "title": "Casino \u2014 Latest Snapshot",
+      "description": "Timestamp of the most recent Iceberg snapshot committed for rw_casino_transactions. Stale value means RisingWave checkpoints are not reaching Databricks.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 156
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT to_unixtime(MAX(committed_at)) * 1000 AS latest_snapshot FROM databricks.rw_poc.\"rw_casino_transactions$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 64,
+      "type": "stat",
+      "title": "Sportsbook \u2014 Latest Snapshot",
+      "description": "Timestamp of the most recent Iceberg snapshot committed for rw_sportsbook_bets. Stale value means RisingWave checkpoints are not reaching Databricks.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 156
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT to_unixtime(MAX(committed_at)) * 1000 AS latest_snapshot FROM databricks.rw_poc.\"rw_sportsbook_bets$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "Databricks Iceberg Snapshot Count Over Time",
+      "description": "Cumulative snapshots per table. Each step up = one RisingWave checkpoint commit reaching Databricks. Flat line = commits stalled. Drops after VACUUM prunes old snapshots.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 160
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS casino_transactions FROM databricks.rw_poc.\"rw_casino_transactions$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS sportsbook_bets FROM databricks.rw_poc.\"rw_sportsbook_bets$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Row Count",
+      "description": "Total rows in de_dev.rw_poc.rw_casino_transactions. Grows with each RisingWave checkpoint commit.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_turnover_90d"
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Minutes Since Last Event",
+      "description": "Staleness of the latest event in rw_casino_transactions. Green = fresh (<5 min), yellow = delayed, red = stalled (>15 min).",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(event_ts), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_casino_turnover_90d"
+        }
+      ]
+    },
+    {
+      "id": 76,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Live Parquet Files",
+      "description": "Current Parquet file count. High = small-file accumulation. Drops after Predictive Optimization or Dagster OPTIMIZE.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS file_count FROM databricks.rw_poc.\"rw_casino_turnover_90d$files\""
+        }
+      ]
+    },
+    {
+      "id": 77,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots retained. One per RisingWave checkpoint commit. Drops after VACUUM.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 168
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_casino_turnover_90d$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 78,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Latest Snapshot",
+      "description": "Timestamp of the most recent Iceberg snapshot committed for rw_casino_transactions. Stale value means RisingWave checkpoints are not reaching Databricks.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 174
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT to_unixtime(MAX(committed_at)) * 1000 AS latest_snapshot FROM databricks.rw_poc.\"rw_casino_turnover_90d$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 79,
+      "type": "timeseries",
+      "title": "Databricks Turnover 90d \u2014 Snapshot Count Over Time",
+      "description": "Cumulative snapshots per table. Each step up = one RisingWave checkpoint commit reaching Databricks. Flat line = commits stalled. Drops after VACUUM prunes old snapshots.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 178
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS turnover_90d FROM databricks.rw_poc.\"rw_casino_turnover_90d$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY 1",
+          "format": 0,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 80,
+      "type": "stat",
+      "title": "Turnover 90d \u2014 Snapshots vs Current Customers",
+      "description": "Append-only snapshots in rw_casino_turnover_90d vs distinct customers after the QUALIFY collapse (= rows in v_casino_turnover_latest). Visualizes upsert-via-view with no Iceberg delete files.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 174
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshots, COUNT(DISTINCT customer_id) AS current_customers FROM databricks.rw_poc.rw_casino_turnover_90d"
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "type": "row",
+      "title": "Databricks Landing Layer",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 186
+      }
+    },
+    {
+      "id": 66,
+      "type": "stat",
+      "title": "Casino Landing \u2014 Row Count",
+      "description": "Total raw Protobuf bytes rows in de_dev.rw_poc.rw_casino_landing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 187
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_landing"
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "type": "stat",
+      "title": "Casino Landing \u2014 Minutes Since Last Event",
+      "description": "Staleness of rw_casino_landing based on kafka_timestamp. Green <5 min, yellow <15 min, red stalled.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 187
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(kafka_timestamp), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_casino_landing"
+        }
+      ]
+    },
+    {
+      "id": 68,
+      "type": "stat",
+      "title": "Sportsbook Landing \u2014 Row Count",
+      "description": "Total raw Protobuf bytes rows in de_dev.rw_poc.rw_sportsbook_landing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 187
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_sportsbook_landing"
+        }
+      ]
+    },
+    {
+      "id": 69,
+      "type": "stat",
+      "title": "Sportsbook Landing \u2014 Minutes Since Last Event",
+      "description": "Staleness of rw_sportsbook_landing based on kafka_timestamp. Green <5 min, yellow <15 min, red stalled.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 187
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT CAST(date_diff('minute', MAX(kafka_timestamp), CURRENT_TIMESTAMP) AS BIGINT) AS minutes_behind FROM databricks.rw_poc.rw_sportsbook_landing"
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "type": "stat",
+      "title": "Casino Landing Bronze \u2014 Row Count",
+      "description": "Total rows in de_dev.rw_poc.rw_casino_landing_bronze after last Dagster re-process run.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 193
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS row_count FROM databricks.rw_poc.rw_casino_landing_bronze"
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "type": "stat",
+      "title": "Casino Landing \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots committed to rw_casino_landing. Each step = one RisingWave checkpoint.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 193
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_casino_landing$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "type": "stat",
+      "title": "Sportsbook Landing \u2014 Snapshot Count",
+      "description": "Total Iceberg snapshots committed to rw_sportsbook_landing.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 193
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "semi-dark-blue"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "SELECT COUNT(*) AS snapshot_count FROM databricks.rw_poc.\"rw_sportsbook_landing$snapshots\""
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "type": "timeseries",
+      "title": "Landing Layer \u2014 Snapshot Count Over Time",
+      "description": "Cumulative Iceberg snapshots per landing table. Each step = one RisingWave checkpoint commit. Flat line = stalled.",
+      "datasource": {
+        "type": "trino-datasource",
+        "uid": "databricks-trino"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 199
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS casino_landing FROM databricks.rw_poc.\"rw_casino_landing$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "trino-datasource",
+            "uid": "databricks-trino"
+          },
+          "rawSql": "SELECT date_trunc('minute', committed_at) AS \"time\", SUM(COUNT(*)) OVER (ORDER BY date_trunc('minute', committed_at)) AS sportsbook_landing FROM databricks.rw_poc.\"rw_sportsbook_landing$snapshots\" GROUP BY date_trunc('minute', committed_at) ORDER BY \"time\"",
+          "format": 0,
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

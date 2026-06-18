@@ -731,6 +731,7 @@ services:
     volumes:
       # Mount only specific directories needed by Dagster instead of entire project
       # This prevents root-owned files from being created in the project root
+      - "./.env:/workspace/.env:ro"
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
       - "./data:/workspace/data:ro"
@@ -794,6 +795,7 @@ services:
       - NO_PROXY=*
       - no_proxy=*
     volumes:
+      - "./.env:/workspace/.env:ro"
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
       - "./data:/workspace/data:ro"
@@ -840,6 +842,13 @@ services:
       - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
       - DATABRICKS_AZURE_CLIENT_SECRET
       - ADLS_ACCOUNT_KEY
+      # RisingWave catalog — used by trino/catalog/risingwave.properties
+      # TRINO_RISINGWAVE_HOST defaults to the Docker-network hostname; set in .env for STG.
+      - RISINGWAVE_HOST=${TRINO_RISINGWAVE_HOST:-frontend-node-0}
+      - RISINGWAVE_PORT=${RISINGWAVE_PORT:-4566}
+      - RISINGWAVE_USER=${RISINGWAVE_USER:-root}
+      - RISINGWAVE_PASSWORD=${RISINGWAVE_PASSWORD:-}
+      - RISINGWAVE_DB=${RISINGWAVE_DB:-dev}
     volumes:
       - type: bind
         source: ./trino/catalog

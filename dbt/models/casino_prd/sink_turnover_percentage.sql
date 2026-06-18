@@ -1,6 +1,6 @@
 {{ config(
     materialized='sink',
-    tags=['casino_uc2']
+    tags=['casino_uc2', 'local_infra']
 ) }}
 
 CREATE SINK IF NOT EXISTS sink_turnover_percentage

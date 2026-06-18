@@ -151,7 +151,11 @@ def databricks_uc_tables_setup(context: AssetExecutionContext):
         "already_existed": MetadataValue.json(existed),
     }
 
-APICURIO_BASE = "http://staging-schema-registry.kaizengaming.net/apis/registry/v2/groups/bigdata/artifacts"
+def _apicurio_base() -> str:
+    url = os.environ.get("APICURIO_BASE_URL")
+    if not url:
+        raise ValueError("APICURIO_BASE_URL must be set in .env")
+    return url
 CASINO_ARTIFACT = "casinoroundinfo"
 BETS_ARTIFACT = "betinfo"
 
@@ -174,7 +178,7 @@ def casino_prd_proto_fetch(context: AssetExecutionContext):
         (BETS_ARTIFACT, "betinfo.proto"),
     ]:
         dest = PROTO_DIR / filename
-        url = f"{APICURIO_BASE}/{artifact}"
+        url = f"{_apicurio_base()}/{artifact}"
         try:
             context.log.info(f"Fetching {url} → {dest}")
             response = httpx.get(url, headers={"Accept": "text/plain"}, timeout=30, follow_redirects=True)
@@ -288,7 +292,7 @@ def casino_prd_proto_upload(context: AssetExecutionContext):
     return {"uploaded_uris": MetadataValue.json(uploaded)}
 
 
-REDPANDA_SCHEMA_REGISTRY = "http://redpanda:8081"
+REDPANDA_SCHEMA_REGISTRY = os.environ.get("SCHEMA_REGISTRY_URL", "http://redpanda:8081")
 
 # Proto descriptor compiled by casino_prd_proto_compile
 CASINO_PROTO_PB = PROTO_DIR / "casinoroundinfodto.pb"

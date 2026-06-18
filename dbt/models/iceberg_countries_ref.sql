@@ -1,5 +1,5 @@
 {{ config(
-    materialized='risingwave_source',
+    materialized='risingwave_iceberg_table',
     tags=['risingwave'],
     schema='public',
     persist_docs={"relation": true, "columns": true},
@@ -16,7 +16,9 @@
     s3_endpoint='http://minio-0:9301',
     s3_access_key='hummockadmin',
     s3_secret_key='hummockadmin',
-    s3_path_style_access='true'
+    s3_path_style_access='true',
+    refresh_interval_sec='1',
+    primary_key='country'
 ) }}
 
 SELECT

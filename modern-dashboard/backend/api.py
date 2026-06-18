@@ -916,19 +916,20 @@ def query_funnel_data(
         with funnel_engine.connect() as conn:
             query = text("""
                 SELECT
-                    window_start,
-                    window_end,
-                    country,
-                    country_name,
-                    viewers,
-                    carters,
-                    purchasers,
-                    view_to_cart_rate,
-                    cart_to_buy_rate
-                FROM funnel_summary_with_country
-                WHERE window_start >= :start_time
-                  AND window_end <= :end_time
-                ORDER BY window_start DESC, country
+                    f.window_start,
+                    f.window_end,
+                    f.country,
+                    c.country_name::varchar AS country_name,
+                    f.viewers,
+                    f.carters,
+                    f.purchasers,
+                    f.view_to_cart_rate,
+                    f.cart_to_buy_rate
+                FROM funnel_summary f
+                LEFT JOIN src_iceberg_countries c ON f.country = c.country
+                WHERE f.window_start >= :start_time
+                  AND f.window_end <= :end_time
+                ORDER BY f.window_start DESC, f.country
                 LIMIT 1000
             """)
             
@@ -985,14 +986,15 @@ def query_funnel_aggregate(
         with funnel_engine.connect() as conn:
             query = text("""
                 SELECT
-                    COALESCE(SUM(viewers), 0) as total_viewers,
-                    COALESCE(SUM(carters), 0) as total_carters,
-                    COALESCE(SUM(purchasers), 0) as total_purchasers,
+                    COALESCE(SUM(f.viewers), 0) as total_viewers,
+                    COALESCE(SUM(f.carters), 0) as total_carters,
+                    COALESCE(SUM(f.purchasers), 0) as total_purchasers,
                     COUNT(*) as record_count,
-                    COUNT(DISTINCT country) as country_count
-                FROM funnel_summary_with_country
-                WHERE window_start >= :start_time
-                  AND window_end <= :end_time
+                    COUNT(DISTINCT f.country) as country_count
+                FROM funnel_summary f
+                LEFT JOIN src_iceberg_countries c ON f.country = c.country
+                WHERE f.window_start >= :start_time
+                  AND f.window_end <= :end_time
             """)
             
             result = conn.execute(query, {

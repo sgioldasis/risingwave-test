@@ -1,6 +1,6 @@
 {{ config(
     materialized='sink',
-    tags=['casino_uc1']
+    tags=['casino_uc1', 'local_infra']
 ) }}
 
 CREATE SINK IF NOT EXISTS sink_casino_real_bet

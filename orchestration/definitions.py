@@ -37,6 +37,7 @@ from .assets.datafusion_demo import casino_datafusion_demo
 from .assets.databricks_optimize import databricks_optimize
 from .assets.databricks_turnover_views import databricks_turnover_latest_view
 from .assets.landing_to_bronze import casino_landing_to_bronze
+from .assets.kafka_topics_setup import kafka_output_topics_setup
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 
 # Set up logging
@@ -50,7 +51,7 @@ logger = logging.getLogger(__name__)
 _env_file = Path(__file__).parent.parent / ".env"
 if _env_file.exists():
     import re as _re
-    _env_re = _re.compile(r'^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*"?(.*?)"?\s*$')
+    _env_re = _re.compile(r'^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*"?(.*?)"?\s*(?:#.*)?\s*$')
     with open(_env_file) as _ef:
         for _line in _ef:
             _line = _line.strip()
@@ -160,8 +161,11 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             kinds.add("iceberg")
             spec = spec.replace_attributes(kinds=frozenset(kinds))
         
-        # Casino UC models get their own groups; shared sources go to casino_uc1
-        if "casino_prd_setup" in tags:
+        # local_infra must be checked first — some models carry both casino_prd_setup
+        # and local_infra tags, and we want them excluded from casino_stg_job.
+        if "local_infra" in tags:
+            new_spec = spec.replace_attributes(group_name="casino_local_infra")
+        elif "casino_prd_setup" in tags:
             new_spec = spec.replace_attributes(group_name="casino_prd_setup")
         elif "casino_uc2" in tags and "casino_uc1" not in tags:
             new_spec = spec.replace_attributes(group_name="casino_uc2")
@@ -209,9 +213,9 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         # Avro sink and source both need the schema pre-registered in Redpanda before
-        # RisingWave can validate/create them. Declaring the dep here on the AssetSpec
-        # is what allows casino_avro_schema_register to be a function parameter on
-        # @dbt_assets without triggering DagsterInvalidDefinitionError.
+        # RisingWave can validate/create them. Per-model dep here (not a function
+        # parameter) keeps the dependency scoped to avro models only, so jobs that
+        # exclude avro models (e.g. casino_stg_job) don't require casino_avro_schema_register.
         if materialized in ["sink", "kafka_table"] and "casino_avro" in tags:
             from dagster import AssetDep
             existing_deps = list(new_spec.deps) if new_spec.deps else []
@@ -398,7 +402,6 @@ def casino_prd_dbt_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
     casino_prd_proto_upload,
-    casino_avro_schema_register,
 ):
     """dbt assets for Casino production — UC1 (Real Bet Amount) + UC2 (Turnover Percentage) in one step."""
     drop_result = subprocess.run(
@@ -527,6 +530,13 @@ databricks_datafusion_job = define_asset_job(
 )
 
 
+kafka_topics_setup_job = define_asset_job(
+    name="casino_kafka_topics_setup_job",
+    selection=AssetSelection.assets(kafka_output_topics_setup),
+    description="Create required output Kafka topics on the configured broker (idempotent — skips topics that already exist).",
+    executor_def=in_process_executor,
+)
+
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -542,6 +552,23 @@ casino_prd_full_job = define_asset_job(
         | AssetSelection.assets(databricks_turnover_latest_view)
     ),
     description="End-to-end casino demo: proto setup → UC1 + UC2 → Trino views → Databricks turnover view → Iceberg sources",
+    executor_def=in_process_executor,
+)
+
+casino_stg_job = define_asset_job(
+    name="casino_stg_job",
+    selection=(
+        AssetSelection.assets(
+            casino_prd_proto_fetch,
+            casino_prd_proto_compile,
+            casino_prd_proto_upload,
+            casino_avro_schema_register,
+            databricks_uc_tables_setup,
+        )
+        | (AssetSelection.assets(casino_prd_dbt_assets) - AssetSelection.groups("casino_local_infra"))
+        | AssetSelection.assets(databricks_turnover_latest_view)
+    ),
+    description="Casino demo for STG RisingWave: sources + MVs + Databricks sinks. No Lakekeeper/MinIO/Redpanda.",
     executor_def=in_process_executor,
 )
 
@@ -595,6 +622,8 @@ defs = Definitions(
         databricks_datafusion_demo,
         # Databricks "latest turnover per customer" view (QUALIFY over append-only table)
         databricks_turnover_latest_view,
+        # Kafka output topic provisioning
+        kafka_output_topics_setup,
         # Landing → Bronze re-processing notebook
         casino_landing_to_bronze,
     ],
@@ -604,7 +633,9 @@ defs = Definitions(
         iceberg_countries_job,
         iceberg_compaction_job,
         postgres_sink_job,
+        kafka_topics_setup_job,
         casino_prd_full_job,
+        casino_stg_job,
         casino_datafusion_job,
         databricks_datafusion_job,
         define_asset_job(

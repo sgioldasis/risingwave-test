@@ -1,144 +1,205 @@
-# Iceberg to RisingWave Sync Guide
+# Iceberg → RisingWave Live Lookup Guide
 
 ## Problem
 
-When modifying data in the Iceberg table (e.g., deleting rows like India or Spain), the changes were not reflected in RisingWave views. Specifically:
+When a country name changes in the `iceberg_countries` Iceberg table, downstream RisingWave views
+and the application dashboard should reflect the change immediately (or near-immediately).
 
-1. `rw_countries` was showing stale data (deleted rows still appeared)
-2. `funnel_summary_with_country` was showing duplicate rows (e.g., Greece appearing multiple times with different names)
+This became non-trivial in **RisingWave 3.0**, which introduced a breaking regression affecting
+the approach that worked in 2.8.5.
 
-## Root Cause
+---
 
-RisingWave's Iceberg source (`CREATE SOURCE ... WITH connector = 'iceberg'`) is a **batch source** that:
-1. Reads a point-in-time snapshot from Iceberg when created
-2. **Caches the data** - it does NOT auto-refresh when Iceberg changes
-3. Does NOT emit changelog events (no `_op` column for deletes)
+## RisingWave 3.0 Regression: DataFusion Batch Engine
 
-Additionally, **MATERIALIZED VIEWs** in RisingWave cache their results at creation time and don't automatically refresh when source data changes.
+RisingWave 3.0 (released 2026-06-11) made **DataFusion the default batch query engine**.
+This broke `CREATE VIEW` over `CREATE SOURCE (connector='iceberg')`:
 
-### Available Columns in Iceberg Source
-
-```sql
-DESCRIBE src_iceberg_countries;
+```
+Expected RisingWave plan in BatchPlanChoice, but got DataFusion plan
 ```
 
-| Column | Type | Hidden | Description |
-|--------|------|--------|-------------|
-| country | varchar | false | Country code |
-| country_name | varchar | false | Country name |
-| _iceberg_sequence_number | bigint | true | Iceberg snapshot sequence |
-| _iceberg_file_path | varchar | true | Data file path |
-| _iceberg_file_pos | bigint | true | Position in file |
-| _row_id | serial | true | RisingWave internal row ID |
+The batch planner (`BatchPlanChoice`) encounters a DataFusion plan node when validating the
+view's query and fails. Direct `SELECT * FROM iceberg_source` still works (DataFusion executes
+it end-to-end), but wrapping it in `CREATE VIEW` does not.
 
-**Note**: There is **NO `_op` column** because this is not a CDC source.
+---
 
-## Solution
+## Approaches Tried and Why They Failed
 
-### Changed Models to Use VIEW Instead of MATERIALIZED_VIEW
-
-When a model reads from the Iceberg source or joins with data from the Iceberg source, use `materialized='view'` to ensure fresh data on each query.
-
-#### [`rw_countries.sql`](dbt/models/rw_countries.sql)
+### Approach 1: CREATE VIEW over Iceberg SOURCE (worked in 2.8.5, broken in 3.0)
 
 ```sql
-{{ config(
-    materialized='view',
-    persist_docs={"relation": true, "columns": true},
-    meta={
-        "dagster": {
-            "deps": [{"asset_key": ["csv", "iceberg_countries"]}]
-        }
-    }
-) }}
-
--- View (rw_countries) that shows the current snapshot from Iceberg
--- Reads from native RisingWave SOURCE src_iceberg_countries
--- Using VIEW materialization to ensure fresh data on each query
-
-SELECT
-    country::varchar as country,
-    country_name::varchar as country_name
-FROM {{ ref('src_iceberg_countries') }}
+CREATE SOURCE src_iceberg_countries WITH (connector='iceberg', ...);
+CREATE VIEW rw_countries AS SELECT * FROM src_iceberg_countries;
 ```
 
-#### [`funnel_summary_with_country.sql`](dbt/models/funnel_summary_with_country.sql)
+**Result in 3.0**: `CREATE VIEW` fails with the DataFusion plan error above.
+
+### Approach 2: MATERIALIZED VIEW over Iceberg SOURCE
 
 ```sql
-{{ config(materialized='view') }}
+CREATE MATERIALIZED VIEW rw_countries AS SELECT * FROM src_iceberg_countries;
+```
 
--- Join funnel_summary with Iceberg countries data within RisingWave
--- This avoids cross-catalog join issues in Trino
--- Using VIEW materialization to ensure fresh data on each query
+MVs use the streaming engine (not the batch planner), so creation succeeds. However, the Iceberg
+streaming connector reads new snapshots in **append-only** mode. When a row is updated in Iceberg
+(e.g. `Greece → Hellas`), the connector emits a new INSERT for `(GR, Hellas)` but **never
+retracts** the old `(GR, Greece)` row. This causes both values to accumulate in the MV,
+resulting in duplicate rows per country.
 
+### Approach 3: FULL_RELOAD TABLE with periodic refresh
+
+```sql
+CREATE TABLE src_iceberg_countries ( PRIMARY KEY (country) )
+WITH (connector='iceberg', refresh_mode='FULL_RELOAD', refresh_interval_sec='1', ...);
+```
+
+Resolves the duplicate-row problem — a full table replacement forces correct retraction in
+downstream joins. However, the refreshed data only becomes visible after RisingWave's next
+**checkpoint cycle**. Even with `refresh_interval_sec='1'`, the effective latency is several
+seconds because the checkpoint gates visibility.
+
+Using this table as the join partner in a streaming MV also resulted in 20–30 second update
+latency due to streaming retraction overhead across all MV rows when the table changed.
+
+---
+
+## Final Solution
+
+Two separate RisingWave objects backed by the same Iceberg table, serving two different purposes:
+
+### Object 1: `src_iceberg_countries` — CREATE SOURCE
+
+```sql
+CREATE SOURCE src_iceberg_countries
+WITH (
+    connector      = 'iceberg',
+    catalog.type   = 'rest',
+    catalog.uri    = 'http://lakekeeper:8181/catalog',
+    warehouse.path = 'risingwave-warehouse',
+    database.name  = 'public',
+    table.name     = 'iceberg_countries',
+    s3.endpoint    = 'http://minio-0:9301',
+    s3.region      = 'us-east-1',
+    s3.access.key  = 'hummockadmin',
+    s3.secret.key  = 'hummockadmin',
+    s3.path.style.access = 'true'
+);
+```
+
+Used by the application backend via an **inline batch JOIN**. Because this is a plain
+`SELECT` (not wrapped in `CREATE VIEW`), DataFusion executes the entire query including the
+Iceberg read — it reads the **current Iceberg snapshot at query time**. No polling, no
+checkpoint wait. Country name changes are visible on the very next request.
+
+### Object 2: `iceberg_countries_ref` — FULL_RELOAD TABLE
+
+```sql
+CREATE TABLE iceberg_countries_ref ( PRIMARY KEY (country) )
+WITH (
+    connector      = 'iceberg',
+    refresh_mode   = 'FULL_RELOAD',
+    refresh_interval_sec = '1',
+    ...
+);
+```
+
+Used only by `rw_countries` VIEW for Dagster pipeline display. Has ~1–3 second latency due to
+the checkpoint cycle, but avoids duplicate rows and works correctly with `CREATE VIEW`.
+
+### `rw_countries` — VIEW over FULL_RELOAD TABLE
+
+```sql
+CREATE VIEW rw_countries AS
+SELECT country::varchar, country_name::varchar
+FROM iceberg_countries_ref;
+```
+
+Works in RW 3.0 because `iceberg_countries_ref` is native RisingWave storage — no DataFusion
+in the batch planner's path.
+
+### Application backend — inline JOIN with SOURCE
+
+Instead of querying `funnel_summary_with_country` (a pre-built view), the backend inlines the
+join:
+
+```sql
 SELECT
     f.window_start,
+    f.window_end,
     f.country,
-    c.country_name,
+    c.country_name::varchar AS country_name,
     f.viewers,
     f.carters,
     f.purchasers,
     f.view_to_cart_rate,
     f.cart_to_buy_rate
-FROM {{ ref('funnel_summary') }} f
-LEFT JOIN {{ ref('rw_countries') }} c
-    ON f.country = c.country
+FROM funnel_summary f
+LEFT JOIN src_iceberg_countries c ON f.country = c.country
+WHERE f.window_start >= :start_time
+  AND f.window_end   <= :end_time
+ORDER BY f.window_start DESC, f.country
+LIMIT 1000
 ```
 
-### When Source Becomes Stale
+`funnel_summary` is a native RisingWave MV. `src_iceberg_countries` is the Iceberg SOURCE.
+DataFusion handles both sides of the join as a single batch query. The result reflects the
+current Iceberg snapshot every time the endpoint is called.
 
-If you modify data in Iceberg (delete/update rows) and the RisingWave source still shows old data, **recreate the source**:
+---
 
-```sql
-DROP SOURCE IF EXISTS src_iceberg_countries CASCADE;
+## Architecture Summary
 
-CREATE SOURCE src_iceberg_countries
-WITH (
-    connector = 'iceberg',
-    catalog.type = 'rest',
-    catalog.uri = 'http://lakekeeper:8181/catalog',
-    warehouse.path = 'risingwave-warehouse',
-    database.name = 'public',
-    table.name = 'iceberg_countries',
-    s3.endpoint = 'http://minio-0:9301',
-    s3.region = 'us-east-1',
-    s3.access.key = 'hummockadmin',
-    s3.secret.key = 'hummockadmin'
-);
+```
+iceberg_countries (Lakekeeper/MinIO)
+    │
+    ├── CREATE SOURCE src_iceberg_countries
+    │       └── backend inline JOIN → immediate reads (DataFusion, at query time)
+    │
+    └── FULL_RELOAD TABLE iceberg_countries_ref  (refresh every 1s)
+            └── VIEW rw_countries  (Dagster display, ~1–3s latency)
 ```
 
-Then run dbt:
+---
+
+## Key Insight: Streaming Path vs Batch Path
+
+| Path | Object | On Iceberg update | Latency |
+|------|--------|-------------------|---------|
+| **Batch** (direct SELECT) | `CREATE SOURCE` | DataFusion reads current snapshot | Immediate |
+| **Streaming** (MV over SOURCE) | `CREATE SOURCE → MV` | Append-only: new row inserted, old row NOT retracted → duplicate rows | — |
+| **Polling** (FULL_RELOAD TABLE) | `CREATE TABLE refresh_mode=FULL_RELOAD` | Full replace on each cycle, visible after checkpoint | Several seconds |
+
+For mutable lookup tables (country names, configs), always use the **batch path** — inline
+`SELECT` with DataFusion — when immediate propagation is required.
+
+---
+
+## dbt Models
+
+| Model | Materialization | Object type |
+|-------|----------------|-------------|
+| `src_iceberg_countries` | `risingwave_source` | `CREATE SOURCE` |
+| `iceberg_countries_ref` | `risingwave_iceberg_table` | `CREATE TABLE` (FULL_RELOAD) |
+| `rw_countries` | `view` | `CREATE VIEW` over `iceberg_countries_ref` |
+| `funnel_summary_with_country` | `view` | `CREATE VIEW` over `funnel_summary` + `iceberg_countries_ref` (Dagster display only — backend uses inline JOIN) |
+
+## Resetting Iceberg Objects
 
 ```bash
-dbt run --models rw_countries funnel_summary_with_country
+dbt run-operation drop_stale_iceberg_sources --project-dir dbt --profiles-dir dbt
+dbt run --select src_iceberg_countries iceberg_countries_ref rw_countries funnel_summary_with_country \
+    --project-dir dbt --profiles-dir dbt
 ```
 
-## How It Works
+The `drop_stale_iceberg_sources` macro handles all object types (SOURCE, TABLE, VIEW, MV) in
+the correct dependency order.
 
-1. **VIEW vs MATERIALIZED VIEW**:
-   - **VIEW**: Always reads fresh data from sources when queried (no caching)
-   - **MATERIALIZED VIEW**: Caches results at creation time (can become stale)
-
-2. **RisingWave Iceberg Source**:
-   - Reads a snapshot from Iceberg when created
-   - Caches the data (doesn't auto-refresh)
-   - When recreated, it reads the latest Iceberg snapshot
-
-3. **The Combination**:
-   - Use VIEWs for models that read from Iceberg sources
-   - When Iceberg data changes, recreate the source
-   - VIEWs automatically see the new source data
-
-## Alternative Solutions
-
-For automatic sync without manual source recreation:
-
-1. **Dagster Asset Sync**: Use `orchestration/assets/risingwave_countries_table.py` which syncs from Iceberg via Trino
-2. **Scheduled dbt Runs**: Run `dbt run` periodically to recreate the source
-3. **Query Iceberg Directly**: Use Trino for queries that need the absolute latest data
+---
 
 ## References
 
-- [RisingWave Iceberg Source](https://docs.risingwave.com/integrations/sources/apache-iceberg)
-- [RisingWave Views](https://docs.risingwave.com/sql/commands/sql-create-view)
-- [RisingWave Materialized Views](https://docs.risingwave.com/sql/commands/sql-create-materialized-view)
+- [RisingWave Iceberg source](https://docs.risingwave.com/integrations/sources/apache-iceberg)
+- [RisingWave refreshable tables](https://docs.risingwave.com/sql/commands/sql-create-table#refreshable-tables)
+- [RisingWave views](https://docs.risingwave.com/sql/commands/sql-create-view)

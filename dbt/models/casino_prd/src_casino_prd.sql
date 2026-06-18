@@ -10,8 +10,13 @@ APPEND ONLY
 WITH (
     connector                     = 'kafka',
     topic                         = 'cronus.casino.out.br',
-    properties.bootstrap.server   = 'prd2-kafka-bootstrap.kaizengaming.net:443',
-    properties.security.protocol  = 'SSL',
+    properties.bootstrap.server   = '{{ env_var("KAFKA_CASINO_BOOTSTRAP", "") }}',
+    properties.security.protocol  = '{{ env_var("KAFKA_INPUT_SECURITY_PROTOCOL", "SSL") }}'
+    {%- if env_var("KAFKA_SASL_USERNAME", "") != "" %},
+    properties.sasl.mechanism     = '{{ env_var("KAFKA_SASL_MECHANISM", "SCRAM-SHA-512") }}',
+    properties.sasl.username      = '{{ env_var("KAFKA_SASL_USERNAME") }}',
+    properties.sasl.password      = '{{ env_var("KAFKA_SASL_PASSWORD") }}'
+    {%- endif %},
     group.id.prefix               = 'rw-readonly-casino-demo',
     scan.startup.mode             = 'latest',
     source_rate_limit             = 1

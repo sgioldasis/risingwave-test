@@ -16,8 +16,13 @@ INCLUDE OFFSET    AS kafka_offset
 WITH (
     connector                     = 'kafka',
     topic                         = 'bets-out-br',
-    properties.bootstrap.server   = 'prd4-kafka-bootstrap.kaizengaming.net:443',
-    properties.security.protocol  = 'SSL',
+    properties.bootstrap.server   = '{{ env_var("KAFKA_BETS_BOOTSTRAP", "") }}',
+    properties.security.protocol  = '{{ env_var("KAFKA_INPUT_SECURITY_PROTOCOL", "SSL") }}'
+    {%- if env_var("KAFKA_SASL_USERNAME", "") != "" %},
+    properties.sasl.mechanism     = '{{ env_var("KAFKA_SASL_MECHANISM", "SCRAM-SHA-512") }}',
+    properties.sasl.username      = '{{ env_var("KAFKA_SASL_USERNAME") }}',
+    properties.sasl.password      = '{{ env_var("KAFKA_SASL_PASSWORD") }}'
+    {%- endif %},
     group.id.prefix               = 'rw-readonly-bets-landing',
     scan.startup.mode             = 'latest',
     source_rate_limit             = 1
