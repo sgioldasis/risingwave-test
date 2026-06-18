@@ -39,7 +39,7 @@ CREATE SOURCE src_page (
     connector = 'kafka',
     topic = 'page_views',
     properties.bootstrap.server = 'redpanda:9092',
-    scan.startup.mode = 'latest'
+    scan.startup.mode = 'earliest'
 ) FORMAT PLAIN ENCODE JSON;
 
 -- ----- Model: src_cart -----
@@ -52,7 +52,7 @@ CREATE SOURCE src_cart (
     connector = 'kafka',
     topic = 'cart_events',
     properties.bootstrap.server = 'redpanda:9092',
-    scan.startup.mode = 'latest'
+    scan.startup.mode = 'earliest'
 ) FORMAT PLAIN ENCODE JSON;
 
 -- ----- Model: src_purchase -----
@@ -65,7 +65,7 @@ CREATE SOURCE src_purchase (
     connector = 'kafka',
     topic = 'purchases',
     properties.bootstrap.server = 'redpanda:9092',
-    scan.startup.mode = 'latest'
+    scan.startup.mode = 'earliest'
 ) FORMAT PLAIN ENCODE JSON;
 
 -- ==========================================================

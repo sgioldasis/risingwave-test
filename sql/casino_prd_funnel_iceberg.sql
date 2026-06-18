@@ -23,8 +23,8 @@
 --   rw_managed_turnover_percentage
 --
 -- Kafka output sinks (Redpanda — PoC R4 latency benchmark):
---   sink_casino_real_bet_kafka       → topic casino_real_bet_output
---   sink_turnover_percentage_kafka   → topic casino_turnover_percentage_output
+--   sink_casino_real_bet_kafka       → topic rw_poc_casino_out_real_bet
+--   sink_turnover_percentage_kafka   → topic rw_poc_casino_out_turnover_percentage
 --
 -- Idempotent: safe to re-run. DROPs cascade to dependents.
 -- =============================================================================
@@ -362,7 +362,7 @@ FROM mv_casino_real_bet
 WITH (
     connector                   = 'kafka',
     properties.bootstrap.server = 'redpanda:9092',
-    topic                       = 'casino_real_bet_output'
+    topic                       = 'rw_poc_casino_out_real_bet'
 )
 FORMAT PLAIN ENCODE JSON (
     force_append_only = 'true'
@@ -373,7 +373,7 @@ FROM mv_turnover_percentage
 WITH (
     connector                   = 'kafka',
     properties.bootstrap.server = 'redpanda:9092',
-    topic                       = 'casino_turnover_percentage_output'
+    topic                       = 'rw_poc_casino_out_turnover_percentage'
 )
 FORMAT PLAIN ENCODE JSON (
     force_append_only = 'true'

@@ -11,7 +11,7 @@ CREATE SINK IF NOT EXISTS {{ this }}
 FROM {{ ref('src_casino_prd') }}
 WITH (
     connector                   = 'kafka',
-    topic                       = 'casino_out_avro',
+    topic                       = 'rw_poc_casino_out_avro',
     properties.bootstrap.server = '{{ env_var("KAFKA_OUTPUT_BOOTSTRAP", "redpanda:9092") }}'
     {%- if env_var("KAFKA_OUTPUT_SASL_USERNAME", "") != "" %},
     properties.security.protocol = 'SASL_SSL',

@@ -388,7 +388,7 @@ def _proto_descriptor_to_avro(pb_path: Path, root_message_fqn: str) -> dict:
     deps=["casino_prd_proto_compile"],
     description=(
         "Derive a full Avro schema from the CasinoRoundInfoDto Protobuf descriptor "
-        "and register it as casino_out_avro-value in Redpanda's built-in schema registry. "
+        "and register it as rw_poc_casino_out_avro-value in Redpanda's built-in schema registry. "
         "Idempotent — skips registration if the subject already exists."
     ),
 )
@@ -405,7 +405,7 @@ def casino_avro_schema_register(context: AssetExecutionContext):
     and fails with 40401 if the subject is absent. This asset must run before the dbt
     build step that creates sink_casino_avro_redpanda and src_casino_avro.
     """
-    subject = "casino_out_avro-value"
+    subject = "rw_poc_casino_out_avro-value"
 
     # --- 1. Check whether schema is already registered ---
     check = requests.get(

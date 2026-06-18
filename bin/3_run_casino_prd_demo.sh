@@ -288,7 +288,7 @@ ORDER BY name;
 
 \echo ''
 \echo '--- Kafka output topics ---'
-\echo 'Run: docker exec redpanda rpk topic consume casino_real_bet_output -n 5'
+\echo 'Run: docker exec redpanda rpk topic consume rw_poc_casino_out_real_bet -n 5'
 SQL
 
 echo ""

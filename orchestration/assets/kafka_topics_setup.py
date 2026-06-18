@@ -4,9 +4,9 @@ from confluent_kafka.admin import AdminClient, NewTopic
 from dagster import AssetExecutionContext, MetadataValue, asset
 
 OUTPUT_TOPICS = [
-    "casino_out_avro",
-    "casino_real_bet_output",
-    "casino_turnover_percentage_output",
+    "rw_poc_casino_out_avro",
+    "rw_poc_casino_out_real_bet",
+    "rw_poc_casino_out_turnover_percentage",
 ]
 
 _DEFAULT_PARTITIONS = 1

@@ -24,7 +24,7 @@ WITH (
     properties.sasl.password      = '{{ env_var("KAFKA_SASL_PASSWORD") }}'
     {%- endif %},
     group.id.prefix               = 'rw-readonly-bets-landing',
-    scan.startup.mode             = 'latest',
+    scan.startup.mode = 'earliest',
     source_rate_limit             = 1
 )
 FORMAT PLAIN ENCODE BYTES

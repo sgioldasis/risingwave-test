@@ -39,7 +39,7 @@ WITH (
     properties.sasl.username      = :'KAFKA_SASL_USERNAME',
     properties.sasl.password      = :'KAFKA_SASL_PASSWORD',
     group.id.prefix               = 'rw-readonly-casino-demo',
-    scan.startup.mode             = 'latest',
+    scan.startup.mode = 'earliest',
     source_rate_limit             = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
@@ -55,7 +55,7 @@ WITH (
     properties.bootstrap.server   = :'KAFKA_CASINO_BOOTSTRAP',
     properties.security.protocol  = 'SSL',
     group.id.prefix               = 'rw-readonly-casino-demo',
-    scan.startup.mode             = 'latest',
+    scan.startup.mode = 'earliest',
     source_rate_limit             = 1
 )
 FORMAT PLAIN ENCODE PROTOBUF (
