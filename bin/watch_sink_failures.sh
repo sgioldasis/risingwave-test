@@ -37,6 +37,15 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
+# Fallback: kill any orphaned instances not tracked by the PID file
+ORPHAN_PIDS="$(pgrep -f "watch_sink_failures.py" 2>/dev/null || true)"
+if [ -n "$ORPHAN_PIDS" ]; then
+    echo "Found orphaned watchdog processes ($ORPHAN_PIDS), killing them..."
+    echo "$ORPHAN_PIDS" | xargs kill 2>/dev/null || true
+    sleep 1
+    echo "$ORPHAN_PIDS" | xargs kill -9 2>/dev/null || true
+fi
+
 mkdir -p "$LOG_DIR"
 
 CMD=(
