@@ -5,6 +5,10 @@
 #}
 
 {% macro create_iceberg_connection() %}
+    {% if env_var('ENABLE_LAKEKEEPER', '1') == '0' %}
+        {{ log("Skipping Lakekeeper connection creation (ENABLE_LAKEKEEPER=0)", info=True) }}
+        {% do return('') %}
+    {% endif %}
     {# Create the Iceberg connection to Lakekeeper #}
     {% set create_connection_sql %}
         CREATE CONNECTION IF NOT EXISTS lakekeeper_catalog_conn

@@ -702,13 +702,16 @@ services:
     environment:
       - DAGSTER_HOME=/workspace
       - PYTHONPATH=/workspace
-      - DBT_HOST=frontend-node-0
+      - DBT_HOST=${RISINGWAVE_HOST:-frontend-node-0}
       - DBT_PROFILES_DIR=/workspace/dbt
       - DBT_PASSWORD=root
       - MINIO_ENDPOINT=http://minio-0:9301
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
-      - RISINGWAVE_HOST=frontend-node-0
+      - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
+      - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
+      - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
+      - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
       - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
       - DATABRICKS_CATALOG=de_dev
       - DATABRICKS_SCHEMA=risingwave_poc
@@ -770,13 +773,16 @@ services:
     environment:
       - DAGSTER_HOME=/workspace
       - PYTHONPATH=/workspace
-      - DBT_HOST=frontend-node-0
+      - DBT_HOST=${RISINGWAVE_HOST:-frontend-node-0}
       - DBT_PROFILES_DIR=/workspace/dbt
       - DBT_PASSWORD=root
       - MINIO_ENDPOINT=http://minio-0:9301
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
-      - RISINGWAVE_HOST=frontend-node-0
+      - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
+      - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
+      - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
+      - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
       - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
       - DATABRICKS_CATALOG=de_dev
       - DATABRICKS_SCHEMA=risingwave_poc

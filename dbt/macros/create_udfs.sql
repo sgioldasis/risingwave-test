@@ -2,6 +2,10 @@
 {# Call with: dbt run-operation create_udfs_from_file #}
 
 {% macro create_udfs_from_file() %}
+    {% if env_var('ENABLE_PYTHON_UDFS', '1') == '0' %}
+        {{ log("Skipping Python UDF creation (ENABLE_PYTHON_UDFS=0)", info=True) }}
+        {% do return('') %}
+    {% endif %}
     {% set udf_sql %}
 -- ==========================================================
 -- RisingWave Python UDFs for Funnel Demo
