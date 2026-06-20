@@ -1,6 +1,6 @@
 # RisingWave PoC — Status Report
 
-**Last updated:** 2026-06-16 (Week 4)
+**Last updated:** 2026-06-20 (Week 4)
 **Source document:** [RisingWave_PoC_Document](https://docs.google.com/document/d/1Ia2_8v1pn1Syj0xUBLHLzAv4rxSGLDmtUhKTA-MxYlI)
 **Tracking sheet:** [Project tracker](https://docs.google.com/spreadsheets/d/1cmLFZ_emV7xOsNv43D_lT5hNI5F6p8vwkNb1pdRmKHE/edit?gid=1924086747#gid=1924086747)
 
@@ -33,7 +33,7 @@
 | Helm chart + sizing recommendations for OpenShift | ✅ Done | |
 | Terry & Yu Li added to Kaizen Slack | ✅ Done | |
 | SOW sign-off by all stakeholders | ❌ Pending | |
-| Deploy RisingWave on OpenShift via Helm | 🔄 In Progress | Triantafyllos + RW team started |
+| Deploy RisingWave on OpenShift via Helm | 🔄 In Progress | Triantafyllos + RW team started. Staging instance (`frontend-node-0`, port 4567) reachable and tested this week via docker-compose stack. |
 
 ---
 
@@ -41,9 +41,9 @@
 
 | Action Item | Status | Notes |
 |-------------|--------|-------|
-| Configure Kafka source connector | ✅ Done | ⚠️ Sheet says "In Progress". Production Kafka (prd2 SSL, prd4 SSL) working. Staging cluster (`stg-ocp-kfk01`, SASL_SSL/SCRAM-SHA-512) also verified — both topics present. |
+| Configure Kafka source connector | ✅ Done | ⚠️ Sheet says "In Progress". Production Kafka (prd2 SSL, prd4 SSL) working. Staging cluster (`stg-ocp-kfk01`, SASL_SSL/SCRAM-SHA-512) also verified — both topics present. docker-compose stack confirmed to connect to staging this week via `RISINGWAVE_HOST` env var. |
 | Throughput baseline (≥10k ev/s, 30-min run) | ❌ Not started | Formal test not run. Production ingesting at ~1,500 msg/s peak. |
-| Schema Registry integration (Confluent-compatible) | ✅ Done | ⚠️ Sheet says "In Progress". Tested with Apicurio (proto→Avro→Redpanda SR). Internal alignment still needed on which registry to standardise on. |
+| Schema Registry integration (Confluent-compatible) | ✅ Done | ⚠️ Sheet says "In Progress". Tested with Apicurio (proto→Avro→Redpanda SR). Internal alignment still needed on which registry to standardise on. `SCHEMA_REGISTRY_URL` is now configurable in docker-compose; validated against the real Apicurio endpoint on staging this week. |
 | Avro end-to-end ingestion | ✅ Done | ⚠️ Sheet says "Not Started". Full round-trip: `src_casino_prd` → `sink_casino_avro_redpanda` → `casino_out_avro` topic → `src_casino_avro` → `mv_casino_transactions_full`. |
 | Protobuf end-to-end ingestion (proto3, nested) | ✅ Done | ⚠️ Sheet says "In Progress". Both `CasinoRoundInfoDto` and `PandoraBetInfoVm` (with self-referential type stored as JSONB) working in production. |
 | Schema evolution scenarios | ❌ Not started | Approach not yet designed. |
@@ -70,8 +70,9 @@
 |-------------|--------|-------|
 | Databricks — bidirectional data exchange | ✅ Done | ⚠️ Sheet says "Not Started". Append-only Iceberg sinks to UC working (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`). Azure AD OAuth2 + explicit ADLS Gen2 account key. Trino federation for reads. See `DATABRICKS_ICEBERG_SINK.md`. |
 | Apache Iceberg sink — continuous ingest + compaction | ✅ Done | ⚠️ Sheet says "In Progress". Lakekeeper REST catalog + MinIO. Upsert sinks working. Compaction working. Snapshot expiration broken (RW ≤ 2.8). |
-| dbt integration | ✅ Done | ⚠️ Sheet says "In Progress". All MVs, sources, and sinks defined as dbt models using `dbt-risingwave` adapter. |
-| Dagster orchestration | ✅ Done | Full pipeline orchestrated: proto compile, MinIO upload, Avro schema registration, source creation, Databricks view, Trino views. |
+| dbt integration | ✅ Done | ⚠️ Sheet says "In Progress". All MVs, sources, and sinks defined as dbt models using `dbt-risingwave` adapter. Both `casino_prd_dbt_assets` and `realtime_funnel_dbt_assets` tested on staging this week. Feature flags `ENABLE_PYTHON_UDFS` and `ENABLE_LAKEKEEPER` added to allow clean dbt runs on staging without Lakekeeper or Python UDF support. |
+| Dagster orchestration | ✅ Done | Full pipeline orchestrated: proto compile, MinIO upload, Avro schema registration, source creation, Databricks view, Trino views. Confirmed end-to-end against staging RisingWave this week. |
+| Python UDFs on staging RisingWave | ❌ Blocked | `risingwave_python_udfs` asset fails on staging: Python UDFs not enabled in Helm config. Requires `enable_udf: true` under `risingwave.frontendNode.config`. Config shared with admin. |
 | Power BI — DirectQuery via PostgreSQL connector | ❌ Not started | Easiest next step — no new infrastructure needed. |
 | Atlan — catalog discovery and lineage | ❌ Not started | Low priority. |
 | incident.io — alert routing | ❌ Not started | Low priority. |
@@ -141,6 +142,7 @@
 - Lakekeeper upsert sinks work natively — best target for rolling-window MVs.
 - dbt + Dagster integration clean and reproducible.
 - R4 subsecond latency confirmed on production data.
+- Docker-compose stack is now fully configurable for staging vs local RisingWave via `RISINGWAVE_HOST` env var. Feature flags (`ENABLE_PYTHON_UDFS`, `ENABLE_LAKEKEEPER`) allow a clean dbt run on minimal staging deployments without Lakekeeper or Python UDF infrastructure.
 
 ### Limitations & Workarounds
 
@@ -151,3 +153,4 @@
 | Iceberg snapshot expiration broken with REST catalog | Snapshots accumulate indefinitely | Manual `expire_snapshots` / `VACUUM` | `DATABRICKS_ICEBERG_SINK.md §11` |
 | UNNEST blocks `TUMBLE` + `EMIT ON WINDOW CLOSE` (v2.7.4) | Windowed aggregation on nested arrays not possible | Fixed in v2.8 | Memory: `reference_rw_unnest_watermark` |
 | `DatabaseFailureIsolation` disabled (local Mac license) | Single job failure resets full DB | Retry-wrapped DDL; not an issue in proper deployment | `PRODUCTION_CASINO_DEMO.md §6` |
+| Python UDFs require `enable_udf: true` in Helm | `risingwave_python_udfs` Dagster asset fails on staging | Add `enable_udf: true` under `risingwave.frontendNode.config` in staging Helm values | Confirmed 2026-06-20 |
