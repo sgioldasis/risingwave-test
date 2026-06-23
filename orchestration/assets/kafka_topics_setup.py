@@ -7,6 +7,8 @@ OUTPUT_TOPICS = [
     "rw_poc_casino_out_avro",
     "rw_poc_casino_out_real_bet",
     "rw_poc_casino_out_turnover_percentage",
+    "cronus.casino.out.br.replay",
+    "bets-out-br-replay",
 ]
 
 _DEFAULT_PARTITIONS = 1
