@@ -7,7 +7,8 @@ requires-python = ">=3.13"
 dependencies = [
     "confluent-kafka[protobuf,avro]>=2.12.2",
     "fastavro>=1.9.0",
-    "grpcio-tools>=1.66.0",
+    "grpcio-tools>=1.66.0,<1.80.0",
+    "grpcio-health-checking>=1.66.2,<1.80.0",
     "dash>=3.4.0",
     "dash-bootstrap-components>=1.4.0",
     "plotly>=5.0.0",
