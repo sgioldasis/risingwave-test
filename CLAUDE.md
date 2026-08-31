@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-A real-time streaming analytics platform built around **RisingWave v3.0.0** (distributed mode), demonstrating an e-commerce conversion funnel and a casino/sportsbook PoC. Events flow through Redpanda (Kafka), get transformed by RisingWave materialized views, and land in multiple sinks: Iceberg (via Lakekeeper + MinIO), PostgreSQL, and back to Kafka. A React dashboard reads from Kafka via SSE. Online ML predictions use River (incremental learning).
+A real-time streaming analytics platform built around **RisingWave v3.2.0-alpha.20260822** (distributed mode), demonstrating an e-commerce conversion funnel and a casino/sportsbook PoC. Events flow through Redpanda (Kafka), get transformed by RisingWave materialized views, and land in multiple sinks: Iceberg (via Lakekeeper + MinIO), PostgreSQL, and back to Kafka. A React dashboard reads from Kafka via SSE. Online ML predictions use River (incremental learning).
 
 The `docs/poc/` directory contains a separate production casino demo (`CASINO_DEMO_RUNBOOK.md`, `PRODUCTION_CASINO_DEMO.md`).
 

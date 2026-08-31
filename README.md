@@ -53,6 +53,7 @@ Casino production demo (UC1/UC2): [docs/poc/PRODUCTION_CASINO_DEMO.md](docs/poc/
 | Technology | Purpose |
 |------------|---------|
 | **RisingWave** | Stream processing database for real-time analytics |
+| **StarRocks** | Always-on OLAP serving layer for Iceberg analytics |
 | **dbt** | Data transformation and modeling |
 | **Apache Kafka (Redpanda)** | Event streaming platform |
 | **Apache Iceberg** | Open table format for data lake storage |
@@ -67,6 +68,16 @@ Casino production demo (UC1/UC2): [docs/poc/PRODUCTION_CASINO_DEMO.md](docs/poc/
 | **scikit-learn** | Batch ML model training (fallback) |
 | **DuckDB** | Local analytics on Iceberg data |
 | **Spark** | Interactive notebook for data analysis |
+
+### StarRocks
+
+StarRocks starts with the default Compose stack and exposes its MySQL protocol on port `9030` and UI/API on port `8030`. The startup path requires the Databricks/ADLS variables documented in [docs/poc/STARROCKS_OPTIONAL_PROFILE_PLAN.md](docs/poc/STARROCKS_OPTIONAL_PROFILE_PLAN.md).
+
+```bash
+devbox shell
+./bin/1_up.sh
+./bin/4_run_starrocks.sh
+```
 
 ## Project Structure
 

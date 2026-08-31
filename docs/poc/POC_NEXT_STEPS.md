@@ -284,9 +284,9 @@ UC3 (betslip recommendation engine) is a large separate build — scope it only 
 
 ---
 
-## Version Notes — RisingWave 3.0.0
+## Version Notes — RisingWave v3.2.0-alpha.20260822
 
-The pipeline runs on **v3.0.0** (`risingwavelabs/risingwave:v3.0.0` in `docker-compose.yml`).
+The pipeline runs on **v3.2.0-alpha.20260822** (`risingwavelabs/risingwave:v3.2.0-alpha.20260822` in `docker-compose.yml`).
 
 **Changes from 2.7.4:**
 - `enable_compaction = 'true'` + `compaction_interval_sec` + `force_compaction = 'true'` is the working compaction pattern (replacing the `compaction.trigger_snapshot_count`-only approach needed in 2.7.4). Both options are set in the current sinks for belt-and-suspenders.

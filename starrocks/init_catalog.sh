@@ -1,5 +1,10 @@
 #!/bin/sh
 set -e
+
+: "${DATABRICKS_AZURE_CLIENT_ID:?DATABRICKS_AZURE_CLIENT_ID must be set}"
+: "${DATABRICKS_AZURE_TENANT_ID:?DATABRICKS_AZURE_TENANT_ID must be set}"
+: "${DATABRICKS_AZURE_CLIENT_SECRET:?DATABRICKS_AZURE_CLIENT_SECRET must be set}"
+
 apk add --no-cache mysql-client >/dev/null
 
 # Unset any injected proxy so requests to Databricks go direct
@@ -18,8 +23,6 @@ done
 
 echo "Creating external catalog databricks_uc..."
 # The heredoc is unquoted (<<SQL) so ${VAR} expands from the container environment.
-# azure.adls2 properties are included as fallback if credential vending doesn't pick up
-# the SAS token automatically; remove them once vending is confirmed working.
 mysql -h starrocks -P 9030 -u root <<SQL
 DROP CATALOG IF EXISTS databricks_uc;
 CREATE EXTERNAL CATALOG databricks_uc
@@ -30,9 +33,8 @@ PROPERTIES (
     "iceberg.catalog.uri"           = "https://adb-1608121643336927.7.azuredatabricks.net/api/2.1/unity-catalog/iceberg-rest",
     "iceberg.catalog.warehouse"     = "de_dev",
     "iceberg.catalog.credential"    = "${DATABRICKS_AZURE_CLIENT_ID}:${DATABRICKS_AZURE_CLIENT_SECRET}",
-    "iceberg.catalog.oauth2-server-uri" = "https://login.microsoftonline.com/78395483-9425-447a-ba64-60b90f6bb16e/oauth2/v2.0/token",
-    "iceberg.catalog.scope"         = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default",
-    "hadoop.fs.azure.account.key.stkznneurwpoccdddevstd.dfs.core.windows.net" = "${ADLS_ACCOUNT_KEY}"
+    "iceberg.catalog.oauth2-server-uri" = "https://login.microsoftonline.com/${DATABRICKS_AZURE_TENANT_ID}/oauth2/v2.0/token",
+    "iceberg.catalog.scope"         = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default"
 );
 SQL
 

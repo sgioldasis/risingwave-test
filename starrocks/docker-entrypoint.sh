@@ -1,21 +1,71 @@
 #!/bin/bash
 set -e
 
-# Write ABFS key into core-site.xml for both FE and BE before StarRocks starts.
-# StarRocks' Iceberg REST catalog doesn't forward catalog PROPERTIES to the
-# Hadoop Configuration, so the account key must be in core-site.xml which
-# Hadoop loads from the classpath automatically (FE for metadata, BE for scans).
-AZURE_XML="
+# Configure ABFS authentication for both FE and BE before StarRocks starts.
+: "${ADLS_ACCOUNT_NAME:?ADLS_ACCOUNT_NAME must be set}"
+
+ADLS_AUTH_MODE="${STARROCKS_ADLS_AUTH_MODE:-oauth}"
+
+if [ "$ADLS_AUTH_MODE" = "sas" ]; then
+  : "${ADLS_PROTO_SAS_TOKEN:?ADLS_PROTO_SAS_TOKEN must be set for SAS authentication}"
+  ADLS_HOST="${ADLS_ACCOUNT_NAME}.dfs.core.windows.net"
+  SAS_TOKEN_XML="$(printf '%s' "$ADLS_PROTO_SAS_TOKEN" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')"
+  AZURE_XML="
 <configuration>
   <property>
-    <name>fs.s3.impl</name>
-    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+    <name>fs.azure.account.auth.type.${ADLS_HOST}</name>
+    <value>SAS</value>
   </property>
   <property>
-    <name>fs.azure.account.key.stkznneurwpoccdddevstd.dfs.core.windows.net</name>
+    <name>fs.azure.sas.token.provider.type.${ADLS_HOST}</name>
+    <value>com.risingwave.starrocks.FixedSASTokenProvider</value>
+  </property>
+  <property>
+    <name>fs.azure.sas.fixed.token.${ADLS_HOST}</name>
+    <value>${SAS_TOKEN_XML}</value>
+  </property>
+</configuration>"
+elif [ "$ADLS_AUTH_MODE" = "oauth" ]; then
+  : "${ADLS_CLIENT_ID:?ADLS_CLIENT_ID must be set for ADLS OAuth}"
+  : "${ADLS_CLIENT_SECRET:?ADLS_CLIENT_SECRET must be set for ADLS OAuth}"
+  : "${ADLS_TENANT_ID:?ADLS_TENANT_ID must be set for ADLS OAuth}"
+  ADLS_HOST="${ADLS_ACCOUNT_NAME}.dfs.core.windows.net"
+  AZURE_XML="
+<configuration>
+  <property>
+    <name>fs.azure.account.auth.type.${ADLS_HOST}</name>
+    <value>OAuth</value>
+  </property>
+  <property>
+    <name>fs.azure.account.oauth.provider.type.${ADLS_HOST}</name>
+    <value>org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider</value>
+  </property>
+  <property>
+    <name>fs.azure.account.oauth2.client.id.${ADLS_HOST}</name>
+    <value>${ADLS_CLIENT_ID}</value>
+  </property>
+  <property>
+    <name>fs.azure.account.oauth2.client.secret.${ADLS_HOST}</name>
+    <value>${ADLS_CLIENT_SECRET}</value>
+  </property>
+  <property>
+    <name>fs.azure.account.oauth2.client.endpoint.${ADLS_HOST}</name>
+    <value>https://login.microsoftonline.com/${ADLS_TENANT_ID}/oauth2/token</value>
+  </property>
+</configuration>"
+elif [ "$ADLS_AUTH_MODE" = "account_key" ]; then
+  : "${ADLS_ACCOUNT_KEY:?ADLS_ACCOUNT_KEY must be set for account-key authentication}"
+  AZURE_XML="
+<configuration>
+  <property>
+    <name>fs.azure.account.key.${ADLS_ACCOUNT_NAME}.dfs.core.windows.net</name>
     <value>${ADLS_ACCOUNT_KEY}</value>
   </property>
 </configuration>"
+else
+  echo "Unsupported STARROCKS_ADLS_AUTH_MODE: ${STARROCKS_ADLS_AUTH_MODE}" >&2
+  exit 1
+fi
 
 echo "$AZURE_XML" > /data/deploy/starrocks/fe/conf/core-site.xml
 echo "$AZURE_XML" > /data/deploy/starrocks/be/conf/core-site.xml
