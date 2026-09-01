@@ -46,8 +46,9 @@ This is the first required step and must be completed before any Docker startup,
 | 2.1.2 Tables | ✅ DONE | `sr_test_events` and `sr_hourly_agg` exist |
 | 2.1.3 Grants | ✅ DONE | Catalog, schema, and table grants were applied to the Databricks service principal |
 | 2.1.4 Full verification | ✅ DONE | Schema, table schemas, and table properties were verified |
-| 2.1.5 StarRocks read verification | ✅ DONE | StarRocks discovered both tables through `databricks_uc.sr_poc` and read zero rows from each |
-| 2.1.6 Trino read verification | ✅ DONE | Trino discovered both tables through `databricks.sr_poc` and read zero rows from each |
+| 2.1.5 StarRocks catalog verification | ✅ DONE | StarRocks discovered both tables through `databricks_uc.sr_poc` and queried empty-table counts |
+| 2.1.6 Trino catalog verification | ✅ DONE | Trino discovered both tables through `databricks.sr_poc` and queried empty-table counts |
+| 2.1.7 External-engine data-plane verification | BLOCKED | StarRocks cannot access the Databricks-managed ADLS location to write or read non-empty table files |
 
 #### ✅ 2.1.1 DONE - Create Schema
 
@@ -143,9 +144,9 @@ SHOW TBLPROPERTIES sr_poc.sr_hourly_agg;
 
 **Expected:** The table schemas match section 2.1.2. Both tables have `history.expire.min-snapshots-to-keep = 100`.
 
-#### ✅ 2.1.5 DONE - Verify StarRocks Can Read Databricks Tables
+#### ✅ 2.1.5 DONE - Verify StarRocks Catalog Access
 
-**Status: Complete** - StarRocks discovered both Databricks-managed tables through the `databricks_uc` Iceberg REST catalog and completed read queries successfully.
+**Status: Complete** - StarRocks discovered both Databricks-managed tables through the `databricks_uc` Iceberg REST catalog and queried their empty-table counts.
 
 ```bash
 docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root --batch --raw -e "
@@ -155,11 +156,11 @@ SELECT COUNT(*) AS hourly_aggregation_rows FROM databricks_uc.sr_poc.sr_hourly_a
 "
 ```
 
-**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events.
+**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events. This verifies catalog and table metadata access; physical ADLS file access remains blocked as described in section 2.1.7.
 
-#### ✅ 2.1.6 DONE - Verify Trino Can Read Databricks Tables
+#### ✅ 2.1.6 DONE - Verify Trino Catalog Access
 
-**Status: Complete** - Trino discovered both Databricks-managed tables through the `databricks` Iceberg REST catalog and completed read queries successfully.
+**Status: Complete** - Trino discovered both Databricks-managed tables through the `databricks` Iceberg REST catalog and queried their empty-table counts.
 
 ```bash
 docker exec trino trino --execute "SHOW TABLES FROM databricks.sr_poc"
@@ -167,7 +168,41 @@ docker exec trino trino --execute "SELECT COUNT(*) AS event_rows FROM databricks
 docker exec trino trino --execute "SELECT COUNT(*) AS hourly_aggregation_rows FROM databricks.sr_poc.sr_hourly_agg"
 ```
 
-**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events.
+**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events. A non-empty table must be queried after resolving section 2.1.7 to verify direct Parquet-file reads.
+
+#### [-] 2.1.7 BLOCKED - Verify External-Engine Data-Plane Access
+
+**Observed failure:** A StarRocks insert into `databricks_uc.sr_poc.sr_test_events` failed before writing data. A follow-up query confirmed that no test row was inserted.
+
+```text
+ERROR 5609: fail to connect hdfs namenode
+abfss://cross-operator@stkznneucommoncdddevstd.dfs.core.windows.net/
+
+KeyProviderException: Failure to initialize configuration for
+stkznneucommoncdddevstd.dfs.core.windows.net
+```
+
+**Root cause:** The current `USING ICEBERG` tables are Unity Catalog-managed tables. Because `de_dev.sr_poc` was created without a `MANAGED LOCATION`, Databricks stores their data files under its shared managed-storage account:
+
+```text
+abfss://cross-operator@stkznneucommoncdddevstd.dfs.core.windows.net/...
+```
+
+StarRocks is configured with OAuth only for the separate PoC account `stkznneusrpoccdddevstd`. It can access Unity Catalog metadata through Iceberg REST but has no Hadoop filesystem configuration or ADLS permission for `stkznneucommoncdddevstd`.
+
+**Additional permission finding:** The personal Databricks profile cannot create the storage credential required to place tables in the PoC-owned ADLS account:
+
+```text
+User does not have CREATE STORAGE CREDENTIAL on Metastore 'unity-northeurope'
+```
+
+**Option A: Retain the current Databricks-managed tables.** An administrator grants the ADLS OAuth service principal used by StarRocks `Storage Blob Data Contributor` on `stkznneucommoncdddevstd`, preferably scoped to the `cross-operator` container. Then add a second OAuth account configuration for `stkznneucommoncdddevstd.dfs.core.windows.net` to the StarRocks Hadoop `core-site.xml` configuration.
+
+**Option B: Recreate the empty tables in the PoC-owned ADLS account.** This is the preferred PoC design when external engines must write Iceberg files directly. An administrator creates a Unity Catalog storage credential and external location for `abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/`, then grants the personal Databricks user `CREATE MANAGED STORAGE`, `READ FILES`, and `WRITE FILES` on that location. The personal user can create a new managed schema and the two tables there, then recreate or update the RisingWave sinks to target it.
+
+**Image validation:** StarRocks was successfully recreated from the upstream `starrocks/allin1-ubuntu:4.1.4` image after removing the SAS-only custom image patch. The blocked insert is an ADLS location and permission issue, not an image issue.
+
+**Next validation:** After either option is complete, insert one uniquely named test row through StarRocks and verify that same row through Databricks SQL, StarRocks, and Trino.
 
 ---
 
