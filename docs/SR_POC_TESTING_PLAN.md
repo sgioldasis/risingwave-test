@@ -47,6 +47,7 @@ This is the first required step and must be completed before any Docker startup,
 | 2.1.3 Grants | ✅ DONE | Catalog, schema, and table grants were applied to the Databricks service principal |
 | 2.1.4 Full verification | ✅ DONE | Schema, table schemas, and table properties were verified |
 | 2.1.5 StarRocks read verification | ✅ DONE | StarRocks discovered both tables through `databricks_uc.sr_poc` and read zero rows from each |
+| 2.1.6 Trino read verification | ✅ DONE | Trino discovered both tables through `databricks.sr_poc` and read zero rows from each |
 
 #### ✅ 2.1.1 DONE - Create Schema
 
@@ -156,6 +157,18 @@ SELECT COUNT(*) AS hourly_aggregation_rows FROM databricks_uc.sr_poc.sr_hourly_a
 
 **Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events.
 
+#### ✅ 2.1.6 DONE - Verify Trino Can Read Databricks Tables
+
+**Status: Complete** - Trino discovered both Databricks-managed tables through the `databricks` Iceberg REST catalog and completed read queries successfully.
+
+```bash
+docker exec trino trino --execute "SHOW TABLES FROM databricks.sr_poc"
+docker exec trino trino --execute "SELECT COUNT(*) AS event_rows FROM databricks.sr_poc.sr_test_events"
+docker exec trino trino --execute "SELECT COUNT(*) AS hourly_aggregation_rows FROM databricks.sr_poc.sr_hourly_agg"
+```
+
+**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events.
+
 ---
 
 ## 2A. Pre-Flight Checks
@@ -256,8 +269,10 @@ psql -h $RISINGWAVE_HOST -p $RISINGWAVE_PORT -U $RISINGWAVE_USER -d $RISINGWAVE_
 
 Expected: RisingWave version output (e.g., `v3.2.0-alpha`).
 
-### 2A.5.2 StarRocks Availability
+### ✅ 2A.5.2 DONE - StarRocks Availability
 Verify StarRocks is healthy and MySQL protocol is responding:
+
+**Status: Complete** - StarRocks connected to Databricks Unity Catalog and queried both `sr_poc` tables successfully.
 
 ```bash
 mysql -h 127.0.0.1 -P 9030 -u root \
@@ -266,8 +281,10 @@ mysql -h 127.0.0.1 -P 9030 -u root \
 
 Expected: `1` (success).
 
-### 2A.5.3 Trino Availability
+### ✅ 2A.5.3 DONE - Trino Availability
 Verify Trino is healthy and catalogs are configured:
+
+**Status: Complete** - Trino connected to Databricks Unity Catalog and queried both `sr_poc` tables successfully.
 
 ```bash
 curl -I http://localhost:8080/ui/

@@ -887,10 +887,7 @@ services:
 
   # StarRocks — columnar OLAP engine reading Unity Catalog and Lakekeeper Iceberg tables
   starrocks:
-    image: ${STARROCKS_IMAGE:-risingwave-test/starrocks:4.1.4-sas}
-    build:
-      context: ./starrocks
-      dockerfile: Dockerfile
+    image: ${STARROCKS_IMAGE:-starrocks/allin1-ubuntu:4.1.4}
     container_name: starrocks
     entrypoint: ["/usr/bin/tini-static", "--", "/starrocks-entrypoint.sh"]
     ports:
