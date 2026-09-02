@@ -1,10 +1,17 @@
-# Databricks Iceberg Sinks — RisingWave Casino PoC
+---
+title: Databricks Iceberg Sinks for the RisingWave Casino PoC
+description: Architecture, configuration, troubleshooting, and compatibility guidance for RisingWave sinks to Databricks managed Iceberg tables
+ms.date: 2026-09-02
+ms.topic: troubleshooting
+---
 
 RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) into **Databricks Unity Catalog Iceberg tables** running in parallel to the existing Lakekeeper sinks. This document records the full integration path, every gotcha encountered, and the rationale for each decision.
 
 > **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see `DATABRICKS_ICEBERG_READ.md` §6.
 >
 > **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and `DATABRICKS_ICEBERG_READ.md` §6 for the view.
+>
+> **Update (2026-09-02):** Newly created managed Iceberg tables in the current workspace receive the `delta.feature.catalogManaged` protocol feature. RisingWave, StarRocks, and Trino IRC commits failed with `ErrorCode: 2012` while that feature was enabled. Running `ALTER TABLE ... DROP FEATURE catalogManaged` on an isolated probe restored RisingWave and StarRocks writes while preserving `Provider = iceberg`, managed-table status, ownership, and predictive optimization. See §19 for the evidence and migration guardrails.
 
 ---
 
@@ -1081,3 +1088,112 @@ Lakekeeper wins on **write semantics**: upsert, compaction, and snapshot expirat
 Unity Catalog wins on **ecosystem integration**: Databricks SQL, Delta Sharing, Unity Catalog governance, and existing organisational data access controls. It is the right target for **archival / append-only** workloads (raw landing tables like `rw_casino_transactions`, `rw_sportsbook_bets`) where the delete-file limitation does not apply.
 
 The current PoC architecture reflects this split: upsert aggregations go to Lakekeeper; raw event facts go to Unity Catalog.
+
+## 19. Catalog-managed Iceberg external-write compatibility
+
+### Current status
+
+External IRC writes to newly created managed Iceberg tables failed in the
+`de_dev.sr_poc_external` schema on 2026-09-02. RisingWave, StarRocks, and Trino
+all reached Unity Catalog and received the same response:
+
+```text
+Service failed: 500: Could not process table operation.
+ErrorCode: 2012
+```
+
+The isolated target `de_dev.sr_poc_external.rw_irc_probe_20260902` satisfied the
+documented prerequisites:
+
+* `Provider = iceberg`
+* `Type = MANAGED`
+* Predictive optimization enabled
+* Writer service principal owns the table
+* `ALL PRIVILEGES` and `EXTERNAL USE SCHEMA` granted
+* ADLS OAuth create, list, read, and delete operations working over VPN
+* External reads working from StarRocks and Trino
+
+These checks ruled out storage reachability, ownership, table grants, and
+reader compatibility.
+
+### Difference from the historical working tables
+
+The historical `de_dev.rw_poc` tables do not advertise the
+`delta.feature.catalogManaged` protocol feature. New managed Iceberg tables do:
+
+```text
+delta.feature.catalogManaged = supported
+databricks.internal.autoUpgrades.delta.feature.catalogManaged = supported
+delta.universalFormat.iceberg.atomicConversion.supported = true
+```
+
+This was the only tested property difference that changed commit behavior.
+
+### Required conversion for external writers
+
+`UNSET TBLPROPERTIES` does not remove the protocol feature. It only removes the
+auto-upgrade marker:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.example_table
+UNSET TBLPROPERTIES ('delta.feature.catalogManaged');
+```
+
+Use the protocol-feature operation instead:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.example_table
+DROP FEATURE catalogManaged;
+```
+
+After the conversion, verify the table through SQL and the Unity Catalog API:
+
+```sql
+DESCRIBE TABLE EXTENDED de_dev.sr_poc_external.example_table;
+DESCRIBE HISTORY de_dev.sr_poc_external.example_table LIMIT 10;
+```
+
+Expected results:
+
+* `Provider = iceberg`
+* `Type = MANAGED`
+* Predictive optimization remains enabled
+* `delta.feature.catalogManaged` is absent from the API properties
+* History contains a `DROP FEATURE` operation
+
+### Verified result
+
+After converting the isolated probe, RisingWave committed two append-only rows
+and StarRocks committed one row. Databricks recorded IRC `WRITE` operations at
+versions `6`, `7`, and `8`. All three rows were queryable through Databricks SQL.
+
+The successful RisingWave configuration retained the existing PoC rules:
+
+```sql
+connector = 'iceberg',
+type = 'append-only',
+force_append_only = 'true'
+```
+
+The conversion resolves the catalog commit error. It does not change the
+separate limitation on Iceberg delete files, so upsert sinks must continue to
+use the append-only and read-side-collapse pattern described in §16.
+
+> [!CAUTION]
+> Treat `DROP FEATURE catalogManaged` as a protocol migration. Validate it on an
+> isolated table before converting an existing target. Stop writers during the
+> operation, record the pre-change metadata, and verify one uniquely identified
+> append through Databricks SQL before resuming the pipeline.
+
+### Rollout status
+
+| Target | Status |
+| -------- | -------- |
+| `rw_irc_probe_20260902` | Converted and externally writable |
+| `sr_test_events` | Not converted |
+| `sr_hourly_agg` | Not converted |
+| Existing `rw_poc` tables | Already compatible; no change required |
+
+Future table provisioning for external writers must include a post-create
+compatibility check. If Databricks adds `catalogManaged`, convert and validate
+the table before creating the RisingWave sink.

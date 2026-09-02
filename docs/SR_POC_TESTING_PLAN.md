@@ -1,7 +1,12 @@
-# StarRocks PoC — Databricks Unity Catalog `sr_poc` Schema Testing Plan
+---
+title: StarRocks PoC Databricks Unity Catalog Testing Plan
+description: Validation plan and current status for RisingWave, StarRocks, and Trino access to Databricks managed Iceberg tables
+ms.date: 2026-09-02
+ms.topic: troubleshooting
+---
 
 **Date Created:** 2026-08-31
-**Status:** DRAFT — Awaiting review and approval
+**Status:** External writes validated after dropping the `catalogManaged` table feature on an isolated managed Iceberg probe
 **Purpose:** Test bidirectional data flow (RisingWave → Databricks → StarRocks/Trino) in a new isolated `sr_poc` schema using the new service principal.
 
 ---
@@ -49,6 +54,7 @@ This is the first required step and must be completed before any Docker startup,
 | 2.1.5 StarRocks catalog verification | ✅ DONE | StarRocks discovered both tables through `databricks_uc.sr_poc` and queried empty-table counts |
 | 2.1.6 Trino catalog verification | ✅ DONE | Trino discovered both tables through `databricks.sr_poc` and queried empty-table counts |
 | 2.1.7 External-engine reader data-plane verification | ✅ DONE | Databricks control row is readable through both StarRocks and Trino from the PoC-owned ADLS location |
+| 2.1.9 External-engine writer root cause | ✅ RESOLVED | `delta.feature.catalogManaged` caused UC IRC commit failures; `DROP FEATURE catalogManaged` restored RisingWave and StarRocks writes on the isolated probe table |
 
 #### ✅ 2.1.1 DONE - Create Schema
 
@@ -536,6 +542,206 @@ The follow-up checks did not identify a missing grant or a missing table capabil
 - and the API metadata does not expose a direct `HAS_DIRECT_EXTERNAL_ENGINE_WRITE_SUPPORT` capability flag.
 
 The next best local move is not to keep retrying writes. It is to create a fresh probe table in Databricks SQL Editor or a SQL warehouse and re-test one minimal insert only after the workspace-level commit contract is clarified.
+
+> [!IMPORTANT]
+> The conclusion above records the intermediate state before the
+> `catalogManaged` comparison. Section 2.1.9 supersedes it with the confirmed
+> root cause and successful external-write validation.
+
+### 2.1.9 Resolved external-write failure on catalog-managed tables
+
+**Status: Resolved on an isolated probe table on 2026-09-02.** The Databricks
+table feature `delta.feature.catalogManaged` caused Unity Catalog Iceberg REST
+Catalog (IRC) commits to fail with HTTP `500`, `ErrorCode: 2012`. Dropping that
+protocol feature converted the probe to the same compatibility state as the
+historical `de_dev.rw_poc` tables and restored external writes from RisingWave
+and StarRocks.
+
+#### Scope of the resolution
+
+The successful test used this isolated target:
+
+```text
+de_dev.sr_poc_external.rw_irc_probe_20260902
+```
+
+The production-style targets `sr_test_events` and `sr_hourly_agg` have not been
+converted. The result proves the remediation but does not authorize a bulk
+conversion of existing tables.
+
+#### Historical comparison through the personal profile
+
+The Databricks CLI `personal` profile compared the historical working table and
+the new failing probe:
+
+| Property | Historical working table | New table before conversion |
+| ---------- | -------------------------- | ----------------------------- |
+| Table | `de_dev.rw_poc.rw_casino_transactions` | `de_dev.sr_poc_external.rw_irc_probe_20260902` |
+| Provider | `iceberg` | `iceberg` |
+| Type | `MANAGED` | `MANAGED` |
+| Predictive optimization | `ENABLE` | `ENABLE` after explicit configuration |
+| Table owner | `3b7f531f-db93-4186-af75-6566c12c076b` | `27a78a40-69f4-40e0-9768-ba39d58a6a55` |
+| `delta.feature.catalogManaged` | Absent | `supported` |
+| Atomic Iceberg conversion | Absent | Enabled |
+| External IRC commits | Successful | Failed with `ErrorCode: 2012` |
+
+Permissions, ownership, table provider, predictive optimization, VPN access,
+ADLS data-plane access, and client versions were tested independently before
+the feature conversion. None resolved the commit error.
+
+#### Failed writers before conversion
+
+All three external writers reached the Unity Catalog commit endpoint and
+received the same server-side failure:
+
+```text
+Service failed: 500: Could not process table operation.
+ErrorCode: 2012
+```
+
+Representative request IDs include:
+
+```text
+StarRocks: 2503bfd5-daa6-4248-a716-a62fd8043aef
+StarRocks: a6dfe5b8-24c0-4ea5-ac9f-635372f74226
+StarRocks: 9a7adc5d-c854-4d3b-9282-13bfaa925506
+Trino:     c3d55af0-10c2-40ea-a36b-4dfdfad52c0e
+RisingWave: 0100e030-e6cb-4b20-8e1c-0f51c7dd8dde
+RisingWave: f218de36-c580-49ac-8d45-32b507a2772a
+RisingWave: abee1f8c-fc3c-41e6-b082-88df2e09eab2
+RisingWave: 70328369-13b7-411b-a95c-a3122386fa29
+RisingWave: c185e3d7-18bd-4826-ad3a-7073eba3442c
+```
+
+Each uncertain commit was checked through Databricks SQL and an external
+reader. No failed-attempt row was present.
+
+#### Conversion procedure
+
+An initial property unset completed but did not remove the protocol feature:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.rw_irc_probe_20260902
+UNSET TBLPROPERTIES ('delta.feature.catalogManaged');
+```
+
+After that statement, the API still returned:
+
+```text
+delta.feature.catalogManaged = supported
+```
+
+The effective conversion used Delta's protocol-feature operation:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.rw_irc_probe_20260902
+DROP FEATURE catalogManaged;
+```
+
+Databricks recorded the conversion at table version `5`:
+
+```text
+operation: DROP FEATURE
+operationParameters: {"featureName":"catalogManaged","truncateHistory":"false"}
+```
+
+After conversion, the Unity Catalog API no longer returned
+`delta.feature.catalogManaged`. SQL metadata still reported:
+
+```text
+Type: MANAGED
+Provider: iceberg
+Owner: 27a78a40-69f4-40e0-9768-ba39d58a6a55
+Predictive Optimization: ENABLE
+```
+
+#### RisingWave validation
+
+RisingWave `3.2.0-alpha` used an isolated append-only source, a timezone-aware
+materialized view, and this sink behavior:
+
+```sql
+connector = 'iceberg',
+type = 'append-only',
+force_append_only = 'true',
+commit_checkpoint_interval = 1
+```
+
+Before conversion, RisingWave built a one-file Iceberg v2 snapshot but every
+commit retry returned `ErrorCode: 2012`. After `DROP FEATURE catalogManaged`,
+the same sink configuration committed successfully. Databricks recorded:
+
+```text
+version 6: WRITE, Kernel-4.4.0-SNAPSHOT/Iceberg REST Catalog
+version 7: WRITE, Kernel-4.4.0-SNAPSHOT/Iceberg REST Catalog
+```
+
+Databricks SQL returned both RisingWave probe rows:
+
+```text
+risingwave-irc-probe-20260902-1407
+risingwave-after-drop-feature-20260902-1435
+```
+
+The temporary RisingWave sink was dropped after validation to prevent further
+backfill or retries. The local source and materialized view remain available
+for follow-up diagnostics.
+
+#### StarRocks validation
+
+StarRocks inserted a fresh row into the same converted table without an error:
+
+```text
+starrocks-after-drop-feature-20260902-1437
+```
+
+Databricks SQL read the row successfully and recorded another IRC write at
+version `8`.
+
+#### Root cause and current operating rule
+
+The failure was not caused by the new service principal, ADLS OAuth, VPN,
+schema grants, `EXTERNAL USE SCHEMA`, ownership, predictive optimization, or
+the external writer versions. The discriminating variable was the
+`catalogManaged` protocol feature automatically added to newly created managed
+Iceberg tables in this workspace.
+
+> [!CAUTION]
+> `DROP FEATURE catalogManaged` changes the table protocol and creates Delta
+> history commits. Apply it to one non-production table at a time, verify the
+> resulting provider and maintenance settings, and test both Databricks-native
+> and external reads before converting operational targets.
+
+Use this validation sequence for each candidate table:
+
+1. Confirm `Provider = iceberg`, `Type = MANAGED`, and predictive optimization
+  is enabled.
+2. Record the current owner, properties, and table history.
+3. Stop external writers to avoid uncertain concurrent commits.
+4. Run `ALTER TABLE ... DROP FEATURE catalogManaged` through Databricks SQL.
+5. Confirm `delta.feature.catalogManaged` is absent through the Unity Catalog
+  table API.
+6. Start one append-only writer and commit one uniquely identified row.
+7. Verify the row and the new `WRITE` history entry through Databricks SQL.
+8. Re-enable the intended pipeline only after the single-row check succeeds.
+
+#### Latest status
+
+External writing is now technically validated for the converted isolated probe:
+
+| Capability | Status |
+| ------------ | -------- |
+| Direct ADLS OAuth access over VPN | Working |
+| Databricks-native write | Working |
+| RisingWave append-only IRC write after conversion | Working |
+| StarRocks IRC write after conversion | Working |
+| Trino read after Databricks-native writes | Working |
+| Existing `sr_test_events` and `sr_hourly_agg` conversion | Not started |
+| Production pipeline migration | Not started |
+
+The next controlled action is to convert one existing test target, validate a
+single external append, and only then update the RisingWave dbt sinks to use the
+converted target set.
 
 ---
 
