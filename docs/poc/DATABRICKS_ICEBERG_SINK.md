@@ -1163,9 +1163,10 @@ Expected results:
 
 ### Verified result
 
-After converting the isolated probe, RisingWave committed two append-only rows
-and StarRocks committed one row. Databricks recorded IRC `WRITE` operations at
-versions `6`, `7`, and `8`. All three rows were queryable through Databricks SQL.
+After converting the isolated probe, RisingWave committed two append-only rows,
+StarRocks committed one row, and Trino committed one row. Databricks recorded
+IRC `WRITE` operations at versions `6`, `7`, and `8`. All rows were queryable
+through Databricks SQL.
 
 The successful RisingWave configuration retained the existing PoC rules:
 
@@ -1175,9 +1176,46 @@ type = 'append-only',
 force_append_only = 'true'
 ```
 
+The converted operational test targets were validated next:
+
+* RisingWave committed `risingwave-sr-test-events-20260902-1510` to
+    `de_dev.sr_poc_external.sr_test_events`. StarRocks and Trino both read the
+    row; the table history recorded an external IRC `WRITE` at version `6`.
+* Trino committed an aggregate row to
+    `de_dev.sr_poc_external.sr_hourly_agg`. StarRocks read it after
+    `REFRESH EXTERNAL TABLE`; the table history recorded an external IRC `WRITE`
+    at version `5`.
+
 The conversion resolves the catalog commit error. It does not change the
 separate limitation on Iceberg delete files, so upsert sinks must continue to
 use the append-only and read-side-collapse pattern described in §16.
+
+### Delta plus UniForm validation
+
+The isolated managed Delta table
+`de_dev.sr_poc_external.delta_uniform_probe_20260902` was created with
+`delta.enableIcebergCompatV2 = true` and
+`delta.universalFormat.enabledFormats = iceberg`. A Databricks-native write
+succeeded, followed by `MSCK REPAIR TABLE ... SYNC METADATA` to synchronize its
+Iceberg metadata.
+
+Databricks identified the object as `Provider = delta` with a `Delta Uniform
+Iceberg` metadata section. StarRocks and Trino both read the Databricks control
+row through the Iceberg REST Catalog.
+
+An external StarRocks insert was rejected before a commit attempt:
+
+```text
+Malformed request: Table
+'de_dev.sr_poc_external.delta_uniform_probe_20260902' is not a Managed
+Iceberg table.
+request_id: 94c873c0-8a0f-46d7-a237-00bba85de9c4
+```
+
+Databricks confirmed that no external row was written. This is the expected
+UniForm behavior: external Iceberg clients can read Delta data but cannot write
+to it. Delta plus UniForm is therefore appropriate for externally readable
+Databricks-owned data, not for RisingWave, StarRocks, or Trino writer targets.
 
 > [!CAUTION]
 > Treat `DROP FEATURE catalogManaged` as a protocol migration. Validate it on an
@@ -1190,8 +1228,9 @@ use the append-only and read-side-collapse pattern described in §16.
 | Target | Status |
 | -------- | -------- |
 | `rw_irc_probe_20260902` | Converted and externally writable |
-| `sr_test_events` | Not converted |
-| `sr_hourly_agg` | Not converted |
+| `delta_uniform_probe_20260902` | UniForm reader validation only; external writes unsupported |
+| `sr_test_events` | Converted; RisingWave append validated and readable from StarRocks and Trino |
+| `sr_hourly_agg` | Converted; Trino append validated and readable from StarRocks after refresh |
 | Existing `rw_poc` tables | Already compatible; no change required |
 
 Future table provisioning for external writers must include a post-create

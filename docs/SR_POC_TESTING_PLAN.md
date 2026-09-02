@@ -270,9 +270,17 @@ request_id: 8346c171-bb94-469e-b13d-0718da00b32f
 
 The Trino test ID returned zero rows through Databricks SQL, StarRocks, and Trino, so this commit also did not complete.
 
-**Current design:** StarRocks and Trino are validated external readers. Do not use either engine as an Iceberg REST writer until the shared Databricks Iceberg REST commit failure is resolved. The intended writer remains RisingWave, which will target `de_dev.sr_poc_external` through Unity Catalog Iceberg REST after that investigation.
+**Historical design at this point:** StarRocks and Trino were validated external
+readers only. The `catalogManaged` root cause, conversion, and successful
+write validation supersede this interim position in section 2.1.9.
 
-**Escalation:** The same Databricks Iceberg REST catalog `500` prevents commits from both StarRocks and Trino, despite verified Unity Catalog grants, `EXTERNAL USE SCHEMA`, VPN ADLS data-plane access, and non-empty reads. Ask the Databricks platform administrator to inspect Unity Catalog service logs for request IDs `d96f9311-2d6f-4868-8855-6841fb5713b3`, `bc643f52-3aee-4b71-b679-752ae1841a22`, and `8346c171-bb94-469e-b13d-0718da00b32f`.
+**Historical escalation:** Before the feature conversion, the same Databricks
+Iceberg REST catalog `500` prevented commits from both StarRocks and Trino,
+despite verified Unity Catalog grants, `EXTERNAL USE SCHEMA`, VPN ADLS
+data-plane access, and non-empty reads. The recorded request IDs remain useful
+for platform investigation: `d96f9311-2d6f-4868-8855-6841fb5713b3`,
+`bc643f52-3aee-4b71-b679-752ae1841a22`, and
+`8346c171-bb94-469e-b13d-0718da00b32f`.
 
 **Option A: Retain the current Databricks-managed tables.** An administrator grants the ADLS OAuth service principal used by StarRocks `Storage Blob Data Contributor` on `stkznneucommoncdddevstd`, preferably scoped to the `cross-operator` container. Then add a second OAuth account configuration for `stkznneucommoncdddevstd.dfs.core.windows.net` to the StarRocks Hadoop `core-site.xml` configuration.
 
@@ -280,13 +288,18 @@ The Trino test ID returned zero rows through Databricks SQL, StarRocks, and Trin
 
 **Image validation:** StarRocks was successfully recreated from the upstream `starrocks/allin1-ubuntu:4.1.4` image after removing the SAS-only custom image patch. The write limitation is unrelated to the image.
 
-**Next validation:** After the shared Iceberg REST commit failure is resolved, deploy the RisingWave sinks with `DATABRICKS_SCHEMA=sr_poc_external`, produce test events, then verify the resulting rows through Databricks SQL, StarRocks, and Trino.
+**Historical next validation:** The validation was completed after the shared
+commit failure was resolved by dropping `catalogManaged`. Section 2.1.9 records
+the successful RisingWave, StarRocks, and Trino writes.
 
-### 2.1.7b RisingWave service-principal handoff (2026-09-02)
+### 2.1.7b Historical RisingWave service-principal handoff (2026-09-02)
 
-**Status: blocked on Databricks service-principal authorization.** The DEV and
-STG workspaces expose the same Unity Catalog metastore object. The current local
-stack uses the DEV host, which remains a valid target for the shared metastore.
+**Historical status: initially blocked on Databricks service-principal
+authorization.** The subsequent schema grants, ownership alignment, and
+successful external writes recorded in section 2.1.9 supersede this initial
+blocker. The DEV and STG workspaces expose the same Unity Catalog metastore
+object. The current local stack uses the DEV host, which remains a valid target
+for the shared metastore.
 
 The Jira request's statement that the principal was "created in STG" refers to
 the STG Azure environment and ADLS roles. It does not prove the principal is
@@ -565,9 +578,10 @@ The successful test used this isolated target:
 de_dev.sr_poc_external.rw_irc_probe_20260902
 ```
 
-The production-style targets `sr_test_events` and `sr_hourly_agg` have not been
-converted. The result proves the remediation but does not authorize a bulk
-conversion of existing tables.
+At the time of the isolated probe, the production-style targets
+`sr_test_events` and `sr_hourly_agg` had not been converted. Both were
+subsequently converted and validated with external writes, as recorded in the
+latest status below.
 
 #### Historical comparison through the personal profile
 
@@ -698,6 +712,66 @@ starrocks-after-drop-feature-20260902-1437
 Databricks SQL read the row successfully and recorded another IRC write at
 version `8`.
 
+#### Delta plus UniForm comparison
+
+An isolated managed Delta table was created to test UniForm as an alternative
+to native managed Iceberg:
+
+```text
+de_dev.sr_poc_external.delta_uniform_probe_20260902
+```
+
+The table was created with Iceberg reads enabled:
+
+```sql
+CREATE TABLE de_dev.sr_poc_external.delta_uniform_probe_20260902 (
+  id STRING NOT NULL,
+  timestamp TIMESTAMP NOT NULL,
+  user_id STRING NOT NULL,
+  event_type STRING NOT NULL,
+  amount DOUBLE,
+  details STRING
+)
+USING DELTA
+TBLPROPERTIES (
+  'delta.columnMapping.mode' = 'id',
+  'delta.enableIcebergCompatV2' = 'true',
+  'delta.universalFormat.enabledFormats' = 'iceberg'
+);
+```
+
+A Databricks-native control insert succeeded. `MSCK REPAIR TABLE ... SYNC
+METADATA` completed before reader validation. Databricks then reported:
+
+```text
+Provider: delta
+# Delta Uniform Iceberg
+```
+
+Both external engines read the Databricks control row successfully:
+
+```text
+delta-control-20260902-1445 | delta_uniform_control | 8.0
+```
+
+StarRocks then attempted an external insert and received the explicit,
+non-ambiguous rejection below:
+
+```text
+Malformed request: Table
+'de_dev.sr_poc_external.delta_uniform_probe_20260902' is not a Managed
+Iceberg table.
+request_id: 94c873c0-8a0f-46d7-a237-00bba85de9c4
+```
+
+Databricks confirmed that the external probe row was absent and that table
+history contains only the native Databricks write.
+
+**Decision:** Delta plus UniForm is a valid external-reader format. It is not
+a writer target for RisingWave, StarRocks, or Trino through the Iceberg REST
+Catalog. Continue to use native managed Iceberg tables with
+`catalogManaged` removed for external writes.
+
 #### Root cause and current operating rule
 
 The failure was not caused by the new service principal, ADLS OAuth, VPN,
@@ -735,13 +809,18 @@ External writing is now technically validated for the converted isolated probe:
 | Databricks-native write | Working |
 | RisingWave append-only IRC write after conversion | Working |
 | StarRocks IRC write after conversion | Working |
-| Trino read after Databricks-native writes | Working |
-| Existing `sr_test_events` and `sr_hourly_agg` conversion | Not started |
+| Trino IRC write after conversion | Working on the isolated probe and `sr_hourly_agg` |
+| Delta plus UniForm external reads | Working |
+| Delta plus UniForm external writes | Explicitly unsupported |
+| RisingWave append to `sr_test_events` | Working; row readable from StarRocks and Trino |
+| Trino append to `sr_hourly_agg` | Working; row readable from StarRocks after refresh |
 | Production pipeline migration | Not started |
 
-The next controlled action is to convert one existing test target, validate a
-single external append, and only then update the RisingWave dbt sinks to use the
-converted target set.
+Trino also committed `trino-after-drop-feature-20260902-1455` to the converted
+probe table. RisingWave committed
+`risingwave-sr-test-events-20260902-1510` to `sr_test_events` at version `6`.
+Trino committed one aggregate row to `sr_hourly_agg` at version `5`. The next
+controlled action is a limited RisingWave dbt-sink rollout.
 
 ---
 
