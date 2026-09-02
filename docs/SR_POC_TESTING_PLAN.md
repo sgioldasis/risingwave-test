@@ -817,6 +817,45 @@ Both external engines read the Databricks control row successfully:
 delta-control-20260902-1445 | delta_uniform_control | 8.0
 ```
 
+#### StarRocks Delta plus UniForm reader validation
+
+A second managed Delta table validated the supported StarRocks reader path with
+an exact fixed-point value:
+
+```text
+de_dev.sr_poc_external.delta_starrocks_read_probe_20260902
+```
+
+It uses managed Delta with the following UniForm properties:
+
+```text
+delta.columnMapping.mode = id
+delta.enableIcebergCompatV2 = true
+delta.universalFormat.enabledFormats = iceberg
+```
+
+A native Delta control write committed a `DECIMAL(12,2)` value. After
+`MSCK REPAIR TABLE ... SYNC METADATA` and a StarRocks metadata refresh, the
+existing `databricks_uc` Iceberg REST catalog read the row successfully:
+
+```text
+1001 | starrocks_delta_read | 123.45 | 2026-09-02 16:00:00
+```
+
+This validates the reader flow for existing Unity Catalog-managed Delta tables:
+
+```text
+Databricks Delta table
+  -> UniForm Iceberg metadata
+  -> Unity Catalog Iceberg REST catalog
+  -> StarRocks Iceberg external catalog
+```
+
+This does not use StarRocks' native Delta Lake catalog. That catalog requires a
+Hive Metastore or AWS Glue metadata backend and cannot use Unity Catalog as a
+documented Delta metastore. UniForm exposure through Unity Catalog Iceberg REST
+is read-only for StarRocks.
+
 StarRocks then attempted an external insert and received the explicit,
 non-ambiguous rejection below:
 
@@ -875,6 +914,7 @@ External writing is now technically validated for the converted isolated probe:
 | Trino IRC write after conversion | Working on the isolated probe and `sr_hourly_agg` |
 | StarRocks decimal writes | Unsupported for `DECIMAL(10,2)` tables; use `DOUBLE` or another writer |
 | Delta plus UniForm external reads | Working |
+| StarRocks reads Delta plus UniForm `DECIMAL(12,2)` | Working |
 | Delta plus UniForm external writes | Explicitly unsupported |
 | RisingWave append to `sr_test_events` | Working; row readable from StarRocks and Trino |
 | Trino append to `sr_hourly_agg` | Working; row readable from StarRocks after refresh |

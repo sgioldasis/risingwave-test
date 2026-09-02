@@ -538,9 +538,10 @@ RisingWave's Iceberg connector **cannot read native Delta format** — it only u
 
 ### Databricks UniForm
 
-UniForm writes Iceberg metadata *alongside* the Delta log simultaneously, making a Delta table readable by both Delta and Iceberg readers.
+UniForm writes Iceberg metadata *alongside* the Delta log, making a Delta table
+readable by both Delta and Iceberg readers.
 
-**All four properties must be set at `CREATE TABLE` time** — cannot `ALTER` an existing table:
+For a new table, configure UniForm at creation time:
 
 ```sql
 CREATE TABLE de_dev.rw_poc.my_table ( ... )
@@ -555,13 +556,52 @@ TBLPROPERTIES (
 
 Once created, the same `CREATE SOURCE` SQL (§5) works — RisingWave reads the Iceberg metadata layer.
 
-### Why ALTER fails on existing Delta tables
+### Existing Delta tables
 
-1. `IcebergCompatV2 requires delta.columnMapping.mode = 'name'` — changing column mapping on an existing table requires a full rewrite
-2. `IcebergCompatV2 requires Deletion Vectors to be disabled` — if DVs were ever used, you'd need `REORG PURGE` first
-3. `REORG PURGE` may fail if the table has other constraints
+Existing Unity Catalog-managed Delta tables can be made readable by Iceberg
+clients when their protocol and table features are compatible. The normal
+migration path is:
 
-**The clean path for existing tables:** drop, recreate with the four properties, reload data.
+```sql
+ALTER TABLE catalog_name.schema_name.table_name
+SET TBLPROPERTIES (
+    'delta.columnMapping.mode' = 'id',
+    'delta.enableIcebergCompatV2' = 'true',
+    'delta.universalFormat.enabledFormats' = 'iceberg'
+);
+```
+
+If deletion vectors exist or the table uses legacy UniForm metadata, use the
+Databricks-supported rewrite:
+
+```sql
+REORG TABLE catalog_name.schema_name.table_name
+APPLY (UPGRADE UNIFORM (ICEBERG_COMPAT_VERSION = 2));
+```
+
+UniForm metadata generation is asynchronous after Delta commits. Use this only
+to recover or force the current Delta version into the Iceberg metadata layer:
+
+```sql
+MSCK REPAIR TABLE catalog_name.schema_name.table_name SYNC METADATA;
+```
+
+#### StarRocks validation
+
+On 2026-09-02, StarRocks 4.1.4 read the managed Delta table
+`de_dev.sr_poc_external.delta_starrocks_read_probe_20260902` through the
+existing Unity Catalog Iceberg REST catalog. The table included a
+`DECIMAL(12,2)` column and returned this native Delta control row after
+`SYNC METADATA` and `REFRESH EXTERNAL TABLE`:
+
+```text
+1001 | starrocks_delta_read | 123.45 | 2026-09-02 16:00:00
+```
+
+Use the existing StarRocks Iceberg REST catalog, not StarRocks' native Delta
+Lake catalog, for Unity Catalog-managed Delta tables. The native Delta catalog
+uses Hive Metastore or AWS Glue metadata backends and has no documented Unity
+Catalog metastore mode. The UniForm path is read-only from StarRocks.
 
 ### Gotchas when enabling UniForm on large existing tables
 
