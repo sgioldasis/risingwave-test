@@ -1190,6 +1190,38 @@ The conversion resolves the catalog commit error. It does not change the
 separate limitation on Iceberg delete files, so upsert sinks must continue to
 use the append-only and read-side-collapse pattern described in §16.
 
+### StarRocks decimal limitation
+
+StarRocks has a separate Iceberg REST write limitation after
+`catalogManaged` is removed. It successfully committed to an isolated
+user-owned table with `TIMESTAMP_NTZ` and `DOUBLE`, but failed with
+`ErrorCode: 2012` for both `TIMESTAMP + DECIMAL(10,2)` and
+`TIMESTAMP_NTZ + DECIMAL(10,2)` probes. Neither failed decimal write committed.
+
+This is not an ownership or Unity Catalog grant issue. Trino successfully
+wrote `DECIMAL(10,2)` to `sr_hourly_agg`, and RisingWave successfully wrote the
+same type to `sr_test_events`. For StarRocks-owned write paths, use `DOUBLE`
+for numeric measures or route decimal-valued writes through RisingWave or
+Trino. StarRocks remains a reader for decimal Iceberg tables.
+
+The confirmed upstream cause is [StarRocks PR #78456](https://github.com/StarRocks/starrocks/pull/78456).
+StarRocks 4.1.4 emits fixed-width Parquet statistic buffers as decimal bounds
+in Iceberg manifests. The Iceberg specification requires minimum-length,
+two's-complement, big-endian decimal bounds; Databricks Unity Catalog validates
+that encoding when the REST commit is submitted. The PR reproduces the same
+`500 / ErrorCode: 2012` Databricks failure and changes the StarRocks manifest
+metric conversion code to normalize the bound values.
+
+As of 2026-09-02, the fix is open and no released StarRocks version containing
+it was confirmed. It has `4.1`, `4.0`, and `3.5` backport labels. There is no
+configuration workaround in StarRocks 4.1.4. Keep exact decimal columns in the
+final tables and route their writes through RisingWave or Trino until a
+vendor-confirmed patched build has passed this PoC's decimal test matrix.
+
+Table owners can differ. External visibility and writes depend on Unity
+Catalog privileges, `EXTERNAL USE SCHEMA`, and storage access, not on the
+writer principal owning the table.
+
 ### Delta plus UniForm validation
 
 The isolated managed Delta table

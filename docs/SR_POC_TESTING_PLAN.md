@@ -712,6 +712,69 @@ starrocks-after-drop-feature-20260902-1437
 Databricks SQL read the row successfully and recorded another IRC write at
 version `8`.
 
+#### StarRocks decimal write compatibility
+
+After the general `catalogManaged` issue was resolved, StarRocks still failed
+to append to `sr_hourly_agg`. A three-table isolated schema matrix identified
+the table-level cause. Every probe was a native managed Iceberg table with
+predictive optimization enabled and `catalogManaged` removed.
+
+| Probe | Timestamp type | Amount type | Owner | StarRocks write |
+| ---------- | ----------------- | ------------- | ----------------------------------------- | ---------------- |
+| `sr_starrocks_ntz_double_probe_20260902` | `TIMESTAMP_NTZ` | `DOUBLE` | `s.gioldasis-si@devkaizengaming.com` | Working, version `5` IRC `WRITE` |
+| `sr_starrocks_tz_decimal_probe_20260902` | `TIMESTAMP` | `DECIMAL(10,2)` | `s.gioldasis-si@devkaizengaming.com` | Failed, `ErrorCode: 2012` |
+| `sr_starrocks_hourly_contract_probe_20260902` | `TIMESTAMP_NTZ` | `DECIMAL(10,2)` | `s.gioldasis-si@devkaizengaming.com` | Failed, `ErrorCode: 2012` |
+
+The successful user-owned probe committed
+`ntz-double-20260902-1535`. The two failed decimal probes returned zero rows
+and no `WRITE` entry in their table histories. Their request IDs were:
+
+```text
+TIMESTAMP plus DECIMAL: 5e486a69-76c7-4399-8ec9-c708e8900eca
+TIMESTAMP_NTZ plus DECIMAL: c160b2f8-5c67-4e2d-87b4-82880bbd6aad
+```
+
+**Conclusion:** StarRocks can write `TIMESTAMP_NTZ` to the converted tables.
+Its remaining incompatibility is `DECIMAL(10,2)` in the Iceberg REST commit
+path. Trino wrote `DECIMAL(10,2)` to `sr_hourly_agg` and RisingWave wrote the
+same decimal type to `sr_test_events`, so this is not a Unity Catalog table,
+permission, or general external-writer limitation.
+
+**Upstream root cause:** [StarRocks PR #78456](https://github.com/StarRocks/starrocks/pull/78456)
+matches this failure exactly. StarRocks 4.1.4 writes fixed-width Parquet
+statistics buffers as Iceberg decimal manifest bounds. The Iceberg specification
+requires each decimal bound to be an unscaled, minimum-length,
+two's-complement, big-endian value. Unity Catalog validates those bounds during
+the REST commit and rejects the non-canonical bytes with `ErrorCode: 2012`.
+The upstream PR includes the same Databricks Unity Catalog failure and a
+successful PyIceberg control write against the same table type, isolating the
+defect to StarRocks manifest serialization.
+
+The PR is open as of 2026-09-02, targets `main`, and carries `4.1`, `4.0`, and
+`3.5` backport labels. No released StarRocks version containing the fix was
+confirmed during this investigation. There is no catalog property or session
+setting that corrects the decimal encoding in StarRocks 4.1.4.
+
+**Operational recommendation:** Preserve existing decimal schemas. Route
+decimal writes through RisingWave or Trino until a vendor-confirmed StarRocks
+build contains this fix. If direct StarRocks writes are mandatory before then,
+use a separate exact scaled-integer staging table and cast it to the final
+decimal target with RisingWave or Trino. Do not substitute `DOUBLE` for money
+or other values requiring exact fixed-point semantics.
+
+#### Ownership validation
+
+Table ownership is not required for external visibility or write access.
+`sr_hourly_agg` was user-owned when Trino successfully wrote to it, and the
+user-owned `TIMESTAMP_NTZ + DOUBLE` probe was successfully written by
+StarRocks. A temporary ownership transfer of `sr_hourly_agg` to the writer
+service principal did not change the StarRocks `ErrorCode: 2012` result, and
+the original user owner was restored.
+
+External engines require the relevant Unity Catalog grants, including
+`EXTERNAL USE SCHEMA`, and ADLS data-plane access. Ownership only controls
+administrative actions such as changing metadata or grants.
+
 #### Delta plus UniForm comparison
 
 An isolated managed Delta table was created to test UniForm as an alternative
@@ -810,6 +873,7 @@ External writing is now technically validated for the converted isolated probe:
 | RisingWave append-only IRC write after conversion | Working |
 | StarRocks IRC write after conversion | Working |
 | Trino IRC write after conversion | Working on the isolated probe and `sr_hourly_agg` |
+| StarRocks decimal writes | Unsupported for `DECIMAL(10,2)` tables; use `DOUBLE` or another writer |
 | Delta plus UniForm external reads | Working |
 | Delta plus UniForm external writes | Explicitly unsupported |
 | RisingWave append to `sr_test_events` | Working; row readable from StarRocks and Trino |
