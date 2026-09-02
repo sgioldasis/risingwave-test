@@ -24,6 +24,41 @@ Databricks Delta table
 StarRocks' native Delta Lake catalog requires a Hive Metastore or AWS Glue
 metadata backend. It has no documented Unity Catalog metastore mode.
 
+## Catalog Terminology
+
+The Databricks table and the StarRocks external catalog are separate concepts:
+
+| Concept | System | Purpose |
+| ------- | ------ | ------- |
+| Unity Catalog table | Databricks | Registers the Delta table, its storage location, governance, and Delta transaction log |
+| External catalog | StarRocks | Connects StarRocks to the Unity Catalog Iceberg REST endpoint so it can discover and query remote tables |
+
+An existing Databricks table does not need to be a Databricks external table or
+belong to a Databricks external catalog. A normal Unity Catalog managed table,
+such as `de_dev.some_schema.existing_delta_table`, is eligible when it meets the
+UniForm requirements.
+
+The existing StarRocks `databricks_uc` external catalog is configured for the
+Unity Catalog catalog `de_dev`. It can expose eligible tables from any visible
+schema without creating a StarRocks catalog per table:
+
+```sql
+SELECT *
+FROM databricks_uc.some_schema.existing_delta_table;
+```
+
+The table can use either Databricks managed storage or a Databricks external
+location. StarRocks still uses its own `databricks_uc` catalog to access it. The
+requirements for an existing managed Delta table are:
+
+* The table is registered in Unity Catalog
+* UniForm Iceberg reads are enabled for the table
+* The StarRocks identity has the required Unity Catalog grants
+* StarRocks can access the underlying ADLS location
+
+The catalog is not an ingestion or data-copy layer. StarRocks reads the existing
+Parquet data files through the Iceberg metadata provided by Unity Catalog.
+
 ## Validated Configuration
 
 On 2026-09-02, StarRocks 4.1.4 read this managed Delta table through the
