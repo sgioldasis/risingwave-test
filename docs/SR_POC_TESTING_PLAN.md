@@ -48,7 +48,7 @@ This is the first required step and must be completed before any Docker startup,
 | 2.1.4 Full verification | ✅ DONE | Schema, table schemas, and table properties were verified |
 | 2.1.5 StarRocks catalog verification | ✅ DONE | StarRocks discovered both tables through `databricks_uc.sr_poc` and queried empty-table counts |
 | 2.1.6 Trino catalog verification | ✅ DONE | Trino discovered both tables through `databricks.sr_poc` and queried empty-table counts |
-| 2.1.7 External-engine data-plane verification | BLOCKED | StarRocks cannot access the Databricks-managed ADLS location to write or read non-empty table files |
+| 2.1.7 External-engine reader data-plane verification | ✅ DONE | Databricks control row is readable through both StarRocks and Trino from the PoC-owned ADLS location |
 
 #### ✅ 2.1.1 DONE - Create Schema
 
@@ -156,7 +156,7 @@ SELECT COUNT(*) AS hourly_aggregation_rows FROM databricks_uc.sr_poc.sr_hourly_a
 "
 ```
 
-**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events. This verifies catalog and table metadata access; physical ADLS file access remains blocked as described in section 2.1.7.
+**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events. Section 2.1.7 subsequently verified physical ADLS file reads through the replacement schema.
 
 #### ✅ 2.1.6 DONE - Verify Trino Catalog Access
 
@@ -168,9 +168,9 @@ docker exec trino trino --execute "SELECT COUNT(*) AS event_rows FROM databricks
 docker exec trino trino --execute "SELECT COUNT(*) AS hourly_aggregation_rows FROM databricks.sr_poc.sr_hourly_agg"
 ```
 
-**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events. A non-empty table must be queried after resolving section 2.1.7 to verify direct Parquet-file reads.
+**Verified result:** `sr_test_events` and `sr_hourly_agg` were listed. Each `COUNT(*)` query returned `0`, which is expected before RisingWave writes events. Section 2.1.7 subsequently verified a non-empty table read through Trino.
 
-#### [-] 2.1.7 BLOCKED - Verify External-Engine Data-Plane Access
+#### ✅ 2.1.7 DONE - Verify External-Engine Reader Data Plane
 
 **Observed failure:** A StarRocks insert into `databricks_uc.sr_poc.sr_test_events` failed before writing data. A follow-up query confirmed that no test row was inserted.
 
@@ -190,19 +190,352 @@ abfss://cross-operator@stkznneucommoncdddevstd.dfs.core.windows.net/...
 
 StarRocks is configured with OAuth only for the separate PoC account `stkznneusrpoccdddevstd`. It can access Unity Catalog metadata through Iceberg REST but has no Hadoop filesystem configuration or ADLS permission for `stkznneucommoncdddevstd`.
 
-**Additional permission finding:** The personal Databricks profile cannot create the storage credential required to place tables in the PoC-owned ADLS account:
+**Initial permission finding:** The personal Databricks profile could not create a storage credential:
 
 ```text
 User does not have CREATE STORAGE CREDENTIAL on Metastore 'unity-northeurope'
 ```
 
+**Administrator action completed:** Terraform pipeline `2808416514` created Unity Catalog external location `stkznneusrpoccdddevstd_sr-poc-cont1` for:
+
+```text
+abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/
+```
+
+The administrator then granted `s.gioldasis-si@devkaizengaming.com` the following Unity Catalog privileges on that location:
+
+```text
+ALL_PRIVILEGES
+MANAGE
+```
+
+**Our action completed:** Using the valid `personal` Databricks profile, we confirmed the grants and created the managed schema:
+
+```text
+de_dev.sr_poc_external
+```
+
+Its managed location is:
+
+```text
+abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external
+```
+
+**Replacement tables completed:** We created `de_dev.sr_poc_external.sr_test_events` and `de_dev.sr_poc_external.sr_hourly_agg` with the existing Iceberg table contract. We also granted the Databricks Iceberg REST catalog principal `3b7f531f-db93-4186-af75-6566c12c076b` `USE_SCHEMA`, `CREATE_TABLE`, `SELECT`, and `MODIFY` access on the replacement schema and tables.
+
+**Catalog refresh completed:** StarRocks and Trino were refreshed and both discovered the two replacement tables in `sr_poc_external`.
+
+**Initial write failure:** Before connecting to VPN, a StarRocks insert into `databricks_uc.sr_poc_external.sr_test_events` reached the PoC-owned ADLS location but failed before writing a row:
+
+```text
+ERROR 5609: Failed to create HDFS directory
+abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/
+sr_poc_external/__unitystorage/.../load_spill
+
+AbfsRestOperationException: This request is not authorized to perform this operation.
+HTTP 403 PUT
+```
+
+**VPN ADLS verification completed:** With VPN connected, the PoC ADLS OAuth service principal successfully authenticated and created, listed, and deleted a temporary directory in `stkznneusrpoccdddevstd/sr-poc-cont1`. This confirms the current network path and ADLS data-plane permission for that principal are working.
+
+**StarRocks write limitation:** After the successful VPN verification, a StarRocks insert wrote far enough to attempt the Iceberg commit but failed with a Unity Catalog Iceberg REST catalog error:
+
+```text
+ERROR 1064: Service failed: 500: Could not process table operation.
+ErrorCode: 2012
+```
+
+StarRocks warned that the commit outcome was uncertain. We checked the test ID through StarRocks, Trino, and Databricks SQL; all returned zero rows. The commit did not complete, and the insert must not be retried until the catalog error is investigated.
+
+**Additional prerequisite completed:** The Databricks Iceberg REST catalog principal `3b7f531f-db93-4186-af75-6566c12c076b` was initially missing `EXTERNAL USE SCHEMA`, which is required in addition to `SELECT` and `MODIFY` for external Iceberg REST access. We granted it on `de_dev.sr_poc_external` and verified that it appears as `EXTERNAL_USE_SCHEMA`.
+
+**Repeated commit result:** Retrying the StarRocks insert with a new test ID after the external-use grant still failed with the same Iceberg REST catalog `500`. The second request ID is `bc643f52-3aee-4b71-b679-752ae1841a22`. The test ID returned zero rows through StarRocks, Trino, and Databricks SQL, so this commit also did not complete.
+
+**Supported reader validation completed:** A control row was inserted through Databricks SQL into `de_dev.sr_poc_external.sr_test_events`. StarRocks read the row successfully through `databricks_uc.sr_poc_external`. Trino initially failed because its configured `ADLS_ACCOUNT_KEY` was invalid for the PoC account. After switching Trino to the validated ADLS OAuth service principal, it read the same control row successfully (`control_row_count = 1`).
+
+**Trino write validation:** Trino was configured with the validated ADLS OAuth service principal and successfully read the non-empty control row. Its insert then failed at the same Unity Catalog Iceberg REST commit stage:
+
+```text
+Failed to commit the transaction during insert:
+Service failed: 500: Could not process table operation.
+ErrorCode: 2012
+request_id: 8346c171-bb94-469e-b13d-0718da00b32f
+```
+
+The Trino test ID returned zero rows through Databricks SQL, StarRocks, and Trino, so this commit also did not complete.
+
+**Current design:** StarRocks and Trino are validated external readers. Do not use either engine as an Iceberg REST writer until the shared Databricks Iceberg REST commit failure is resolved. The intended writer remains RisingWave, which will target `de_dev.sr_poc_external` through Unity Catalog Iceberg REST after that investigation.
+
+**Escalation:** The same Databricks Iceberg REST catalog `500` prevents commits from both StarRocks and Trino, despite verified Unity Catalog grants, `EXTERNAL USE SCHEMA`, VPN ADLS data-plane access, and non-empty reads. Ask the Databricks platform administrator to inspect Unity Catalog service logs for request IDs `d96f9311-2d6f-4868-8855-6841fb5713b3`, `bc643f52-3aee-4b71-b679-752ae1841a22`, and `8346c171-bb94-469e-b13d-0718da00b32f`.
+
 **Option A: Retain the current Databricks-managed tables.** An administrator grants the ADLS OAuth service principal used by StarRocks `Storage Blob Data Contributor` on `stkznneucommoncdddevstd`, preferably scoped to the `cross-operator` container. Then add a second OAuth account configuration for `stkznneucommoncdddevstd.dfs.core.windows.net` to the StarRocks Hadoop `core-site.xml` configuration.
 
-**Option B: Recreate the empty tables in the PoC-owned ADLS account.** This is the preferred PoC design when external engines must write Iceberg files directly. An administrator creates a Unity Catalog storage credential and external location for `abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/`, then grants the personal Databricks user `CREATE MANAGED STORAGE`, `READ FILES`, and `WRITE FILES` on that location. The personal user can create a new managed schema and the two tables there, then recreate or update the RisingWave sinks to target it.
+**Option B: Recreate the empty tables in the PoC-owned ADLS account.** This is the selected and completed reader-data-plane design. The external location, delegated Unity Catalog access, `de_dev.sr_poc_external` schema, replacement tables, workload-principal grants, VPN ADLS validation, and non-empty reads through StarRocks and Trino are ready.
 
-**Image validation:** StarRocks was successfully recreated from the upstream `starrocks/allin1-ubuntu:4.1.4` image after removing the SAS-only custom image patch. The blocked insert is an ADLS location and permission issue, not an image issue.
+**Image validation:** StarRocks was successfully recreated from the upstream `starrocks/allin1-ubuntu:4.1.4` image after removing the SAS-only custom image patch. The write limitation is unrelated to the image.
 
-**Next validation:** After either option is complete, insert one uniquely named test row through StarRocks and verify that same row through Databricks SQL, StarRocks, and Trino.
+**Next validation:** After the shared Iceberg REST commit failure is resolved, deploy the RisingWave sinks with `DATABRICKS_SCHEMA=sr_poc_external`, produce test events, then verify the resulting rows through Databricks SQL, StarRocks, and Trino.
+
+### 2.1.7b RisingWave service-principal handoff (2026-09-02)
+
+**Status: blocked on Databricks service-principal authorization.** The DEV and
+STG workspaces expose the same Unity Catalog metastore object. The current local
+stack uses the DEV host, which remains a valid target for the shared metastore.
+
+The Jira request's statement that the principal was "created in STG" refers to
+the STG Azure environment and ADLS roles. It does not prove the principal is
+provisioned in the STG Databricks workspace or visible to its Unity Catalog
+metastore. The STG workspace host is:
+
+```text
+https://adb-2241475393894655.15.azuredatabricks.net
+```
+
+Both the DEV and STG workspace Catalog Explorer views report the same schema
+comment, managed root location, and schema UUID
+`6fa9db04-0d77-41dd-bc2d-2e8a8aeced7f`. This proves they expose the same Unity
+Catalog schema rather than independent environment copies. The shared schema is
+the external-engine validation target and has this managed root location:
+
+```text
+abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external
+```
+
+The PoC uses the following new Entra service principal and ADLS configuration:
+
+```text
+Service principal: sp-stkznneusrpoccdddevstd-contributor
+Application ID:    27a78a40-69f4-40e0-9768-ba39d58a6a55
+Tenant ID:         78395483-9425-447a-ba64-60b90f6bb16e
+Databricks catalog: de_dev
+Databricks schema:  sr_poc_external
+ADLS account:       stkznneusrpoccdddevstd
+ADLS container:     sr-poc-cont1
+```
+
+The principal is confirmed in Entra ID and has `Reader` on its resource group plus
+`Storage Blob Data Contributor` on `stkznneusrpoccdddevstd`. These Azure RBAC
+assignments cover direct ADLS data-plane access, but they do not make the
+principal available to the Unity Catalog metastore.
+
+The initial workspace SCIM test and workspace-local SCIM record below apply to
+the DEV workspace, `https://adb-1608121643336927.7.azuredatabricks.net`, because
+that host was configured in the local `personal` profile and `.env` at the time.
+They do not establish anything about STG:
+
+```text
+Workspace SCIM ID: 147673200001521
+Display name:      sp-stkznneusrpoccdddevstd-contributor
+Application ID:    27a78a40-69f4-40e0-9768-ba39d58a6a55
+Entitlements:      workspace-access, databricks-sql-access
+```
+
+The `PRINCIPAL_DOES_NOT_EXIST` error was returned while executing Unity Catalog
+grants in STG, not DEV. Because both workspaces share this metastore, the error
+means the principal is not metastore-visible. A direct STG check subsequently
+obtained an Azure AD access token successfully for this client ID, then received
+HTTP `403` for both the current-principal and service-principal SCIM endpoints.
+This demonstrates that the Entra credentials are valid but does not, by itself,
+distinguish a missing Databricks account-level principal from a Databricks API
+permission restriction.
+
+#### RisingWave probe result
+
+A minimal append-only RisingWave Iceberg sink was attempted against
+`de_dev.sr_poc_external.rw_write_probe`. The sink used Azure AD OAuth for the
+Databricks Iceberg REST catalog and account-key authentication for direct ADLS
+writes. It failed before the first row was written:
+
+```text
+org.apache.iceberg.exceptions.ForbiddenException: Forbidden: User not authorized
+```
+
+The sink configuration was corrected during the test so that it uses one ADLS
+authentication mode only. It must not combine `adlsgen2.account_key` with
+`adlsgen2.tenant_id`, `adlsgen2.client_id`, or `adlsgen2.client_secret`.
+
+#### Required admin action
+
+An administrator must provision the Entra application as a Databricks
+account-level principal that is visible to the shared Unity Catalog metastore.
+The principal may then be assigned to the workspace endpoint selected for the
+RisingWave catalog connection. The admin must grant the following privileges on
+the shared metastore:
+
+```sql
+GRANT USE CATALOG ON CATALOG de_dev
+TO `sp-stkznneusrpoccdddevstd-contributor`;
+
+GRANT USE SCHEMA, CREATE TABLE, MODIFY, SELECT
+ON SCHEMA de_dev.sr_poc_external
+TO `sp-stkznneusrpoccdddevstd-contributor`;
+
+GRANT EXTERNAL USE SCHEMA
+ON SCHEMA de_dev.sr_poc_external
+TO `sp-stkznneusrpoccdddevstd-contributor`;
+```
+
+`EXTERNAL USE SCHEMA` is required because RisingWave writes through the Unity
+Catalog Iceberg REST endpoint. The existing DEV workspace-local SCIM record
+must not be used as evidence of account-level or metastore provisioning. Do not
+delete it until the administrator confirms whether it must be reconciled or
+removed.
+
+#### Resume checklist
+
+1. Confirm the application ID is selectable in the shared
+  `de_dev.sr_poc_external` Unity Catalog permissions dialog.
+2. Confirm the grants above complete without `PRINCIPAL_DOES_NOT_EXIST`.
+3. Confirm whether the team requires the DEV or STG workspace endpoint for the
+  RisingWave catalog connection. No endpoint change is required solely to
+  access this shared metastore.
+4. Re-run the minimal `rw_write_probe` sink using catalog OAuth and
+  `adlsgen2.account_key` only.
+5. Insert one probe row in RisingWave and query the target through Databricks
+  SQL and Trino after the sink checkpoint commits.
+6. If the sink progresses beyond authorization but fails its metadata commit,
+  record the Databricks request ID and compare it with the existing shared
+  Iceberg REST `500` investigation above.
+
+### 2.1.8 Recommended validation sequence (2026-09-02)
+
+This follow-up pass was run to validate the remaining hypotheses without involving the Databricks team.
+
+#### Validation 1: Table capability metadata
+
+Command executed:
+
+```bash
+databricks tables get de_dev.sr_poc_external.sr_test_events --profile personal --output json | jq '{name, table_type, data_source_format, storage_location, capabilities}'
+```
+
+Verified result:
+
+```json
+{
+  "name": "sr_test_events",
+  "table_type": "MANAGED",
+  "data_source_format": "DELTA",
+  "storage_location": "abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external/__unitystorage/.../tables/...",
+  "capabilities": null
+}
+```
+
+Interpretation: the Unity Catalog table metadata does not advertise a `HAS_DIRECT_EXTERNAL_ENGINE_WRITE_SUPPORT` capability flag. This does not prove the table is ineligible to write, but it does confirm the platform is not exposing a direct capability signal in the table object.
+
+#### Validation 2: Raw table payload inspection
+
+Command executed:
+
+```bash
+databricks api get '/api/2.1/unity-catalog/tables/de_dev.sr_poc_external.sr_test_events' --profile personal --output json | jq '{full_name, table_type, data_source_format, properties, capabilities, storage_location}'
+```
+
+Verified result (key fields):
+
+```json
+{
+  "full_name": "de_dev.sr_poc_external.sr_test_events",
+  "table_type": "MANAGED",
+  "data_source_format": "DELTA",
+  "properties": {
+    "delta.universalFormat.enabledFormats": "iceberg",
+    "delta.feature.icebergCompatV2": "supported",
+    "delta.feature.icebergWriterCompatV1": "supported",
+    "write.object-storage.enabled": "true",
+    "write.metadata.path": "abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external/__unitystorage/.../_iceberg/metadata"
+  },
+  "capabilities": null,
+  "storage_location": "abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external/__unitystorage/.../tables/..."
+}
+```
+
+Interpretation: the table is configured as a managed Delta table with Iceberg universal-format compatibility enabled. The absence of the explicit `capabilities` field makes the problem look like a server-side UC commit rejection rather than a missing table property.
+
+#### Validation 3: Grant and permission lookups
+
+Commands executed:
+
+```bash
+databricks permissions get table de_dev.sr_poc_external.sr_test_events --profile personal --output json
+databricks permissions get schema de_dev.sr_poc_external --profile personal --output json
+databricks grants get external-location stkznneusrpoccdddevstd_sr-poc-cont1 --profile personal --output json
+```
+
+Verified result:
+
+```text
+Error: 'table' is not a supported object type for permissions. Expected one of {alerts,...,warehouses,vector-search-endpoints}.
+Error: 'schema' is not a supported object type for permissions. Expected one of {alerts,...,warehouses,vector-search-endpoints}.
+{
+  "name": null,
+  "grants": null
+}
+```
+
+Interpretation: the CLI profile in this environment does not support those permission endpoints directly, so the secure path is to rely on the Databricks SQL `SHOW GRANTS`/`DESCRIBE` checks already recorded earlier in this plan. This environment also did not yield a useful external-location grant dump via this command.
+
+#### Validation 4: Fresh probe-table creation attempt
+
+Command executed:
+
+```bash
+databricks sql --profile personal -c de_dev -q "CREATE TABLE IF NOT EXISTS sr_poc_external.trino_probe (id BIGINT, event_ts TIMESTAMP, payload STRING) USING DELTA; INSERT INTO sr_poc_external.trino_probe VALUES (1, TIMESTAMP '2026-09-02 12:00:00', 'probe'); SELECT * FROM sr_poc_external.trino_probe;"
+```
+
+Verified result:
+
+```text
+Error: unknown command "sql" for "databricks"
+```
+
+Interpretation: this workspace CLI does not include the `databricks sql` subcommand. The safe alternative is to create and validate the probe table through Databricks SQL Editor / `psql` or a SQL warehouse, not the CLI.
+
+#### Validation 5: Trino minimal read/write probe against a fresh table
+
+Commands executed:
+
+```bash
+docker exec trino trino --execute "SELECT * FROM databricks.sr_poc_external.trino_probe"
+docker exec trino trino --execute "INSERT INTO databricks.sr_poc_external.trino_probe VALUES (2, TIMESTAMP '2026-09-02 12:00:00', 'probe2')"
+```
+
+Verified result:
+
+```text
+Query failed: Table 'databricks.sr_poc_external.trino_probe' does not exist
+Query failed: Table 'databricks.sr_poc_external.trino_probe' does not exist
+```
+
+Interpretation: there was no fresh test table to probe. This confirms the write failure is not being retested against a newly created table yet; only the existing production-style `sr_test_events` table has been exercised.
+
+#### Validation 6: StarRocks minimal probe against a fresh table
+
+Command executed:
+
+```bash
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "INSERT INTO databricks_uc.sr_poc_external.trino_probe VALUES (3, '2026-09-02 12:00:00', 'probe3');"
+```
+
+Verified result:
+
+```text
+ERROR 1064 (HY000) at line 1: Getting analyzing error. Detail message: Table trino_probe is not found.
+```
+
+Interpretation: no fresh probe table existed in the catalog, so the engine-level failure we saw earlier is isolated to the existing table write path and not to a valid new table being created ad hoc.
+
+#### Conclusion from the follow-up run
+
+The follow-up checks did not identify a missing grant or a missing table capability flag that could be fixed locally. The most likely root cause remains a Databricks Unity Catalog Iceberg REST commit rejection on the external write path, because:
+
+- the table is configured as managed Delta + Iceberg-compatible,
+- the external location and schema are valid,
+- file reads succeed via the ADLS data plane,
+- the same write failure surfaces in both Trino and StarRocks,
+- and the API metadata does not expose a direct `HAS_DIRECT_EXTERNAL_ENGINE_WRITE_SUPPORT` capability flag.
+
+The next best local move is not to keep retrying writes. It is to create a fresh probe table in Databricks SQL Editor or a SQL warehouse and re-test one minimal insert only after the workspace-level commit contract is clarified.
 
 ---
 

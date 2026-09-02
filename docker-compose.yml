@@ -714,9 +714,9 @@ services:
       - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
       - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
       - DATABRICKS_CATALOG=de_dev
-      - DATABRICKS_SCHEMA=risingwave_poc
+      - DATABRICKS_SCHEMA=sr_poc_external
       - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET
       - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
       - ADLS_ACCOUNT_KEY
@@ -785,9 +785,9 @@ services:
       - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
       - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
       - DATABRICKS_CATALOG=de_dev
-      - DATABRICKS_SCHEMA=risingwave_poc
+      - DATABRICKS_SCHEMA=sr_poc_external
       - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET
       - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
       - ADLS_ACCOUNT_KEY
@@ -845,9 +845,11 @@ services:
       - NO_PROXY=*
       - no_proxy=*
       # Databricks Unity Catalog credentials — used by trino/catalog/databricks.properties
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET=${DATABRICKS_AZURE_CLIENT_SECRET-}
-      - ADLS_ACCOUNT_KEY=${ADLS_ACCOUNT_KEY-}
+      - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+      - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+      - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
       # RisingWave catalog — used by trino/catalog/risingwave.properties
       # TRINO_RISINGWAVE_HOST defaults to the Docker-network hostname; set in .env for STG.
       - RISINGWAVE_HOST=${TRINO_RISINGWAVE_HOST:-frontend-node-0}
@@ -947,7 +949,7 @@ services:
     networks:
       iceberg_net:
     environment:
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_TENANT_ID=${DATABRICKS_AZURE_TENANT_ID-}
       - DATABRICKS_AZURE_CLIENT_SECRET=${DATABRICKS_AZURE_CLIENT_SECRET-}
     volumes:
