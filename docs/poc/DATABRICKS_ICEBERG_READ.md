@@ -586,33 +586,20 @@ to recover or force the current Delta version into the Iceberg metadata layer:
 MSCK REPAIR TABLE catalog_name.schema_name.table_name SYNC METADATA;
 ```
 
-#### StarRocks validation
-
-On 2026-09-02, StarRocks 4.1.4 read the managed Delta table
-`de_dev.sr_poc_external.delta_starrocks_read_probe_20260902` through the
-existing Unity Catalog Iceberg REST catalog. The table included a
-`DECIMAL(12,2)` column and returned this native Delta control row after
-`SYNC METADATA` and `REFRESH EXTERNAL TABLE`:
-
-```text
-1001 | starrocks_delta_read | 123.45 | 2026-09-02 16:00:00
-```
-
-Use the existing StarRocks Iceberg REST catalog, not StarRocks' native Delta
-Lake catalog, for Unity Catalog-managed Delta tables. The native Delta catalog
-uses Hive Metastore or AWS Glue metadata backends and has no documented Unity
-Catalog metastore mode. The UniForm path is read-only from StarRocks.
+For the StarRocks-specific integration, validation, large-table rollout,
+cost model, and operational limits, see
+[StarRocks Reads of Databricks Delta Tables](SR_DATABRICKS_DELTA_READ.md).
 
 ### Gotchas when enabling UniForm on large existing tables
 
 | Blocker | Detail |
 |---|---|
-| **Deletion Vectors** | Modern Databricks tables have DVs enabled by default. Must run `REORG TABLE <t> APPLY (PURGE)` — rewrites all data files, blocks writes, can take hours |
-| **Column mapping mode** | Tables on `NoMapping` must migrate to `name` mode — can break Spark jobs that depend on column IDs |
-| **Initial metadata sync** | On first enable, Databricks generates Iceberg metadata for the entire Delta log — can take hours for large tables |
-| **Per-write overhead** | Every future write also updates Iceberg metadata — adds latency on high-frequency append tables |
-| **Incompatible features** | Cannot enable UniForm if table uses: Liquid Clustering, V-Order, row tracking, type widening |
-| **Protocol upgrade** | Requires reader version 2, writer version 7 — older Spark jobs may fail |
+| **Deletion Vectors** | IcebergCompatV2 cannot coexist with deletion vectors. A `REORG ... UPGRADE UNIFORM` operation can require substantial compute, I/O, and temporary capacity. |
+| **Column mapping mode** | Table protocol and mapping changes affect compatibility. Validate every existing Delta writer before enabling UniForm. |
+| **Initial metadata sync** | Metadata generation is asynchronous. For a large table history, allow a maintenance window and verify conversion status before enabling external readers. |
+| **Per-write overhead** | Every future Delta write can trigger Iceberg metadata generation, increasing compute demand and potentially write latency. |
+| **Existing features** | Validate Liquid Clustering, row tracking, type widening, and other enabled features against the intended UniForm version before changing the table. |
+| **Protocol upgrade** | UniForm requires Delta reader version 2 and writer version 7 or later. Older clients can fail after the upgrade. |
 
 ---
 
