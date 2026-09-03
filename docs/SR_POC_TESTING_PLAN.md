@@ -1429,6 +1429,17 @@ read successfully by both native Delta connectors:
 * StarRocks `databricks_delta_hms.sr_poc_external.fact_virtual_personal_copy_20260903`:
   table discovery succeeded and `COUNT(*) = 6`
 
+A second fresh copy was created with the personal Databricks profile as
+`de_dev.sr_poc_external.fact_virtual_personal_copy_20260903_b`. Databricks
+exposed the new managed table immediately after the CTAS completed. Trino and
+StarRocks saw it after its new ADLS root was registered in HMS, without any
+change to the source table or to the copy's Delta properties:
+
+* Trino `delta.sr_poc_external.fact_virtual_personal_copy_20260903_b`:
+  `COUNT(*) = 6`
+* StarRocks `databricks_delta_hms.sr_poc_external.fact_virtual_personal_copy_20260903_b`:
+  table discovery succeeded and `COUNT(*) = 6`
+
 5. Reconcile dropped tables, recreated tables, and changed locations.
 
 This process registers metadata only. It does not rewrite or copy table data.
