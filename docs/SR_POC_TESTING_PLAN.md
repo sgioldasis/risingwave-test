@@ -1280,7 +1280,7 @@ azure.oauth.endpoint=https://login.microsoftonline.com/${ENV:ADLS_TENANT_ID}/oau
 azure.oauth.client-id=${ENV:ADLS_CLIENT_ID}
 azure.oauth.secret=${ENV:ADLS_CLIENT_SECRET}
 
-delta.security=READ_ONLY
+delta.security=ALLOW_ALL
 ```
 
 Trino can register an existing Delta table using its transaction-log location:
@@ -1292,6 +1292,12 @@ CALL delta.system.register_table(
   table_location => 'abfss://sr-poc-cont1@<storage-account>.dfs.core.windows.net/sr_poc_external/...'
 );
 ```
+
+In this Docker PoC, Trino's registration procedure was attempted but could
+not resolve the required Hadoop Azure filesystem class through the connector
+classloader. The successful registration path used typed Hive Metastore
+Thrift structures instead. The procedure remains a valid option when the
+Trino image has the required filesystem dependencies available.
 
 The location must be the Delta table root containing `_delta_log`, not the
 `_delta_log` directory itself. Query the registered table with:
@@ -1322,7 +1328,7 @@ CREATE EXTERNAL CATALOG databricks_delta_hms
 PROPERTIES (
   "type" = "deltalake",
   "hive.metastore.type" = "hive",
-  "hive.metastore.uris" = "thrift://hive-metastore:9083",
+  "hive.metastore.uris" = "thrift://host.docker.internal:9083",
   "azure.adls2.oauth2_client_id" = '<client-id>',
   "azure.adls2.oauth2_client_secret" = '<client-secret>',
   "azure.adls2.oauth2_client_endpoint" =
@@ -1368,6 +1374,61 @@ manual commands:
 2. Filter by approved catalogs, schemas, and data classifications.
 3. Create or update the corresponding HMS entries.
 4. Apply separate read controls in Trino and StarRocks.
+
+##### Direct HMS registration result
+
+The direct HMS path was validated on `2026-09-03` with the existing PoC Delta
+table `de_dev.sr_poc_external` and the HMS name
+`sr_poc_external.fact_virtual_hms`. The registered root was:
+
+```text
+abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external/__unitystorage/schemas/6fa9db04-0d77-41dd-bc2d-2e8a8aeced7f/tables/f4026820-2f3b-4bf3-b024-85c3bfe4bad6
+```
+
+The registration used typed Hive Thrift structures for the columns, Parquet
+storage descriptor, external table type, and
+`spark.sql.sources.provider=delta`. Trino requires the Delta root in the
+SerDe parameter `path`; setting only the storage descriptor location is not
+sufficient. The same root was also retained in the storage descriptor and
+table location parameters.
+
+Both readers passed without converting the table to UniForm:
+
+* Trino `delta.sr_poc_external.fact_virtual_hms`: `COUNT(*) = 6`
+* StarRocks `databricks_delta_hms.sr_poc_external.fact_virtual_hms`:
+  table discovery succeeded and `COUNT(*) = 6`
+
+For this Docker setup, StarRocks' Hive client reverse-resolved the Compose
+network hostname containing an underscore and rejected it as an invalid Java
+URI. The working local catalog uses the published endpoint
+`thrift://host.docker.internal:9083`; production deployments should use a
+stable DNS name or IP address for the HMS service. The HMS container also
+needs Hadoop Azure support and effective `core-site.xml` OAuth settings so
+Hive can validate ADLS locations during registration.
+
+##### Fresh untouched Delta copy result
+
+Using the personal Databricks profile, a fresh managed Delta copy was created
+with:
+
+```sql
+CREATE TABLE de_dev.sr_poc_external.fact_virtual_personal_copy_20260903 AS
+SELECT *
+FROM de_dev.sling.fact_virtual;
+```
+
+The source table was not altered. The source and copy each returned `6` rows.
+The copy retained its normal Delta protocol features, including deletion
+vectors; no table properties were changed for this test.
+
+The new copy was registered in HMS at its own managed ADLS location and then
+read successfully by both native Delta connectors:
+
+* Trino `delta.sr_poc_external.fact_virtual_personal_copy_20260903`:
+  `COUNT(*) = 6`
+* StarRocks `databricks_delta_hms.sr_poc_external.fact_virtual_personal_copy_20260903`:
+  table discovery succeeded and `COUNT(*) = 6`
+
 5. Reconcile dropped tables, recreated tables, and changed locations.
 
 This process registers metadata only. It does not rewrite or copy table data.

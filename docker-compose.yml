@@ -372,6 +372,60 @@ services:
     networks:
       iceberg_net:
 
+  hive-metastore-db:
+    image: "postgres:15-alpine"
+    environment:
+      - POSTGRES_USER=hive
+      - POSTGRES_PASSWORD=hive
+      - POSTGRES_DB=metastore_db
+    expose:
+      - "5432"
+    volumes:
+      - "hive-metastore-db:/var/lib/postgresql/data"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U hive -d metastore_db" ]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    restart: always
+    networks:
+      iceberg_net:
+
+  hive-metastore:
+    build:
+      context: .
+      dockerfile: Dockerfile.hive-metastore
+    image: risingwave-test/hive-metastore:4.0.0-postgres
+    entrypoint: ["/usr/local/bin/hive-metastore-entrypoint.sh"]
+    container_name: hive-metastore
+    hostname: hive-metastore
+    environment:
+      - SERVICE_NAME=metastore
+      - DB_DRIVER=postgres
+      - SERVICE_OPTS=-Xmx1G
+      - HIVE_AUX_JARS_PATH=/opt/hive/lib
+      - HADOOP_CLASSPATH=/opt/hive/lib/postgresql-42.7.4.jar
+      - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+      - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+      - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
+      - "HADOOP_OPTS=-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-metastore-db:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=hive -Dfs.azure.account.auth.type.stkznneusrpoccdddevstd.dfs.core.windows.net=OAuth -Dfs.azure.account.oauth.provider.type.stkznneusrpoccdddevstd.dfs.core.windows.net=org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider -Dfs.azure.account.oauth2.client.id.stkznneusrpoccdddevstd.dfs.core.windows.net=${ADLS_CLIENT_ID-} -Dfs.azure.account.oauth2.client.secret.stkznneusrpoccdddevstd.dfs.core.windows.net=${ADLS_CLIENT_SECRET-} -Dfs.azure.account.oauth2.client.endpoint.stkznneusrpoccdddevstd.dfs.core.windows.net=https://login.microsoftonline.com/${ADLS_TENANT_ID-}/oauth2/token"
+    ports:
+      - "9083:9083"
+    depends_on:
+      hive-metastore-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c 'echo > /dev/tcp/127.0.0.1/9083'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: always
+    networks:
+      iceberg_net:
+
   minio-0:
     image: "quay.io/minio/minio:latest"
     command:
@@ -827,7 +881,10 @@ services:
 
   # Trino - Iceberg SQL query engine with full CRUD support
   trino:
-    image: trinodb/trino:481
+    build:
+      context: .
+      dockerfile: Dockerfile.trino
+    image: risingwave-test/trino:481-hadoop-azure
     ports:
       - "9080:8080"
     environment:
@@ -972,6 +1029,8 @@ volumes:
   dagster-storage:
     external: false
   trino-data:                # Trino node data dir + spill-to-disk scratch (see trino/config.properties)
+    external: false
+  hive-metastore-db:
     external: false
   hummock-fs-store:        # local-fs Hummock state store (§16, demo-only) — shared across RW nodes
     external: false
