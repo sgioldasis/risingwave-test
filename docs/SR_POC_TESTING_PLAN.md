@@ -1,7 +1,7 @@
 ---
 title: StarRocks PoC Databricks Unity Catalog Testing Plan
 description: Validation plan and current status for RisingWave, StarRocks, and Trino access to Databricks managed Iceberg tables
-ms.date: 2026-09-02
+ms.date: 2026-09-03
 ms.topic: troubleshooting
 ---
 
@@ -925,6 +925,611 @@ probe table. RisingWave committed
 `risingwave-sr-test-events-20260902-1510` to `sr_test_events` at version `6`.
 Trino committed one aggregate row to `sr_hourly_agg` at version `5`. The next
 controlled action is a limited RisingWave dbt-sink rollout.
+
+### 2.1.10 Existing-table reader test: `de_dev.sling.fact_virtual`
+
+#### Test description
+
+Validate read-only access to the existing Unity Catalog table
+`de_dev.sling.fact_virtual` from StarRocks and Trino through the Databricks
+Unity Catalog Iceberg REST catalog. The test confirms three independent
+permissions: Databricks metadata visibility, Iceberg-compatible metadata for
+the Delta table, and direct read access to the underlying ADLS files. It does
+not test external writes.
+
+The table was confirmed through the `personal` Databricks profile on
+2026-09-03:
+
+| Property | Observed value |
+| --- | --- |
+| Table type | Managed Delta |
+| Rows | 6 |
+| Columns | `id`, `virtual_item`, `cost`, `timestamp`, `_sling_loaded_at` |
+| Storage | `stkznneucommoncdddevstd`, container `cross-operator` |
+| Existing features | Deletion vectors and row tracking enabled |
+| Container identity | `27a78a40-69f4-40e0-9768-ba39d58a6a55` |
+
+#### Execution results
+
+The commands below were executed on 2026-09-03 with the `personal` Databricks
+profile. Secrets are omitted from this record.
+
+| Command | Result |
+| --- | --- |
+| `SELECT current_user()` | `s.gioldasis-si@devkaizengaming.com` |
+| `SHOW TBLPROPERTIES de_dev.sling.fact_virtual` before changes | Delta table with no UniForm properties; deletion vectors and row tracking enabled |
+| `GRANT USE CATALOG ON CATALOG de_dev` | Succeeded |
+| `GRANT USE SCHEMA ON SCHEMA de_dev.sling` | Succeeded |
+| `GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.sling` | Succeeded |
+| `GRANT SELECT ON TABLE de_dev.sling.fact_virtual` | Succeeded |
+| UniForm command with column mapping `id` | Rejected: changing column mapping from `none` to `id` is unsupported |
+| UniForm command without column mapping | Rejected: IcebergCompatV2 requires column mapping mode `name` |
+| UniForm command with column mapping `name` | Rejected initially because deletion vectors were enabled |
+| `ALTER TABLE ... SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')` | Succeeded |
+| `REORG TABLE ... APPLY (PURGE)` | Succeeded; zero deletion vectors and zero deletion-vector rows removed |
+| UniForm command with column mapping `name` after purge | Succeeded |
+| `MSCK REPAIR TABLE ... SYNC METADATA` | Succeeded |
+| Final row count in Databricks SQL | `6` |
+| Trino `SHOW TABLES FROM databricks.sling` | `fact_virtual` visible |
+| StarRocks `SHOW TABLES FROM databricks_uc.sling` | `fact_virtual` visible |
+| StarRocks data read | Blocked by missing filesystem credentials for `stkznneucommoncdddevstd` |
+| Trino data read | Failed while processing table metadata; ADLS data-plane access remains unresolved |
+
+The exact successful Databricks commands were:
+
+```bash
+databricks experimental aitools tools query \
+  "GRANT USE CATALOG ON CATALOG de_dev TO \`27a78a40-69f4-40e0-9768-ba39d58a6a55\`" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "GRANT USE SCHEMA ON SCHEMA de_dev.sling TO \`27a78a40-69f4-40e0-9768-ba39d58a6a55\`" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.sling TO \`27a78a40-69f4-40e0-9768-ba39d58a6a55\`" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "GRANT SELECT ON TABLE de_dev.sling.fact_virtual TO \`27a78a40-69f4-40e0-9768-ba39d58a6a55\`" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "ALTER TABLE de_dev.sling.fact_virtual SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "REORG TABLE de_dev.sling.fact_virtual APPLY (PURGE)" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "ALTER TABLE de_dev.sling.fact_virtual SET TBLPROPERTIES ('delta.columnMapping.mode' = 'name', 'delta.enableIcebergCompatV2' = 'true', 'delta.universalFormat.enabledFormats' = 'iceberg')" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "MSCK REPAIR TABLE de_dev.sling.fact_virtual SYNC METADATA" \
+  --profile personal
+```
+
+The final table properties include:
+
+```text
+delta.columnMapping.mode = name
+delta.enableDeletionVectors = false
+delta.enableIcebergCompatV2 = true
+delta.universalFormat.enabledFormats = iceberg
+```
+
+The Databricks-side setup is complete, but the full external-reader test is
+not yet passing. The table location is
+`abfss://cross-operator@stkznneucommoncdddevstd.dfs.core.windows.net/...`,
+while the current local container configuration targets
+`stkznneusrpoccdddevstd` and `sr-poc-cont1`. Update the StarRocks Hadoop
+configuration and Trino ADLS configuration with credentials and Azure RBAC
+for the actual `stkznneucommoncdddevstd/cross-operator` location, then rerun
+the reader commands below.
+
+#### Snapshot-copy alternative
+
+To avoid changing the local container storage configuration, a read-test copy
+was created in the existing PoC schema. This is a point-in-time snapshot of
+the source table, not a live synchronization:
+
+```bash
+databricks experimental aitools tools query \
+  "CREATE TABLE de_dev.sr_poc_external.fact_virtual_read_test USING ICEBERG AS SELECT id, virtual_item, cost, timestamp, _sling_loaded_at FROM de_dev.sling.fact_virtual" \
+  --profile personal
+```
+
+Result: succeeded with `0` reported affected rows. Databricks verification
+returned `6` rows. The destination is stored under the expected PoC location:
+
+```text
+abfss://sr-poc-cont1@stkznneusrpoccdddevstd.dfs.core.windows.net/sr_poc_external/...
+```
+
+The destination table was granted to the container service principal:
+
+```bash
+databricks experimental aitools tools query \
+  "GRANT SELECT ON TABLE de_dev.sr_poc_external.fact_virtual_read_test TO \`27a78a40-69f4-40e0-9768-ba39d58a6a55\`" \
+  --profile personal
+```
+
+Result: succeeded with no returned rows.
+
+The destination did not require `MSCK REPAIR TABLE` because it was created as
+a native managed Iceberg table in the target schema. Its catalog metadata
+does include the workspace's `catalogManaged` feature, but external reads are
+supported and no external write was attempted.
+
+StarRocks validation succeeded after refreshing its external-table metadata:
+
+```bash
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root --batch --raw \
+  -e "REFRESH EXTERNAL TABLE databricks_uc.sr_poc_external.fact_virtual_read_test; \
+      SELECT COUNT(*) AS row_count FROM databricks_uc.sr_poc_external.fact_virtual_read_test; \
+      SELECT * FROM databricks_uc.sr_poc_external.fact_virtual_read_test LIMIT 5"
+```
+
+Result:
+
+```text
+row_count
+6
+
+id  virtual_item  cost  timestamp            _sling_loaded_at
+1   s1            1     2025-01-14 15:00:00  1775543147
+2   s2            2     2025-01-14 15:01:00  1775543147
+3   s3            3     2025-01-14 15:02:00  1775543147
+4   s4            4     2025-01-14 15:02:00  1775543147
+5   s5            5     2026-01-22 00:00:00  1775543147
+```
+
+Trino validation also succeeded:
+
+```bash
+docker exec trino trino --execute \
+  "SELECT COUNT(*) AS row_count FROM databricks.sr_poc_external.fact_virtual_read_test; \
+   SELECT * FROM databricks.sr_poc_external.fact_virtual_read_test LIMIT 5"
+```
+
+Result: `row_count = 6`, with the same five sample rows returned by StarRocks.
+
+This alternative passes the external-reader test using the current local
+container configuration:
+
+```text
+Databricks source:  de_dev.sling.fact_virtual
+Databricks copy:    de_dev.sr_poc_external.fact_virtual_read_test
+StarRocks:          databricks_uc.sr_poc_external.fact_virtual_read_test
+Trino:              databricks.sr_poc_external.fact_virtual_read_test
+Result:             PASS, six rows readable from both engines
+```
+
+#### As-is Delta control test
+
+To test whether copying the source without changing its format was sufficient,
+a second snapshot was created with plain CTAS:
+
+```bash
+databricks experimental aitools tools query \
+  "CREATE TABLE de_dev.sr_poc_external.fact_virtual_as_is_test_20260903 AS SELECT * FROM de_dev.sling.fact_virtual" \
+  --profile personal
+```
+
+Result: succeeded. Databricks reported `6` rows, and the destination location
+was under `stkznneusrpoccdddevstd/sr-poc-cont1`. The table metadata confirmed:
+
+```text
+data_source_format = DELTA
+delta.columnMapping.mode = not set
+delta.enableIcebergCompatV2 = not set
+delta.universalFormat.enabledFormats = not set
+```
+
+The container service principal was granted table access:
+
+```bash
+databricks experimental aitools tools query \
+  "GRANT SELECT ON TABLE de_dev.sr_poc_external.fact_virtual_as_is_test_20260903 TO \`27a78a40-69f4-40e0-9768-ba39d58a6a55\`" \
+  --profile personal
+```
+
+Result: succeeded with no returned rows.
+
+The original reader commands were then run unchanged. StarRocks listed the
+table but failed to read it:
+
+```text
+Malformed request: Table
+'de_dev.sr_poc_external.fact_virtual_as_is_test_20260903' is not an Iceberg
+compatible table. ErrorCode: 1000
+```
+
+Trino also listed the table but failed while loading it:
+
+```text
+Failed to load table: fact_virtual_as_is_test_20260903
+in sr_poc_external namespace
+```
+
+This control test confirms that copying a Delta table as-is is insufficient.
+The copy must be created as native managed Iceberg, or Delta UniForm Iceberg
+metadata must be enabled, before StarRocks and Trino can read it through the
+configured Unity Catalog Iceberg REST catalog. The earlier
+`fact_virtual_read_test` native-Iceberg copy is the passing approach.
+
+#### Conversion test on the as-is copy
+
+The as-is copy was then converted using the same validated sequence used for
+the source table:
+
+```bash
+databricks experimental aitools tools query \
+  "ALTER TABLE de_dev.sr_poc_external.fact_virtual_as_is_test_20260903 SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "REORG TABLE de_dev.sr_poc_external.fact_virtual_as_is_test_20260903 APPLY (PURGE)" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "ALTER TABLE de_dev.sr_poc_external.fact_virtual_as_is_test_20260903 SET TBLPROPERTIES ('delta.columnMapping.mode' = 'name', 'delta.enableIcebergCompatV2' = 'true', 'delta.universalFormat.enabledFormats' = 'iceberg')" \
+  --profile personal
+
+databricks experimental aitools tools query \
+  "MSCK REPAIR TABLE de_dev.sr_poc_external.fact_virtual_as_is_test_20260903 SYNC METADATA" \
+  --profile personal
+```
+
+Results:
+
+| Command | Result |
+| --- | --- |
+| Disable deletion vectors | Succeeded |
+| `REORG ... APPLY (PURGE)` | Succeeded; zero deletion vectors and zero deletion-vector rows removed |
+| Enable column mapping `name` and UniForm | Succeeded |
+| `MSCK REPAIR TABLE ... SYNC METADATA` | Succeeded |
+| Final row count in Databricks | `6` |
+
+Final relevant properties:
+
+```text
+delta.columnMapping.mode = name
+delta.enableDeletionVectors = false
+delta.enableIcebergCompatV2 = true
+delta.universalFormat.enabledFormats = iceberg
+```
+
+The original StarRocks command was rerun after refreshing metadata:
+
+```bash
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root --batch --raw \
+  -e "REFRESH EXTERNAL TABLE databricks_uc.sr_poc_external.fact_virtual_as_is_test_20260903; \
+      SELECT COUNT(*) AS row_count FROM databricks_uc.sr_poc_external.fact_virtual_as_is_test_20260903; \
+      SELECT * FROM databricks_uc.sr_poc_external.fact_virtual_as_is_test_20260903 LIMIT 5"
+```
+
+Result: `row_count = 6`; five sample rows were returned successfully.
+
+The original Trino command was also rerun successfully:
+
+```bash
+docker exec trino trino --execute \
+  "SELECT COUNT(*) AS row_count FROM databricks.sr_poc_external.fact_virtual_as_is_test_20260903; \
+   SELECT * FROM databricks.sr_poc_external.fact_virtual_as_is_test_20260903 LIMIT 5"
+```
+
+Result: `row_count = 6`; the same five sample rows were returned.
+
+This confirms that the original copy became readable after conversion. The
+plain-Delta copy failed because it had no Iceberg-compatible metadata; the
+conversion, rather than the copy operation alone, enabled StarRocks and Trino
+access.
+
+#### Native Delta alternative with a shared Hive Metastore
+
+Converting every existing Delta table to UniForm is not required if the goal
+is broad read access to an existing Delta estate. Trino and StarRocks both
+support native Delta access through a Hive Thrift Metastore. This path reads
+the Delta transaction log and Parquet files directly and does not require a
+snapshot copy or UniForm conversion.
+
+```text
+Unity Catalog Delta table location on ADLS
+        |
+        +-- Local Hive Metastore table registration
+              |
+         +--------+--------+
+         |                 |
+      Trino delta_lake   StarRocks deltalake
+```
+
+The local Hive Metastore is a separate metadata plane. Unity Catalog does not
+provide a built-in continuous synchronization from its catalog into a local
+HMS. A table registration contains the table name, schema, format, and ADLS
+location. The data and Delta transaction log remain in ADLS.
+
+##### Required local services
+
+The local stack would need:
+
+* A Hive Metastore service listening on port `9083`
+* A separate PostgreSQL database or schema for Hive Metastore metadata
+* Network access from Trino and StarRocks to the Hive Metastore
+* ADLS read access from both Trino and StarRocks
+* A one-time registration for each approved Delta table
+
+Do not reuse the Lakekeeper database schema for Hive Metastore. The services
+may share a PostgreSQL server only when they use separate databases or schemas.
+
+##### Trino native Delta catalog
+
+Create a separate Trino catalog, for example `trino/catalog/delta.properties`:
+
+```properties
+connector.name=delta_lake
+hive.metastore=thrift
+hive.metastore.uri=thrift://hive-metastore:9083
+
+fs.azure.enabled=true
+azure.auth-type=OAUTH
+azure.oauth.tenant-id=${ENV:ADLS_TENANT_ID}
+azure.oauth.endpoint=https://login.microsoftonline.com/${ENV:ADLS_TENANT_ID}/oauth2/token
+azure.oauth.client-id=${ENV:ADLS_CLIENT_ID}
+azure.oauth.secret=${ENV:ADLS_CLIENT_SECRET}
+
+delta.security=READ_ONLY
+```
+
+Trino can register an existing Delta table using its transaction-log location:
+
+```sql
+CALL delta.system.register_table(
+  schema_name => 'sr_poc_external',
+  table_name => 'fact_virtual_delta',
+  table_location => 'abfss://sr-poc-cont1@<storage-account>.dfs.core.windows.net/sr_poc_external/...'
+);
+```
+
+The location must be the Delta table root containing `_delta_log`, not the
+`_delta_log` directory itself. Query the registered table with:
+
+```sql
+SELECT COUNT(*)
+FROM delta.sr_poc_external.fact_virtual_delta;
+
+SELECT *
+FROM delta.sr_poc_external.fact_virtual_delta
+LIMIT 5;
+```
+
+The registration procedure is disabled by default and should be enabled only
+for a controlled test or registration service:
+
+```properties
+delta.register-table-procedure.enabled=true
+```
+
+##### StarRocks native Delta catalog
+
+StarRocks can use the same Hive Metastore registration through a separate
+native Delta catalog:
+
+```sql
+CREATE EXTERNAL CATALOG databricks_delta_hms
+PROPERTIES (
+  "type" = "deltalake",
+  "hive.metastore.type" = "hive",
+  "hive.metastore.uris" = "thrift://hive-metastore:9083",
+  "azure.adls2.oauth2_client_id" = '<client-id>',
+  "azure.adls2.oauth2_client_secret" = '<client-secret>',
+  "azure.adls2.oauth2_client_endpoint" =
+    'https://login.microsoftonline.com/<tenant-id>/oauth2/token'
+);
+```
+
+Then query:
+
+```sql
+SELECT COUNT(*)
+FROM databricks_delta_hms.sr_poc_external.fact_virtual_delta;
+```
+
+StarRocks and Trino can share the same HMS registration. StarRocks 4.1.4 and
+Trino 481 support the Delta features relevant to this test, but each table
+should still be checked for unsupported types and protocol features before it
+is exposed.
+
+##### Unity Catalog and HMS responsibilities
+
+The following Unity Catalog metadata does not automatically transfer to HMS:
+
+* Unity Catalog grants and ownership
+* Row filters and column masks
+* Tags and lineage
+* External-location permissions
+* Table lifecycle events
+
+The ADLS service principal must have read access to every storage account and
+container used by the registered tables. This is independent of the HMS
+registration. The original `de_dev.sling.fact_virtual` table is stored in a
+different ADLS account and container from the PoC schema, so it requires its
+own storage permission even when it is registered in the local HMS.
+
+##### Scalable registration model
+
+For thousands of tables, use an allowlisted registration service rather than
+manual commands:
+
+1. Read approved Delta tables and storage locations from the Unity Catalog
+   Tables API or `system.information_schema`.
+2. Filter by approved catalogs, schemas, and data classifications.
+3. Create or update the corresponding HMS entries.
+4. Apply separate read controls in Trino and StarRocks.
+5. Reconcile dropped tables, recreated tables, and changed locations.
+
+This process registers metadata only. It does not rewrite or copy table data.
+For stable table locations, new Delta versions are visible through the Delta
+transaction log without repeating registration. A selective native Delta path
+is the recommended alternative when migrating thousands of Delta tables to
+UniForm would be disproportionate.
+
+#### Step 1: Verify the table as a Databricks administrator
+
+Run these commands in Databricks SQL as an identity that can inspect the
+`de_dev.sling` schema:
+
+```sql
+SHOW SCHEMAS IN de_dev;
+
+SHOW TABLES IN de_dev.sling;
+
+DESCRIBE TABLE EXTENDED de_dev.sling.fact_virtual;
+
+SHOW TBLPROPERTIES de_dev.sling.fact_virtual;
+
+SELECT COUNT(*) AS row_count
+FROM de_dev.sling.fact_virtual;
+```
+
+The expected Databricks row count is `6`. The table is Delta, so it must expose
+UniForm Iceberg metadata before StarRocks or Trino can read it through the
+Unity Catalog Iceberg REST catalog.
+
+#### Step 2: Grant the external-reader principal
+
+Grant the principal used by the local StarRocks and Trino containers:
+
+```sql
+GRANT USE CATALOG ON CATALOG de_dev
+TO `27a78a40-69f4-40e0-9768-ba39d58a6a55`;
+
+GRANT USE SCHEMA ON SCHEMA de_dev.sling
+TO `27a78a40-69f4-40e0-9768-ba39d58a6a55`;
+
+GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.sling
+TO `27a78a40-69f4-40e0-9768-ba39d58a6a55`;
+
+GRANT SELECT ON TABLE de_dev.sling.fact_virtual
+TO `27a78a40-69f4-40e0-9768-ba39d58a6a55`;
+
+SHOW GRANTS ON SCHEMA de_dev.sling;
+
+SHOW GRANTS ON TABLE de_dev.sling.fact_virtual;
+```
+
+The earlier external-reader attempt failed with `Forbidden` while checking
+the `sling` namespace because this principal did not yet have visibility of the
+schema.
+
+#### Step 3: Enable UniForm Iceberg reads
+
+Run this once if the table does not already contain the UniForm properties:
+
+```sql
+ALTER TABLE de_dev.sling.fact_virtual
+SET TBLPROPERTIES (
+    'delta.columnMapping.mode' = 'name',
+    'delta.enableIcebergCompatV2' = 'true',
+    'delta.universalFormat.enabledFormats' = 'iceberg'
+);
+```
+
+Synchronize the Iceberg metadata before the first external-reader test:
+
+```sql
+MSCK REPAIR TABLE de_dev.sling.fact_virtual SYNC METADATA;
+```
+
+Verify that Databricks reports the Delta UniForm Iceberg section:
+
+```sql
+DESCRIBE TABLE EXTENDED de_dev.sling.fact_virtual;
+```
+
+`MSCK REPAIR TABLE ... SYNC METADATA` is a one-time cutover or troubleshooting
+operation here. UniForm metadata generation is asynchronous, so it is not
+required after every future Delta write. If the operation rejects the existing
+deletion vectors, stop and assess a maintenance-window migration before using
+`REORG TABLE ... APPLY (PURGE)`; do not apply that rewrite automatically to a
+production table.
+
+#### Step 4: Grant ADLS file-read access
+
+This permission is outside Databricks SQL. The ADLS identity configured as
+`ADLS_CLIENT_ID` must have `Storage Blob Data Reader` on the
+`cross-operator` container in `stkznneucommoncdddevstd`. The containers use
+Unity Catalog OAuth for metadata and the ADLS OAuth identity for direct
+Parquet reads.
+
+#### Step 5: Refresh and test StarRocks
+
+Refresh the external-table metadata after UniForm synchronization:
+
+```bash
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root \
+  -e "REFRESH EXTERNAL TABLE databricks_uc.sling.fact_virtual"
+```
+
+Run the bounded reader checks:
+
+```bash
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root --batch --raw \
+  -e "SHOW TABLES FROM databricks_uc.sling; \
+      SELECT COUNT(*) AS row_count FROM databricks_uc.sling.fact_virtual; \
+      SELECT * FROM databricks_uc.sling.fact_virtual LIMIT 5"
+```
+
+Expected result: the table is listed and the row count is `6`.
+
+#### Step 6: Test Trino
+
+```bash
+docker exec trino trino --execute \
+  "SHOW TABLES FROM databricks.sling"
+
+docker exec trino trino --execute \
+  "SELECT COUNT(*) AS row_count FROM databricks.sling.fact_virtual"
+
+docker exec trino trino --execute \
+  "SELECT * FROM databricks.sling.fact_virtual LIMIT 5"
+```
+
+Expected result: the table is listed and the row count is `6`.
+
+#### Step 7: Validate through DBeaver
+
+Use the existing local services rather than connecting DBeaver directly to the
+Databricks workspace.
+
+| Reader | Driver | Host | Port | User | Catalog or database |
+| --- | --- | --- | --- | --- | --- |
+| Trino | Trino | `localhost` | `9080` | `trino` | `databricks` |
+| StarRocks | MySQL | `localhost` | `9030` | `root` | `databricks_uc` |
+
+Run the corresponding query:
+
+```sql
+-- Trino
+SELECT * FROM databricks.sling.fact_virtual LIMIT 10;
+
+-- StarRocks
+SELECT * FROM databricks_uc.sling.fact_virtual LIMIT 10;
+```
+
+#### Success criteria
+
+The test passes when all of the following are true:
+
+1. The container principal can enumerate `de_dev.sling` through the Unity
+   Catalog Iceberg REST endpoint.
+2. StarRocks and Trino both discover `fact_virtual`.
+3. Both readers return the same six rows as Databricks SQL.
+4. No ADLS authorization errors occur while scanning Parquet files.
+5. No external `INSERT`, `UPDATE`, or `DELETE` is attempted against this Delta
+   plus UniForm table.
 
 ---
 
