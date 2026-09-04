@@ -1448,6 +1448,108 @@ transaction log without repeating registration. A selective native Delta path
 is the recommended alternative when migrating thousands of Delta tables to
 UniForm would be disproportionate.
 
+#### External-HMS versus Unity Catalog IRC governance trade-off
+
+The native Delta/HMS path above satisfies zero-transformation reads, but it
+introduces a metadata plane that sits outside Unity Catalog. Grants, row
+filters, column masks, and audit logging enforced by Unity Catalog are not
+consulted by a local or external Hive Metastore. For an organization that
+requires Unity Catalog to remain the single governance authority, this is
+disqualifying regardless of how convenient the HMS path is.
+
+The alternative that keeps governance entirely inside Unity Catalog is its
+built-in Iceberg REST Catalog (IRC) endpoint. Trino and StarRocks already use
+this for the `databricks` / `databricks_uc` catalogs in this project. IRC
+requests are authorized with the same OAuth-scoped Unity Catalog grants used
+by Databricks compute, so no second permission system needs to be maintained.
+
+The trade-off is that IRC can only serve a Delta table as Iceberg once that
+table has UniForm (or, for streaming tables/materialized views, Compatibility
+Mode) enabled. There is currently no supported way for an external SQL engine
+to read a plain, unmodified Delta table through Unity Catalog with zero table
+changes. The two governance-preserving options are therefore:
+
+| Requirement | External HMS | Unity Catalog IRC |
+| --- | --- | --- |
+| Extra metadata service to operate | Yes | No |
+| Unity Catalog grants enforced on external reads | No | Yes |
+| Table property changes required | None | One-time UniForm enablement |
+| Data files rewritten | Never | Only if deletion vectors are enabled |
+
+##### UniForm requirements
+
+* Unity Catalog-registered table
+* Databricks Runtime 14.3 or later
+* `delta.columnMapping.mode = name`
+* `delta.enableDeletionVectors = false`
+* `minReaderVersion >= 2`, `minWriterVersion >= 7`
+
+`de_dev.sling.fact_virtual` already satisfies every requirement above
+(`SHOW TBLPROPERTIES` confirms `delta.universalFormat.enabledFormats =
+iceberg`, `delta.enableDeletionVectors = false`, and
+`delta.columnMapping.mode = name`), so it is already IRC-readable with no
+further changes. Tables created after this table, including the CTAS test
+copies in this document, do not inherit these properties automatically and
+require the same one-time enablement before they can be read through IRC.
+
+##### Enabling UniForm without existing deletion vectors
+
+```sql
+ALTER TABLE catalog.schema.table_name
+SET TBLPROPERTIES (
+  'delta.columnMapping.mode' = 'name',
+  'delta.enableIcebergCompatV2' = 'true',
+  'delta.universalFormat.enabledFormats' = 'iceberg'
+);
+```
+
+This is a metadata-only change and takes effect immediately, subject to the
+asynchronous Iceberg metadata generation Databricks performs after each
+Delta commit.
+
+##### Enabling UniForm with existing deletion vectors
+
+```sql
+ALTER TABLE catalog.schema.table_name
+SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');
+
+REORG TABLE catalog.schema.table_name APPLY (PURGE);
+
+ALTER TABLE catalog.schema.table_name
+SET TBLPROPERTIES (
+  'delta.columnMapping.mode' = 'name',
+  'delta.enableIcebergCompatV2' = 'true',
+  'delta.universalFormat.enabledFormats' = 'iceberg'
+);
+```
+
+`REORG TABLE ... APPLY (PURGE)` rewrites the affected data files to remove
+deletion vectors. This is the only case where enabling UniForm changes the
+underlying Parquet files rather than just table metadata.
+
+##### Recommended rollout for a majority-Delta estate
+
+1. Inventory existing tables and their current
+   `delta.universalFormat.enabledFormats` and `delta.enableDeletionVectors`
+   values, for example through `information_schema` or the Tables API.
+2. Split the remaining tables into two batches: deletion-vectors-disabled
+   (cheap, metadata-only enablement) and deletion-vectors-enabled (requires
+   `REORG ... PURGE` first).
+3. Run enablement as a governed, tracked batch job owned by the platform
+   team rather than ad hoc per-table changes.
+4. Query the enabled tables through the existing `databricks` (Trino) and
+   `databricks_uc` (StarRocks) IRC catalogs; no new catalog configuration is
+   required once a table is enabled.
+5. Join Unity Catalog tables with RisingWave tables in the same query using
+   the existing `risingwave` Trino catalog, which connects over the
+   PostgreSQL wire protocol.
+
+A table that cannot tolerate the one-time enablement, most commonly because
+`REORG TABLE ... APPLY (PURGE)` is too disruptive to schedule, is not a
+candidate for IRC-based external access. The external-HMS path remains the
+only fallback for that specific table, with the governance trade-off
+described above accepted for it alone rather than for the entire estate.
+
 #### Step 1: Verify the table as a Databricks administrator
 
 Run these commands in Databricks SQL as an identity that can inspect the
