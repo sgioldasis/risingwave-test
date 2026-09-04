@@ -1631,6 +1631,48 @@ directly, but Databricks-side federation does not need it.
   verify governance behavior or join-pushdown support, so they are
   unverified rather than recommended.
 
+##### Cost comparison: Databricks compute involvement per query
+
+Databricks bills SQL compute as `usage_type = COMPUTE_TIME` under the `SQL`
+billing origin, metered in DBUs while a SQL warehouse is running. A stopped
+warehouse auto-starts on the next query (JDBC/ODBC connection, dashboard
+open, scheduled job) and only stops again after its configured idle
+timeout. Whether a given access pattern touches a SQL warehouse at all
+determines whether it is billed as Databricks compute:
+
+| Path | Requires a running Databricks SQL warehouse? | Databricks compute cost per query? |
+| --- | --- | --- |
+| Lakehouse Federation (Databricks queries RisingWave) | Yes — every query executes on a warehouse | Yes, proportional to warehouse uptime |
+| Trino / StarRocks via Unity Catalog IRC | No — IRC is a Unity Catalog control-plane REST API, not a SQL warehouse | No |
+| Trino / StarRocks via external HMS (native Delta) | No — reads the Delta log and Parquet directly from ADLS | No |
+
+With Trino or StarRocks, the read path is: engine to Unity Catalog IRC (or
+HMS) for metadata, then engine to ADLS directly for data. Neither step
+touches a Databricks SQL warehouse, so neither is billed as Databricks
+compute. Only the self-hosted engine's own compute and ordinary ADLS
+storage transaction costs apply.
+
+With Lakehouse Federation, every query — including a cheap one — executes
+inside a live Databricks SQL warehouse, because that warehouse plans the
+query, pushes down to RisingWave over JDBC, and performs the join. This
+cost scales with query volume and warehouse uptime, not with the size of
+the RisingWave result set.
+
+##### Recommendation once cost is a factor
+
+For high-query-volume or latency-sensitive access, such as dashboards or
+repeated joins with RisingWave, prefer UniForm plus Unity Catalog IRC plus
+Trino/StarRocks: the one-time per-table UniForm cost is paid once, and every
+subsequent query is free of Databricks compute cost while UC grants are
+still enforced on the read. Reserve Lakehouse Federation for low-frequency,
+ad hoc joins where avoiding any external engine outweighs paying DBUs per
+query.
+
+Exact DBU rates, committed-use discounts, and actual query volume determine
+where this trade-off tips in dollar terms for a specific workload. Query
+`system.billing.usage` filtered to `sql_tier` warehouse usage to obtain
+real figures before deciding.
+
 #### Step 1: Verify the table as a Databricks administrator
 
 Run these commands in Databricks SQL as an identity that can inspect the
