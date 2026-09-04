@@ -1550,6 +1550,87 @@ candidate for IRC-based external access. The external-HMS path remains the
 only fallback for that specific table, with the governance trade-off
 described above accepted for it alone rather than for the entire estate.
 
+#### Alternative: Databricks Lakehouse Federation instead of an external engine
+
+Every option above assumes an external SQL engine (Trino or StarRocks) reads
+Databricks tables. Databricks Lakehouse Federation inverts that: Databricks
+itself queries RisingWave, and the join runs inside Databricks SQL with no
+external engine at all.
+
+Lakehouse Federation's PostgreSQL query-federation connector is a documented,
+supported feature. RisingWave speaks the Postgres wire protocol, so a
+Unity Catalog connection and foreign catalog can point at it directly:
+
+```sql
+CREATE CONNECTION risingwave_conn TYPE postgresql
+OPTIONS (
+  host 'frontend-node-0',
+  port '4566',
+  user secret ('rw_scope', 'user'),
+  password secret ('rw_scope', 'password')
+);
+
+CREATE FOREIGN CATALOG risingwave_fed
+USING CONNECTION risingwave_conn
+OPTIONS (database 'dev');
+```
+
+Once created, the join runs as ordinary Databricks SQL:
+
+```sql
+SELECT d.id, d.virtual_item, r.event_type
+FROM de_dev.sr_poc_external.fact_virtual_personal_copy_20260903 d
+JOIN risingwave_fed.public.funnel_summary r
+  ON d.id = r.source_id;
+```
+
+##### Why this satisfies every constraint simultaneously
+
+| Requirement | Databricks Lakehouse Federation |
+| --- | --- |
+| Query Delta/Iceberg/UniForm without transformation | Native — Databricks is the table's own engine; no REST/HMS/IRC layer is involved |
+| Governance stays in Unity Catalog | Yes — the foreign catalog is a UC object with UC grants |
+| Extra metastore to operate | None |
+| Join with RisingWave | Native PostgreSQL query federation, with join pushdown in DBR 17.2+ (Public Preview) |
+
+Because Databricks is reading its own tables directly, the UniForm
+enablement discussed above becomes unnecessary for this access pattern. It
+is still required if Trino or StarRocks need to read the same tables
+directly, but Databricks-side federation does not need it.
+
+##### Requirements and unverified assumptions
+
+* Unity Catalog-enabled workspace, DBR 13.3 LTS+ or later, SQL warehouse
+  Pro or Serverless at version 2023.40 or above.
+* Network connectivity from the Databricks SQL warehouse to the RisingWave
+  frontend node (VNet peering, PrivateLink, or an equivalent routed path;
+  general internet reachability is not sufficient for a private RisingWave
+  deployment).
+* RisingWave's Postgres-wire compatibility has not been validated against
+  Databricks' PostgreSQL connector in this project. The connector is
+  documented for PostgreSQL itself, not RisingWave specifically, and its
+  JDBC driver performs `information_schema` / `pg_catalog` metadata
+  introspection during connection setup. A pilot `CREATE CONNECTION` and
+  test query against the RisingWave frontend node is required before this
+  path can be considered validated.
+* Join pushdown to the federated source is a Public Preview feature
+  requiring DBR 17.2+ and SQL warehouse compute; without it, joins still
+  execute correctly but run partially in Databricks compute rather than
+  fully pushed down.
+
+##### Alternatives considered and rejected
+
+* **ClickHouse** (`IcebergAzure` / `DeltaLake` table engines) reads Iceberg
+  and Delta tables directly from ADLS by URL, requiring no catalog service
+  at all. This was rejected because it bypasses Unity Catalog entirely,
+  authorizing access through raw storage credentials instead of UC grants,
+  which is a larger governance gap than the external-HMS path. It also does
+  not support Iceberg deletion vectors.
+* **Dremio and Starburst** advertise Unity Catalog and PostgreSQL
+  connectivity, but their current documentation could not be retrieved to
+  verify governance behavior or join-pushdown support, so they are
+  unverified rather than recommended.
+
 #### Step 1: Verify the table as a Databricks administrator
 
 Run these commands in Databricks SQL as an identity that can inspect the
