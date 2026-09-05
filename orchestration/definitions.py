@@ -725,14 +725,14 @@ defs = Definitions(
     resources={
         "dbt": DbtCliResource(
             project_dir=str(dbt_PROJECT_PATH),
-            dbt_executable="/opt/dagster-venv/bin/dbt",
+            dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
         ),
         "starrocks_dbt": DbtCliResource(
             project_dir=str(dbt_STARROCKS_PROJECT_PATH),
             profiles_dir=str(dbt_STARROCKS_PROJECT_PATH),
             profile="starrocks_profile",
             target="dev",
-            dbt_executable="/opt/dagster-venv/bin/dbt",
+            dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
         ),
         "spark": spark_session_resource,
     },
