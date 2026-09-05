@@ -11,7 +11,7 @@ WORKDIR /workspace
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-        build-essential gcc libpq-dev curl ca-certificates \
+        build-essential gcc git libpq-dev curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install JDK 21 (Eclipse Temurin / Adoptium) — required by pyspark 4 for the
@@ -87,6 +87,7 @@ COPY --chown=dagster:dagster . .
 # project is not installed as a package (PYTHONPATH is used instead).
 RUN --mount=type=cache,target=/root/.cache/uv \
     UV_PROJECT_ENVIRONMENT=/opt/dagster-venv \
+    UV_LINK_MODE=copy \
     uv sync --frozen --no-install-project --no-dev
 
 # Note: This project is NOT installed as a package.

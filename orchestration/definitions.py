@@ -40,6 +40,7 @@ from .assets.landing_to_bronze import casino_landing_to_bronze
 from .assets.kafka_topics_setup import kafka_output_topics_setup
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 
+from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         # Get the dbt resource properties
         dbt_resource_props = manifest.get("nodes", {}).get(unique_id, {})
         tags = dbt_resource_props.get("tags", [])
+        package_name = dbt_resource_props.get("package_name", "")
         config = dbt_resource_props.get("config", {})
         meta = config.get("meta", {})
         dagster_meta = meta.get("dagster", {})
@@ -161,9 +163,13 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             kinds.add("iceberg")
             spec = spec.replace_attributes(kinds=frozenset(kinds))
         
+        # StarRocks models get their own organizational group, regardless of their
+        # materialization type. This keeps them separate from the RisingWave PoC.
+        if package_name == "starrocks_unified_funnel":
+            new_spec = spec.replace_attributes(group_name="starrocks")
         # local_infra must be checked first — some models carry both casino_prd_setup
         # and local_infra tags, and we want them excluded from casino_stg_job.
-        if "local_infra" in tags:
+        elif "local_infra" in tags:
             new_spec = spec.replace_attributes(group_name="casino_local_infra")
         elif "casino_prd_setup" in tags:
             new_spec = spec.replace_attributes(group_name="casino_prd_setup")
@@ -197,6 +203,16 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             for new_dep_key in asset_deps:
                 if new_dep_key not in existing_keys:
                     existing_deps.append(AssetDep(asset=new_dep_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
+        # The StarRocks unified view reads the Databricks table populated by
+        # the RisingWave funnel sink, so keep the cross-PoC dependency explicit.
+        if package_name == "starrocks_unified_funnel":
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            risingwave_sink_key = AssetKey(["public", "sink_funnel_to_databricks"])
+            if risingwave_sink_key not in {dep.asset_key for dep in existing_deps}:
+                existing_deps.append(AssetDep(asset=risingwave_sink_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         # Casino Kafka source tables depend on proto descriptors being in MinIO.
@@ -293,6 +309,24 @@ else:
 # Create translator instance
 custom_translator = CustomDagsterDbtTranslator()
 
+# Initialize StarRocks dbt project
+logger.info("Initializing dbt_starrocks project for Dagster...")
+dbt_starrocks_project = DbtProject(
+    project_dir=str(dbt_STARROCKS_PROJECT_PATH),
+)
+
+# Verify dbt_starrocks manifest
+logger.info(f"DbtProject (starrocks) initialized with manifest: {dbt_starrocks_project.manifest_path}")
+if dbt_starrocks_project.manifest_path.exists():
+    try:
+        with open(dbt_starrocks_project.manifest_path) as f:
+            sr_manifest_check = json.load(f)
+        sr_nodes_count = len(sr_manifest_check.get("nodes", {}))
+        logger.info(f"StarRocks manifest loaded with {sr_nodes_count} nodes")
+    except Exception as e:
+        logger.error(f"ERROR reading StarRocks manifest: {e}")
+else:
+    logger.info(f"StarRocks manifest not found at {dbt_starrocks_project.manifest_path} (will be created on first dbt run)")
 
 @dbt_assets(manifest=dbt_project.manifest_path, dagster_dbt_translator=custom_translator, exclude="casino_prd")
 def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
@@ -429,6 +463,20 @@ def casino_prd_dbt_assets(
     )
 
 
+@dbt_assets(
+    manifest=dbt_starrocks_project.manifest_path,
+    dagster_dbt_translator=custom_translator,
+    name="starrocks_unified_dbt_assets",
+)
+def starrocks_unified_dbt_assets(
+    context: AssetExecutionContext,
+    starrocks_dbt: DbtCliResource,
+):
+    """dbt assets for StarRocks unified MV (cold-path-only, Pilot B)."""
+    context.log.info(f"Starting dbt build for StarRocks project: {dbt_STARROCKS_PROJECT_PATH}")
+    context.log.info("Building unified funnel MV (cold-path-only; hot path deferred pending JDBC catalog fix)")
+
+    yield from starrocks_dbt.cli(["build"], context=context).stream()
 # Define jobs
 dbt_build_job = define_asset_job(
     name="dbt_build_job",
@@ -444,6 +492,12 @@ postgres_sink_job = define_asset_job(
     description="Create PostgreSQL table and RisingWave sink for funnel data",
 )
 
+# Job to build StarRocks unified MV
+dbt_starrocks_build_job = define_asset_job(
+    name="dbt_starrocks_build_job",
+    selection=[starrocks_unified_dbt_assets],
+    description="Build StarRocks unified funnel MV (cold-path-only, Pilot B)",
+)
 # Define schedules - run every 5 minutes
 dbt_build_schedule = ScheduleDefinition(
     job=dbt_build_job,
@@ -452,6 +506,13 @@ dbt_build_schedule = ScheduleDefinition(
     description="Run dbt build every 5 minutes",
 )
 
+# StarRocks dbt build schedule (runs every 10 minutes, offset from main dbt to avoid contention)
+dbt_starrocks_build_schedule = ScheduleDefinition(
+    job=dbt_starrocks_build_job,
+    cron_schedule="*/10 * * * *",
+    name="dbt_starrocks_build_schedule",
+    description="Run StarRocks dbt build (unified MV refresh) every 10 minutes",
+)
 # ML Training Asset - depends on funnel_training dbt model
 @asset(
     group_name="ml",
@@ -605,6 +666,8 @@ defs = Definitions(
         postgres_funnel_table,
         realtime_funnel_dbt_assets,
         ml_trained_models,
+        # StarRocks unified MV (cold-path-only, Pilot B)
+        starrocks_unified_dbt_assets,
         # Casino production prerequisites
         casino_prd_proto_fetch,
         casino_prd_proto_compile,
@@ -633,6 +696,7 @@ defs = Definitions(
         iceberg_countries_job,
         iceberg_compaction_job,
         postgres_sink_job,
+        dbt_starrocks_build_job,
         kafka_topics_setup_job,
         casino_prd_full_job,
         casino_stg_job,
@@ -655,10 +719,21 @@ defs = Definitions(
     schedules=[
         dbt_build_schedule,
         ml_training_schedule,
+        dbt_starrocks_build_schedule,
     ],
     sensors=[ml_training_sensor_realtime],
     resources={
-        "dbt": DbtCliResource(project_dir=str(dbt_PROJECT_PATH)),
+        "dbt": DbtCliResource(
+            project_dir=str(dbt_PROJECT_PATH),
+            dbt_executable="/opt/dagster-venv/bin/dbt",
+        ),
+        "starrocks_dbt": DbtCliResource(
+            project_dir=str(dbt_STARROCKS_PROJECT_PATH),
+            profiles_dir=str(dbt_STARROCKS_PROJECT_PATH),
+            profile="starrocks_profile",
+            target="dev",
+            dbt_executable="/opt/dagster-venv/bin/dbt",
+        ),
         "spark": spark_session_resource,
     },
 )

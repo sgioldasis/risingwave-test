@@ -22,4 +22,3 @@ on-run-start:
 models:
   starrocks_unified_funnel:
     +schema: 'sr_local_db'
-    +database: 'sr_local_db'

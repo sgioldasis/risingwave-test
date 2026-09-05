@@ -1,21 +1,14 @@
 {{
   config(
-    materialized='table',
-    unique_key='window_start, country',
-    sort_keys=['window_start', 'country'],
-    distributed_by='HASH(window_start)',
-    properties={'replication_num': '1'}
+    materialized='view',
+    enabled=false
   )
 }}
 
-SELECT
-    CAST(window_start AS DATETIME) AS window_start,
-    CAST(window_end AS DATETIME) AS window_end,
-    country,
-    viewers,
-    carters,
-    purchasers,
-    view_to_cart_rate,
-    cart_to_buy_rate
-FROM {{ source('risingwave', 'funnel_summary') }}
-WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+-- DEFERRED: This table was intended to read live from RisingWave via JDBC catalog,
+-- but StarRocks 4.1.4 JDBC external catalog creation is not working with the expected syntax.
+-- For now, the unified MV reads only from Databricks UC (cold path).
+-- TODO: Revisit JDBC catalog once a working path is confirmed (StarRocks 5.0+ or configuration fix).
+
+SELECT 1 -- Placeholder; this model is disabled
+

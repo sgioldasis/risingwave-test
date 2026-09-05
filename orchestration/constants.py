@@ -6,6 +6,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 dbt_PROJECT_PATH = PROJECT_ROOT / "dbt"
 dbt_MANIFEST_PATH = dbt_PROJECT_PATH / "target" / "manifest.json"
 
+# dbt_starrocks project path
+dbt_STARROCKS_PROJECT_PATH = PROJECT_ROOT / "dbt_starrocks"
+dbt_STARROCKS_MANIFEST_PATH = dbt_STARROCKS_PROJECT_PATH / "target" / "manifest.json"
 # dbt profile configuration
 dbt_PROFILE_NAME = "funnel_profile"
 dbt_TARGET_NAME = "dev"
