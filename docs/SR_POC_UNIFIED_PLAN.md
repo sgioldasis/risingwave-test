@@ -216,6 +216,25 @@ Part 1 is now complete for the historical funnel table. The remaining work is
 to build the StarRocks hot path and unified view, then refactor only the
 ad-hoc dashboard query endpoints.
 
+### Current implementation status (2026-09-05)
+
+The project has now moved from the design stage into the execution stage:
+
+* The production Databricks sink is validated and writing to the Managed Iceberg
+  table `de_dev.sr_poc_external.funnel_summary_historical`.
+* The StarRocks dbt project has been scaffolded at
+  [dbt_starrocks/dbt_project.yml](../dbt_starrocks/dbt_project.yml),
+  [dbt_starrocks/profiles.yml](../dbt_starrocks/profiles.yml),
+  [dbt_starrocks/models/hot_funnel_summary.sql](../dbt_starrocks/models/hot_funnel_summary.sql),
+  and [dbt_starrocks/models/mv_unified_funnel_summary.sql](../dbt_starrocks/models/mv_unified_funnel_summary.sql).
+* The new StarRocks project parses successfully via the adapter: the command
+  `uv run --with dbt-starrocks==1.12.0 dbt ls --project-dir dbt_starrocks --profiles-dir dbt_starrocks`
+  discovered `2 models, 2 operations, 3 sources, 480 macros`.
+
+The next live step is to wire the new project into Dagster and execute the hot
+and unified StarRocks models against the running StarRocks instance before the
+API endpoints are switched away from RisingWave.
+
 ## Part 2: Ad-hoc query endpoints read through StarRocks
 
 Only the dashboard's on-demand query endpoints in
@@ -342,7 +361,9 @@ materializations cover every StarRocks object this plan needs:
 Because `dbt-starrocks` and the existing `risingwave` adapter are different
 dbt adapter types, they cannot share one dbt project (a dbt project's
 `profile:` resolves to exactly one adapter). This plan adds a second, sibling
-dbt project rather than mixing adapters in the existing one:
+dbt project rather than mixing adapters in the existing one. The scaffold for
+that project is now in place and successfully parsed, so the remaining work is
+execution and dependency wiring rather than project bootstrap:
 
 ```text
 dbt/                     (existing, unchanged) - profile: funnel_profile, type: risingwave
