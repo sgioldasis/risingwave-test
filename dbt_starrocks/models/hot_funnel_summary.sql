@@ -1,14 +1,17 @@
 {{
   config(
-    materialized='view',
-    enabled=false
+    materialized='view'
   )
 }}
 
--- DEFERRED: This table was intended to read live from RisingWave via JDBC catalog,
--- but StarRocks 4.1.4 JDBC external catalog creation is not working with the expected syntax.
--- For now, the unified MV reads only from Databricks UC (cold path).
--- TODO: Revisit JDBC catalog once a working path is confirmed (StarRocks 5.0+ or configuration fix).
-
-SELECT 1 -- Placeholder; this model is disabled
+SELECT
+  CAST(window_start AS DATETIME) AS window_start,
+  CAST(window_end AS DATETIME) AS window_end,
+  country,
+  viewers,
+  carters,
+  purchasers,
+  CAST(view_to_cart_rate AS DOUBLE) AS view_to_cart_rate,
+  CAST(cart_to_buy_rate AS DOUBLE) AS cart_to_buy_rate
+FROM {{ source('risingwave', 'funnel_summary') }}
 

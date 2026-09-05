@@ -10,7 +10,7 @@
     "DATABRICKS_AZURE_TENANT_ID":   "78395483-9425-447a-ba64-60b90f6bb16e",
     "DATABRICKS_AZURE_CLIENT_ID":   "$DATABRICKS_AZURE_CLIENT_ID",
     "DATABRICKS_AZURE_CLIENT_SECRET": "$DATABRICKS_AZURE_CLIENT_SECRET",
-    "ADLS_ACCOUNT_NAME":              "stkznneurwpoccdddevstd",
+    "ADLS_ACCOUNT_NAME":              "stkznneusrpoccdddevstd",
     "ADLS_ACCOUNT_KEY":               "$ADLS_ACCOUNT_KEY"
   },
   "packages": [

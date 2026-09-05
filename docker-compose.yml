@@ -774,7 +774,7 @@ services:
       - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
       - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET
-      - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
+      - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME}
       - ADLS_ACCOUNT_KEY
       # Disable OrbStack-injected HTTP proxy so in-network HTTP calls
       # (e.g. Trino, Lakekeeper, MinIO) bypass proxyproxy.orb.internal which
@@ -848,7 +848,7 @@ services:
       - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
       - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET
-      - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
+      - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME}
       - ADLS_ACCOUNT_KEY
       # Disable OrbStack-injected HTTP proxy (see dagster-webserver above).
       - HTTP_PROXY=

@@ -472,9 +472,9 @@ def starrocks_unified_dbt_assets(
     context: AssetExecutionContext,
     starrocks_dbt: DbtCliResource,
 ):
-    """dbt assets for StarRocks unified MV (cold-path-only, Pilot B)."""
+    """dbt assets for the StarRocks hot and cold unified MV."""
     context.log.info(f"Starting dbt build for StarRocks project: {dbt_STARROCKS_PROJECT_PATH}")
-    context.log.info("Building unified funnel MV (cold-path-only; hot path deferred pending JDBC catalog fix)")
+    context.log.info("Building the RisingWave hot view and unified funnel MV")
 
     yield from starrocks_dbt.cli(["build"], context=context).stream()
 # Define jobs
@@ -496,7 +496,7 @@ postgres_sink_job = define_asset_job(
 dbt_starrocks_build_job = define_asset_job(
     name="dbt_starrocks_build_job",
     selection=[starrocks_unified_dbt_assets],
-    description="Build StarRocks unified funnel MV (cold-path-only, Pilot B)",
+    description="Build the StarRocks hot view and unified funnel MV",
 )
 # Define schedules - run every 5 minutes
 dbt_build_schedule = ScheduleDefinition(

@@ -52,7 +52,7 @@ run_sql() {
 }
 
 echo "Checking StarRocks catalogs..."
-run_sql "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local';"
+run_sql "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave';"
 
 echo "Checking Databricks Unity Catalog namespace..."
 run_sql "SHOW DATABASES FROM databricks_uc; SHOW TABLES FROM databricks_uc.rw_poc;"

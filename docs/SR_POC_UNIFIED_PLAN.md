@@ -1,4 +1,7 @@
-# StarRocks Unified Lakehouse Dashboard Plan
+---
+title: StarRocks Unified Lakehouse Dashboard Plan
+description: Plan and validation record for the StarRocks hot and cold funnel serving layer
+---
 
 ## Objective
 
@@ -28,12 +31,14 @@ modern-dashboard/backend/api.py
 `funnel_summary` columns: `window_start`, `window_end`, `country`, `viewers`,
 `carters`, `purchasers`, `view_to_cart_rate`, `cart_to_buy_rate`.
 
-StarRocks currently has two external catalogs and no table fed by
-RisingWave:
+StarRocks currently has three external catalogs and a dbt-managed hot view:
 
-* `databricks_uc` — Iceberg REST against Unity Catalog `de_dev`
+* `databricks_uc` - Iceberg REST against Unity Catalog `de_dev`
   ([starrocks/init_catalog.sh](../starrocks/init_catalog.sh))
-* `lakekeeper_local` — Iceberg REST against the local Lakekeeper/MinIO stack
+* `lakekeeper_local` - Iceberg REST against the local Lakekeeper/MinIO stack
+* `risingwave` - JDBC federation against RisingWave `public`
+* `hot_funnel_summary` - normalized StarRocks view over
+  `risingwave.public.funnel_summary`
 
 ## Target architecture (to-be)
 
@@ -212,9 +217,9 @@ RisingWave v3.0.3
   -> Databricks SQL verification
 ```
 
-Part 1 is now complete for the historical funnel table. The remaining work is
-to build the StarRocks hot path and unified view, then refactor only the
-ad-hoc dashboard query endpoints.
+Part 1 is complete for the historical funnel table. The StarRocks hot path and
+unified view are also deployed and validated. The remaining implementation
+work is the scoped dashboard endpoint migration.
 
 ### Current implementation status (2026-09-05)
 
@@ -267,76 +272,104 @@ against the Part 3 unified view.
 
 ## Part 3: StarRocks async materialized view (hot + cold union)
 
-### Current status (2026-09-05 — dbt pilot findings)
+### Current status (2026-09-05 — federated demo validated)
 
 The dbt-starrocks adapter config issues have been resolved:
 
-**Root-cause blocking the hot model:** The model tries to read from `public.public.funnel_summary`, but StarRocks has no `public` catalog. The only available catalogs are:
+The initial hot model failed because the RisingWave JDBC catalog did not yet exist. The catalog is now created idempotently by the StarRocks dbt project's `on-run-start` hook.
 
-The hot path needs a new external catalog for RisingWave. Two pilots will confirm the best path:
+The two source catalogs are now both validated:
 
 **Pilot A: RisingWave JDBC External Catalog** — StarRocks reads `public.funnel_summary` from RisingWave via a JDBC external catalog. This is the live-reading pattern previously researched for Part 3 and documented in [SR_POC_TESTING_PLAN.md](SR_POC_TESTING_PLAN.md) as an unvalidated candidate. The advantage is direct MV access; the disadvantage is a new external service dependency.
 
 **Pilot B: Reuse Databricks UC (no hot path)** — Skip the hot path altogether and use only the cold path (Databricks UC historical table) in the unified view. The disadvantage is no real-time hot data; the advantage is no new dependencies. This changes the MV from union-based to a single-table read.
 
-Once the hot-path pilot is validated, the materialized view will be finalized and wired into Dagster.
-**OUTCOME (2026-09-05 15:22 UTC):** Pilot B (cold-path-only) was successfully deployed and validated.
+**COLD-PATH BASELINE (2026-09-05):** Pilot B was deployed first as a fallback and remains useful for comparison.
   - ✅ `mv_unified_funnel_summary` materialized view created in StarRocks (`sr_local_db_sr_local_db` schema)
-  - ✅ Async refresh configured: `EVERY (INTERVAL 5 MINUTE)`
+  - ✅ Async refresh was initially configured: `EVERY (INTERVAL 5 MINUTE)`
   - ✅ Data verified: 54 rows, 11 distinct time windows from Databricks UC `funnel_summary_historical`
   - ✅ Sample query result confirms column mappings and numeric precision
-  - 🔄 **Pilot A (RisingWave JDBC) is DEFERRED:** StarRocks 4.1.4 JDBC external catalog syntax not working with tested patterns. Workaround: revisit in StarRocks 5.0+ or alternate connection methods (e.g., remote data source via Spark connector). For now, the MV is cold-path-only and suitable for ad-hoc queries; real-time hot data will be available in next phase post-JDBC fix.
 
-### Materialized view design (to finalize after hot-path pilot)
+**FEDERATION OUTCOME (2026-09-05 12:11 UTC):** Pilot A is now validated on StarRocks 4.1.4.
+  - ✅ Created `risingwave` JDBC catalog using the documented `jdbc_uri`, `driver_url`, `driver_class`, and `schema_resolver=postgresql` properties.
+  - ✅ StarRocks discovered RisingWave catalogs `information_schema`, `pg_catalog`, `public`, and `rw_catalog`.
+  - ✅ Direct query through StarRocks returned 11 rows from `risingwave.public.funnel_summary`.
+  - ✅ Databricks UC direct query returned 54 rows from `databricks_uc.sr_poc_external.funnel_summary_historical`.
+  - ✅ One StarRocks `UNION ALL` query across both catalogs returned 65 rows.
+  - ✅ Superseded by the boundary-aware federated demo MV below.
+
+**DEMO FEDERATION SETUP (2026-09-05 12:23 UTC):** The producer-driven test configuration is deployed and tested.
+  - ✅ Hot source: `risingwave.public.funnel_summary` through the StarRocks JDBC catalog.
+  - ✅ Cold source: `databricks_uc.sr_poc_external.funnel_summary_historical` through Iceberg REST.
+  - ✅ Hot/cold ownership boundary: three minutes (`window_start >= CURRENT_TIMESTAMP() - INTERVAL 3 MINUTE` for RisingWave; older rows from Databricks).
+  - ✅ StarRocks MV refresh: every one minute.
+  - ✅ Dagster run `dbt_starrocks_build_job`: `RUN_SUCCESS`, dbt `PASS=4`, `WARN=0`, `ERROR=0`.
+  - ✅ Initial post-build counts: 19 RisingWave rows, 206 Databricks rows, 183 rows visible in the unified MV.
+  - ✅ Later live validation: 24 RisingWave rows, 369 Databricks rows, 369 rows visible in the unified MV.
+  - ✅ Cold-branch deduplication now collapses repeated historical snapshots by `(window_start, country)` using the maximum cumulative counts and recalculated rates.
+  - ✅ Deduplicated MV validation: 23 rows, 23 distinct logical keys, 0 duplicate rows.
+  - ℹ️ The external Databricks Iceberg table remains append-only and unchanged; deduplication is applied at the StarRocks federated view layer.
+
+### Cold-path continuity validation (2026-09-05 14:11 UTC)
+
+The Databricks sink later stopped advancing because the runtime configuration
+used an ADLS account name that did not match the account in the Iceberg table's
+`abfss://` metadata location. The sink DDL remained valid, but OpenDAL writes
+timed out against the incorrect storage endpoint.
+
+* Corrected the Devbox account value and removed stale hardcoded account values
+  from the Dagster Compose services.
+* Recreated `sink_funnel_to_databricks` through the credential-populated
+  `dagster-webserver` container with dbt `PASS=3`, `WARN=0`, and `ERROR=0`.
+* Confirmed that the Iceberg metadata version advanced from `00015` to `00018`
+  without new object-write timeout messages.
+* Confirmed that the cold table advanced from 369 rows with a `09:27` watermark
+  to 495 rows with an `11:10` watermark after a bounded producer run.
+* Refreshed the unified MV synchronously and verified 43 rows, 43 distinct
+  `(window_start, country)` keys, and an `11:11` watermark.
+
+### Materialized view design
 
 The materialized view unions:
 
-* **Hot path**: the most recent window(s) of `funnel_summary`, fed live
-  from the RisingWave sink (pending external catalog pilot).
+* **Hot path**: the most recent three minutes of `funnel_summary`, read live
+  through the validated RisingWave JDBC catalog.
 * **Cold path**: `databricks_uc` catalog reading the new
   `funnel_summary_historical` Managed Iceberg table.
 
-Draft shape (to refine before implementation):
+Deployed shape:
 
 ```sql
-CREATE MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary
-PARTITION BY (window_start)
+CREATE MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary
 REFRESH ASYNC EVERY (INTERVAL 1 MINUTE)
 PROPERTIES (
-    "query_rewrite_consistency" = "loose",
-    "mv_rewrite_staleness_second" = "30"
+  "query_rewrite_consistency" = "loose"
 )
 AS
-SELECT window_start, window_end, country, viewers, carters, purchasers,
-       view_to_cart_rate, cart_to_buy_rate
-FROM sr_local_db.hot_funnel_summary
-WHERE window_start >= CURRENT_TIMESTAMP() - INTERVAL 1 DAY
+WITH cold_deduplicated AS (
+  SELECT window_start, MAX(window_end) AS window_end, country,
+       MAX(viewers) AS viewers, MAX(carters) AS carters,
+       MAX(purchasers) AS purchasers
+  FROM databricks_uc.sr_poc_external.funnel_summary_historical
+  WHERE window_start < DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE)
+  GROUP BY window_start, country
+)
+SELECT window_start, window_end, country, viewers, carters, purchasers
+FROM cold_deduplicated
 
 UNION ALL
 
-SELECT window_start, window_end, country, viewers, carters, purchasers,
-       view_to_cart_rate, cart_to_buy_rate
-FROM databricks_uc.sr_poc_external.funnel_summary_historical
-WHERE window_start < CURRENT_TIMESTAMP() - INTERVAL 1 DAY;
+SELECT window_start, window_end, country, viewers, carters, purchasers
+FROM sr_local_db_sr_local_db.hot_funnel_summary
+WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE);
 ```
 
-### Open questions for Part 3 (updated)
+### Remaining questions for Part 3
 
-* **How does the hot path actually reach StarRocks?** Two candidate
-  designs, now under pilot validation (see status above):
-  1. RisingWave sinks `funnel_summary` a second time into a native
-     StarRocks Primary Key table (a new sink, analogous to
-     `sink_funnel_to_postgres` but with a `starrocks` connector).
-  2. StarRocks reads RisingWave live through a JDBC external catalog,
-     analogous to Trino's proven `risingwave` PostgreSQL catalog
-     documented in
-     [SR_POC_TESTING_PLAN.md](SR_POC_TESTING_PLAN.md). This has not been
-     verified for StarRocks specifically and needs a pilot test before
-     it can be assumed to work.
-* **Incremental partition refresh across mixed internal/external
-  sources is unverified.** StarRocks documentation on whether partition-level
+* Incremental partition refresh across mixed internal and external sources
+  remains unverified. StarRocks documentation on whether partition-level
   incremental refresh is fully supported when an async MV's base tables
-  span both an internal table and an external Iceberg catalog table in the
+  span both a JDBC-backed view and an external Iceberg catalog table in the
   same `UNION ALL` could not be confirmed in this session. Until verified,
   assume the MV may fall back to a full refresh on each cycle and size the
   refresh interval and cluster resources accordingly.
@@ -359,10 +392,11 @@ WHERE window_start < CURRENT_TIMESTAMP() - INTERVAL 1 DAY;
 
 ## Part 4: dbt + Dagster orchestration for StarRocks objects
 
-Today, StarRocks objects (`databricks_uc`, `lakekeeper_local`) are created by
+Today, StarRocks catalogs (`databricks_uc`, `lakekeeper_local`, `risingwave`)
+are created by
 [starrocks/init_catalog.sh](../starrocks/init_catalog.sh), a shell script run
-by the `starrocks-init` container at stack startup. This is outside dbt and
-Dagster entirely. RisingWave objects, by contrast, are all dbt models
+by the `starrocks-init` container at stack startup and idempotently by dbt
+`on-run-start` hooks. RisingWave objects are dbt models
 materialized as `materialized_view`, `sink`, or `iceberg_table`, run through
 dbt and orchestrated by Dagster's `dagster_dbt.dbt_assets`. This part brings
 StarRocks objects to parity with that pattern.
@@ -420,10 +454,9 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
    `meta.dagster.deps` mechanism already used across dbt models tagged
    `casino_prd_setup`, `databricks`, and `lakekeeper` in
    `CustomDagsterDbtTranslator`.
-3. Retire [starrocks/init_catalog.sh](../starrocks/init_catalog.sh) once the
-   `on-run-start` macros in the new project reliably (re)create both
-   catalogs idempotently; keep it only as a fallback until that is proven
-   in practice.
+3. Keep [starrocks/init_catalog.sh](../starrocks/init_catalog.sh) aligned with
+  the dbt `on-run-start` hooks so fresh stack startup and scheduled dbt runs
+  create the same three catalogs.
 
 ### Open questions for Part 4
 
@@ -468,16 +501,20 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
    [starrocks/init_catalog.sh](../starrocks/init_catalog.sh) into
    `on-run-start` macros. ✅ Completed; both catalogs created via on-run-start hooks.
 
-🔄 **IN PROGRESS (4):**
-4. Resolve the Part 3 hot-path open question with a small pilot: create a
-   RisingWave JDBC external catalog in StarRocks to read `public.funnel_summary`
-   directly. Once the pilot validates that StarRocks can query `risingwave.public.funnel_summary`,
-   the hot table and unified MV models can be deployed.
+✅ **DONE (4):**
+4. Validate StarRocks federation and deploy the boundary-aware unified MV:
+  - ✅ RisingWave JDBC catalog created and queried successfully
+  - ✅ Databricks UC Iceberg catalog recreated and queried successfully
+  - ✅ Three-minute hot/cold ownership boundary deployed
+  - ✅ One-minute MV refresh deployed
+  - ✅ Dagster `dbt_starrocks_build_job` completed successfully with `PASS=4`, `WARN=0`, `ERROR=0`
 
-⏭️ **NEXT (5-7):**
-5. Implement the hot Primary Key table and the async materialized view as
-   `dbt_starrocks/` models once the RisingWave catalog pilot is validated,
-   and wire Dagster dependencies per Part 4.
+✅ **DONE (5):**
+5. Validate append-only historical duplicates separately from hot/cold boundary
+  overlap. ✅ Completed; the serving MV exposes the deduplicated latest-row
+  representation and retains unique `(window_start, country)` keys.
+
+⏭️ **NEXT (6-7):**
 6. Refactor only the dashboard's ad-hoc query endpoints
    (`/api/query/funnel*`, `/api/funnel/enriched`, `/api/funnel/health`) to
    read from StarRocks, behind a feature flag or parallel endpoint so the
@@ -492,17 +529,18 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
 
 ## Explicitly out of scope for this plan
 
-**✅ COMPLETED (4-updated):**
+**✅ COMPLETED (4):**
 4. Deploy unified MV and wire Dagster orchestration:
-  - ✅ Pilot B (cold-path-only) deployed successfully
-  - ✅ `mv_unified_funnel_summary` materialized view created with async refresh (5 min interval)
+  - ✅ `mv_unified_funnel_summary` federates RisingWave JDBC and Databricks UC
+  - ✅ MV refreshes every minute with a three-minute ownership boundary
   - ✅ Dagster asset `starrocks_unified_dbt_assets` defined and scheduled
-  - ✅ Job `dbt_starrocks_build_job` created, runs on 10-min schedule (offset from main dbt)
-  - 🔄 Pilot A (RisingWave JDBC) deferred — revisit in StarRocks 5.0+
+  - ✅ Job `dbt_starrocks_build_job` created and validated through `dg launch`
+  - ✅ Pilot A (RisingWave JDBC) validated on StarRocks 4.1.4
 * Changing the existing Kafka, PostgreSQL, or Lakekeeper sinks — they
 ⏭️ **NEXT (5-7):**
-5. [DEFERRED] Implement the hot Primary Key table once RisingWave JDBC catalog fix is available.
-  For now, the unified MV is cold-path-only and suitable for ad-hoc queries.
+5. Implement the boundary-aware hot/cold MV using the validated RisingWave JDBC
+  catalog and Databricks UC catalog. Keep the current cold-path-only MV as the
+  comparison baseline until duplicate handling and freshness are validated.
   to StarRocks.
 * Row-level or column-level governance on the new Databricks table beyond
   standard Unity Catalog table grants.

@@ -56,6 +56,22 @@ PROPERTIES (
 );
 SQL
 
+echo "Creating RisingWave JDBC catalog (risingwave)..."
+mysql -h starrocks -P 9030 -u root <<SQL
+DROP CATALOG IF EXISTS risingwave;
+CREATE EXTERNAL CATALOG risingwave
+COMMENT "RisingWave PostgreSQL JDBC federation"
+PROPERTIES (
+  "type"            = "jdbc",
+  "user"            = "root",
+  "password"        = "root",
+  "jdbc_uri"        = "jdbc:postgresql://frontend-node-0:4566/dev",
+  "driver_url"      = "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar",
+  "driver_class"    = "org.postgresql.Driver",
+  "schema_resolver" = "postgresql"
+);
+SQL
+
 echo "Verifying catalogs..."
-mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local';"
+mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave';"
 echo "StarRocks init complete."

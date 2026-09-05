@@ -1,18 +1,28 @@
 {{
   config(
     materialized='materialized_view',
-    refresh_method='ASYNC EVERY (INTERVAL 5 MINUTE)',
+    refresh_method='ASYNC EVERY (INTERVAL 1 MINUTE)',
     distributed_by=['window_start'],
     properties={'query_rewrite_consistency': 'loose'}
   )
 }}
 
--- PILOT B: Cold-path-only unified view (hot path deferred pending JDBC catalog fix)
--- Reads historical funnel summary from Databricks Unity Catalog Managed Iceberg table.
--- 
--- Once the RisingWave JDBC external catalog is working, this view will be updated to
--- UNION ALL the hot path (most recent windows from risingwave.public.funnel_summary)
--- with the cold path below.
+-- Federated demo view: RisingWave owns the newest three minutes while Databricks
+-- UC owns older windows. The append-only cold source can contain multiple
+-- snapshots for one window, so the cold branch collapses those snapshots first.
+
+WITH cold_deduplicated AS (
+  SELECT
+    window_start,
+    MAX(window_end) AS window_end,
+    country,
+    MAX(viewers) AS viewers,
+    MAX(carters) AS carters,
+    MAX(purchasers) AS purchasers
+  FROM {{ source('databricks_uc', 'funnel_summary_historical') }}
+  WHERE window_start < DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE)
+  GROUP BY window_start, country
+)
 
 SELECT
     window_start,
@@ -21,7 +31,21 @@ SELECT
     viewers,
     carters,
     purchasers,
-    view_to_cart_rate,
-    cart_to_buy_rate
-FROM {{ source('databricks_uc', 'funnel_summary_historical') }}
+  ROUND(CAST(carters AS DOUBLE) / NULLIF(viewers, 0), 2) AS view_to_cart_rate,
+  ROUND(CAST(purchasers AS DOUBLE) / NULLIF(carters, 0), 2) AS cart_to_buy_rate
+FROM cold_deduplicated
+
+UNION ALL
+
+SELECT
+  window_start,
+  window_end,
+  country,
+  viewers,
+  carters,
+  purchasers,
+  view_to_cart_rate,
+  cart_to_buy_rate
+FROM {{ ref('hot_funnel_summary') }}
+WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE)
 

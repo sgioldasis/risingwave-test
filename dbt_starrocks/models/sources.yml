@@ -1,13 +1,11 @@
 version: 2
 
 sources:
-  # DEFERRED: RisingWave JDBC external catalog (pending connector fix)
-  # Once available, this source will be used for the hot-path in the unified MV:
-  #   - name: risingwave
-  #     database: risingwave
-  #     schema: public
-  #     tables:
-  #       - name: funnel_summary
+  - name: risingwave
+    database: risingwave
+    schema: public
+    tables:
+      - name: funnel_summary
 
   - name: databricks_uc
     database: databricks_uc
