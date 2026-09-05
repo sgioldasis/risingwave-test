@@ -2,10 +2,13 @@
 
 ## Objective
 
-Refactor the modern dashboard so it stops reading directly from Kafka and
-RisingWave, and instead reads through StarRocks. StarRocks serves a single
-unified view that combines the hot, recent data streamed from RisingWave with
-the cold, historical data stored in Databricks Unity Catalog.
+Refactor only the modern dashboard's ad-hoc query endpoints so they read
+through StarRocks instead of querying RisingWave directly. StarRocks serves a
+single unified view that combines the hot, recent data streamed from
+RisingWave with the cold, historical data stored in Databricks Unity
+Catalog. The dashboard's live Kafka consumer thread and SSE stream — used for
+real-time updates — are explicitly kept unchanged; this plan touches only the
+query-on-demand endpoints.
 
 ## Current architecture (as-is)
 
@@ -49,8 +52,9 @@ StarRocks
     -> async materialized view UNIONs hot + cold, refreshed on a short interval
 
 modern-dashboard/backend/api.py
-    -> replaces Kafka consumer thread and direct RisingWave SQLAlchemy queries
-    -> queries StarRocks (MySQL wire protocol) for /api/funnel, /api/query/funnel*, SSE stream
+    -> Kafka consumer thread, in-memory cache, /api/funnel, /api/stats, /api/funnel/stream (SSE)  (unchanged)
+    -> ad-hoc query endpoints only: /api/query/funnel*, /api/funnel/enriched, /api/funnel/health
+         now query StarRocks (MySQL wire protocol) instead of RisingWave (Postgres wire protocol)
 ```
 
 ## Part 1: RisingWave to Databricks sink
@@ -75,29 +79,45 @@ CREATE SINK IF NOT EXISTS funnel_databricks_sink
 FROM {{ ref('funnel_for_iceberg') }}
 WITH (
     connector = 'iceberg',
-    type = 'upsert',
-    primary_key = 'window_start,country',
-    connection = databricks_uc_catalog_conn,  -- new connection, see below
+  type = 'append-only',
+  force_append_only = 'true',
+  catalog.type = 'rest',
+  catalog.uri = 'https://<workspace>/api/2.1/unity-catalog/iceberg-rest',
+  catalog.oauth2_server_uri = 'https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token',
+  catalog.credential = '<client-id>:<client-secret>',
+  catalog.scope = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
+  warehouse.path = 'de_dev',
     database.name = 'sr_poc_external',
     table.name = 'funnel_summary_historical',
-    create_table_if_not_exists = 'true',
-    commit_checkpoint_interval = 30
+  adlsgen2.account_name = '<new-storage-account>',
+  adlsgen2.tenant_id = '<tenant-id>',
+  adlsgen2.client_id = '<client-id>',
+  adlsgen2.client_secret = '<client-secret>',
+  commit_checkpoint_interval = 20
 )
 ```
 
-This requires a new dbt on-run-start connection, `databricks_uc_catalog_conn`,
-analogous to `lakekeeper_catalog_conn`
-(created in [dbt/dbt_project.yml](../dbt/dbt_project.yml) via
-`create_iceberg_connection()`), but pointed at the Unity Catalog IRC
-endpoint and OAuth credentials already used by
-[starrocks/init_catalog.sh](../starrocks/init_catalog.sh) for the
-`databricks_uc` catalog.
+The working RisingWave configuration embeds OAuth and ADLS data-plane
+credentials directly in `CREATE SINK`. The earlier `CREATE CONNECTION` probe
+was not the successful path. Use a pre-created Managed Iceberg table and do
+not rely on `create_table_if_not_exists` until the write path is validated.
+
+The sink must be append-only. Unity Catalog does not accept the Iceberg delete
+files produced by a normal upsert sink. Updates must be represented as new
+rows and collapsed downstream with a latest-row query or materialized view.
 
 ### Open questions for Part 1
 
-* Does RisingWave's `iceberg` sink connector support OAuth2 client-credential
-  authentication against Unity Catalog's IRC endpoint the same way StarRocks'
-  `iceberg.catalog.credential` property does? Not yet verified.
+* **Validated:** the target table must have no
+  `delta.feature.catalogManaged` protocol feature. On tables where it is
+  present, an administrator must run:
+  `ALTER TABLE ... DROP FEATURE catalogManaged` before external IRC writes.
+* **Validated:** the target schema must exactly match the RisingWave sink
+  relation. A mismatch in column count, names, or timestamp semantics fails
+  sink validation before any data is written.
+* **Validated:** RisingWave `v3.0.3` can write with the new service principal
+  and new ADLS account when the target is converted and the sink is
+  append-only.
 * Should the target catalog/schema be a new schema (for example
   `de_dev.sr_poc_external`) or a dedicated catalog reserved for
   RisingWave-managed tables, to keep it clearly separated from
@@ -108,34 +128,123 @@ endpoint and OAuth credentials already used by
   projection). Confirm which grain the historical Databricks table should
   use before implementing.
 
-## Part 2: Dashboard reads through StarRocks
+### Validated write spike (2026-09-05)
 
-Replace the dashboard's two current data paths in
-[modern-dashboard/backend/api.py](../modern-dashboard/backend/api.py):
+The write path was reproduced on a clean RisingWave `v3.0.3` stack using only
+  the new service principal and the new PoC ADLS account
+  `stkznneusrpoccdddevstd/sr-poc-cont1`.
 
-* The Kafka consumer thread (`kafka_consumer_loop`, feeding
-  `/api/funnel`, `/api/stats`, `/api/funnel/stream`) is replaced by a
-  polling or push query against the new StarRocks unified view.
-* The SQLAlchemy engine currently pointed at RisingWave
-  (`RISINGWAVE_URL`, `postgresql://root:root@localhost:4566/dev`) is
-  replaced by a StarRocks MySQL-wire connection for
-  `/api/query/funnel*`, `/api/funnel/enriched`, `/api/funnel/health`.
+  The required steps were:
+
+  1. Disconnect the VPN before pulling the new RisingWave image, then reconnect
+    before live Unity Catalog/ADLS testing.
+  2. Pin the default Compose image to
+    `risingwavelabs/risingwave:v3.0.3`.
+  3. Reset only the RisingWave metadata/state volumes
+    `risingwave-test_hummock-fs-store` and `risingwave-test_postgres-0`.
+    Reusing v3.2-alpha metadata caused v3.0.3 migration failures.
+  4. Start fresh v3.0.3 `meta-node-0`, `compute-node-0`,
+    `frontend-node-0`, and compactor services.
+  5. Create a Managed Iceberg target in
+    `de_dev.sr_poc_external` and ensure its schema exactly matches the
+    RisingWave relation, including timezone-aware `TIMESTAMP` columns.
+  6. Create the RisingWave UC REST connection using Azure AD OAuth2 client
+    credentials. UC metadata authentication and table discovery succeeded.
+  7. Create a `type = 'append-only'` sink with
+    `force_append_only = 'true'` and direct `adlsgen2` service-principal
+    credentials.
+  8. Insert a row after the sink was active and query the target through
+    Databricks SQL.
+
+  The exact marker row `minimal-v303-20260905` appeared in
+  `de_dev.sr_poc_external.rw_irc_probe_20260902`, proving the complete path:
+
+  ```text
+  RisingWave v3.0.3
+    -> Azure AD OAuth2 to Unity Catalog IRC
+    -> new service principal data-plane access
+    -> append-only Iceberg sink
+    -> Managed Iceberg table in Unity Catalog
+    -> Databricks SQL read
+  ```
+
+  The disposable RisingWave source, MV, and sink objects were cleaned up after
+  the successful check. The marker row remains in the existing converted probe
+  table as evidence. The production funnel-to-Databricks sink has not yet been
+  created.
+
+  The attempted v3.2-alpha run was not a valid final comparison: it reused
+  metadata/state that later proved incompatible with v3.0.3, accumulated stale
+  probe sink actors, and included several schema-mismatched disposable targets.
+  The clean v3.0.3 run removed those confounders.
+
+### Production sink validation
+
+The production-shaped sink was deployed successfully on the clean RisingWave
+`v3.0.3` stack on 2026-09-05:
+
+1. Rebuilt `funnel_for_iceberg` through the existing dbt/Dagster path.
+2. Confirmed the exact eight-column relation schema, including timezone-aware
+   `window_start` and `window_end` columns.
+3. Created the Managed Iceberg target
+   `de_dev.sr_poc_external.funnel_summary_historical` with the matching schema.
+4. Removed `delta.feature.catalogManaged` from the target before external
+   writes.
+5. Added [dbt/models/sink_funnel_to_databricks.sql](../dbt/models/sink_funnel_to_databricks.sql)
+   with direct Unity Catalog OAuth2 metadata credentials, direct ADLS service
+   principal credentials, `append-only`, `force_append_only = 'true'`, and a
+   production checkpoint interval of 20.
+6. Deployed the sink through dbt. A bounded live producer run crossed the
+   checkpoint threshold and produced a Databricks commit.
+7. Verified 26 rows in the Unity Catalog target, spanning windows from
+   `2026-09-05T04:06:00Z` through `2026-09-05T06:00:00Z`.
+
+The intermediate verification returned zero rows because the sink had not yet
+reached its checkpoint interval. The later count confirms the complete
+production path:
+
+```text
+RisingWave v3.0.3
+  -> dbt/Dagster sink deployment
+  -> Azure AD OAuth2 to Unity Catalog IRC
+  -> ADLS service-principal data-plane access
+  -> append-only Managed Iceberg writes
+  -> Databricks SQL verification
+```
+
+Part 1 is now complete for the historical funnel table. The remaining work is
+to build the StarRocks hot path and unified view, then refactor only the
+ad-hoc dashboard query endpoints.
+
+## Part 2: Ad-hoc query endpoints read through StarRocks
+
+Only the dashboard's on-demand query endpoints in
+[modern-dashboard/backend/api.py](../modern-dashboard/backend/api.py) change.
+The Kafka consumer thread (`kafka_consumer_loop`), the in-memory cache it
+feeds, and the endpoints backed by that cache (`/api/funnel`, `/api/stats`,
+`/api/funnel/stream` SSE) are explicitly **not modified** by this plan.
+
+The SQLAlchemy engine currently pointed at RisingWave
+(`RISINGWAVE_URL`, `postgresql://root:root@localhost:4566/dev`, used by
+`/api/query/funnel`, `/api/query/funnel/aggregate`, `/api/funnel/enriched`,
+`/api/funnel/health`) is replaced by a StarRocks MySQL-wire connection
+against the Part 3 unified view.
 
 ### Open questions for Part 2
 
 * StarRocks speaks the MySQL wire protocol, not PostgreSQL — the backend's
   SQLAlchemy dialect and connection string need to change
-  (`mysql+pymysql://` or equivalent), not just the host/port.
-* The SSE stream (`/api/funnel/stream`) currently pushes on every Kafka
-  message. A StarRocks-backed replacement needs either polling on a short
-  interval or a separate change-notification mechanism — StarRocks itself
-  has no native push/subscribe API. Decide the acceptable staleness window
-  before implementing.
+  (`mysql+pymysql://` or equivalent), not just the host/port. This affects
+  only the ad-hoc query engine (`create_engine(...)` in `api.py`), not the
+  Kafka consumer, which is unaffected by this change.
 * `/api/funnel/enriched` currently queries a RisingWave UDF-enhanced view
   directly. Confirm whether the enrichment logic moves into the StarRocks
   materialized view, stays in RisingWave with StarRocks reading the
   enriched RisingWave table instead of the raw one, or is reimplemented in
   StarRocks SQL.
+* `/api/funnel/health` currently checks RisingWave connectivity/health.
+  Confirm whether it should report StarRocks health, RisingWave health, or
+  both, now that the ad-hoc and live-stream paths query different systems.
 
 ## Part 3: StarRocks async materialized view (hot + cold union)
 
@@ -294,7 +403,7 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
 * [dbt/models/funnel_summary.sql](../dbt/models/funnel_summary.sql) — source MV, defines the grain and columns to preserve end-to-end
 * [dbt/models/funnel_for_iceberg.sql](../dbt/models/funnel_for_iceberg.sql) — existing type-casting pattern to reuse for the new Databricks sink
 * [dbt/models/sink_funnel_to_rw_iceberg.sql](../dbt/models/sink_funnel_to_rw_iceberg.sql) — template for the new `sink_funnel_to_databricks.sql`
-* [dbt/dbt_project.yml](../dbt/dbt_project.yml) — on-run-start hooks and vars; needs a new `databricks_uc_catalog_conn` connection
+* [dbt/dbt_project.yml](../dbt/dbt_project.yml) — on-run-start hooks and vars; the production sink should use direct OAuth/ADLS properties rather than the unsuccessful PAT-style connection probe
 * [starrocks/init_catalog.sh](../starrocks/init_catalog.sh) — existing `databricks_uc`/`lakekeeper_local` catalog DDL and credentials to port into the new `dbt_starrocks/` project's `on-run-start` macros, then retire
 * [orchestration/definitions.py](../orchestration/definitions.py) — existing `DbtProject`/`dbt_assets` wiring and `CustomDagsterDbtTranslator`; needs a second `dbt_assets` set for `dbt_starrocks/`
 * [orchestration/assets/postgres_sink_setup.py](../orchestration/assets/postgres_sink_setup.py) — precedent pattern for a one-time setup `@asset` wired as a dbt model dependency
@@ -302,34 +411,45 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
 * [modern-dashboard/backend/api.py](../modern-dashboard/backend/api.py) — Kafka consumer thread and RisingWave SQLAlchemy queries to replace
 * [docs/SR_POC_TESTING_PLAN.md](SR_POC_TESTING_PLAN.md) — governance, cost, and UniForm/HMS trade-off background this plan builds on
 
-## Sequencing (draft)
+## Sequencing (next steps)
 
-1. Resolve the Part 1 open questions; implement and validate
-   `sink_funnel_to_databricks.sql` writes to a Managed Iceberg table,
-   independent of the dashboard changes.
-2. Scaffold the new `dbt_starrocks/` project (Part 4) and port the
+1. Create the production-shaped UC Managed Iceberg target and implement
+  `sink_funnel_to_databricks.sql` using the validated v3.0.3 append-only
+  contract.
+2. Run the production sink through dbt and Dagster, then verify multiple
+  commits, row counts, timestamp semantics, and external reads through
+  StarRocks/Trino.
+3. Scaffold the new `dbt_starrocks/` project (Part 4) and port the
    `databricks_uc`/`lakekeeper_local` catalog DDL from
    [starrocks/init_catalog.sh](../starrocks/init_catalog.sh) into
    `on-run-start` macros, validating catalog creation through `dbt run`
    before any table or MV models depend on it.
-3. Resolve the Part 3 hot-path open question (native StarRocks sink vs.
+4. Resolve the Part 3 hot-path open question (native StarRocks sink vs.
    JDBC catalog to RisingWave) with a small pilot before committing to the
    materialized view design.
-4. Implement the hot Primary Key table and the async materialized view as
+5. Implement the hot Primary Key table and the async materialized view as
    `dbt_starrocks/` models once both source paths are validated
    independently, and wire Dagster dependencies per Part 4.
-5. Refactor the dashboard backend to read from StarRocks, behind a feature
-   flag or parallel endpoint so the existing Kafka/RisingWave path can be
-   compared side-by-side before cutover.
-6. Remove the Kafka consumer thread and direct RisingWave SQLAlchemy
-   queries from the dashboard only after the StarRocks path is validated
-   in parallel for at least one full day/night cycle (to exercise the
-   hot/cold boundary).
+6. Refactor only the dashboard's ad-hoc query endpoints
+   (`/api/query/funnel*`, `/api/funnel/enriched`, `/api/funnel/health`) to
+   read from StarRocks, behind a feature flag or parallel endpoint so the
+   existing RisingWave-backed versions can be compared side-by-side before
+   cutover. The Kafka consumer thread and SSE stream are not touched at any
+   point in this sequence.
+7. Remove the direct RisingWave SQLAlchemy queries backing the ad-hoc
+   endpoints only after the StarRocks path is validated in parallel for at
+   least one full day/night cycle (to exercise the hot/cold boundary). The
+   Kafka consumer thread, in-memory cache, and SSE stream remain in place
+   permanently under this plan.
 
 ## Explicitly out of scope for this plan
 
 * Changing the existing Kafka, PostgreSQL, or Lakekeeper sinks — they
   continue running unchanged.
+* The dashboard's Kafka consumer thread, in-memory cache, and SSE stream
+  (`/api/funnel`, `/api/stats`, `/api/funnel/stream`) — these keep reading
+  from Kafka exactly as they do today; only the ad-hoc query endpoints move
+  to StarRocks.
 * Row-level or column-level governance on the new Databricks table beyond
   standard Unity Catalog table grants.
 * Historical backfill of existing RisingWave data into the new Databricks
