@@ -32,6 +32,31 @@ remaining production checks are realistic query-concurrency and latency
 benchmarks, a full day/night hot/cold soak, failure and replay behavior, and
 operational cost, monitoring, and high-availability validation.
 
+## Next architecture steps
+
+The following improvements are the next implementation priorities before
+production adoption:
+
+1. Centralize the three-minute hot/cold boundary so the MV and dashboard query
+  overlay cannot drift apart.
+2. Add a StarRocks serving view for the dashboard query-time union, keeping
+  federation logic out of the FastAPI process.
+3. Move enrichment, scoring, emoji formatting, and health calculations into a
+  dbt-StarRocks model or serving view.
+4. Return explicit HTTP error statuses when StarRocks is unavailable or a
+  query times out instead of returning HTTP 200 with an error payload.
+5. Add serving-layer health and freshness checks covering StarRocks catalogs,
+  the latest hot window, the cold watermark, and the unified result window.
+6. Add degraded-mode behavior that serves cold history when the hot RisingWave
+  catalog is temporarily unavailable, with freshness metadata in the response.
+7. Add p50/p95/p99 latency and concurrency benchmarks for detail and aggregate
+  queries across representative time ranges.
+8. Test RisingWave and StarRocks restarts, Databricks catalog outages, late
+  events, replayed windows, duplicate boundary rows, and stale MV refreshes.
+9. Extend Dagster preflight checks to verify StarRocks catalogs, Trino country
+  data, RisingWave SQL, Redpanda topics, and the Databricks table before
+  starting dependent assets.
+
 ## Implemented architecture
 
 ```text

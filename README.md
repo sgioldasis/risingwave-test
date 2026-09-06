@@ -177,6 +177,11 @@ RisingWave data and historical Databricks Iceberg data. Production adoption
 still requires workload benchmarks, a full hot/cold soak, failure and replay
 testing, and operational cost and availability validation.
 
+The next architecture work is to centralize the hot/cold boundary, move the
+federation and enrichment SQL into governed StarRocks/dbt serving views, expose
+explicit StarRocks freshness and readiness status, return proper API failure
+codes, and add performance, outage, replay, and Dagster preflight tests.
+
 #### Architecture
 
 ```
