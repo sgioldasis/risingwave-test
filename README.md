@@ -167,8 +167,10 @@ trino/                            # Trino configuration
 
 The modern dashboard uses a push architecture for live updates: data flows
 from RisingWave to the dashboard through Kafka. On-demand historical and
-aggregate queries use the StarRocks unified hot/cold materialized view. The
-backend also derives enrichment and health metrics in StarRocks SQL.
+aggregate queries use StarRocks with a query-time hot overlay from the
+RisingWave JDBC catalog and cold history from the unified materialized view.
+The backend also derives enrichment and health metrics in StarRocks SQL, so
+ad hoc results do not wait for the asynchronous MV refresh.
 
 #### Architecture
 
@@ -219,6 +221,7 @@ This sink publishes every update from the `funnel_summary` materialized view to 
 
 **2. Dashboard Backend** ([`modern-dashboard/backend/api.py`](modern-dashboard/backend/api.py))
 - **StarRocks SQL Serving**: Ad hoc, enriched, and health queries use StarRocks
+- **Hot/Cold Query Overlay**: Recent windows are read through StarRocks JDBC; older history comes from the unified MV
 - **Kafka Consumer Thread**: Background thread consumes from `funnel` topic on startup
 - **In-Memory Cache**: Stores latest funnel data and history (last 1000 records)
 - **Deduplication Logic**: Handles materialized view retractions by keeping only latest per window

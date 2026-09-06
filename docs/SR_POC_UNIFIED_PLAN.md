@@ -26,8 +26,9 @@ Kafka producer
 
 modern-dashboard/backend/api.py
     -> background Kafka consumer thread -> in-memory cache -> /api/funnel, /api/funnel/stream (SSE)
-  -> SQLAlchemy over StarRocks MySQL wire (port 9030) -> /api/query/funnel*
-    -> SQLAlchemy over StarRocks MySQL wire (port 9030) -> all SQL query endpoints
+    -> one SQLAlchemy connection to StarRocks MySQL wire (port 9030)
+       -> query-time hot overlay from risingwave.public.funnel_summary
+       -> cold history from mv_unified_funnel_summary
 ```
 
 `funnel_summary` columns: `window_start`, `window_end`, `country`, `viewers`,
@@ -56,7 +57,7 @@ Kafka producer
 StarRocks
     -> databricks_uc catalog reads the new Managed Iceberg table (historical/cold data)
     -> a RisingWave-fed hot table or catalog holds the last N minutes (live data)
-    -> async materialized view UNIONs hot + cold, refreshed on a short interval
+    -> async materialized view stores cold history and a fallback hot union
 
 modern-dashboard/backend/api.py
     -> Kafka consumer thread, in-memory cache, /api/funnel, /api/stats, /api/funnel/stream (SSE)  (unchanged)
@@ -254,16 +255,22 @@ feeds, and the endpoints backed by that cache (`/api/funnel`, `/api/stats`,
 `/api/funnel/stream` SSE) are explicitly **not modified** by this plan.
 
 The backend now uses one SQLAlchemy engine. `STARROCKS_URL` defaults to
-`mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db` and serves all
-SQL query endpoints from `mv_unified_funnel_summary`. Enrichment and health
-fields are calculated in StarRocks SQL to preserve the existing frontend
-response contract without a direct RisingWave connection.
+`mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db`. All SQL query
+endpoints execute through StarRocks, combining cold history from
+`mv_unified_funnel_summary` with the newest three minutes read directly from
+`risingwave.public.funnel_summary` through StarRocks JDBC federation. This
+keeps dashboard queries current without waiting for the asynchronous MV
+refresh. Enrichment and health fields are calculated in StarRocks SQL to
+preserve the existing frontend response contract without a direct RisingWave
+connection.
 
 ### Part 2 implementation decisions
 
 * The backend uses the `mysql+pymysql` SQLAlchemy dialect for StarRocks.
 * Detail queries join `lakekeeper_local.public.iceberg_countries` through
   StarRocks, preserving the existing `country_name` response field.
+* The three-minute hot/cold boundary is applied both in the MV and in the
+  dashboard query-time overlay.
 * `/api/funnel/enriched` and `/api/funnel/health` reproduce the former UDF
   classifications, scores, emojis, and health status in StarRocks SQL.
 * The Kafka consumer, in-memory cache, and SSE stream are unchanged.
@@ -378,10 +385,9 @@ WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE);
   replaces the current shell-script catalog setup
   ([starrocks/init_catalog.sh](../starrocks/init_catalog.sh)) with a
   dbt+Dagster-managed equivalent.
-* **Freshness boundary**: the `WHERE window_start >= / <` split between hot
-  and cold needs to be a single source of truth (a variable or view), not
-  duplicated as a literal `INTERVAL 1 DAY` in two places, to avoid a gap or
-  overlap window as the boundary moves.
+* **Freshness boundary**: the three-minute `window_start >= / <` split is
+  applied consistently in the MV and dashboard query-time overlay. Keep both
+  definitions aligned if the boundary changes.
 * **Backfill/replay**: if RisingWave is restarted or replayed, duplicate
   windows could exist transiently in both hot and cold paths before the
   Databricks sink's upsert catches up. Needs a defined reconciliation
