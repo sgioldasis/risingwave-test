@@ -222,8 +222,8 @@ RisingWave v3.0.3
 
 Part 1 is complete for the historical funnel table. The StarRocks hot path,
 unified view, Dagster setup job, and scoped dashboard endpoint migration are
-implemented. Live endpoint validation remains after the infrastructure stack
-is started.
+implemented. Live endpoint validation has passed through StarRocks; the
+remaining validation is a full day/night hot/cold soak.
 
 ### Current implementation status (2026-09-06)
 
@@ -245,6 +245,10 @@ existing Databricks table was validated through StarRocks. The run created the
 RisingWave and StarRocks objects required by the dashboard. Live endpoint
 queries also passed through StarRocks; the remaining validation is a full
 day/night hot/cold soak.
+
+The modern dashboard launcher uses the Devbox-managed Node.js 22 runtime. The
+launcher explicitly prepends the Devbox Node path so Script Runner cannot fall
+back to an incompatible global Homebrew Node installation.
 
 ## Part 2: Ad-hoc query endpoints read through StarRocks
 

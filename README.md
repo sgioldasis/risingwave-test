@@ -1082,6 +1082,10 @@ From the project **root** folder, run:
 ./bin/4_run_modern.sh
 ```
 
+Run the launcher from an active Devbox shell. The project provides Node.js 22
+through Devbox so the Vite frontend does not depend on the host Homebrew Node
+installation.
+
 This will start:
 - **Backend**: FastAPI server at http://localhost:8000
 - **Frontend**: React dev server at http://localhost:4000
