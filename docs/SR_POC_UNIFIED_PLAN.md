@@ -34,26 +34,20 @@ operational cost, monitoring, and high-availability validation.
 
 ## Next architecture steps
 
-The following improvements are the next implementation priorities before
+The following improvements are the remaining implementation priorities before
 production adoption:
 
-1. Centralize the three-minute hot/cold boundary so the MV and dashboard query
-  overlay cannot drift apart.
-2. Add a StarRocks serving view for the dashboard query-time union, keeping
-  federation logic out of the FastAPI process.
-3. Move enrichment, scoring, emoji formatting, and health calculations into a
-  dbt-StarRocks model or serving view.
-4. Return explicit HTTP error statuses when StarRocks is unavailable or a
+1. Return explicit HTTP error statuses when StarRocks is unavailable or a
   query times out instead of returning HTTP 200 with an error payload.
-5. Add serving-layer health and freshness checks covering StarRocks catalogs,
+2. Add serving-layer health and freshness checks covering StarRocks catalogs,
   the latest hot window, the cold watermark, and the unified result window.
-6. Add degraded-mode behavior that serves cold history when the hot RisingWave
+3. Add degraded-mode behavior that serves cold history when the hot RisingWave
   catalog is temporarily unavailable, with freshness metadata in the response.
-7. Add p50/p95/p99 latency and concurrency benchmarks for detail and aggregate
+4. Add p50/p95/p99 latency and concurrency benchmarks for detail and aggregate
   queries across representative time ranges.
-8. Test RisingWave and StarRocks restarts, Databricks catalog outages, late
+5. Test RisingWave and StarRocks restarts, Databricks catalog outages, late
   events, replayed windows, duplicate boundary rows, and stale MV refreshes.
-9. Extend Dagster preflight checks to verify StarRocks catalogs, Trino country
+6. Extend Dagster preflight checks to verify StarRocks catalogs, Trino country
   data, RisingWave SQL, Redpanda topics, and the Databricks table before
   starting dependent assets.
 
@@ -279,6 +273,9 @@ The project has now moved from the design stage into the execution stage:
   [dbt_starrocks/profiles.yml](../dbt_starrocks/profiles.yml),
   [dbt_starrocks/models/hot_funnel_summary.sql](../dbt_starrocks/models/hot_funnel_summary.sql),
   and [dbt_starrocks/models/mv_unified_funnel_summary.sql](../dbt_starrocks/models/mv_unified_funnel_summary.sql).
+* Governed dashboard serving models are defined in
+  [dbt_starrocks/models/dashboard_funnel_serving.sql](../dbt_starrocks/models/dashboard_funnel_serving.sql)
+  and [dbt_starrocks/models/dashboard_funnel_enriched.sql](../dbt_starrocks/models/dashboard_funnel_enriched.sql).
 * The new StarRocks project parses successfully via the adapter: the command
   `uv run --with dbt-starrocks==1.12.0 dbt ls --project-dir dbt_starrocks --profiles-dir dbt_starrocks`
   discovered `2 models, 2 operations, 3 sources, 480 macros`.
@@ -288,6 +285,12 @@ existing Databricks table was validated through StarRocks. The run created the
 RisingWave and StarRocks objects required by the dashboard. Live endpoint
 queries also passed through StarRocks; the remaining validation is a full
 day/night hot/cold soak.
+
+The governed serving models were built successfully with `dbt-starrocks`
+(`PASS=7`). The dashboard detail, aggregate, enriched, and health endpoints
+now query those models through StarRocks. After a fresh Redpanda volume reset,
+the `funnel` topic was recreated, the producer was started, and the backend
+consumed a current event through Kafka/SSE.
 
 The modern dashboard launcher uses the Devbox-managed Node.js 22 runtime. The
 launcher explicitly prepends the Devbox Node path so Script Runner cannot fall
@@ -566,9 +569,9 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
   representation and retains unique `(window_start, country)` keys.
 
 ✅ **DONE (6):**
-6. Refactor all SQL-backed dashboard endpoints to query the StarRocks unified
-  MV. The Kafka consumer and SSE stream remain unchanged, and the former
-  RisingWave UDF outputs are reproduced in StarRocks SQL.
+6. Refactor all SQL-backed dashboard endpoints to query governed StarRocks
+  serving models. The Kafka consumer and SSE stream remain unchanged, and the
+  former RisingWave UDF outputs are reproduced in StarRocks SQL.
 
 ⏭️ **NEXT (7):**
 7. Continue live endpoint validation for at least one full day/night cycle to
