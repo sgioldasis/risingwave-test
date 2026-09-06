@@ -50,6 +50,11 @@ acceptance:
   verify correctness of the unified serving layer.
 - [ ] Confirm operational guardrails: alerting, monitoring, restoration
   runbooks, and cost/throughput assumptions under realistic workload patterns.
+- [ ] `mv_unified_funnel_summary` is unpartitioned, so every one-minute
+  refresh fully rebuilds the entire view (confirmed 2026-09-06 via
+  `information_schema.materialized_views`; ~8.9s at current volume). Evaluate
+  adding a partition key (e.g. `window_start` by day) before cold-history
+  volume grows enough to make full refresh a bottleneck.
 
 ## POC conclusion
 
@@ -179,12 +184,16 @@ rows and collapsed downstream with a latest-row query or materialized view.
 * Should the target catalog/schema be a new schema (for example
   `de_dev.sr_poc_external`) or a dedicated catalog reserved for
   RisingWave-managed tables, to keep it clearly separated from
-  human-managed Databricks tables?
-* Upsert primary key: `funnel_summary` is keyed by `(window_start, country)`,
-  matching `sink_funnel_to_postgres`, not `sink_funnel_to_rw_iceberg` (which
-  uses `window_start` alone from the country-less `funnel_for_iceberg`
-  projection). Confirm which grain the historical Databricks table should
-  use before implementing.
+  human-managed Databricks tables? **Still open** — a governance/ownership
+  decision, not resolvable by inspecting the code.
+* **Resolved (2026-09-06):** the historical Databricks table uses grain
+  `(window_start, country)`. Confirmed by inspecting the deployed
+  [dbt_starrocks/models/mv_unified_funnel_summary.sql](../dbt_starrocks/models/mv_unified_funnel_summary.sql),
+  whose cold branch dedupes with `GROUP BY window_start, country` — matching
+  `sink_funnel_to_postgres`, not the `window_start`-only key on
+  `sink_funnel_to_rw_iceberg`. Note: `funnel_summary.sql` currently hardcodes
+  `country = 'GR'`, so this grain hasn't yet been exercised with more than
+  one country value.
 
 ### Validated write spike (2026-09-05)
 
@@ -484,13 +493,17 @@ WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE);
 
 ### Remaining questions for Part 3
 
-* Incremental partition refresh across mixed internal and external sources
-  remains unverified. StarRocks documentation on whether partition-level
-  incremental refresh is fully supported when an async MV's base tables
-  span both a JDBC-backed view and an external Iceberg catalog table in the
-  same `UNION ALL` could not be confirmed in this session. Until verified,
-  assume the MV may fall back to a full refresh on each cycle and size the
-  refresh interval and cluster resources accordingly.
+* **Resolved (2026-09-06):** confirmed via
+  `information_schema.materialized_views` on the running StarRocks instance
+  that `mv_unified_funnel_summary` is `PARTITION_TYPE: UNPARTITIONED`, so
+  every one-minute refresh cycle fully rebuilds the entire unified view
+  (`LAST_REFRESH_MV_REFRESH_PARTITIONS` reported the whole MV as a single
+  partition; observed `LAST_REFRESH_DURATION: 8.856s` at current data
+  volume). Partition-level incremental refresh across the mixed JDBC +
+  external Iceberg `UNION ALL` is not happening — the MV has no
+  `PARTITION BY`, so PCT (partial refresh) has nothing to partition on.
+  This is fine at current volume but will not scale linearly as cold
+  history grows; see the new item under "Remaining work" below.
 * The materialized view itself, and the `databricks_uc`/`lakekeeper_local`
   external catalog `CREATE EXTERNAL CATALOG` statements, can be managed by
   the `dbt-starrocks` adapter (confirmed current, PyPI `dbt-starrocks`
@@ -581,11 +594,12 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
   TASK` semantics cleanly alongside the `is_async` polling behavior
   described in its docs, so that dbt runs do not block for the full async
   MV refresh duration on every `dbt run`.
-* Confirm whether `CREATE EXTERNAL CATALOG` is idempotent enough to run on
-  every `dbt run` via `on-run-start` (`CREATE EXTERNAL CATALOG IF NOT
-  EXISTS`, or a drop-and-recreate as the current shell script does), and
-  whether repeated recreation has any impact on already-running queries
-  against `databricks_uc.*`.
+* **Resolved (2026-09-06):** confirmed in
+  [dbt_starrocks/dbt_project.yml](../dbt_starrocks/dbt_project.yml) that all
+  three `on-run-start` hooks use `CREATE EXTERNAL CATALOG IF NOT EXISTS`, not
+  a drop-and-recreate. This is a pure no-op skip when the catalog already
+  exists, so repeated `dbt run`s have no impact on in-flight queries against
+  `databricks_uc.*`.
 * Decide whether the new `dbt_starrocks/` project shares the existing
   `dbt/profiles.yml` file (as an additional named profile) or uses its own,
   and align with however the project's dbt Cloud or CLI invocation
