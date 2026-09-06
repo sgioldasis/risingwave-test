@@ -3,17 +3,18 @@ title: StarRocks Unified Lakehouse Dashboard Plan
 description: Plan and validation record for the StarRocks hot and cold funnel serving layer
 ---
 
+<!-- markdownlint-disable-file -->
+
 ## Objective
 
-Refactor only the modern dashboard's ad-hoc query endpoints so they read
-through StarRocks instead of querying RisingWave directly. StarRocks serves a
-single unified view that combines the hot, recent data streamed from
-RisingWave with the cold, historical data stored in Databricks Unity
-Catalog. The dashboard's live Kafka consumer thread and SSE stream — used for
-real-time updates — are explicitly kept unchanged; this plan touches only the
-query-on-demand endpoints.
+Refactor the modern dashboard's SQL query endpoints so they read through
+StarRocks instead of querying RisingWave directly. StarRocks serves a single
+unified view that combines the hot, recent data streamed from RisingWave with
+the cold, historical data stored in Databricks Unity Catalog. The dashboard's
+live Kafka consumer thread and SSE stream, used for real-time updates, are
+explicitly kept unchanged.
 
-## Current architecture (as-is)
+## Implemented architecture
 
 ```text
 Kafka producer
@@ -25,7 +26,8 @@ Kafka producer
 
 modern-dashboard/backend/api.py
     -> background Kafka consumer thread -> in-memory cache -> /api/funnel, /api/funnel/stream (SSE)
-    -> SQLAlchemy over RisingWave Postgres wire (port 4566) -> /api/query/funnel*, /api/funnel/enriched, /api/funnel/health
+  -> SQLAlchemy over StarRocks MySQL wire (port 9030) -> /api/query/funnel*
+    -> SQLAlchemy over StarRocks MySQL wire (port 9030) -> all SQL query endpoints
 ```
 
 `funnel_summary` columns: `window_start`, `window_end`, `country`, `viewers`,
@@ -58,8 +60,8 @@ StarRocks
 
 modern-dashboard/backend/api.py
     -> Kafka consumer thread, in-memory cache, /api/funnel, /api/stats, /api/funnel/stream (SSE)  (unchanged)
-    -> ad-hoc query endpoints only: /api/query/funnel*, /api/funnel/enriched, /api/funnel/health
-         now query StarRocks (MySQL wire protocol) instead of RisingWave (Postgres wire protocol)
+  -> /api/query/funnel and /api/query/funnel/aggregate query StarRocks (MySQL wire protocol)
+  -> /api/funnel/enriched and /api/funnel/health use StarRocks-derived SQL metrics
 ```
 
 ## Part 1: RisingWave to Databricks sink
@@ -217,11 +219,12 @@ RisingWave v3.0.3
   -> Databricks SQL verification
 ```
 
-Part 1 is complete for the historical funnel table. The StarRocks hot path and
-unified view are also deployed and validated. The remaining implementation
-work is the scoped dashboard endpoint migration.
+Part 1 is complete for the historical funnel table. The StarRocks hot path,
+unified view, Dagster setup job, and scoped dashboard endpoint migration are
+implemented. Live endpoint validation remains after the infrastructure stack
+is started.
 
-### Current implementation status (2026-09-05)
+### Current implementation status (2026-09-06)
 
 The project has now moved from the design stage into the execution stage:
 
@@ -236,9 +239,11 @@ The project has now moved from the design stage into the execution stage:
   `uv run --with dbt-starrocks==1.12.0 dbt ls --project-dir dbt_starrocks --profiles-dir dbt_starrocks`
   discovered `2 models, 2 operations, 3 sources, 480 macros`.
 
-The next live step is to wire the new project into Dagster and execute the hot
-and unified StarRocks models against the running StarRocks instance before the
-API endpoints are switched away from RisingWave.
+`modern_dashboard_setup_job` completed successfully on 2026-09-06 after the
+existing Databricks table was validated through StarRocks. The run created the
+RisingWave and StarRocks objects required by the dashboard. Live endpoint
+queries also passed through StarRocks; the remaining validation is a full
+day/night hot/cold soak.
 
 ## Part 2: Ad-hoc query endpoints read through StarRocks
 
@@ -248,27 +253,20 @@ The Kafka consumer thread (`kafka_consumer_loop`), the in-memory cache it
 feeds, and the endpoints backed by that cache (`/api/funnel`, `/api/stats`,
 `/api/funnel/stream` SSE) are explicitly **not modified** by this plan.
 
-The SQLAlchemy engine currently pointed at RisingWave
-(`RISINGWAVE_URL`, `postgresql://root:root@localhost:4566/dev`, used by
-`/api/query/funnel`, `/api/query/funnel/aggregate`, `/api/funnel/enriched`,
-`/api/funnel/health`) is replaced by a StarRocks MySQL-wire connection
-against the Part 3 unified view.
+The backend now uses one SQLAlchemy engine. `STARROCKS_URL` defaults to
+`mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db` and serves all
+SQL query endpoints from `mv_unified_funnel_summary`. Enrichment and health
+fields are calculated in StarRocks SQL to preserve the existing frontend
+response contract without a direct RisingWave connection.
 
-### Open questions for Part 2
+### Part 2 implementation decisions
 
-* StarRocks speaks the MySQL wire protocol, not PostgreSQL — the backend's
-  SQLAlchemy dialect and connection string need to change
-  (`mysql+pymysql://` or equivalent), not just the host/port. This affects
-  only the ad-hoc query engine (`create_engine(...)` in `api.py`), not the
-  Kafka consumer, which is unaffected by this change.
-* `/api/funnel/enriched` currently queries a RisingWave UDF-enhanced view
-  directly. Confirm whether the enrichment logic moves into the StarRocks
-  materialized view, stays in RisingWave with StarRocks reading the
-  enriched RisingWave table instead of the raw one, or is reimplemented in
-  StarRocks SQL.
-* `/api/funnel/health` currently checks RisingWave connectivity/health.
-  Confirm whether it should report StarRocks health, RisingWave health, or
-  both, now that the ad-hoc and live-stream paths query different systems.
+* The backend uses the `mysql+pymysql` SQLAlchemy dialect for StarRocks.
+* Detail queries join `lakekeeper_local.public.iceberg_countries` through
+  StarRocks, preserving the existing `country_name` response field.
+* `/api/funnel/enriched` and `/api/funnel/health` reproduce the former UDF
+  classifications, scores, emojis, and health status in StarRocks SQL.
+* The Kafka consumer, in-memory cache, and SSE stream are unchanged.
 
 ## Part 3: StarRocks async materialized view (hot + cold union)
 
@@ -484,7 +482,7 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
 * [orchestration/definitions.py](../orchestration/definitions.py) — existing `DbtProject`/`dbt_assets` wiring and `CustomDagsterDbtTranslator`; needs a second `dbt_assets` set for `dbt_starrocks/`
 * [orchestration/assets/postgres_sink_setup.py](../orchestration/assets/postgres_sink_setup.py) — precedent pattern for a one-time setup `@asset` wired as a dbt model dependency
 * [orchestration/assets/casino_prd_setup.py](../orchestration/assets/casino_prd_setup.py) — contains `databricks_uc_tables_setup`, the existing precedent for Databricks-side setup as a Dagster asset
-* [modern-dashboard/backend/api.py](../modern-dashboard/backend/api.py) — Kafka consumer thread and RisingWave SQLAlchemy queries to replace
+* [modern-dashboard/backend/api.py](../modern-dashboard/backend/api.py) — Kafka consumer thread and StarRocks SQLAlchemy query endpoints
 * [docs/SR_POC_TESTING_PLAN.md](SR_POC_TESTING_PLAN.md) — governance, cost, and UniForm/HMS trade-off background this plan builds on
 
 ## Sequencing (current status and next steps)
@@ -514,18 +512,16 @@ as plain `@asset` dependencies ahead of the dbt models that need them:
   overlap. ✅ Completed; the serving MV exposes the deduplicated latest-row
   representation and retains unique `(window_start, country)` keys.
 
-⏭️ **NEXT (6-7):**
-6. Refactor only the dashboard's ad-hoc query endpoints
-   (`/api/query/funnel*`, `/api/funnel/enriched`, `/api/funnel/health`) to
-   read from StarRocks, behind a feature flag or parallel endpoint so the
-   existing RisingWave-backed versions can be compared side-by-side before
-   cutover. The Kafka consumer thread and SSE stream are not touched at any
-   point in this sequence.
-7. Remove the direct RisingWave SQLAlchemy queries backing the ad-hoc
-   endpoints only after the StarRocks path is validated in parallel for at
-   least one full day/night cycle (to exercise the hot/cold boundary). The
-   Kafka consumer thread, in-memory cache, and SSE stream remain in place
-   permanently under this plan.
+✅ **DONE (6):**
+6. Refactor all SQL-backed dashboard endpoints to query the StarRocks unified
+  MV. The Kafka consumer and SSE stream remain unchanged, and the former
+  RisingWave UDF outputs are reproduced in StarRocks SQL.
+
+⏭️ **NEXT (7):**
+7. Continue live endpoint validation for at least one full day/night cycle to
+  exercise the hot/cold boundary and compare response totals with direct
+  StarRocks queries. Basic live enriched and health endpoint queries already
+  pass through StarRocks.
 
 ## Explicitly out of scope for this plan
 

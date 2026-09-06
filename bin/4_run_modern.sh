@@ -26,6 +26,15 @@ sleep 0.5
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
+# Prefer the project-managed Devbox Node runtime. A login shell can reorder
+# PATH and select a broken global Homebrew Node instead.
+FRONTEND_NPM="npm"
+FRONTEND_PATH="$PATH"
+if [[ -x "$PWD/.devbox/nix/profile/default/bin/npm" ]]; then
+    FRONTEND_NPM="$PWD/.devbox/nix/profile/default/bin/npm"
+    FRONTEND_PATH="$PWD/.devbox/nix/profile/default/bin:$PATH"
+fi
+
 # Start the Backend
 echo "Starting FastAPI Backend..."
 (cd modern-dashboard && nohup uv run python3 backend/api.py > ../backend.log 2>&1) &
@@ -34,7 +43,7 @@ echo $BACKEND_PID > .backend.pid
 
 # Start the Frontend
 echo "Starting Vite Frontend..."
-(cd modern-dashboard/frontend && nohup npm run dev > ../../frontend.log 2>&1) &
+(cd modern-dashboard/frontend && nohup env PATH="$FRONTEND_PATH" "$FRONTEND_NPM" run dev > ../../frontend.log 2>&1) &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > .frontend.pid
 

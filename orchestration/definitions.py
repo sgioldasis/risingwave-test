@@ -24,6 +24,7 @@ from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table
+from .assets.modern_dashboard_setup import modern_dashboard_databricks_table
 from .assets.iceberg_compaction import iceberg_compaction_job, spark_session_resource
 from .assets.casino_prd_setup import (
     casino_prd_proto_fetch,
@@ -246,7 +247,10 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         if materialized == "sink" and "databricks" in tags:
             from dagster import AssetDep
             existing_deps = list(new_spec.deps) if new_spec.deps else []
-            uc_key = AssetKey(["databricks_uc_tables_setup"])
+            if dbt_resource_props.get("name") == "sink_funnel_to_databricks":
+                uc_key = AssetKey(["modern_dashboard_databricks_table"])
+            else:
+                uc_key = AssetKey(["databricks_uc_tables_setup"])
             if uc_key not in {d.asset_key for d in existing_deps}:
                 existing_deps.append(AssetDep(asset=uc_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
@@ -377,16 +381,34 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
     if "DBT_PASSWORD" not in _dbt_env:
         _dbt_env["DBT_PASSWORD"] = "root"
 
+    drop_command = [
+        "dbt",
+        "run-operation",
+        "drop_prebuild_sinks",
+        "--project-dir",
+        str(dbt_PROJECT_PATH),
+        "--profiles-dir",
+        str(dbt_PROJECT_PATH),
+    ]
+    if context.is_subset:
+        sink_object_names = {
+            "sink_funnel_to_rw_iceberg": "rw_managed_funnel_sink",
+            "sink_hermes_features_to_iceberg": "sink_hermes_features_to_iceberg",
+            "sink_funnel_to_kafka": "funnel_kafka_sink",
+            "sink_funnel_to_postgres": "funnel_postgres_sink",
+            "sink_funnel_to_databricks": "sink_funnel_to_databricks",
+        }
+        selected_sink_names = sorted(
+            sink_object_names[key.path[-1]]
+            for key in context.selected_asset_keys
+            if key.path[-1] in sink_object_names
+        )
+        drop_command.extend(
+            ["--args", json.dumps({"sink_names": selected_sink_names})]
+        )
+
     drop_result = subprocess.run(
-        [
-            "dbt",
-            "run-operation",
-            "drop_prebuild_sinks",
-            "--project-dir",
-            str(dbt_PROJECT_PATH),
-            "--profiles-dir",
-            str(dbt_PROJECT_PATH),
-        ],
+        drop_command,
         capture_output=True,
         text=True,
         cwd=str(dbt_PROJECT_PATH.parent),
@@ -497,6 +519,33 @@ dbt_starrocks_build_job = define_asset_job(
     name="dbt_starrocks_build_job",
     selection=[starrocks_unified_dbt_assets],
     description="Build the StarRocks hot view and unified funnel MV",
+)
+
+modern_dashboard_setup_job = define_asset_job(
+    name="modern_dashboard_setup_job",
+    selection=(
+        AssetSelection.assets(iceberg_countries)
+        | AssetSelection.assets(risingwave_python_udfs)
+        | AssetSelection.assets(modern_dashboard_databricks_table)
+        | AssetSelection.assets(
+            AssetKey(["public", "src_page"]),
+            AssetKey(["public", "src_cart"]),
+            AssetKey(["public", "src_purchase"]),
+            AssetKey(["public", "funnel"]),
+            AssetKey(["public", "funnel_summary"]),
+            AssetKey(["public", "funnel_enriched"]),
+            AssetKey(["public", "src_iceberg_countries"]),
+            AssetKey(["public", "funnel_for_iceberg"]),
+            AssetKey(["public", "sink_funnel_to_kafka"]),
+            AssetKey(["public", "sink_funnel_to_databricks"]),
+        )
+        | AssetSelection.assets(starrocks_unified_dbt_assets)
+    ),
+    description=(
+        "Create all RisingWave, Kafka sink, Iceberg/Databricks, and StarRocks "
+        "objects required by the modern dashboard. Infrastructure "
+        "services must already be running."
+    ),
 )
 # Define schedules - run every 5 minutes
 dbt_build_schedule = ScheduleDefinition(
@@ -664,6 +713,8 @@ defs = Definitions(
         risingwave_python_udfs,
         # Create PostgreSQL table for RisingWave sink
         postgres_funnel_table,
+        # Create the Databricks historical funnel table before its RisingWave sink
+        modern_dashboard_databricks_table,
         realtime_funnel_dbt_assets,
         ml_trained_models,
         # StarRocks unified MV (cold-path-only, Pilot B)
@@ -697,6 +748,7 @@ defs = Definitions(
         iceberg_compaction_job,
         postgres_sink_job,
         dbt_starrocks_build_job,
+        modern_dashboard_setup_job,
         kafka_topics_setup_job,
         casino_prd_full_job,
         casino_stg_job,

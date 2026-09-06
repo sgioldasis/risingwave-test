@@ -41,6 +41,7 @@ dependencies = [
     "trino>=0.331.0",
     "river>=0.22.0",
     "pyarrow>=24.0.0",
+    "pymysql>=1.1.2",
 ]
 
 [tool.dagster]

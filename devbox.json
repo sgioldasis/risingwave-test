@@ -16,6 +16,7 @@
   "packages": [
     "python@3.13",
     "uv@latest",
+    "nodejs@22.23.2",
     "jdk@21",
     "duckdb@latest",
     "postgresql@latest",

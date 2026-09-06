@@ -1,3 +1,5 @@
+<!-- markdownlint-disable-file -->
+
 # Real-Time E-Commerce Conversion Funnel
 
 This project demonstrates a real-time e-commerce conversion funnel using RisingWave, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. It tracks user behavior through page views, cart events, and purchases to calculate conversion rates in real-time with predictive analytics.
@@ -163,7 +165,10 @@ trino/                            # Trino configuration
 
 ### Use Case 1: Push Model - Modern Dashboard via Kafka Sink
 
-The modern dashboard uses a **push architecture** where data flows from RisingWave to the dashboard entirely through Kafka, without the backend ever querying RisingWave directly.
+The modern dashboard uses a push architecture for live updates: data flows
+from RisingWave to the dashboard through Kafka. On-demand historical and
+aggregate queries use the StarRocks unified hot/cold materialized view. The
+backend also derives enrichment and health metrics in StarRocks SQL.
 
 #### Architecture
 
@@ -213,7 +218,7 @@ FORMAT PLAIN ENCODE JSON (
 This sink publishes every update from the `funnel_summary` materialized view to the Kafka `funnel` topic in real-time.
 
 **2. Dashboard Backend** ([`modern-dashboard/backend/api.py`](modern-dashboard/backend/api.py))
-- **No RisingWave Connection**: The backend NEVER connects to RisingWave
+- **StarRocks SQL Serving**: Ad hoc, enriched, and health queries use StarRocks
 - **Kafka Consumer Thread**: Background thread consumes from `funnel` topic on startup
 - **In-Memory Cache**: Stores latest funnel data and history (last 1000 records)
 - **Deduplication Logic**: Handles materialized view retractions by keeping only latest per window
@@ -226,11 +231,11 @@ This sink publishes every update from the `funnel_summary` materialized view to 
 - Displays 3D funnel visualization and real-time metrics
 - No direct connection to Kafka or RisingWave
 
-#### Why Push Model?
-- **Decoupling**: Dashboard backend doesn't need RisingWave credentials
+#### Why Push Model for Live Data?
+- **Decoupling**: Live updates do not poll RisingWave
 - **Scalability**: Multiple dashboard instances can consume from Kafka independently
 - **Resilience**: Dashboard can survive temporary RisingWave outages (Kafka buffers data)
-- **Performance**: No query load on RisingWave from dashboard users
+- **Performance**: Live dashboard traffic does not add polling load to RisingWave
 
 ---
 
@@ -1086,6 +1091,7 @@ This will start:
 - **Predictions Tab**: ML predictions with comparison charts
 - **Dark Theme**: Modern dark UI with RisingWave branding
 - **Kafka Consumer**: Backend consumes from Kafka for real-time updates
+- **Unified Historical Queries**: StarRocks serves ad hoc hot/cold analytics
 
 ## Architecture Overview
 

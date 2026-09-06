@@ -5,7 +5,7 @@
     persist_docs={"relation": true, "columns": true},
     meta={
         "dagster": {
-            "deps": [{"asset_key": ["csv", "iceberg_countries"]}]
+            "deps": ["iceberg_countries"]
         }
     },
     connector='iceberg',

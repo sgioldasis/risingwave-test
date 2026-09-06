@@ -88,10 +88,53 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092'
 FUNNEL_TOPIC = 'funnel'
 logger.info(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
 
-# RisingWave database configuration via SQLAlchemy
-RISINGWAVE_URL = os.getenv('RISINGWAVE_URL', 'postgresql://root:root@localhost:4566/dev')
-funnel_engine = create_engine(RISINGWAVE_URL, connect_args={"connect_timeout": 5})
-logger.info(f"[RisingWave] Connected to: {RISINGWAVE_URL.replace('root:root', '***:***')}")
+# StarRocks serves ad hoc queries across the unified hot/cold funnel history.
+STARROCKS_URL = os.getenv(
+    'STARROCKS_URL',
+    'mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db',
+)
+starrocks_engine = create_engine(
+    STARROCKS_URL,
+    connect_args={"connect_timeout": 5},
+    pool_pre_ping=True,
+)
+logger.info(
+    "[StarRocks] Ad hoc query connection: %s",
+    starrocks_engine.url.render_as_string(hide_password=True),
+)
+
+# Keep the dashboard's SQL path on StarRocks while avoiding MV refresh lag for
+# the hot window. StarRocks reads recent RisingWave rows through its JDBC
+# catalog and uses the unified MV for older, batch-backed history.
+UNIFIED_FUNNEL_SOURCE_SQL = """
+WITH unified_funnel AS (
+    SELECT
+        window_start,
+        window_end,
+        country,
+        viewers,
+        carters,
+        purchasers,
+        view_to_cart_rate,
+        cart_to_buy_rate
+    FROM mv_unified_funnel_summary
+    WHERE window_start < DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE)
+
+    UNION ALL
+
+    SELECT
+        window_start,
+        window_end,
+        country,
+        viewers,
+        carters,
+        purchasers,
+        view_to_cart_rate,
+        cart_to_buy_rate
+    FROM risingwave.public.funnel_summary
+    WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE)
+)
+"""
 
 # In-memory cache for the latest funnel data
 latest_funnel_data = {
@@ -899,7 +942,7 @@ async def get_predictions_comparison():
 
 
 # =============================================================================
-# Query Endpoints - SQLAlchemy RisingWave Integration
+# Query Endpoints - SQLAlchemy StarRocks Integration
 # =============================================================================
 
 @app.get("/api/query/funnel")
@@ -908,25 +951,26 @@ def query_funnel_data(
     end_time: str = Query(..., description="End time in ISO format")
 ):
     """
-    Query funnel_summary joined with src_iceberg_countries inline via DataFusion.
+    Query the StarRocks unified hot/cold funnel history.
     
     Returns per-minute records with country breakdown from the pre-aggregated 1-minute windows.
     """
     try:
-        with funnel_engine.connect() as conn:
-            query = text("""
+        with starrocks_engine.connect() as conn:
+            query = text(UNIFIED_FUNNEL_SOURCE_SQL + """
                 SELECT
                     f.window_start,
                     f.window_end,
                     f.country,
-                    c.country_name::varchar AS country_name,
+                    c.country_name,
                     f.viewers,
                     f.carters,
                     f.purchasers,
                     f.view_to_cart_rate,
                     f.cart_to_buy_rate
-                FROM funnel_summary f
-                LEFT JOIN src_iceberg_countries c ON f.country = c.country
+                FROM unified_funnel f
+                LEFT JOIN lakekeeper_local.public.iceberg_countries c
+                  ON f.country = c.country
                 WHERE f.window_start >= :start_time
                   AND f.window_end <= :end_time
                 ORDER BY f.window_start DESC, f.country
@@ -977,22 +1021,21 @@ def query_funnel_aggregate(
     end_time: str = Query(..., description="End time in ISO format")
 ):
     """
-    Query aggregated funnel data from RisingWave using SQLAlchemy.
+    Query aggregated funnel data from the StarRocks unified hot/cold history.
     
     Returns sum of viewers, carters, and purchasers for the specified time range
-    from the per-minute funnel_summary table.
+    from the per-minute unified materialized view.
     """
     try:
-        with funnel_engine.connect() as conn:
-            query = text("""
+        with starrocks_engine.connect() as conn:
+            query = text(UNIFIED_FUNNEL_SOURCE_SQL + """
                 SELECT
                     COALESCE(SUM(f.viewers), 0) as total_viewers,
                     COALESCE(SUM(f.carters), 0) as total_carters,
                     COALESCE(SUM(f.purchasers), 0) as total_purchasers,
                     COUNT(*) as record_count,
                     COUNT(DISTINCT f.country) as country_count
-                FROM funnel_summary f
-                LEFT JOIN src_iceberg_countries c ON f.country = c.country
+                FROM unified_funnel f
                 WHERE f.window_start >= :start_time
                   AND f.window_end <= :end_time
             """)
@@ -1000,7 +1043,7 @@ def query_funnel_aggregate(
             result = conn.execute(query, {
                 "start_time": start_time,
                 "end_time": end_time
-            }).fetchone()
+            }).one()
             
             return {
                 "data": {
@@ -1030,7 +1073,7 @@ def get_enriched_funnel_data(
     limit: int = Query(100, description="Number of records to return")
 ):
     """
-    Query funnel_enriched view from RisingWave with UDF-enhanced metrics.
+    Query the StarRocks unified hot/cold view with SQL-derived metrics.
     
     Returns funnel data with Python UDF categorizations:
     - view_to_cart_category: conversion_category(view_to_cart_rate)
@@ -1041,8 +1084,20 @@ def get_enriched_funnel_data(
     - funnel_health: overall funnel health indicator
     """
     try:
-        with funnel_engine.connect() as conn:
-            query = text("""
+        with starrocks_engine.connect() as conn:
+            query = text(UNIFIED_FUNNEL_SOURCE_SQL + """
+                , country_aggregated AS (
+                    SELECT
+                        window_start,
+                        window_end,
+                        SUM(viewers) AS viewers,
+                        SUM(carters) AS carters,
+                        SUM(purchasers) AS purchasers,
+                        SUM(carters) / NULLIF(SUM(viewers), 0) AS view_to_cart_rate,
+                        SUM(purchasers) / NULLIF(SUM(carters), 0) AS cart_to_buy_rate
+                    FROM unified_funnel
+                    GROUP BY window_start, window_end
+                )
                 SELECT
                     window_start,
                     window_end,
@@ -1056,8 +1111,50 @@ def get_enriched_funnel_data(
                     funnel_score,
                     view_to_cart_emoji,
                     cart_to_buy_emoji,
-                    funnel_health
-                FROM funnel_enriched
+                    CASE
+                        WHEN view_to_cart_rate IS NULL OR cart_to_buy_rate IS NULL THEN 'unknown'
+                        WHEN view_to_cart_rate >= 0.3 AND cart_to_buy_rate >= 0.3 THEN 'strong'
+                        WHEN view_to_cart_rate >= 0.2 OR cart_to_buy_rate >= 0.2 THEN 'moderate'
+                        ELSE 'weak'
+                    END AS funnel_health
+                FROM (
+                    SELECT
+                        *,
+                        CASE
+                            WHEN view_to_cart_rate IS NULL THEN 'unknown'
+                            WHEN view_to_cart_rate >= 0.5 THEN 'excellent'
+                            WHEN view_to_cart_rate >= 0.3 THEN 'good'
+                            WHEN view_to_cart_rate >= 0.1 THEN 'average'
+                            ELSE 'needs_improvement'
+                        END AS view_to_cart_category,
+                        CASE
+                            WHEN cart_to_buy_rate IS NULL THEN 'unknown'
+                            WHEN cart_to_buy_rate >= 0.5 THEN 'excellent'
+                            WHEN cart_to_buy_rate >= 0.3 THEN 'good'
+                            WHEN cart_to_buy_rate >= 0.1 THEN 'average'
+                            ELSE 'needs_improvement'
+                        END AS cart_to_buy_category,
+                        ROUND(
+                            (carters / NULLIF(viewers, 0)) * 0.4
+                            + (purchasers / NULLIF(carters, 0)) * 0.6,
+                            2
+                        ) AS funnel_score,
+                        CASE
+                            WHEN view_to_cart_rate IS NULL THEN '⚪ N/A'
+                            WHEN view_to_cart_rate >= 0.5 THEN CONCAT('🟢 High ', ROUND(view_to_cart_rate * 100, 1), '%')
+                            WHEN view_to_cart_rate >= 0.3 THEN CONCAT('🟡 Medium ', ROUND(view_to_cart_rate * 100, 1), '%')
+                            WHEN view_to_cart_rate >= 0.1 THEN CONCAT('🟠 Low ', ROUND(view_to_cart_rate * 100, 1), '%')
+                            ELSE CONCAT('🔴 Critical ', ROUND(view_to_cart_rate * 100, 1), '%')
+                        END AS view_to_cart_emoji,
+                        CASE
+                            WHEN cart_to_buy_rate IS NULL THEN '⚪ N/A'
+                            WHEN cart_to_buy_rate >= 0.5 THEN CONCAT('🟢 High ', ROUND(cart_to_buy_rate * 100, 1), '%')
+                            WHEN cart_to_buy_rate >= 0.3 THEN CONCAT('🟡 Medium ', ROUND(cart_to_buy_rate * 100, 1), '%')
+                            WHEN cart_to_buy_rate >= 0.1 THEN CONCAT('🟠 Low ', ROUND(cart_to_buy_rate * 100, 1), '%')
+                            ELSE CONCAT('🔴 Critical ', ROUND(cart_to_buy_rate * 100, 1), '%')
+                        END AS cart_to_buy_emoji
+                    FROM country_aggregated
+                ) enriched
                 ORDER BY window_start DESC
                 LIMIT :limit
             """)
@@ -1100,36 +1197,40 @@ def get_enriched_funnel_data(
 @app.get("/api/funnel/health")
 def get_funnel_health():
     """
-    Get current funnel health summary from UDF-enhanced data.
+    Get current funnel health summary from StarRocks-derived metrics.
     """
     try:
-        with funnel_engine.connect() as conn:
-            query = text("""
-                WITH minute_latest AS (
+        with starrocks_engine.connect() as conn:
+            query = text(UNIFIED_FUNNEL_SOURCE_SQL + """
+                , country_aggregated AS (
                     SELECT
-                        date_trunc('minute', window_start) AS minute_bucket,
                         window_start,
-                        funnel_health,
-                        funnel_score,
-                        view_to_cart_rate,
-                        cart_to_buy_rate,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY date_trunc('minute', window_start)
-                            ORDER BY window_start DESC
-                        ) AS rn
-                    FROM funnel_enriched
-                    WHERE window_start >= NOW() - INTERVAL '15 minutes'
+                        SUM(viewers) AS viewers,
+                        SUM(carters) AS carters,
+                        SUM(purchasers) AS purchasers,
+                        SUM(carters) / NULLIF(SUM(viewers), 0) AS view_to_cart_rate,
+                        SUM(purchasers) / NULLIF(SUM(carters), 0) AS cart_to_buy_rate
+                    FROM unified_funnel
+                    WHERE window_start >= NOW() - INTERVAL 15 MINUTE
+                    GROUP BY window_start
                 ),
                 latest_5_minutes AS (
                     SELECT
-                        minute_bucket,
-                        funnel_health,
-                        funnel_score,
+                        CASE
+                            WHEN view_to_cart_rate IS NULL OR cart_to_buy_rate IS NULL THEN 'unknown'
+                            WHEN view_to_cart_rate >= 0.3 AND cart_to_buy_rate >= 0.3 THEN 'strong'
+                            WHEN view_to_cart_rate >= 0.2 OR cart_to_buy_rate >= 0.2 THEN 'moderate'
+                            ELSE 'weak'
+                        END AS funnel_health,
+                        ROUND(
+                            (carters / NULLIF(viewers, 0)) * 0.4
+                            + (purchasers / NULLIF(carters, 0)) * 0.6,
+                            2
+                        ) AS funnel_score,
                         view_to_cart_rate,
                         cart_to_buy_rate
-                    FROM minute_latest
-                    WHERE rn = 1
-                    ORDER BY minute_bucket DESC
+                    FROM country_aggregated
+                    ORDER BY window_start DESC
                     LIMIT 5
                 )
                 SELECT
