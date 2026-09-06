@@ -172,6 +172,11 @@ RisingWave JDBC catalog and cold history from the unified materialized view.
 The backend also derives enrichment and health metrics in StarRocks SQL, so
 ad hoc results do not wait for the asynchronous MV refresh.
 
+The POC validates StarRocks as the dashboard serving layer across realtime
+RisingWave data and historical Databricks Iceberg data. Production adoption
+still requires workload benchmarks, a full hot/cold soak, failure and replay
+testing, and operational cost and availability validation.
+
 #### Architecture
 
 ```

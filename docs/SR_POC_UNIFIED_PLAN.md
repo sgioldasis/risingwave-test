@@ -14,6 +14,24 @@ the cold, historical data stored in Databricks Unity Catalog. The dashboard's
 live Kafka consumer thread and SSE stream, used for real-time updates, are
 explicitly kept unchanged.
 
+## POC conclusion
+
+The proof of concept supports introducing StarRocks as the dashboard serving
+layer. StarRocks successfully federates the newest RisingWave windows through
+JDBC with historical Databricks Iceberg data, while the dashboard backend uses
+only the StarRocks MySQL endpoint. The query-time hot overlay removes the
+asynchronous materialized-view refresh from the realtime dashboard query path.
+
+The implementation also demonstrates deduplicated cold history, country
+reference joins, StarRocks-derived enrichment and health metrics, and Dagster
+provisioning without requiring a Databricks SQL warehouse for the existing
+historical table.
+
+This is an architectural validation, not final production sign-off. The
+remaining production checks are realistic query-concurrency and latency
+benchmarks, a full day/night hot/cold soak, failure and replay behavior, and
+operational cost, monitoring, and high-availability validation.
+
 ## Implemented architecture
 
 ```text
