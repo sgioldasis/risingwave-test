@@ -26,6 +26,7 @@ from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table
 from .assets.modern_dashboard_setup import modern_dashboard_databricks_table
 from .assets.modern_dashboard_preflight import modern_dashboard_preflight
+from .assets.starrocks_mv_warm import starrocks_mv_warm
 from .assets.iceberg_compaction import iceberg_compaction_job, spark_session_resource
 from .assets.casino_prd_setup import (
     casino_prd_proto_fetch,
@@ -562,11 +563,26 @@ modern_dashboard_setup_job = define_asset_job(
             AssetKey(["public", "sink_funnel_to_databricks"]),
         )
         | AssetSelection.assets(starrocks_unified_dbt_assets)
+        | AssetSelection.assets(starrocks_mv_warm)
     ),
     description=(
         "Create all RisingWave, Kafka sink, Iceberg/Databricks, and StarRocks "
-        "objects required by the modern dashboard. Infrastructure "
-        "services must already be running."
+        "objects required by the modern dashboard, then synchronously warm "
+        "the unified funnel MV. Infrastructure services must already be "
+        "running."
+    ),
+)
+
+# Lightweight pre-demo warm-up: forces the unified MV refresh synchronously
+# without re-running the RisingWave/Databricks setup steps, which briefly
+# interrupt the live streaming MVs on every rebuild -- not something you want
+# seconds before a live demo.
+demo_warm_job = define_asset_job(
+    name="demo_warm_job",
+    selection=AssetSelection.assets(starrocks_mv_warm),
+    description=(
+        "Synchronously refresh the StarRocks unified funnel MV so SQL query "
+        "endpoints are gapless. Safe to run immediately before a live demo."
     ),
 )
 # Define schedules - run every 5 minutes
@@ -742,6 +758,8 @@ defs = Definitions(
         ml_trained_models,
         # StarRocks unified MV (cold-path-only, Pilot B)
         starrocks_unified_dbt_assets,
+        # Synchronous pre-demo warm-up for the unified MV
+        starrocks_mv_warm,
         # Casino production prerequisites
         casino_prd_proto_fetch,
         casino_prd_proto_compile,
@@ -772,6 +790,7 @@ defs = Definitions(
         postgres_sink_job,
         dbt_starrocks_build_job,
         modern_dashboard_setup_job,
+        demo_warm_job,
         kafka_topics_setup_job,
         casino_prd_full_job,
         casino_stg_job,

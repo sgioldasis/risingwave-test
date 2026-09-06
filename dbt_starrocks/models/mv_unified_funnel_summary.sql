@@ -1,7 +1,7 @@
 {{
   config(
     materialized='materialized_view',
-    refresh_method='ASYNC EVERY (INTERVAL 1 MINUTE)',
+    refresh_method='ASYNC EVERY (INTERVAL 5 MINUTE)',
     distributed_by=['window_start'],
     properties={'query_rewrite_consistency': 'loose'}
   )
@@ -10,6 +10,18 @@
 -- Federated demo view: RisingWave owns the newest three minutes while Databricks
 -- UC owns older windows. The append-only cold source can contain multiple
 -- snapshots for one window, so the cold branch collapses those snapshots first.
+--
+-- Partitioning this MV (e.g. by window_start) was attempted and rejected by
+-- StarRocks: "Materialized view partition column in partition exp must be
+-- base table partition column" -- neither base table (hot_funnel_summary via
+-- JDBC, funnel_summary_historical as an unpartitioned external Iceberg table)
+-- is itself partitioned, so partition-level incremental refresh isn't
+-- available here without first partitioning those base tables. Until that's
+-- done, this stays unpartitioned and relies on a longer refresh interval
+-- (5 min, widened from 1 min) to bound full-rebuild frequency -- cold data is
+-- immutable past the 3-minute hot boundary and doesn't need minute-level
+-- freshness; the dashboard already reads the live 3-minute hot window
+-- directly from RisingWave regardless of MV freshness.
 
 WITH cold_deduplicated AS (
   SELECT

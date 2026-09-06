@@ -50,11 +50,23 @@ acceptance:
   verify correctness of the unified serving layer.
 - [ ] Confirm operational guardrails: alerting, monitoring, restoration
   runbooks, and cost/throughput assumptions under realistic workload patterns.
-- [ ] `mv_unified_funnel_summary` is unpartitioned, so every one-minute
-  refresh fully rebuilds the entire view (confirmed 2026-09-06 via
-  `information_schema.materialized_views`; ~8.9s at current volume). Evaluate
-  adding a partition key (e.g. `window_start` by day) before cold-history
-  volume grows enough to make full refresh a bottleneck.
+- [x] **Resolved (2026-09-06):** `mv_unified_funnel_summary` was unpartitioned,
+  so every one-minute refresh fully rebuilt the entire view (~8.9s at the
+  time). Adding `partition_by` was attempted and rejected by StarRocks:
+  `Materialized view partition column in partition exp must be base table
+  partition column` -- neither base table (`hot_funnel_summary` via JDBC,
+  `funnel_summary_historical` as an unpartitioned external Iceberg table) is
+  itself partitioned, so partition-level incremental refresh isn't available
+  without first partitioning those base tables (a larger change touching
+  Part 1's Iceberg table spec). Mitigated instead by widening the refresh
+  interval from 1 to 5 minutes, cutting full-rebuild frequency 5x with no
+  partitioning dependency -- deployed via `dg launch --job
+  dbt_starrocks_build_job`, confirmed live: `REFRESH_POLICY: EVERY(INTERVAL 5
+  MINUTE)`, refresh completed in ~16.6s, `serving/status` remained `ready`
+  with both hot and cold watermarks populated. The MV still fully rebuilds
+  each cycle; if cold-history volume grows enough to make even a 5-minute
+  full rebuild a bottleneck, revisit by partitioning the underlying Iceberg
+  table first.
 
 ## POC conclusion
 
@@ -464,11 +476,12 @@ The materialized view unions:
 * **Cold path**: `databricks_uc` catalog reading the new
   `funnel_summary_historical` Managed Iceberg table.
 
-Deployed shape:
+Deployed shape (refresh interval widened to 5 minutes on 2026-09-06; see
+"Remaining questions for Part 3" below):
 
 ```sql
 CREATE MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary
-REFRESH ASYNC EVERY (INTERVAL 1 MINUTE)
+REFRESH ASYNC EVERY (INTERVAL 5 MINUTE)
 PROPERTIES (
   "query_rewrite_consistency" = "loose"
 )
@@ -495,15 +508,22 @@ WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE);
 
 * **Resolved (2026-09-06):** confirmed via
   `information_schema.materialized_views` on the running StarRocks instance
-  that `mv_unified_funnel_summary` is `PARTITION_TYPE: UNPARTITIONED`, so
-  every one-minute refresh cycle fully rebuilds the entire unified view
+  that `mv_unified_funnel_summary` was `PARTITION_TYPE: UNPARTITIONED`, so
+  every refresh cycle fully rebuilds the entire unified view
   (`LAST_REFRESH_MV_REFRESH_PARTITIONS` reported the whole MV as a single
   partition; observed `LAST_REFRESH_DURATION: 8.856s` at current data
   volume). Partition-level incremental refresh across the mixed JDBC +
   external Iceberg `UNION ALL` is not happening — the MV has no
   `PARTITION BY`, so PCT (partial refresh) has nothing to partition on.
-  This is fine at current volume but will not scale linearly as cold
-  history grows; see the new item under "Remaining work" below.
+  Adding `partition_by` was attempted and rejected outright by StarRocks
+  (`Materialized view partition column in partition exp must be base table
+  partition column`) since neither base table is itself partitioned.
+  Mitigated instead by widening the refresh interval from 1 to 5 minutes,
+  deployed 2026-09-06 via `dg launch --job dbt_starrocks_build_job`
+  (`REFRESH_POLICY: EVERY(INTERVAL 5 MINUTE)` confirmed live, refresh
+  completed in ~16.6s, `serving/status` stayed `ready`). This bounds
+  full-rebuild frequency but not per-rebuild cost — see the resolved item
+  under "Remaining work" below for when to revisit.
 * The materialized view itself, and the `databricks_uc`/`lakekeeper_local`
   external catalog `CREATE EXTERNAL CATALOG` statements, can be managed by
   the `dbt-starrocks` adapter (confirmed current, PyPI `dbt-starrocks`
