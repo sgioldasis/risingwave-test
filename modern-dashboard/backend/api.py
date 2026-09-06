@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
@@ -102,6 +102,128 @@ logger.info(
     "[StarRocks] Ad hoc query connection: %s",
     starrocks_engine.url.render_as_string(hide_password=True),
 )
+
+
+def _starrocks_http_error(error: Exception) -> HTTPException:
+    """Map StarRocks failures to an actionable API response."""
+    message = str(error)
+    status_code = 504 if "timeout" in message.lower() else 503
+    return HTTPException(
+        status_code=status_code,
+        detail={"source": "starrocks", "error": message},
+    )
+
+
+def _cold_enriched_records(connection, limit: int) -> list[dict]:
+    """Build enriched records from cold history when the hot catalog is down."""
+    result = connection.execute(text("""
+        WITH country_aggregated AS (
+            SELECT
+                window_start,
+                window_end,
+                SUM(viewers) AS viewers,
+                SUM(carters) AS carters,
+                SUM(purchasers) AS purchasers,
+                SUM(carters) / NULLIF(SUM(viewers), 0) AS view_to_cart_rate,
+                SUM(purchasers) / NULLIF(SUM(carters), 0) AS cart_to_buy_rate
+            FROM mv_unified_funnel_summary
+            GROUP BY window_start, window_end
+        )
+        SELECT
+            window_start,
+            window_end,
+            viewers,
+            carters,
+            purchasers,
+            view_to_cart_rate,
+            cart_to_buy_rate,
+            CASE
+                WHEN view_to_cart_rate IS NULL THEN 'unknown'
+                WHEN view_to_cart_rate >= 0.5 THEN 'excellent'
+                WHEN view_to_cart_rate >= 0.3 THEN 'good'
+                WHEN view_to_cart_rate >= 0.1 THEN 'average'
+                ELSE 'needs_improvement'
+            END AS view_to_cart_category,
+            CASE
+                WHEN cart_to_buy_rate IS NULL THEN 'unknown'
+                WHEN cart_to_buy_rate >= 0.5 THEN 'excellent'
+                WHEN cart_to_buy_rate >= 0.3 THEN 'good'
+                WHEN cart_to_buy_rate >= 0.1 THEN 'average'
+                ELSE 'needs_improvement'
+            END AS cart_to_buy_category,
+            ROUND((carters / NULLIF(viewers, 0)) * 0.4
+                + (purchasers / NULLIF(carters, 0)) * 0.6, 2) AS funnel_score,
+            'N/A' AS view_to_cart_emoji,
+            'N/A' AS cart_to_buy_emoji,
+            CASE
+                WHEN view_to_cart_rate IS NULL OR cart_to_buy_rate IS NULL THEN 'unknown'
+                WHEN view_to_cart_rate >= 0.3 AND cart_to_buy_rate >= 0.3 THEN 'strong'
+                WHEN view_to_cart_rate >= 0.2 OR cart_to_buy_rate >= 0.2 THEN 'moderate'
+                ELSE 'weak'
+            END AS funnel_health
+        FROM country_aggregated
+        ORDER BY window_start DESC
+        LIMIT :limit
+    """), {"limit": limit})
+    return [
+        {
+            "window_start": row.window_start.isoformat() if row.window_start else None,
+            "window_end": row.window_end.isoformat() if row.window_end else None,
+            "viewers": int(row.viewers) if row.viewers else 0,
+            "carters": int(row.carters) if row.carters else 0,
+            "purchasers": int(row.purchasers) if row.purchasers else 0,
+            "view_to_cart_rate": float(row.view_to_cart_rate) if row.view_to_cart_rate else 0.0,
+            "cart_to_buy_rate": float(row.cart_to_buy_rate) if row.cart_to_buy_rate else 0.0,
+            "view_to_cart_category": row.view_to_cart_category,
+            "cart_to_buy_category": row.cart_to_buy_category,
+            "funnel_score": float(row.funnel_score) if row.funnel_score else 0.0,
+            "view_to_cart_emoji": row.view_to_cart_emoji,
+            "cart_to_buy_emoji": row.cart_to_buy_emoji,
+            "funnel_health": row.funnel_health,
+        }
+        for row in result
+    ]
+
+
+@app.get("/api/serving/status")
+def get_serving_status():
+    """Report StarRocks catalog availability and hot/cold serving freshness."""
+    try:
+        with starrocks_engine.connect() as conn:
+            catalogs = {
+                row[0]
+                for row in conn.execute(text("SHOW CATALOGS"))
+            }
+            freshness = {}
+            component_errors = {}
+            for name, query in {
+                "hot_window": "SELECT MAX(window_start) FROM risingwave.public.funnel_summary",
+                "cold_window": "SELECT MAX(window_start) FROM mv_unified_funnel_summary",
+                "serving_window": "SELECT MAX(window_start) FROM dashboard_funnel_serving",
+            }.items():
+                try:
+                    value = conn.execute(text(query)).scalar()
+                    freshness[name] = value.isoformat() if value else None
+                except Exception as error:
+                    freshness[name] = None
+                    component_errors[name] = str(error)
+
+        required_catalogs = {"risingwave", "databricks_uc", "lakekeeper_local"}
+        missing_catalogs = sorted(required_catalogs - catalogs)
+        status = "ready" if not missing_catalogs and not component_errors else "degraded"
+        return {
+            "status": status,
+            "catalogs": {
+                "required": sorted(required_catalogs),
+                "missing": missing_catalogs,
+            },
+            "freshness": freshness,
+            "component_errors": component_errors,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as error:
+        logger.exception("Error checking StarRocks serving status")
+        raise _starrocks_http_error(error) from error
 
 # In-memory cache for the latest funnel data
 latest_funnel_data = {
@@ -944,10 +1066,38 @@ def query_funnel_data(
                 LIMIT 1000
             """)
             
-            result = conn.execute(query, {
-                "start_time": start_time,
-                "end_time": end_time
-            })
+            try:
+                result = conn.execute(query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                })
+                degraded = False
+            except Exception:
+                logger.warning("Hot catalog unavailable; serving cold history only")
+                cold_query = text("""
+                    SELECT
+                        f.window_start,
+                        f.window_end,
+                        f.country,
+                        c.country_name,
+                        f.viewers,
+                        f.carters,
+                        f.purchasers,
+                        f.view_to_cart_rate,
+                        f.cart_to_buy_rate
+                    FROM mv_unified_funnel_summary f
+                    LEFT JOIN lakekeeper_local.public.iceberg_countries c
+                      ON f.country = c.country
+                    WHERE f.window_start >= :start_time
+                      AND f.window_end <= :end_time
+                    ORDER BY f.window_start DESC, f.country
+                    LIMIT 1000
+                """)
+                result = conn.execute(cold_query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                })
+                degraded = True
             
             records = []
             for row in result:
@@ -970,16 +1120,12 @@ def query_funnel_data(
                     "start_time": start_time,
                     "end_time": end_time
                 },
+                "degraded": degraded,
                 "generated_at": datetime.now(timezone.utc).isoformat()
             }
     except Exception as e:
         logger.error(f"Error querying funnel data: {e}")
-        return {
-            "error": str(e),
-            "data": [],
-            "count": 0,
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
+        raise _starrocks_http_error(e) from e
 
 
 @app.get("/api/query/funnel/aggregate")
@@ -1007,10 +1153,30 @@ def query_funnel_aggregate(
                   AND f.window_end <= :end_time
             """)
             
-            result = conn.execute(query, {
-                "start_time": start_time,
-                "end_time": end_time
-            }).one()
+            try:
+                result = conn.execute(query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                }).one()
+                degraded = False
+            except Exception:
+                logger.warning("Hot catalog unavailable; aggregating cold history only")
+                cold_query = text("""
+                    SELECT
+                        COALESCE(SUM(f.viewers), 0) AS total_viewers,
+                        COALESCE(SUM(f.carters), 0) AS total_carters,
+                        COALESCE(SUM(f.purchasers), 0) AS total_purchasers,
+                        COUNT(*) AS record_count,
+                        COUNT(DISTINCT f.country) AS country_count
+                    FROM mv_unified_funnel_summary f
+                    WHERE f.window_start >= :start_time
+                      AND f.window_end <= :end_time
+                """)
+                result = conn.execute(cold_query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                }).one()
+                degraded = True
             
             return {
                 "data": {
@@ -1024,15 +1190,12 @@ def query_funnel_aggregate(
                     "start_time": start_time,
                     "end_time": end_time
                 },
+                "degraded": degraded,
                 "generated_at": datetime.now(timezone.utc).isoformat()
             }
     except Exception as e:
         logger.error(f"Error querying funnel aggregate: {e}")
-        return {
-            "error": str(e),
-            "data": None,
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
+        raise _starrocks_http_error(e) from e
 
 
 @app.get("/api/funnel/enriched")
@@ -1099,12 +1262,17 @@ def get_enriched_funnel_data(
             }
     except Exception as e:
         logger.error(f"Error querying enriched funnel data: {e}")
-        return {
-            "error": str(e),
-            "data": [],
-            "count": 0,
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
+        try:
+            with starrocks_engine.connect() as conn:
+                records = _cold_enriched_records(conn, limit)
+            return {
+                "data": records,
+                "count": len(records),
+                "degraded": True,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as fallback_error:
+            raise _starrocks_http_error(fallback_error) from fallback_error
 
 
 @app.get("/api/funnel/health")
@@ -1149,11 +1317,37 @@ def get_funnel_health():
             }
     except Exception as e:
         logger.error(f"Error querying funnel health: {e}")
-        return {
-            "error": str(e),
-            "health_summary": {},
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
+        try:
+            with starrocks_engine.connect() as conn:
+                fallback_rows = _cold_enriched_records(conn, 5)
+            health_summary = {}
+            for row in fallback_rows:
+                health = row["funnel_health"]
+                summary = health_summary.setdefault(
+                    health,
+                    {
+                        "count": 0,
+                        "avg_score": 0.0,
+                        "avg_view_to_cart_rate": 0.0,
+                        "avg_cart_to_buy_rate": 0.0,
+                    },
+                )
+                summary["count"] += 1
+                summary["avg_score"] += row["funnel_score"]
+                summary["avg_view_to_cart_rate"] += row["view_to_cart_rate"]
+                summary["avg_cart_to_buy_rate"] += row["cart_to_buy_rate"]
+            for summary in health_summary.values():
+                count = summary["count"]
+                summary["avg_score"] /= count
+                summary["avg_view_to_cart_rate"] /= count
+                summary["avg_cart_to_buy_rate"] /= count
+            return {
+                "health_summary": health_summary,
+                "degraded": True,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as fallback_error:
+            raise _starrocks_http_error(fallback_error) from fallback_error
 
 
 if __name__ == "__main__":

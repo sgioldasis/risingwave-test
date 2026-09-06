@@ -2,7 +2,9 @@
 
 # Real-Time E-Commerce Conversion Funnel
 
-This project demonstrates a real-time e-commerce conversion funnel using RisingWave, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. It tracks user behavior through page views, cart events, and purchases to calculate conversion rates in real-time with predictive analytics.
+This project demonstrates a validated real-time e-commerce conversion funnel using RisingWave, StarRocks, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. The dashboard path is now served through StarRocks as the unified hot/cold query layer, with RisingWave handling stream processing and the live Kafka/SSE path preserved for real-time updates.
+
+The current runtime validation confirms the serving layer is operating as intended: the StarRocks-backed query path resolves real funnel data, the dashboard API reports ready status, and the hot/cold serving views are populated for live use. Remaining work is limited to production readiness checks for latency, resilience, and operational guardrails.
 
 Quick demo SQL reference: [docs/DEMO_OPERATIONS_SQL.md](docs/DEMO_OPERATIONS_SQL.md)
 
@@ -172,15 +174,17 @@ RisingWave JDBC catalog and cold history from the unified materialized view.
 The backend also derives enrichment and health metrics in StarRocks SQL, so
 ad hoc results do not wait for the asynchronous MV refresh.
 
-The POC validates StarRocks as the dashboard serving layer across realtime
-RisingWave data and historical Databricks Iceberg data. Production adoption
-still requires workload benchmarks, a full hot/cold soak, failure and replay
-testing, and operational cost and availability validation.
+The current runtime validation supports StarRocks as the dashboard serving
+layer across real-time RisingWave data and historical Databricks Iceberg data.
+The serving path is functionally validated, with live data flowing through the
+StarRocks query surface and the dashboard API reporting ready status.
 
-The governed StarRocks/dbt serving views are now in place. The next
-architecture work is to expose explicit StarRocks freshness and readiness
-status, return proper API failure codes, add degraded cold-history behavior,
-and run performance, outage, replay, and Dagster preflight tests.
+The remaining production gates are explicit and bounded: latency and
+concurrency benchmarks, recovery under restarts and catalog outages, replay and
+late-arrival validation, and operational guardrails for monitoring, alerting,
+and runbooks. The modern dashboard bootstrap uses StarRocks for the country
+reference table through the existing `lakekeeper_local` catalog; Trino is not
+required for the dashboard runtime or setup job.
 
 #### Architecture
 

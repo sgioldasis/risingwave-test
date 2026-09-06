@@ -1,18 +1,55 @@
 ---
-title: StarRocks Unified Lakehouse Dashboard Plan
-description: Plan and validation record for the StarRocks hot and cold funnel serving layer
+title: StarRocks Unified Lakehouse Dashboard Architecture Memo
+description: Architecture validation and handoff record for the StarRocks hot and cold funnel serving layer
 ---
 
 <!-- markdownlint-disable-file -->
 
-## Objective
+## Overview
 
-Refactor the modern dashboard's SQL query endpoints so they read through
-StarRocks instead of querying RisingWave directly. StarRocks serves a single
-unified view that combines the hot, recent data streamed from RisingWave with
-the cold, historical data stored in Databricks Unity Catalog. The dashboard's
-live Kafka consumer thread and SSE stream, used for real-time updates, are
-explicitly kept unchanged.
+This memo records the validated architecture for the modern dashboard serving
+layer. The dashboard query path reads through StarRocks rather than querying
+RisingWave directly. In the resulting design, StarRocks provides a unified
+serving surface that combines the hot, recent data streamed from RisingWave with
+cold historical data stored in Databricks Unity Catalog, while the live Kafka
+consumer and SSE stream remain unchanged for real-time updates.
+
+## Validated state (2026-09-06)
+
+The StarRocks-backed serving layer is functionally validated in the current
+project runtime.
+
+* `GET /api/serving/status` returned `"status": "ready"` with all required
+  catalogs present (`databricks_uc`, `lakekeeper_local`, `risingwave`)
+* direct StarRocks validation confirmed populated serving data for the exact
+  dashboard tables used in the query path:
+  * `dashboard_funnel_serving`: 13 rows in the selected 16:00-16:12 window
+  * `mv_unified_funnel_summary`: 13 rows in the same window
+  * `dashboard_funnel_enriched`: 13 rows in the same window
+* the live SSE endpoint emitted real funnel and stats payloads, confirming the
+  Kafka consumer thread and the backend data path are active
+* the query endpoints returned real dashboard data from the StarRocks serving
+  path rather than synthetic or stale mock output
+
+This is a functional architecture validation, not a final production sign-off.
+The stack is operating as designed for the modern dashboard path, and the
+remaining work is now performance, failure-handling, and operational hardening
+rather than basic functional completion.
+
+## Remaining work
+
+The following items remain as explicit production-readiness gates before final
+acceptance:
+
+- [ ] Confirm p50/p95/p99 latency and concurrency targets for detail and
+  aggregate queries across representative time ranges and hot/cold boundary
+  conditions.
+- [ ] Validate restart and recovery behavior for RisingWave and StarRocks,
+  including Databricks catalog outages and stale or replayed event windows.
+- [ ] Exercise duplicate-boundary, late-arrival, and stale-refresh scenarios to
+  verify correctness of the unified serving layer.
+- [ ] Confirm operational guardrails: alerting, monitoring, restoration
+  runbooks, and cost/throughput assumptions under realistic workload patterns.
 
 ## POC conclusion
 
@@ -26,30 +63,6 @@ The implementation also demonstrates deduplicated cold history, country
 reference joins, StarRocks-derived enrichment and health metrics, and Dagster
 provisioning without requiring a Databricks SQL warehouse for the existing
 historical table.
-
-This is an architectural validation, not final production sign-off. The
-remaining production checks are realistic query-concurrency and latency
-benchmarks, a full day/night hot/cold soak, failure and replay behavior, and
-operational cost, monitoring, and high-availability validation.
-
-## Next architecture steps
-
-The following improvements are the remaining implementation priorities before
-production adoption:
-
-1. Return explicit HTTP error statuses when StarRocks is unavailable or a
-  query times out instead of returning HTTP 200 with an error payload.
-2. Add serving-layer health and freshness checks covering StarRocks catalogs,
-  the latest hot window, the cold watermark, and the unified result window.
-3. Add degraded-mode behavior that serves cold history when the hot RisingWave
-  catalog is temporarily unavailable, with freshness metadata in the response.
-4. Add p50/p95/p99 latency and concurrency benchmarks for detail and aggregate
-  queries across representative time ranges.
-5. Test RisingWave and StarRocks restarts, Databricks catalog outages, late
-  events, replayed windows, duplicate boundary rows, and stale MV refreshes.
-6. Extend Dagster preflight checks to verify StarRocks catalogs, Trino country
-  data, RisingWave SQL, Redpanda topics, and the Databricks table before
-  starting dependent assets.
 
 ## Implemented architecture
 
@@ -278,7 +291,7 @@ The project has now moved from the design stage into the execution stage:
   and [dbt_starrocks/models/dashboard_funnel_enriched.sql](../dbt_starrocks/models/dashboard_funnel_enriched.sql).
 * The new StarRocks project parses successfully via the adapter: the command
   `uv run --with dbt-starrocks==1.12.0 dbt ls --project-dir dbt_starrocks --profiles-dir dbt_starrocks`
-  discovered `2 models, 2 operations, 3 sources, 480 macros`.
+  discovered `4 models, 3 operations, 3 sources, 480 macros`.
 
 `modern_dashboard_setup_job` completed successfully on 2026-09-06 after the
 existing Databricks table was validated through StarRocks. The run created the
@@ -291,6 +304,56 @@ The governed serving models were built successfully with `dbt-starrocks`
 now query those models through StarRocks. After a fresh Redpanda volume reset,
 the `funnel` topic was recreated, the producer was started, and the backend
 consumed a current event through Kafka/SSE.
+
+The dashboard bootstrap no longer depends on Trino. The country reference asset
+validates the existing `lakekeeper_local.public.iceberg_countries` table through
+StarRocks, matching the dashboard serving path and leaving Trino out of the
+required runtime architecture.
+
+The serving hardening endpoint `/api/serving/status` reports catalog
+availability and hot, cold, and serving watermarks. It validated the
+`databricks_uc`, `lakekeeper_local`, and `risingwave` catalogs as ready.
+Dashboard SQL failures now return explicit StarRocks service or timeout HTTP
+errors instead of HTTP 200 responses containing an error payload.
+
+An initial local concurrency baseline completed with 32 requests per endpoint
+and eight workers, with zero errors: detail p95 `573 ms`, aggregate p95
+`668 ms`, enriched p95 `676 ms`, and health p95 `957 ms`. These are baseline
+measurements, not production acceptance thresholds.
+
+An isolated StarRocks outage test also passed: the aggregate endpoint returned
+HTTP `503` with `detail.source = "starrocks"`, while the real running service
+remained ready and continued returning successful queries afterward.
+
+An isolated hot-catalog failure contract test passed for all four SQL endpoint
+groups. Detail, aggregate, enriched, and health responses successfully used
+cold MV data and marked their responses with `degraded=true`; enriched and
+health fallback emoji fields used neutral `N/A` values.
+
+A StarRocks restart recovery test also passed. The catalog initializer exited
+successfully, all three external catalogs returned, the serving status returned
+`ready`, the governed serving view recovered, and aggregate queries resumed
+with `degraded=false`.
+
+A RisingWave frontend restart recovery test also passed. The frontend returned
+healthy, StarRocks resumed JDBC reads from `risingwave.public.funnel_summary`,
+the serving status remained `ready`, and dashboard aggregate queries resumed
+with `degraded=false`.
+
+A simulated Databricks catalog outage test passed without altering the live
+catalog. Serving status returned HTTP `200` with `status=degraded` and listed
+`databricks_uc` as missing; an aggregate query returned HTTP `503` because
+neither hot nor cold history was available in the simulation.
+
+The dashboard-specific Dagster preflight asset also passed in the live
+container. It validated the StarRocks catalogs, the Lakekeeper country table,
+the Databricks historical table, the RisingWave hot relation, and the Kafka
+`funnel` topic before dashboard dbt assets were allowed to run.
+
+All four SQL-backed dashboard endpoint groups fall back to cold MV history when
+the hot RisingWave catalog is unavailable and mark the response with
+`degraded=true`. Enriched and health fallback responses preserve their metric
+shape, while emoji fields use the neutral `N/A` value without hot data.
 
 The modern dashboard launcher uses the Devbox-managed Node.js 22 runtime. The
 launcher explicitly prepends the Devbox Node path so Script Runner cannot fall

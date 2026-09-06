@@ -25,6 +25,7 @@ from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table
 from .assets.modern_dashboard_setup import modern_dashboard_databricks_table
+from .assets.modern_dashboard_preflight import modern_dashboard_preflight
 from .assets.iceberg_compaction import iceberg_compaction_job, spark_session_resource
 from .assets.casino_prd_setup import (
     casino_prd_proto_fetch,
@@ -204,6 +205,26 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             for new_dep_key in asset_deps:
                 if new_dep_key not in existing_keys:
                     existing_deps.append(AssetDep(asset=new_dep_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
+        dashboard_assets = {
+            "src_page",
+            "src_cart",
+            "src_purchase",
+            "funnel",
+            "funnel_summary",
+            "funnel_enriched",
+            "src_iceberg_countries",
+            "funnel_for_iceberg",
+            "sink_funnel_to_kafka",
+            "sink_funnel_to_databricks",
+        }
+        if dbt_resource_props.get("name") in dashboard_assets:
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            preflight_key = AssetKey(["modern_dashboard_preflight"])
+            if preflight_key not in {dep.asset_key for dep in existing_deps}:
+                existing_deps.append(AssetDep(asset=preflight_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         # The StarRocks unified view reads the Databricks table populated by
@@ -524,7 +545,8 @@ dbt_starrocks_build_job = define_asset_job(
 modern_dashboard_setup_job = define_asset_job(
     name="modern_dashboard_setup_job",
     selection=(
-        AssetSelection.assets(iceberg_countries)
+        AssetSelection.assets(modern_dashboard_preflight)
+        | AssetSelection.assets(iceberg_countries)
         | AssetSelection.assets(risingwave_python_udfs)
         | AssetSelection.assets(modern_dashboard_databricks_table)
         | AssetSelection.assets(
@@ -709,6 +731,7 @@ defs = Definitions(
     assets=[
         # Yield iceberg_countries first (dependency of dbt assets)
         iceberg_countries,
+        modern_dashboard_preflight,
         # Create Python UDFs before dbt models run
         risingwave_python_udfs,
         # Create PostgreSQL table for RisingWave sink
