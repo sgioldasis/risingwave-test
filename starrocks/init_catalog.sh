@@ -73,6 +73,18 @@ PROPERTIES (
 );
 SQL
 
+# NOTE: this project tried three different mechanisms to get "hot" RisingWave
+# data into StarRocks without a live per-query JDBC touch: a 10s-refresh
+# local MV mirror, a StarRocks Routine Load job off RisingWave's `funnel`
+# Kafka topic (hard 5s minimum batch interval, StarRocks-enforced), and a
+# native RisingWave StarRocks sink (Stream Load-based, no floor, but
+# every-checkpoint flushing overloaded compaction on the receiving table and
+# made query latency worse). All were reverted 2026-09-07 in favor of the
+# original live JDBC SELECT (see dbt_starrocks/models/dashboard_funnel_serving.sql
+# and docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md for the full history) --
+# do not re-add a hot_funnel_kafka table/Routine Load job/native sink here
+# without reading that history first.
+
 echo "Verifying catalogs..."
 mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave';"
 echo "StarRocks init complete."

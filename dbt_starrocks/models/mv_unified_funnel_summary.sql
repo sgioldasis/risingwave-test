@@ -1,7 +1,7 @@
 {{
   config(
     materialized='materialized_view',
-    refresh_method='ASYNC EVERY (INTERVAL 5 MINUTE)',
+    refresh_method='MANUAL',
     distributed_by=['window_start'],
     properties={'query_rewrite_consistency': 'loose'}
   )
@@ -17,11 +17,23 @@
 -- JDBC, funnel_summary_historical as an unpartitioned external Iceberg table)
 -- is itself partitioned, so partition-level incremental refresh isn't
 -- available here without first partitioning those base tables. Until that's
--- done, this stays unpartitioned and relies on a longer refresh interval
--- (5 min, widened from 1 min) to bound full-rebuild frequency -- cold data is
--- immutable past the 3-minute hot boundary and doesn't need minute-level
--- freshness; the dashboard already reads the live 3-minute hot window
--- directly from RisingWave regardless of MV freshness.
+-- done, this stays unpartitioned; a full rebuild costs 13s-117s depending on
+-- Databricks-side latency (confirmed 2026-09-07 -- see
+-- docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md), which is exactly why this is
+-- MANUAL rather than a scheduled ASYNC EVERY interval: a periodic full
+-- rebuild that size was found to overlap itself and compete with every
+-- foreground dashboard query on the same FE, not just its own runtime. The
+-- dashboard's hot path (dashboard_funnel_serving) doesn't depend on this MV
+-- being fresh at all -- it reads risingwave.public.funnel_summary live via
+-- JDBC for the current 3-minute window (see that model's own comment for
+-- the full history of what else was tried there and why it was reverted
+-- back to this). This MV only needs to run once per stack startup (already handled
+-- by the starrocks_mv_warm Dagster asset in the standard setup job) to pick
+-- up whatever's accumulated in Databricks since the last run, plus on
+-- demand (re-run that same asset, or
+-- `REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`)
+-- if demonstrating the live hot-to-cold aging transition with the producer
+-- running.
 
 WITH cold_deduplicated AS (
   SELECT
