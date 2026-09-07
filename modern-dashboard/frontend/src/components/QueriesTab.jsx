@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Database, Users, ShoppingCart, CreditCard, BarChart3, Calendar, Clock, Globe } from 'lucide-react';
+import { Search, Database, Users, ShoppingCart, CreditCard, BarChart3, Calendar, Clock, Globe, AlertTriangle, Loader2 } from 'lucide-react';
 
 const DateTimeInput = ({ value, onChange }) => {
     const dateInputRef = useRef(null);
@@ -275,11 +275,15 @@ const QueriesTab = () => {
     });
     const [loading, setLoading] = useState(false);
     const [hasQueried, setHasQueried] = useState(false);
+    const [degraded, setDegraded] = useState(false);
+    const [queryDurationMs, setQueryDurationMs] = useState(null);
 
     const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
     const runQuery = async () => {
         setLoading(true);
+        setQueryDurationMs(null);
+        const startedAt = performance.now();
         try {
             // Convert local times to UTC for API
             const startTs = localToUTC(startTime);
@@ -304,10 +308,12 @@ const QueriesTab = () => {
                 record_count: 0,
                 country_count: 0
             });
+            setDegraded(Boolean(detailData.degraded || aggData.degraded));
             setHasQueried(true);
         } catch (err) {
             console.error(err);
         } finally {
+            setQueryDurationMs(performance.now() - startedAt);
             setLoading(false);
         }
     };
@@ -412,11 +418,51 @@ const QueriesTab = () => {
                             marginLeft: '0.5rem'
                         }}
                     >
-                        <Search size={16} />
-                        Run Query
+                        {loading ? (
+                            <motion.span
+                                style={{ display: 'flex' }}
+                                animate={{ rotate: 360 }}
+                                transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
+                            >
+                                <Loader2 size={16} />
+                            </motion.span>
+                        ) : (
+                            <Search size={16} />
+                        )}
+                        {loading ? 'Running...' : 'Run Query'}
                     </motion.button>
+
+                    {!loading && queryDurationMs !== null && (
+                        <motion.span
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            style={{
+                                fontSize: '0.8rem',
+                                color: 'rgba(255, 255, 255, 0.5)',
+                                marginLeft: '0.5rem',
+                                whiteSpace: 'nowrap'
+                            }}
+                        >
+                            Query run in {(queryDurationMs / 1000).toFixed(2)}s
+                        </motion.span>
+                    )}
                 </div>
             </motion.div>
+
+            {hasQueried && degraded && (
+                <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    style={{ marginBottom: '1rem', display: 'flex' }}
+                >
+                    <div className="refresh-badge degraded" style={{ justifyContent: 'flex-start' }}>
+                        <AlertTriangle size={14} />
+                        <span>
+                            Degraded: the live RisingWave catalog is unavailable — showing cold/historical data only, results may be stale
+                        </span>
+                    </div>
+                </motion.div>
+            )}
 
             {/* KPI Cards */}
             <motion.div

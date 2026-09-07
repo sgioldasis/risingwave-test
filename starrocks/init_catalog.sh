@@ -34,7 +34,8 @@ PROPERTIES (
     "iceberg.catalog.warehouse"     = "de_dev",
     "iceberg.catalog.credential"    = "${DATABRICKS_AZURE_CLIENT_ID}:${DATABRICKS_AZURE_CLIENT_SECRET}",
     "iceberg.catalog.oauth2-server-uri" = "https://login.microsoftonline.com/${DATABRICKS_AZURE_TENANT_ID}/oauth2/v2.0/token",
-    "iceberg.catalog.scope"         = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default"
+    "iceberg.catalog.scope"         = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default",
+    "iceberg_meta_cache_ttl_sec"    = "0"
 );
 SQL
 

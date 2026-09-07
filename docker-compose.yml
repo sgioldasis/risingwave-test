@@ -684,7 +684,7 @@ services:
     networks:
       iceberg_net:
     entrypoint: ["/bin/bash", "-c"]
-    command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases rw_poc_casino_out_avro; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
+    command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases funnel rw_poc_casino_out_avro; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
   prometheus-0:
     image: prom/prometheus:latest
@@ -910,6 +910,7 @@ services:
       # Databricks Unity Catalog credentials — used by trino/catalog/databricks.properties
       - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET=${DATABRICKS_AZURE_CLIENT_SECRET-}
+      - DATABRICKS_AZURE_TENANT_ID=${DATABRICKS_AZURE_TENANT_ID-}
       - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
       - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
       - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
@@ -992,9 +993,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          memory: 5G
         reservations:
-          memory: 2G
+          memory: 3G
     networks:
       iceberg_net:
 

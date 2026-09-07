@@ -17,11 +17,22 @@ from sqlalchemy import create_engine, text
 
 MV_RELATION = "sr_local_db_sr_local_db.mv_unified_funnel_summary"
 
+# NOTE: the Dagster asset key for a dbt_starrocks model uses the dbt config
+# schema name ("sr_local_db"), NOT the actual runtime StarRocks database name
+# ("sr_local_db_sr_local_db", used in MV_RELATION above -- StarRocks doubles
+# the schema prefix for this project). These are two different namespaces
+# that happen to look similar. Using the runtime database name here as the
+# AssetDep (as an earlier version of this file did) creates a disconnected,
+# producer-less asset key that Dagster never waits on -- confirmed
+# 2026-09-07: starrocks_mv_warm started immediately in parallel with
+# unrelated steps instead of after starrocks_unified_dbt_assets, and failed
+# with "Can not find database" because the MV didn't exist yet.
+
 
 @asset(
     name="starrocks_mv_warm",
     group_name="dashboard_setup",
-    deps=[AssetDep(asset=AssetKey(["sr_local_db_sr_local_db", "mv_unified_funnel_summary"]))],
+    deps=[AssetDep(asset=AssetKey(["sr_local_db", "mv_unified_funnel_summary"]))],
     description=(
         "Synchronously refresh mv_unified_funnel_summary so the SQL query "
         "endpoints have no hot/cold boundary gap immediately after this runs."

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { TrendingUp, TrendingDown, Activity, BarChart3 } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, BarChart3, AlertTriangle } from 'lucide-react';
 
 const FlashValue = ({ children, token, textColor = 'inherit' }) => (
     <motion.span
@@ -29,6 +29,7 @@ const FlashValue = ({ children, token, textColor = 'inherit' }) => (
 const EnrichedFunnelTab = () => {
     const [data, setData] = useState([]);
     const [health, setHealth] = useState({});
+    const [degraded, setDegraded] = useState(false);
     const [flashTokens, setFlashTokens] = useState({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -90,6 +91,8 @@ const EnrichedFunnelTab = () => {
             if (Object.keys(nextFlashTokens).length > 0) {
                 setFlashTokens((prev) => ({ ...prev, ...nextFlashTokens }));
             }
+
+            setDegraded(Boolean(dataJson.degraded || healthJson.degraded));
         } catch (err) {
             setError(err.message);
         } finally {
@@ -165,6 +168,21 @@ const EnrichedFunnelTab = () => {
 
     return (
         <div style={{ padding: '1.5rem' }}>
+            {degraded && (
+                <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    style={{ marginBottom: '1rem', display: 'flex' }}
+                >
+                    <div className="refresh-badge degraded" style={{ justifyContent: 'flex-start' }}>
+                        <AlertTriangle size={14} />
+                        <span>
+                            Degraded: the live RisingWave catalog is unavailable — showing cold/historical data only, results may be stale
+                        </span>
+                    </div>
+                </motion.div>
+            )}
+
             {/* Health Summary */}
             {Object.keys(health).length > 0 && (
                 <motion.div

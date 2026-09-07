@@ -1058,14 +1058,14 @@ def query_funnel_data(
                     f.view_to_cart_rate,
                     f.cart_to_buy_rate
                 FROM dashboard_funnel_serving f
-                LEFT JOIN lakekeeper_local.public.iceberg_countries c
+                LEFT JOIN mv_iceberg_countries_cache c
                   ON f.country = c.country
                 WHERE f.window_start >= :start_time
                   AND f.window_end <= :end_time
                 ORDER BY f.window_start DESC, f.country
                 LIMIT 1000
             """)
-            
+
             try:
                 result = conn.execute(query, {
                     "start_time": start_time,
@@ -1086,7 +1086,7 @@ def query_funnel_data(
                         f.view_to_cart_rate,
                         f.cart_to_buy_rate
                     FROM mv_unified_funnel_summary f
-                    LEFT JOIN lakekeeper_local.public.iceberg_countries c
+                    LEFT JOIN mv_iceberg_countries_cache c
                       ON f.country = c.country
                     WHERE f.window_start >= :start_time
                       AND f.window_end <= :end_time
@@ -1098,7 +1098,7 @@ def query_funnel_data(
                     "end_time": end_time
                 })
                 degraded = True
-            
+
             records = []
             for row in result:
                 records.append({
@@ -1112,7 +1112,7 @@ def query_funnel_data(
                     "view_to_cart_rate": float(row.view_to_cart_rate) if row.view_to_cart_rate else 0.0,
                     "cart_to_buy_rate": float(row.cart_to_buy_rate) if row.cart_to_buy_rate else 0.0
                 })
-            
+
             return {
                 "data": records,
                 "count": len(records),

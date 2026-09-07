@@ -545,6 +545,15 @@ dbt_starrocks_build_job = define_asset_job(
 
 modern_dashboard_setup_job = define_asset_job(
     name="modern_dashboard_setup_job",
+    # Without this, Dagster's default multiprocess executor spawns a fresh
+    # subprocess per step, each re-importing the whole orchestration.definitions
+    # module (two dbt manifests, both DbtProjects, dbt-core, dagster-dbt,
+    # sqlalchemy, confluent_kafka...) before the step's actual work starts.
+    # Confirmed 2026-09-07: this accounted for ~104s of a ~229s run (45%) as
+    # pure inter-step gaps with zero step activity -- not DDL/query time at
+    # all. Other jobs in this file already use in_process_executor for the
+    # same reason; this one was missed.
+    executor_def=in_process_executor,
     selection=(
         AssetSelection.assets(modern_dashboard_preflight)
         | AssetSelection.assets(iceberg_countries)
@@ -557,7 +566,6 @@ modern_dashboard_setup_job = define_asset_job(
             AssetKey(["public", "funnel"]),
             AssetKey(["public", "funnel_summary"]),
             AssetKey(["public", "funnel_enriched"]),
-            AssetKey(["public", "src_iceberg_countries"]),
             AssetKey(["public", "funnel_for_iceberg"]),
             AssetKey(["public", "sink_funnel_to_kafka"]),
             AssetKey(["public", "sink_funnel_to_databricks"]),

@@ -12,6 +12,7 @@ sources:
     schema: sr_poc_external
     tables:
       - name: funnel_summary_historical
+      - name: iceberg_countries
 
   - name: lakekeeper_local
     database: lakekeeper_local

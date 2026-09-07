@@ -8,10 +8,7 @@
     "DATABRICKS_CATALOG":           "de_dev",
     "DATABRICKS_SCHEMA":            "risingwave_poc",
     "DATABRICKS_AZURE_TENANT_ID":   "78395483-9425-447a-ba64-60b90f6bb16e",
-    "DATABRICKS_AZURE_CLIENT_ID":   "$DATABRICKS_AZURE_CLIENT_ID",
-    "DATABRICKS_AZURE_CLIENT_SECRET": "$DATABRICKS_AZURE_CLIENT_SECRET",
-    "ADLS_ACCOUNT_NAME":              "stkznneusrpoccdddevstd",
-    "ADLS_ACCOUNT_KEY":               "$ADLS_ACCOUNT_KEY"
+    "ADLS_ACCOUNT_NAME":              "stkznneusrpoccdddevstd"
   },
   "packages": [
     "python@3.13",
@@ -29,6 +26,16 @@
   "shell": {
     "init_hook": [
       "unset DEBUGINFOD_URLS",
+
+      "# Explicitly load project secrets from .env. devbox.json's own `env`",
+      "# block cannot read .env directly -- a same-name entry like",
+      "# `\"DATABRICKS_AZURE_CLIENT_SECRET\": \"$DATABRICKS_AZURE_CLIENT_SECRET\"`",
+      "# only passes through whatever the OUTER shell already had exported",
+      "# before `devbox shell` started, which is empty in a normal terminal.",
+      "# Confirmed 2026-09-07: this caused starrocks-init to fail with",
+      "# 'DATABRICKS_AZURE_CLIENT_SECRET must be set' even in a brand-new",
+      "# devbox shell, despite .env having a correct value the whole time.",
+      "if [ -f .env ]; then set -a; source .env; set +a; fi",
 
       "# Create and activate uv venv",
       "if [ ! -d .venv ]; then echo '📦 Creating virtual environment...' && uv venv; fi",
