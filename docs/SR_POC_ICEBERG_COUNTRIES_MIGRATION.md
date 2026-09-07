@@ -558,6 +558,87 @@ refresh stays as the general-case default. Not yet wired into a Dagster
 asset (offered, declined for now, same pattern as `starrocks_mv_warm` for
 the historical-data MV if wanted later).
 
+**Tenth follow-up: partitioned `funnel_summary_historical` by date, with a
+full migration of existing data.** Raised in discussion after the live
+Databricks-read test above (finding that a full unfiltered scan cost
+1.2-3.0s of real `ScanTime`): at real scale (billions of rows), a live
+per-query scan only stays viable if the query can be pruned down to a
+handful of partitions/files. The table had no partitioning at all.
+
+**Gotcha hit immediately**: `CREATE TABLE ... USING ICEBERG PARTITIONED BY
+(days(window_start))` -- the standard Iceberg hidden-partitioning
+transform syntax -- was rejected by Databricks: `BAD_REQUEST
+[DELTA_OPERATION_NOT_ALLOWED] Operation not allowed: Partitioning by
+expressions is not supported for Delta tables`. Managed-Iceberg CREATE
+TABLE in Databricks only accepts `PARTITIONED BY` on a **plain column
+reference**, not an expression transform -- confirming the
+`databricks-iceberg` skill's warning about this ("MUST NOT use
+expression-based partition transforms... with PARTITIONED BY on managed
+Iceberg tables"). Fix: added a real, visible `window_date DATE` column
+(`funnel_for_iceberg.sql`: `window_start::DATE as window_date`) and
+partitioned by that column instead of a hidden `day(window_start)`
+transform.
+
+**Migration performed** (option (b) -- full rewrite, not "accept a gap
+for old data" -- chosen because today's volume, 7290 rows, made this
+trivial):
+1. `CREATE TABLE funnel_summary_historical_v2 USING ICEBERG PARTITIONED BY
+   (window_date) AS SELECT ..., CAST(window_start AS DATE) AS window_date
+   FROM funnel_summary_historical` -- via the Databricks CLI directly
+   (`databricks experimental aitools tools query ... --profile personal`),
+   not through StarRocks, since this is authoritative Databricks-side DDL.
+2. Verified row count matched (7290 = 7290) before proceeding.
+3. `ALTER TABLE funnel_summary_historical RENAME TO
+   funnel_summary_historical_unpartitioned_backup`, then `ALTER TABLE
+   funnel_summary_historical_v2 RENAME TO funnel_summary_historical` --
+   the external-facing table name never changes, so nothing downstream
+   (RisingWave sink, StarRocks catalog references) needed reconfiguring
+   for the rename itself. Old table kept as a backup, not dropped.
+4. `dbt/models/sink_funnel_to_databricks.sql`: added
+   `partition_by = 'window_date'` to the sink's `WITH` clause (RisingWave's
+   Iceberg sink does support the raw `day(window_start)` transform syntax
+   at the protocol level -- unlike Databricks' own DDL surface -- but
+   `window_date` was used instead for consistency with the migrated
+   table's actual schema).
+5. Full `dbt run` (not just the two affected models) was needed to recreate
+   this, because the RisingWave stack had been freshly restarted
+   (`docker compose down` + up) earlier and none of its models existed yet
+   -- `funnel_summary`, `funnel_for_iceberg`, etc. all had to be rebuilt
+   from scratch first. One unrelated pre-existing failure surfaced during
+   this rebuild and was left alone: `sink_funnel_to_postgres` (needs a
+   Dagster asset, `postgres_funnel_table`, that creates its target table --
+   hasn't run since the restart; unrelated to this migration). The
+   casino_prd/sportsbook models also failed (storage-account permission
+   and Kafka broker connectivity issues) -- pre-existing, unrelated
+   separate demo per this repo's CLAUDE.md, not touched.
+
+**Verified**: re-ran the same live-read `EXPLAIN ANALYZE` from the ninth
+follow-up, now filtered to a single `window_date`: `ScanTime` dropped from
+1.2-3.0s (unfiltered, full table) to **540ms** (single-partition filter).
+The remaining ~2.6s gap in `TotalTime` is the same unrelated, already-
+documented external-catalog planning tax (findings #3/eighth follow-up),
+not something partitioning addresses. Real-world payoff of this change
+scales with how many distinct partitions exist -- today's data spans only
+1-2 days, so this test undersells it; at real volume (many months/years of
+daily partitions), filtering to one day out of thousands would show a far
+larger relative improvement than the 2-6x seen here.
+
+**Eleventh follow-up: settled on 20s as the country-cache refresh
+interval.** Revisited after a live Greece -> Hellas rename test: confirmed
+the source-of-truth check first (querying `de_dev.sr_poc_external.iceberg_countries`
+directly via `databricks experimental aitools tools query --profile personal`
+showed the edit hadn't actually landed on the first attempt -- a reminder
+to check the Databricks-side value directly before assuming a caching
+problem). After the edit was redone and confirmed, tried 20s as a middle
+ground between the earlier 10s (2.7-5.5s collision spikes) and 60s
+(no spikes, but slower rename visibility). Recreated the MV, confirmed
+"Hellas" flowed through the full path (StarRocks cache ->
+`dashboard_funnel_serving` -> `/api/query/funnel`) correctly, then ran a
+30-run timing test spanning ~1-2 refresh cycles: max 1.03s, mostly
+440-980ms -- no repeat of the 10s-interval spikes. Kept at 20s. If spikes
+ever reappear under heavier load, 60s remains the documented, verified
+fallback.
+
 **Unrelated false lead, for the record**: during this investigation one
 test run stalled for 694 seconds with zero trace in `fe.audit.log`. Cause
 was external to StarRocks — the host laptop was switched away from on a
