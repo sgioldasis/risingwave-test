@@ -277,6 +277,19 @@ const QueriesTab = () => {
     const [hasQueried, setHasQueried] = useState(false);
     const [degraded, setDegraded] = useState(false);
     const [queryDurationMs, setQueryDurationMs] = useState(null);
+    // Architecture toggle for the side-by-side demo (2026-09-08): 'live' is
+    // the zero-copy default (queries Databricks/RisingWave live, no local
+    // cache, ~2s/query); 'cached' reads the pre-2026-09-08 materialized-view
+    // architecture (mv_unified_funnel_summary + mv_iceberg_countries_cache,
+    // ~500ms/query but can be briefly stale). Same query, same params, run
+    // through either endpoint set to compare the real timing difference
+    // directly. See docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's twelfth
+    // follow-up.
+    const [architecture, setArchitecture] = useState('live');
+    // Captured at query time so the duration label always reflects which
+    // architecture actually produced it, even if the toggle is flipped
+    // afterward without re-running.
+    const [lastQueryArchitecture, setLastQueryArchitecture] = useState(null);
 
     const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -288,10 +301,12 @@ const QueriesTab = () => {
             // Convert local times to UTC for API
             const startTs = localToUTC(startTime);
             const endTs = localToUTC(endTime);
+            const detailPath = architecture === 'cached' ? '/api/query/funnel/cached' : '/api/query/funnel';
+            const aggPath = architecture === 'cached' ? '/api/query/funnel/cached/aggregate' : '/api/query/funnel/aggregate';
 
             const [detailRes, aggRes] = await Promise.all([
-                fetch(`${API_URL}/api/query/funnel?start_time=${encodeURIComponent(startTs)}&end_time=${encodeURIComponent(endTs)}`),
-                fetch(`${API_URL}/api/query/funnel/aggregate?start_time=${encodeURIComponent(startTs)}&end_time=${encodeURIComponent(endTs)}`)
+                fetch(`${API_URL}${detailPath}?start_time=${encodeURIComponent(startTs)}&end_time=${encodeURIComponent(endTs)}`),
+                fetch(`${API_URL}${aggPath}?start_time=${encodeURIComponent(startTs)}&end_time=${encodeURIComponent(endTs)}`)
             ]);
 
             if (!detailRes.ok) throw new Error(`Detail query failed: ${detailRes.statusText}`);
@@ -314,6 +329,7 @@ const QueriesTab = () => {
             console.error(err);
         } finally {
             setQueryDurationMs(performance.now() - startedAt);
+            setLastQueryArchitecture(architecture);
             setLoading(false);
         }
     };
@@ -396,6 +412,51 @@ const QueriesTab = () => {
                         <DateTimeInput value={endTime} onChange={setEndTime} />
                     </div>
 
+                    <div>
+                        <label style={{
+                            display: 'block',
+                            fontSize: '0.75rem',
+                            color: 'rgba(255, 255, 255, 0.5)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            marginBottom: '0.5rem'
+                        }}>
+                            Architecture
+                        </label>
+                        <div style={{
+                            display: 'flex',
+                            height: '38px',
+                            borderRadius: '0.5rem',
+                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            overflow: 'hidden'
+                        }}>
+                            {[
+                                { key: 'live', label: 'Live (zero-copy)' },
+                                { key: 'cached', label: 'Cached' }
+                            ].map(({ key, label }) => (
+                                <button
+                                    key={key}
+                                    onClick={() => setArchitecture(key)}
+                                    style={{
+                                        height: '100%',
+                                        padding: '0 0.9rem',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        fontSize: '0.8125rem',
+                                        fontWeight: 500,
+                                        color: architecture === key ? 'white' : 'rgba(255, 255, 255, 0.55)',
+                                        background: architecture === key
+                                            ? 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 50%, #06B6D4 100%)'
+                                            : 'rgba(255, 255, 255, 0.04)',
+                                        transition: 'background 0.15s, color 0.15s'
+                                    }}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
                     <motion.button
                         onClick={runQuery}
                         disabled={loading}
@@ -444,6 +505,9 @@ const QueriesTab = () => {
                             }}
                         >
                             Query run in {(queryDurationMs / 1000).toFixed(2)}s
+                            {lastQueryArchitecture && (
+                                <> &middot; {lastQueryArchitecture === 'cached' ? 'Cached' : 'Live (zero-copy)'}</>
+                            )}
                         </motion.span>
                     )}
                 </div>

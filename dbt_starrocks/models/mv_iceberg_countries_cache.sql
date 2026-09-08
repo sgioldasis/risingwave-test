@@ -6,6 +6,14 @@
   )
 }}
 
+-- Restored 2026-09-08 (was dropped as part of the zero-copy migration --
+-- see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's twelfth follow-up) to
+-- support a side-by-side demo of both architectures. Feeds
+-- dashboard_funnel_serving_cached, a second view alongside the current
+-- default (zero-copy) dashboard_funnel_serving, so both can be queried and
+-- compared directly via /api/query/funnel (live) vs
+-- /api/query/funnel/cached (this).
+--
 -- Local mirror of the tiny Databricks iceberg_countries reference table.
 -- Dashboard queries used to LEFT JOIN databricks_uc.sr_poc_external.iceberg_countries
 -- live, on every request -- confirmed via EXPLAIN ANALYZE (2026-09-07) that

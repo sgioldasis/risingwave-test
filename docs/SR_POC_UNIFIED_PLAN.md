@@ -98,10 +98,10 @@ modern-dashboard/backend/api.py
     -> background Kafka consumer thread -> in-memory cache -> /api/funnel, /api/funnel/stream (SSE)
     -> one SQLAlchemy connection to StarRocks MySQL wire (port 9030)
        -> query-time hot overlay: risingwave.public.funnel_summary, live via JDBC
-       -> cold history: mv_unified_funnel_summary, a periodically-refreshed
-          local COPY (see note below)
-       -> country names: mv_iceberg_countries_cache, a periodically-refreshed
-          local COPY (see note below)
+       -> cold history: databricks_uc.sr_poc_external.funnel_summary_historical,
+          live via Iceberg REST (see note below)
+       -> country names: databricks_uc.sr_poc_external.iceberg_countries,
+          live via Iceberg REST (see note below)
 ```
 
 `funnel_summary` columns: `window_start`, `window_end`, `country`, `viewers`,
@@ -116,25 +116,30 @@ StarRocks currently has three external catalogs and a dbt-managed hot view:
 * `hot_funnel_summary` - normalized StarRocks view over
   `risingwave.public.funnel_summary`
 
-**Is data copied from Databricks to StarRocks, or read live?** Both, depending
-on which piece — this comes up often enough to spell out explicitly (full
-history in [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)):
+**Is data copied from Databricks to StarRocks, or read live?** As of
+2026-09-08, **nothing is copied — this is a zero-copy architecture**. Every
+piece is read live at query time (full history, including why this changed
+from an earlier cached design, in
+[SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)):
 
-* **Country names** (`mv_iceberg_countries_cache`) — copied. StarRocks runs
-  `INSERT OVERWRITE ... SELECT ... FROM databricks_uc.sr_poc_external.iceberg_countries`
-  every 20s, storing the result locally. Dashboard queries read the local
-  copy, never Databricks directly.
-* **Historical funnel data** (`mv_unified_funnel_summary`) — also copied,
-  same mechanism, but on `REFRESH MANUAL`: only re-copies when explicitly
-  triggered (`starrocks_mv_warm` at stack startup, or manually), not on a
-  timer.
-* **Hot/current-minute funnel data** — the exception: always a live JDBC
-  query against `risingwave.public.funnel_summary` on every dashboard
-  request, never copied.
-* **Any ad-hoc query against `databricks_uc` directly** (bypassing the two
-  MVs above) is also always live — StarRocks streams Parquet files straight
-  from Azure at query time, with only an ephemeral BE-side block cache, not
-  a persistent copy.
+* **Country names** — live join to
+  `databricks_uc.sr_poc_external.iceberg_countries` on every dashboard
+  request. No local copy exists (the earlier `mv_iceberg_countries_cache`
+  was dropped).
+* **Historical funnel data** — live query to
+  `databricks_uc.sr_poc_external.funnel_summary_historical` on every
+  request (the earlier `mv_unified_funnel_summary` was dropped).
+* **Hot/current-minute funnel data** — unchanged: live JDBC query against
+  `risingwave.public.funnel_summary`, as it always was.
+
+**The trade-off, made deliberately with the cost measured in advance**:
+every dashboard query now touches three external systems live, settling at
+a consistent **~2.0-2.1s per query** (mostly the same StarRocks
+external-catalog planning tax documented throughout the migration doc,
+paid three times instead of zero) — vs. ~500ms-1s with the caching layers
+this replaced. In exchange, staleness is structurally impossible: there is
+no cache, no refresh schedule, and no "why didn't my edit show up" question
+that can ever recur for this data.
 
 ## Target architecture (to-be)
 

@@ -12,7 +12,7 @@ REQUIRED_TOPIC = "funnel"
 
 @asset(
     name="modern_dashboard_preflight",
-    group_name="dashboard_setup",
+    group_name="setup",
     # iceberg_countries and modern_dashboard_databricks_table now create/load
     # their own data (no longer just validate pre-existing state elsewhere),
     # so this preflight must run strictly after both -- without this, Dagster

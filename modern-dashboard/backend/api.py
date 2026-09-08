@@ -1058,7 +1058,7 @@ def query_funnel_data(
                     f.view_to_cart_rate,
                     f.cart_to_buy_rate
                 FROM dashboard_funnel_serving f
-                LEFT JOIN mv_iceberg_countries_cache c
+                LEFT JOIN databricks_uc.sr_poc_external.iceberg_countries c
                   ON f.country = c.country
                 WHERE f.window_start >= :start_time
                   AND f.window_end <= :end_time
@@ -1074,22 +1074,28 @@ def query_funnel_data(
                 degraded = False
             except Exception:
                 logger.warning("Hot catalog unavailable; serving cold history only")
+                # No cached cold layer to fall back to since the zero-copy
+                # migration (2026-09-08, see
+                # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) -- queries
+                # Databricks directly, same dedup logic as
+                # dashboard_funnel_serving's cold branch.
                 cold_query = text("""
                     SELECT
                         f.window_start,
-                        f.window_end,
+                        MAX(f.window_end) AS window_end,
                         f.country,
                         c.country_name,
-                        f.viewers,
-                        f.carters,
-                        f.purchasers,
-                        f.view_to_cart_rate,
-                        f.cart_to_buy_rate
-                    FROM mv_unified_funnel_summary f
-                    LEFT JOIN mv_iceberg_countries_cache c
+                        MAX(f.viewers) AS viewers,
+                        MAX(f.carters) AS carters,
+                        MAX(f.purchasers) AS purchasers,
+                        ROUND(CAST(MAX(f.carters) AS DOUBLE) / NULLIF(MAX(f.viewers), 0), 2) AS view_to_cart_rate,
+                        ROUND(CAST(MAX(f.purchasers) AS DOUBLE) / NULLIF(MAX(f.carters), 0), 2) AS cart_to_buy_rate
+                    FROM databricks_uc.sr_poc_external.funnel_summary_historical f
+                    LEFT JOIN databricks_uc.sr_poc_external.iceberg_countries c
                       ON f.country = c.country
                     WHERE f.window_start >= :start_time
                       AND f.window_end <= :end_time
+                    GROUP BY f.window_start, f.country, c.country_name
                     ORDER BY f.window_start DESC, f.country
                     LIMIT 1000
                 """)
@@ -1161,16 +1167,31 @@ def query_funnel_aggregate(
                 degraded = False
             except Exception:
                 logger.warning("Hot catalog unavailable; aggregating cold history only")
+                # No cached cold layer to fall back to since the zero-copy
+                # migration (2026-09-08) -- queries Databricks directly.
+                # Must dedupe per (window_start, country) first, same as
+                # dashboard_funnel_serving's cold branch, since the
+                # underlying stream can carry multiple growing-count
+                # snapshots per window; summing raw rows would double-count.
                 cold_query = text("""
                     SELECT
-                        COALESCE(SUM(f.viewers), 0) AS total_viewers,
-                        COALESCE(SUM(f.carters), 0) AS total_carters,
-                        COALESCE(SUM(f.purchasers), 0) AS total_purchasers,
+                        COALESCE(SUM(viewers), 0) AS total_viewers,
+                        COALESCE(SUM(carters), 0) AS total_carters,
+                        COALESCE(SUM(purchasers), 0) AS total_purchasers,
                         COUNT(*) AS record_count,
-                        COUNT(DISTINCT f.country) AS country_count
-                    FROM mv_unified_funnel_summary f
-                    WHERE f.window_start >= :start_time
-                      AND f.window_end <= :end_time
+                        COUNT(DISTINCT country) AS country_count
+                    FROM (
+                        SELECT
+                            window_start,
+                            country,
+                            MAX(viewers) AS viewers,
+                            MAX(carters) AS carters,
+                            MAX(purchasers) AS purchasers
+                        FROM databricks_uc.sr_poc_external.funnel_summary_historical
+                        WHERE window_start >= :start_time
+                          AND window_end <= :end_time
+                        GROUP BY window_start, country
+                    ) f
                 """)
                 result = conn.execute(cold_query, {
                     "start_time": start_time,
@@ -1195,6 +1216,177 @@ def query_funnel_aggregate(
             }
     except Exception as e:
         logger.error(f"Error querying funnel aggregate: {e}")
+        raise _starrocks_http_error(e) from e
+
+
+# --- Cached-architecture endpoints (2026-09-08) ---
+# Mirror /api/query/funnel and /api/query/funnel/aggregate exactly, but read
+# from dashboard_funnel_serving_cached (backed by mv_unified_funnel_summary,
+# REFRESH MANUAL, and mv_iceberg_countries_cache, 20s refresh) instead of
+# the zero-copy default. Added for a side-by-side demo comparing both
+# architectures this project tried -- same query, same params, run through
+# both endpoints to see the real timing difference directly. See
+# docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's twelfth follow-up.
+@app.get("/api/query/funnel/cached")
+def query_funnel_data_cached(
+    start_time: str = Query(..., description="Start time in ISO format"),
+    end_time: str = Query(..., description="End time in ISO format")
+):
+    """
+    Same as /api/query/funnel, but reads the cached architecture
+    (dashboard_funnel_serving_cached) instead of the zero-copy default.
+    """
+    try:
+        with starrocks_engine.connect() as conn:
+            query = text("""
+                SELECT
+                    f.window_start,
+                    f.window_end,
+                    f.country,
+                    c.country_name,
+                    f.viewers,
+                    f.carters,
+                    f.purchasers,
+                    f.view_to_cart_rate,
+                    f.cart_to_buy_rate
+                FROM dashboard_funnel_serving_cached f
+                LEFT JOIN mv_iceberg_countries_cache c
+                  ON f.country = c.country
+                WHERE f.window_start >= :start_time
+                  AND f.window_end <= :end_time
+                ORDER BY f.window_start DESC, f.country
+                LIMIT 1000
+            """)
+
+            try:
+                result = conn.execute(query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                })
+                degraded = False
+            except Exception:
+                logger.warning("Hot catalog unavailable; serving cached cold history only")
+                cold_query = text("""
+                    SELECT
+                        f.window_start,
+                        f.window_end,
+                        f.country,
+                        c.country_name,
+                        f.viewers,
+                        f.carters,
+                        f.purchasers,
+                        f.view_to_cart_rate,
+                        f.cart_to_buy_rate
+                    FROM mv_unified_funnel_summary f
+                    LEFT JOIN mv_iceberg_countries_cache c
+                      ON f.country = c.country
+                    WHERE f.window_start >= :start_time
+                      AND f.window_end <= :end_time
+                    ORDER BY f.window_start DESC, f.country
+                    LIMIT 1000
+                """)
+                result = conn.execute(cold_query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                })
+                degraded = True
+
+            records = []
+            for row in result:
+                records.append({
+                    "window_start": row.window_start.isoformat() if row.window_start else None,
+                    "window_end": row.window_end.isoformat() if row.window_end else None,
+                    "country": row.country,
+                    "country_name": row.country_name,
+                    "viewers": int(row.viewers),
+                    "carters": int(row.carters),
+                    "purchasers": int(row.purchasers),
+                    "view_to_cart_rate": float(row.view_to_cart_rate) if row.view_to_cart_rate else 0.0,
+                    "cart_to_buy_rate": float(row.cart_to_buy_rate) if row.cart_to_buy_rate else 0.0
+                })
+
+            return {
+                "data": records,
+                "count": len(records),
+                "query": {
+                    "start_time": start_time,
+                    "end_time": end_time
+                },
+                "degraded": degraded,
+                "architecture": "cached",
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Error querying cached funnel data: {e}")
+        raise _starrocks_http_error(e) from e
+
+
+@app.get("/api/query/funnel/cached/aggregate")
+def query_funnel_aggregate_cached(
+    start_time: str = Query(..., description="Start time in ISO format"),
+    end_time: str = Query(..., description="End time in ISO format")
+):
+    """
+    Same as /api/query/funnel/aggregate, but reads the cached architecture
+    (dashboard_funnel_serving_cached) instead of the zero-copy default.
+    """
+    try:
+        with starrocks_engine.connect() as conn:
+            query = text("""
+                SELECT
+                    COALESCE(SUM(f.viewers), 0) as total_viewers,
+                    COALESCE(SUM(f.carters), 0) as total_carters,
+                    COALESCE(SUM(f.purchasers), 0) as total_purchasers,
+                    COUNT(*) as record_count,
+                    COUNT(DISTINCT f.country) as country_count
+                FROM dashboard_funnel_serving_cached f
+                WHERE f.window_start >= :start_time
+                  AND f.window_end <= :end_time
+            """)
+
+            try:
+                result = conn.execute(query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                }).one()
+                degraded = False
+            except Exception:
+                logger.warning("Hot catalog unavailable; aggregating cached cold history only")
+                cold_query = text("""
+                    SELECT
+                        COALESCE(SUM(viewers), 0) AS total_viewers,
+                        COALESCE(SUM(carters), 0) AS total_carters,
+                        COALESCE(SUM(purchasers), 0) AS total_purchasers,
+                        COUNT(*) AS record_count,
+                        COUNT(DISTINCT country) AS country_count
+                    FROM mv_unified_funnel_summary
+                    WHERE window_start >= :start_time
+                      AND window_end <= :end_time
+                """)
+                result = conn.execute(cold_query, {
+                    "start_time": start_time,
+                    "end_time": end_time
+                }).one()
+                degraded = True
+
+            return {
+                "data": {
+                    "total_viewers": int(result.total_viewers),
+                    "total_carters": int(result.total_carters),
+                    "total_purchasers": int(result.total_purchasers),
+                    "record_count": int(result.record_count),
+                    "country_count": int(result.country_count)
+                },
+                "query": {
+                    "start_time": start_time,
+                    "end_time": end_time
+                },
+                "degraded": degraded,
+                "architecture": "cached",
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+    except Exception as e:
+        logger.error(f"Error querying cached funnel aggregate: {e}")
         raise _starrocks_http_error(e) from e
 
 

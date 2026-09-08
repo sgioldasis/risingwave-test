@@ -7,6 +7,14 @@
   )
 }}
 
+-- Restored 2026-09-08 (was dropped as part of the zero-copy migration --
+-- see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's twelfth follow-up) to
+-- support a side-by-side demo of both architectures. Feeds
+-- dashboard_funnel_serving_cached, a second view alongside the current
+-- default (zero-copy) dashboard_funnel_serving, so both can be queried and
+-- compared directly via /api/query/funnel (live) vs
+-- /api/query/funnel/cached (this).
+--
 -- Federated demo view: RisingWave owns the newest three minutes while Databricks
 -- UC owns older windows. The append-only cold source can contain multiple
 -- snapshots for one window, so the cold branch collapses those snapshots first.

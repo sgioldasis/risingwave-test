@@ -14,32 +14,37 @@ query RisingWave or Databricks directly — they all go through a single
 StarRocks SQLAlchemy engine (`mysql+pymysql`, port 9030), reading the
 governed view `dashboard_funnel_serving`
 ([dbt_starrocks/models/dashboard_funnel_serving.sql](../dbt_starrocks/models/dashboard_funnel_serving.sql)).
-That view itself is a StarRocks-side union of two sources:
+That view itself is a StarRocks-side union of two sources, and as of
+2026-09-08 **both are read live at query time — this is a zero-copy
+architecture, no local materialized copy of either source exists** (see
+[SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)'s
+twelfth follow-up for the full history and why):
 
-- **Windows younger than 3 minutes**: read **live** from
+- **Windows younger than 3 minutes**: read live from
   `risingwave.public.funnel_summary` through StarRocks' JDBC federation
-  catalog — no caching, no lag, StarRocks is just federating the query.
-- **Windows older than 3 minutes**: read from `mv_unified_funnel_summary`,
-  an async materialized view that dedupes the Databricks Unity Catalog
-  historical Iceberg table. This MV only self-refreshes on its own schedule
-  (every 5 minutes — see
-  [SR_POC_UNIFIED_PLAN.md](SR_POC_UNIFIED_PLAN.md#remaining-questions-for-part-3)),
-  so a window that just aged past the 3-minute boundary can be briefly
-  invisible to those endpoints until the next scheduled refresh — that's the
-  gap this doc exists to close for a demo.
+  catalog.
+- **Windows older than 3 minutes**: read live from
+  `databricks_uc.sr_poc_external.funnel_summary_historical` through
+  StarRocks' Iceberg REST catalog, deduped per-window in the view itself.
 
 (If the `risingwave` catalog is unreachable, the backend falls back to
-querying `mv_unified_funnel_summary` directly — cold-only — and marks the
+querying `funnel_summary_historical` directly — cold-only — and marks the
 response `degraded: true`.)
+
+**The gap this doc originally existed to close no longer exists.** Before
+2026-09-08, the cold side was a materialized view that only refreshed on a
+schedule (or manually via a `demo_warm_job`/`starrocks_mv_warm` Dagster
+asset, since removed), so a window that just aged past the 3-minute
+boundary could be briefly invisible until the next refresh. With both sides
+now read live, there is no schedule, no cache, and no possible gap — every
+query sees current data by construction. The rest of this doc's cold-start
+sequence (Steps 1-6 below) is still accurate and still worth following for
+a live demo; the "keep it gapless" concern that used to follow it is not.
 
 The live SSE dashboard (`/api/funnel`, `/api/stats`, `/api/funnel/stream`) is
 **not** affected by any of this — it reads straight from the Kafka consumer's
 in-memory cache, with no StarRocks or RisingWave query involved at all, and
 is always real-time.
-
-To make the SQL query endpoints gapless for a demo, run `demo_warm_job`
-right before you start — it synchronously forces the MV refresh via Dagster,
-so you never have to run ad hoc SQL by hand.
 
 ## Demo script: cold start to hot+cold unified view
 
@@ -80,17 +85,16 @@ docker ps --format 'table {{.Names}}\t{{.Status}}'
 **Purpose:** create every object the demo depends on in one pass — RisingWave
 sources/`funnel_summary`/sinks, the StarRocks catalogs (`databricks_uc`,
 `lakekeeper_local`, `risingwave`), and all `dbt_starrocks` models
-(`hot_funnel_summary`, `mv_unified_funnel_summary`, `dashboard_funnel_serving`,
+(`hot_funnel_summary`, `dashboard_funnel_serving`,
 `dashboard_funnel_enriched`, `mv_funnel_daily_country_rollup` — see
-[SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md)). It ends by
-running `starrocks_mv_warm`, so `mv_unified_funnel_summary` comes out
-synchronously refreshed against whatever historical data already exists in
-Databricks.
+[SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md)).
+`dashboard_funnel_serving` is a plain view with nothing to warm — both its
+branches read live at query time (see "Why this doc exists" above).
 
 **Expected outcome:** `RUN_SUCCESS`. `mv_funnel_daily_country_rollup` will
 still have zero rows afterward — it's `MANUAL`-refresh and no asset is wired
-to warm it yet (only `mv_unified_funnel_summary` is), so if you also want the
-query-rewrite demo, refresh it once by hand:
+to warm it, so if you also want the query-rewrite demo, refresh it once by
+hand:
 ```bash
 docker exec starrocks mysql -h127.0.0.1 -P9030 -uroot -e "REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE;"
 ```
@@ -161,16 +165,13 @@ real, not just configured. This is also the moment to point at
 `/api/serving/status` (`hot_window`/`cold_window`/`serving_window`) to show
 both sides are populated and current.
 
-### Ongoing: keep it gapless if the demo runs long
+### Ongoing: nothing to do, by design
 
-If you keep querying across a long session, the hot/cold boundary gap
-described in "Why this doc exists" can reappear (a window that just aged past
-3 minutes, not yet caught up by the next scheduled MV refresh). Re-run
-`demo_warm_job` (Dagster UI → Jobs → `demo_warm_job` → Launchpad → Launch
-Run) right before you need another gapless window — it's safe to run
-repeatedly since the objects already exist from Step 2. Don't use
-`modern_dashboard_setup_job` for this; it also rebuilds the RisingWave dbt
-models, briefly interrupting the live streaming objects Step 5 is producing.
+Before 2026-09-08 this section covered re-running a warm-up job periodically
+during a long demo session, since the cold side could fall behind its
+refresh schedule. That's no longer applicable — both sides of
+`dashboard_funnel_serving` read live on every query, so there's no schedule
+to fall behind and nothing to re-run, no matter how long the session runs.
 
 ## Demo: graceful degradation (RisingWave outage)
 
@@ -224,8 +225,8 @@ on its own) and run a query covering recent time again:
 - `dashboard_funnel_serving`'s live branch (reading
   `risingwave.public.funnel_summary` via JDBC) fails.
 - The backend catches the exception, falls back to querying
-  `mv_unified_funnel_summary` directly (cold-only), and marks the response
-  `degraded: true`.
+  `databricks_uc.sr_poc_external.funnel_summary_historical` directly
+  (cold-only), and marks the response `degraded: true`.
 - The red **"Degraded: the live RisingWave catalog is unavailable — showing
   cold/historical data only, results may be stale"** banner appears above
   the results.
@@ -277,33 +278,6 @@ should be back to `"status": "ready"`.
   `detail.source = "starrocks"` rather than degrading, since there's no cold
   fallback path when StarRocks itself is the thing that's down.
 
-## Reference: what `demo_warm_job` actually runs
-
-Defined in
-[orchestration/definitions.py](../orchestration/definitions.py) and
-[orchestration/assets/starrocks_mv_warm.py](../orchestration/assets/starrocks_mv_warm.py):
-
-```python
-demo_warm_job = define_asset_job(
-    name="demo_warm_job",
-    selection=AssetSelection.assets(starrocks_mv_warm),
-    ...
-)
-```
-
-`starrocks_mv_warm` connects to StarRocks via the same SQLAlchemy
-(`mysql+pymysql`) pattern used elsewhere in this project
-([orchestration/assets/modern_dashboard_preflight.py](../orchestration/assets/modern_dashboard_preflight.py))
-and runs:
-
-```sql
-REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;
-```
-
-`WITH SYNC MODE` is what makes this useful for a demo: it blocks the calling
-session until the refresh is fully done, unlike the MV's own async schedule
-which just submits a background task.
-
 ## Known devbox bug: `devbox run` fails with `DEVBOX_PROJECT_ROOT: unbound variable`
 
 `devbox run -- <cmd>` fails unconditionally in this project (even for a
@@ -333,7 +307,7 @@ interactively — sets these variables correctly. Pipe a command into it
 non-interactively instead of using `devbox run`:
 
 ```bash
-echo 'dg launch --job demo_warm_job; exit' | devbox shell
+echo 'dg launch --job dbt_starrocks_build_job; exit' | devbox shell
 ```
 
 A **fresh** `devbox shell` also auto-loads `.env` (confirmed 2026-09-07:
@@ -344,7 +318,7 @@ to point `STARROCKS_URL` at `localhost` rather than the in-Docker-network
 default:
 
 ```bash
-echo 'export STARROCKS_URL="mysql+pymysql://root@localhost:9030"; dg launch --job demo_warm_job; exit' | devbox shell
+echo 'export STARROCKS_URL="mysql+pymysql://root@localhost:9030"; dg launch --job dbt_starrocks_build_job; exit' | devbox shell
 ```
 
 (An earlier version of this note cited `DATABRICKS_CATALOG` as proof of

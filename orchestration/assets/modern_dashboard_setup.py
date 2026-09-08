@@ -9,7 +9,7 @@ TABLE_FQN = "databricks_uc.sr_poc_external.funnel_summary_historical"
 
 
 @asset(
-    group_name="dashboard_setup",
+    group_name="setup",
     description=(
         "Validate that the already-provisioned Unity Catalog Iceberg table used "
         "by the RisingWave cold sink and StarRocks unified funnel view is readable."

@@ -26,7 +26,7 @@ TABLE_FQN = "databricks_uc.sr_poc_external.iceberg_countries"
 
 @asset(
     name="iceberg_countries",
-    group_name="datalake",
+    group_name="setup",
     description=(
         "Validate the existing Databricks Iceberg country reference table "
         "through StarRocks."

@@ -17,6 +17,7 @@ from dagster import (
     DefaultSensorStatus,
     AssetKey,
     AssetSelection,
+    AssetSpec,
 )
 from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTranslator
 
@@ -26,7 +27,6 @@ from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table
 from .assets.modern_dashboard_setup import modern_dashboard_databricks_table
 from .assets.modern_dashboard_preflight import modern_dashboard_preflight
-from .assets.starrocks_mv_warm import starrocks_mv_warm
 from .assets.iceberg_compaction import iceberg_compaction_job, spark_session_resource
 from .assets.casino_prd_setup import (
     casino_prd_proto_fetch,
@@ -130,6 +130,13 @@ _ensure_valid_manifest()
 
 
 # Custom translator to add compute kind and group based on dbt tags
+#
+# NOTE: dbt SOURCES (e.g. dbt_starrocks's risingwave/databricks_uc/
+# lakekeeper_local sources.yml entries) don't get their group from this
+# class at all -- confirmed 2026-09-08 that overriding get_group_name here
+# has no effect for them, since @dbt_assets never invokes it for pure
+# external/upstream references this project doesn't build. Their group is
+# set via map_asset_specs on starrocks_unified_dbt_assets below instead.
 class CustomDagsterDbtTranslator(DagsterDbtTranslator):
     def get_asset_spec(self, manifest, unique_id, project):
         # Get base spec from parent
@@ -170,6 +177,15 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         # materialization type. This keeps them separate from the RisingWave PoC.
         if package_name == "starrocks_unified_funnel":
             new_spec = spec.replace_attributes(group_name="starrocks")
+        # sink_funnel_to_databricks carries the same 'databricks' tag as every
+        # casino_prd sink (below), which would otherwise sweep it into
+        # casino_databricks. It's a funnel-project RisingWave sink, not a
+        # casino asset -- runs inside RisingWave regardless of its target, so
+        # it belongs in modern_dashboard_setup_job's "risingwave" group (see
+        # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's 4-group scheme).
+        # Checked before the generic 'databricks' tag branch for that reason.
+        elif dbt_resource_props.get("name") == "sink_funnel_to_databricks":
+            new_spec = spec.replace_attributes(group_name="risingwave")
         # local_infra must be checked first — some models carry both casino_prd_setup
         # and local_infra tags, and we want them excluded from casino_stg_job.
         elif "local_infra" in tags:
@@ -392,9 +408,22 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
         context.log.info("dbt compile completed. Models will appear on next materialization.")
         return {"status": "initial_compile", "message": "Run again to materialize models"}
 
-    # Keep Dagster behavior consistent with bin/3_run_dbt.sh by dropping sinks
-    # before build, so CREATE SINK IF NOT EXISTS definitions are refreshed.
-    context.log.info("Dropping pre-build sinks via dbt run-operation...")
+    # Sinks use CREATE SINK IF NOT EXISTS, so a routine re-run silently keeps
+    # a stale definition if a sink's SQL/config changed since it was last
+    # created -- dropping first (this block) is what guarantees freshness.
+    # Made opt-in 2026-09-08 (default: skip), same pattern as
+    # FORCE_ICEBERG_SOURCE_REFRESH below: confirmed this project's
+    # sink_funnel_to_databricks specifically can take anywhere from ~5s to
+    # 2m40s+ to drop, highly variable run to run with identical code and
+    # scoping -- RisingWave's own logs showed zero activity during both the
+    # fast and slow cases, pointing at a stale/cold Iceberg-Databricks
+    # connection needing a slow timeout-based teardown rather than a
+    # RisingWave-side bug (see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md).
+    # Not something further fixable from this side, so instead: only pay
+    # this cost when actually needed (after editing a sink's SQL), not on
+    # every routine run. Set FORCE_SINK_REFRESH=true in Dagster env to force
+    # it when needed.
+    force_sink_refresh = os.environ.get("FORCE_SINK_REFRESH", "false").lower() in {"1", "true", "yes"}
     _dbt_env = os.environ.copy()
     if "DBT_HOST" not in _dbt_env:
         _dbt_env["DBT_HOST"] = "risingwave-frontend"
@@ -403,44 +432,51 @@ def realtime_funnel_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResour
     if "DBT_PASSWORD" not in _dbt_env:
         _dbt_env["DBT_PASSWORD"] = "root"
 
-    drop_command = [
-        "dbt",
-        "run-operation",
-        "drop_prebuild_sinks",
-        "--project-dir",
-        str(dbt_PROJECT_PATH),
-        "--profiles-dir",
-        str(dbt_PROJECT_PATH),
-    ]
-    if context.is_subset:
-        sink_object_names = {
-            "sink_funnel_to_rw_iceberg": "rw_managed_funnel_sink",
-            "sink_hermes_features_to_iceberg": "sink_hermes_features_to_iceberg",
-            "sink_funnel_to_kafka": "funnel_kafka_sink",
-            "sink_funnel_to_postgres": "funnel_postgres_sink",
-            "sink_funnel_to_databricks": "sink_funnel_to_databricks",
-        }
-        selected_sink_names = sorted(
-            sink_object_names[key.path[-1]]
-            for key in context.selected_asset_keys
-            if key.path[-1] in sink_object_names
+    if force_sink_refresh:
+        context.log.info("FORCE_SINK_REFRESH=true: dropping pre-build sinks via dbt run-operation...")
+        drop_command = [
+            "dbt",
+            "run-operation",
+            "drop_prebuild_sinks",
+            "--project-dir",
+            str(dbt_PROJECT_PATH),
+            "--profiles-dir",
+            str(dbt_PROJECT_PATH),
+        ]
+        if context.is_subset:
+            sink_object_names = {
+                "sink_funnel_to_rw_iceberg": "rw_managed_funnel_sink",
+                "sink_hermes_features_to_iceberg": "sink_hermes_features_to_iceberg",
+                "sink_funnel_to_kafka": "funnel_kafka_sink",
+                "sink_funnel_to_postgres": "funnel_postgres_sink",
+                "sink_funnel_to_databricks": "sink_funnel_to_databricks",
+            }
+            selected_sink_names = sorted(
+                sink_object_names[key.path[-1]]
+                for key in context.selected_asset_keys
+                if key.path[-1] in sink_object_names
+            )
+            drop_command.extend(
+                ["--args", json.dumps({"sink_names": selected_sink_names})]
+            )
+
+        drop_result = subprocess.run(
+            drop_command,
+            capture_output=True,
+            text=True,
+            cwd=str(dbt_PROJECT_PATH.parent),
+            env=_dbt_env,
         )
-        drop_command.extend(
-            ["--args", json.dumps({"sink_names": selected_sink_names})]
+        if drop_result.returncode != 0:
+            context.log.error(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
+            raise Exception(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
+        context.log.info("Pre-build sinks dropped successfully")
+    else:
+        context.log.info(
+            "Skipping pre-build sink drop (default -- set FORCE_SINK_REFRESH=true "
+            "if a sink's SQL/config changed and needs to be picked up)."
         )
 
-    drop_result = subprocess.run(
-        drop_command,
-        capture_output=True,
-        text=True,
-        cwd=str(dbt_PROJECT_PATH.parent),
-        env=_dbt_env,
-    )
-    if drop_result.returncode != 0:
-        context.log.error(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
-        raise Exception(f"dbt run-operation drop_prebuild_sinks failed: {drop_result.stderr}")
-    context.log.info("Pre-build sinks dropped successfully")
-    
     # Optional emergency refresh for Iceberg sources.
     # Set FORCE_ICEBERG_SOURCE_REFRESH=true in Dagster env when a manual refresh is needed.
     force_iceberg_refresh = os.environ.get("FORCE_ICEBERG_SOURCE_REFRESH", "false").lower() in {"1", "true", "yes"}
@@ -521,6 +557,32 @@ def starrocks_unified_dbt_assets(
     context.log.info("Building the RisingWave hot view and unified funnel MV")
 
     yield from starrocks_dbt.cli(["build"], context=context).stream()
+
+
+# dbt SOURCES (risingwave.funnel_summary, databricks_uc.funnel_summary_historical,
+# databricks_uc.iceberg_countries, lakekeeper_local.funnel_summary) are pure
+# external/upstream references this project never builds -- confirmed
+# 2026-09-08 that CustomDagsterDbtTranslator.get_group_name (which does
+# return the right group when called directly) never actually gets invoked
+# for them by the @dbt_assets machinery, so they always land in Dagster's
+# bare "default" group regardless of translator logic. map_asset_specs
+# overrides them directly on the built AssetsDefinition instead, which does
+# work reliably. Part of modern_dashboard_setup_job's 4-group scheme
+# (risingwave/starrocks/postgres/setup) -- see
+# docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md.
+_SOURCE_GROUP_OVERRIDES = {
+    AssetKey(["risingwave", "funnel_summary"]): "risingwave",
+    AssetKey(["databricks_uc", "funnel_summary_historical"]): "setup",
+    AssetKey(["databricks_uc", "iceberg_countries"]): "setup",
+    AssetKey(["lakekeeper_local", "funnel_summary"]): "setup",
+}
+starrocks_unified_dbt_assets = starrocks_unified_dbt_assets.map_asset_specs(
+    lambda spec: (
+        spec.replace_attributes(group_name=_SOURCE_GROUP_OVERRIDES[spec.key])
+        if spec.key in _SOURCE_GROUP_OVERRIDES
+        else spec
+    )
+)
 # Define jobs
 dbt_build_job = define_asset_job(
     name="dbt_build_job",
@@ -571,28 +633,19 @@ modern_dashboard_setup_job = define_asset_job(
             AssetKey(["public", "sink_funnel_to_databricks"]),
         )
         | AssetSelection.assets(starrocks_unified_dbt_assets)
-        | AssetSelection.assets(starrocks_mv_warm)
     ),
     description=(
         "Create all RisingWave, Kafka sink, Iceberg/Databricks, and StarRocks "
-        "objects required by the modern dashboard, then synchronously warm "
-        "the unified funnel MV. Infrastructure services must already be "
-        "running."
+        "objects required by the modern dashboard. Infrastructure services "
+        "must already be running."
     ),
 )
 
-# Lightweight pre-demo warm-up: forces the unified MV refresh synchronously
-# without re-running the RisingWave/Databricks setup steps, which briefly
-# interrupt the live streaming MVs on every rebuild -- not something you want
-# seconds before a live demo.
-demo_warm_job = define_asset_job(
-    name="demo_warm_job",
-    selection=AssetSelection.assets(starrocks_mv_warm),
-    description=(
-        "Synchronously refresh the StarRocks unified funnel MV so SQL query "
-        "endpoints are gapless. Safe to run immediately before a live demo."
-    ),
-)
+# demo_warm_job and the starrocks_mv_warm asset it wrapped were retired
+# 2026-09-08 as part of the zero-copy migration -- there's no longer a
+# unified funnel MV to warm; dashboard_funnel_serving reads RisingWave and
+# Databricks live on every query. See
+# docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md for the full history.
 # Define schedules - run every 5 minutes
 dbt_build_schedule = ScheduleDefinition(
     job=dbt_build_job,
@@ -750,9 +803,30 @@ def ml_training_sensor_realtime(context):
     return RunRequest(run_key=f"ml_training_{timestamp}")
 
 
+# Explicit external-asset declarations for dbt_starrocks's dbt SOURCES
+# (risingwave.funnel_summary, databricks_uc.funnel_summary_historical,
+# databricks_uc.iceberg_countries, lakekeeper_local.funnel_summary). These
+# are pure upstream references dbt_starrocks depends on but never builds --
+# confirmed 2026-09-08 that neither CustomDagsterDbtTranslator overrides nor
+# map_asset_specs on starrocks_unified_dbt_assets can set their group, since
+# they aren't part of any AssetsDefinition at all; Dagster auto-synthesizes
+# a bare placeholder (always shown as "default" group, no matter what) for
+# any dependency key nothing else defines. A bare AssetSpec passed directly
+# to Definitions(assets=[...]) is the documented way to give such a
+# placeholder real metadata. Part of modern_dashboard_setup_job's 4-group
+# scheme (risingwave/starrocks/postgres/setup) -- see
+# docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md.
+external_dbt_source_assets = [
+    AssetSpec(key=AssetKey(["risingwave", "funnel_summary"]), group_name="risingwave"),
+    AssetSpec(key=AssetKey(["databricks_uc", "funnel_summary_historical"]), group_name="setup"),
+    AssetSpec(key=AssetKey(["databricks_uc", "iceberg_countries"]), group_name="setup"),
+    AssetSpec(key=AssetKey(["lakekeeper_local", "funnel_summary"]), group_name="setup"),
+]
+
 # Dagster definitions
 defs = Definitions(
     assets=[
+        *external_dbt_source_assets,
         # Yield iceberg_countries first (dependency of dbt assets)
         iceberg_countries,
         modern_dashboard_preflight,
@@ -766,8 +840,6 @@ defs = Definitions(
         ml_trained_models,
         # StarRocks unified MV (cold-path-only, Pilot B)
         starrocks_unified_dbt_assets,
-        # Synchronous pre-demo warm-up for the unified MV
-        starrocks_mv_warm,
         # Casino production prerequisites
         casino_prd_proto_fetch,
         casino_prd_proto_compile,
@@ -798,7 +870,6 @@ defs = Definitions(
         postgres_sink_job,
         dbt_starrocks_build_job,
         modern_dashboard_setup_job,
-        demo_warm_job,
         kafka_topics_setup_job,
         casino_prd_full_job,
         casino_stg_job,

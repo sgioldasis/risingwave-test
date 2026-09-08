@@ -639,12 +639,219 @@ ground between the earlier 10s (2.7-5.5s collision spikes) and 60s
 ever reappear under heavier load, 60s remains the documented, verified
 fallback.
 
+**Twelfth follow-up: implemented a zero-copy architecture, deliberately,
+after measuring the real cost.** Raised as "can we plan a zero-copy
+approach with the same functionality" -- i.e. remove both remaining local
+materialized copies (`mv_iceberg_countries_cache`, `mv_unified_funnel_summary`)
+and read Databricks live at query time for everything, trading query speed
+for zero staleness by construction (no cache means the "why didn't my edit
+show up" question becomes structurally impossible, not just faster to
+answer).
+
+**Measured before changing anything** (the plan's explicit first step):
+hand-wrote the live three-way query (hot JDBC + cold Iceberg, day-partition
+filtered + country-name Iceberg join) and ran `EXPLAIN ANALYZE` + a 3-run
+batch. First run 2.838s (cold), settled to a consistent **2.0-2.1s**
+across two more runs, with `ExecutionTime` itself tiny (150-460ms) --
+almost the entire cost is the same per-external-table planning tax
+documented throughout this file, just paid three times per query instead
+of zero. Compared to the ~500ms-1s the caching layers delivered, this is a
+real, consistent 2-4x regression, not an occasional outlier -- confirmed
+with the user before proceeding, since the earlier plan explicitly flagged
+this as a decision point, not an assumption.
+
+**Important correctness finding during measurement**: `funnel_summary_historical`
+is partitioned on `window_date`, a *plain* column (not a hidden
+`day(window_start)` transform -- see the tenth follow-up for why). Filtering
+only on `window_start`/`window_end` (what the API layer already does, not
+`window_date` directly) does **not** get true partition-level pruning --
+but it still gets a real ~5x benefit via per-file Iceberg column statistics
+(456ms vs 2.38s scan time, confirmed directly). Exposing `window_date` as
+an output column for the stronger benefit was considered and explicitly
+skipped, to avoid touching the API response shape for a further, smaller
+gain on top of an already-accepted cost.
+
+**What was changed**:
+- `dbt_starrocks/models/dashboard_funnel_serving.sql` -- rewritten to
+  inline both branches as live queries: the cold branch now reads
+  `databricks_uc.sr_poc_external.funnel_summary_historical` directly (with
+  the same per-window dedup `GROUP BY` the old MV used), the hot branch is
+  unchanged (`risingwave.public.funnel_summary`, already zero-copy since
+  the seventh follow-up).
+- Dropped `mv_iceberg_countries_cache` and `mv_unified_funnel_summary`,
+  removed their dbt model files.
+- `modern-dashboard/backend/api.py` -- both country-name joins now target
+  `databricks_uc.sr_poc_external.iceberg_countries` directly instead of the
+  dropped cache. The "hot catalog unavailable" degraded-fallback queries
+  (both `/api/query/funnel` and `/api/query/funnel/aggregate`) previously
+  read the now-dropped `mv_unified_funnel_summary` -- rewritten to query
+  `funnel_summary_historical` directly with the same dedup logic, since
+  there's no cached cold layer left to fall back to.
+- Retired the `starrocks_mv_warm` Dagster asset and the `demo_warm_job` job
+  that existed solely to wrap it (`orchestration/definitions.py`,
+  `orchestration/assets/starrocks_mv_warm.py` deleted) -- there's no
+  longer a unified MV to warm at startup or before a demo.
+  [SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md) still
+  references `demo_warm_job` in several places and needs a follow-up pass
+  to remove that guidance -- not done as part of this change, flagged here
+  so it isn't mistaken for an oversight if noticed later.
+- Ran `dbt parse` on both dbt projects and restarted `dagster-daemon` per
+  this project's standing convention after model/config changes.
+
+**Verified end-to-end**: view returns correct data (checked directly via
+`SHOW CREATE VIEW` and a live `SELECT`), both API endpoints return correct
+data (`degraded: false`), and a 15-run timing batch against the real
+running app landed at **1.97-2.56s**, matching the hand-written
+measurement closely. This is the accepted, final state for this
+architecture -- a deliberate trade of query speed for structural
+freshness guarantees, chosen with the real cost known in advance rather
+than discovered after the fact.
+
+**Thirteenth follow-up: added a side-by-side demo of both architectures,
+instead of choosing one.** Rather than only having the zero-copy
+architecture available, restored the pre-zero-copy cached objects
+alongside it (not replacing anything) so both can be run and compared
+directly in a live demo.
+
+**Restored** (exact content recovered via `git show HEAD:<path>`, not
+reconstructed from memory, to guarantee it matched the last known-good
+state): `dbt_starrocks/models/mv_iceberg_countries_cache.sql` (20s refresh)
+and `mv_unified_funnel_summary.sql` (`REFRESH MANUAL`). **New**:
+`dashboard_funnel_serving_cached.sql` -- the pre-zero-copy form of
+`dashboard_funnel_serving.sql` (also recovered via `git show`), kept under
+a new name so both views can coexist. All three built via
+`dbt run` and verified with data (`mv_iceberg_countries_cache`: 20 rows,
+`mv_unified_funnel_summary`/`dashboard_funnel_serving_cached`: 286 rows
+each, matching).
+
+**Backend**: two new parallel endpoints,
+`/api/query/funnel/cached` and `/api/query/funnel/cached/aggregate`
+(`modern-dashboard/backend/api.py`), mirroring the existing zero-copy
+endpoints exactly (same response shape, same degraded-fallback pattern)
+but reading `dashboard_funnel_serving_cached`/`mv_iceberg_countries_cache`
+instead.
+
+**Frontend**: an "Architecture" toggle added to the Queries tab
+(`modern-dashboard/frontend/src/components/QueriesTab.jsx`) switching
+between `live` (zero-copy, default) and `cached`, wired to call the
+matching endpoint pair. The existing "Query run in X.XXs" duration display
+now also shows which architecture produced that specific timing (captured
+at query time, not read from the toggle's current position, so it stays
+correct even if the toggle is flipped afterward without re-running).
+
+**Verified the demo actually demonstrates something**: ran both endpoints
+5 times each with identical query parameters --
+zero-copy: 1.35-1.79s, cached: 0.40-0.67s. A clear, consistent ~3x
+difference, visible directly in the UI by flipping the toggle and
+re-running the same query.
+
+**Note on staleness**: the cached path's `mv_unified_funnel_summary` needs
+an explicit refresh to pick up newly-archived historical data (no Dagster
+asset wraps this anymore, since `starrocks_mv_warm` was retired in the
+twelfth follow-up) --
+`REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`
+if it looks stale during a demo. `mv_iceberg_countries_cache` still
+self-refreshes every 20s on its own schedule.
+
+**Fourteenth follow-up: consolidated `modern_dashboard_setup_job`'s asset
+groups down to exactly four** (`risingwave`, `starrocks`, `postgres`,
+`setup`), from what had grown to ten (`casino_databricks`,
+`dashboard_setup`, `datalake`, `default` x3, `postgres`, `risingwave`,
+`starrocks`, ...). Note: **Dagster asset groups are global**, not
+job-scoped -- there's no way for an asset to show one group in this job
+and a different one elsewhere, so this changed how these assets display
+everywhere they appear, not just here.
+
+**Mapping applied**:
+- `risingwave`: everything already there, plus `sink_funnel_to_databricks`
+  (was `casino_databricks` -- it shares the same `databricks` tag as every
+  casino_prd sink, which swept it into that bucket even though it's a
+  funnel-project RisingWave sink) and the `risingwave.funnel_summary` dbt
+  source.
+- `starrocks`: unchanged.
+- `postgres`: unchanged (`postgres_funnel_table` was already there).
+- `setup`: `modern_dashboard_databricks_table`/`modern_dashboard_preflight`
+  (were `dashboard_setup`), `iceberg_countries` the Python asset (was
+  `datalake`), and the `databricks_uc.*`/`lakekeeper_local.*` dbt sources.
+
+**Three failed attempts before the one that worked**, each instructive
+about how dagster-dbt actually resolves group names for dbt *sources*
+(external references this project depends on but never builds) as opposed
+to models/sinks it does build:
+1. Tag-based classification in `CustomDagsterDbtTranslator.get_asset_spec`
+   (the existing mechanism used for models) -- confirmed via a direct call
+   that it returns the *correct* group when invoked manually, but the
+   actual `@dbt_assets`-built job still showed these sources as Dagster's
+   bare `default` group. Conclusion: `get_asset_spec` is simply never
+   invoked for pure source nodes by the `@dbt_assets` machinery.
+2. Overriding `DagsterDbtTranslator.get_group_name` (a separate,
+   documented hook whose docstring explicitly mentions sources) -- same
+   result: correct output when called directly, no effect on the built
+   job. Removed after confirming it was dead code.
+3. `AssetsDefinition.map_asset_specs` on `starrocks_unified_dbt_assets` --
+   confirmed via `AssetKey(...) in starrocks_unified_dbt_assets.keys` that
+   these source keys **aren't part of that AssetsDefinition's own spec
+   list at all** -- they're bare external-dependency placeholders Dagster
+   auto-synthesizes for any key something depends on but nothing defines,
+   with no owning `AssetsDefinition` to call `map_asset_specs` on.
+4. **What worked**: passing bare `AssetSpec(key=..., group_name=...)`
+   objects directly into `Definitions(assets=[...])` -- confirmed Dagster
+   1.13.19 accepts this as a documented way to declare/annotate an
+   external asset. Added `external_dbt_source_assets` in
+   `orchestration/definitions.py` for all four dbt_starrocks sources
+   (including `lakekeeper_local.funnel_summary`, not part of this job but
+   fixed for consistency).
+
+**Verified**: direct inspection of `modern_dashboard_setup_job`'s resolved
+asset graph shows exactly 4 groups, zero `default` entries. Re-ran the
+full job end-to-end after the change: `RUN_SUCCESS`, zero step failures,
+both `/api/query/funnel` and `/api/query/funnel/cached` still returning
+`200` afterward.
+
 **Unrelated false lead, for the record**: during this investigation one
 test run stalled for 694 seconds with zero trace in `fe.audit.log`. Cause
 was external to StarRocks — the host laptop was switched away from on a
 KVM switch and macOS suspended it, freezing the in-flight `docker exec`
 client process until it woke back up. Not a StarRocks issue; flagged here
 only so it isn't mistaken for one if seen again in a log review.
+
+## `realtime_funnel_dbt_assets` job runtime: made the sink drop opt-in
+
+**Question raised**: "Why does this job take such a long time to run?"
+First hypothesis was wrong — checked `run_results.json` from a real
+invocation and confirmed the `dbt build` step itself was already correctly
+scoped (exactly the 9 models the job's selected assets needed, ~8.5s total
+execution), not rebuilding the whole ~50-model project as first assumed.
+
+**Real cost**: `orchestration/definitions.py`'s `realtime_funnel_dbt_assets`
+function runs `dbt run-operation drop_prebuild_sinks` before every `dbt
+build`, so that `CREATE SINK IF NOT EXISTS` definitions get refreshed if a
+sink's SQL changed. Confirmed via `context.is_subset` /
+`context.selected_asset_keys` (temporarily added debug logging, then
+removed) that the existing scoping logic already worked correctly — it
+correctly narrowed the drop to just the sinks actually selected (e.g.
+`['funnel_kafka_sink', 'sink_funnel_to_databricks']`), so scoping was never
+the bug.
+
+The actual variable cost is dropping `sink_funnel_to_databricks`
+specifically: repeated manual timing showed 35s → 7s → 3s → 5s, and two
+job runs with byte-identical scoped code took 9s vs 2m42s. RisingWave's
+`meta-node-0` / `compute-node-0` / `frontend-node-0` logs showed **zero**
+lines during both a fast and a slow drop window (calibrated against a
+known-fast window showing the same zero-log behavior), ruling out a
+RisingWave-side stall as the visible cause. Best explanation: tearing down
+a stale/cold Iceberg-Databricks connection sometimes needs a slow
+TCP-timeout-based detection before the drop can proceed — external network
+variability, not a code bug, consistent with the connection behavior seen
+elsewhere with Databricks/Iceberg throughout this project.
+
+**Fix (2026-09-08)**: the drop is only actually needed after editing a
+sink's SQL/config — rare relative to how often this job runs routinely.
+Made it opt-in, mirroring the existing `FORCE_ICEBERG_SOURCE_REFRESH`
+pattern in the same function: new `FORCE_SINK_REFRESH` env var, default
+`false` (skip the drop, `CREATE SINK IF NOT EXISTS` just leaves the
+existing sink alone). Set `FORCE_SINK_REFRESH=true` in the Dagster env
+when a sink's definition has changed and needs to be picked up.
 
 ## Earlier approach considered: Managed Iceberg (superseded)
 
