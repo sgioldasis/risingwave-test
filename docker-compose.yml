@@ -999,6 +999,75 @@ services:
     networks:
       iceberg_net:
 
+  # StarRocks shared-data test cluster — standalone proof-of-concept for
+  # whether StarRocks can use Azure (ADLS Gen2) as its own table storage,
+  # instead of the local BE disk the main `starrocks` service above uses.
+  # COMMENTED OUT 2026-09-08: confirmed feasible (both nodes came up
+  # healthy, shared-data bootstrap works cleanly) but blocked on Azure
+  # credentials -- every available credential (account shared key, SAS
+  # token) was rejected with 403 by Azure itself, and StarRocks's ADLS2
+  # storage volume doesn't support plain client-secret OAuth (only Managed/
+  # Workload Identity). Kept here, commented, for future reference rather
+  # than deleted. Full findings, exact commands, and how to resume:
+  # docs/SR_POC_STARROCKS_SHARED_DATA_AZURE.md
+  #
+  # starrocks-shared-fe:
+  #   image: starrocks/fe-ubuntu:4.0-latest
+  #   hostname: starrocks-shared-fe
+  #   container_name: starrocks-shared-fe
+  #   user: root
+  #   environment:
+  #     - AWS_EC2_METADATA_DISABLED=true
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - |
+  #       echo "run_mode = shared_data" >> /opt/starrocks/fe/conf/fe.conf
+  #       echo "cloud_native_storage_type = ADLS2" >> /opt/starrocks/fe/conf/fe.conf
+  #       /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
+  #   ports:
+  #     - "9031:9030"
+  #     - "8031:8030"
+  #     - "9021:9020"
+  #   healthcheck:
+  #     test: 'mysql -u root -h starrocks-shared-fe -P 9030 -e "show frontends\G" | grep "Alive: true"'
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     iceberg_net:
+  #
+  # starrocks-shared-cn:
+  #   image: starrocks/cn-ubuntu:4.0-latest
+  #   hostname: starrocks-shared-cn
+  #   container_name: starrocks-shared-cn
+  #   user: root
+  #   environment:
+  #     - HOST_TYPE=FQDN
+  #     - AWS_EC2_METADATA_DISABLED=true
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - |
+  #       sleep 15
+  #       ulimit -u 65535
+  #       ulimit -n 65535
+  #       mysql --connect-timeout 2 -h starrocks-shared-fe -P9030 -uroot -e "ALTER SYSTEM ADD COMPUTE NODE \"starrocks-shared-cn:9050\";"
+  #       /opt/starrocks/cn/bin/start_cn.sh
+  #   ports:
+  #     - "8041:8040"
+  #   depends_on:
+  #     starrocks-shared-fe:
+  #       condition: service_healthy
+  #       restart: true
+  #   healthcheck:
+  #     test: 'mysql -u root -h starrocks-shared-fe -P 9030 -e "SHOW COMPUTE NODES\G" | grep "Alive: true"'
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     iceberg_net:
+
   starrocks-init:
     image: alpine:3.23.4
     container_name: starrocks-init
