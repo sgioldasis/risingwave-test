@@ -853,6 +853,52 @@ pattern in the same function: new `FORCE_SINK_REFRESH` env var, default
 existing sink alone). Set `FORCE_SINK_REFRESH=true` in the Dagster env
 when a sink's definition has changed and needs to be picked up.
 
+## StarRocks storage backend: shared-nothing -> shared-data on MinIO
+
+Prompted by "can we set up StarRocks to use MinIO as storage?" — a natural
+follow-up to the earlier Azure ADLS shared-data feasibility test (which
+confirmed the mechanism works but got blocked on Azure credentials, see
+[SR_POC_STARROCKS_SHARED_DATA_AZURE.md](SR_POC_STARROCKS_SHARED_DATA_AZURE.md)).
+MinIO is S3-compatible and already running in this stack with static
+access-key/secret auth — exactly what StarRocks's S3 storage-volume
+properties expect, unlike ADLS2's OAuth-only gap. Confirmed working
+end-to-end on the first attempt: standalone test cluster up, storage
+volume created, table write/read round-tripped, independently verified by
+inspecting MinIO's own backing filesystem for the actual data file.
+
+That standalone test was then **wired in as the main `starrocks` service**
+the same day, replacing the old `starrocks/allin1-ubuntu` (shared-nothing)
+image with the split `fe-ubuntu`/`cn-ubuntu` shared-data pair — full
+details, exact SQL, and verification results in
+[SR_POC_STARROCKS_SHARED_DATA_MINIO.md](SR_POC_STARROCKS_SHARED_DATA_MINIO.md).
+Two things worth calling out here since they're specific to this project's
+history rather than StarRocks generally:
+
+1. **The old allin1 service's custom `docker-entrypoint.sh` did far more
+   than shared-nothing bootstrap** — it also wrote the ADLS
+   `core-site.xml` credential needed to read the Databricks Unity Catalog
+   table's actual data files (physically stored in ADLS, separate from the
+   REST catalog's own OAuth metadata credential), plus every performance
+   fix accumulated in this document: the JVM heap ceiling reduction
+   (`-Xmx3072m`, see the GC-pause section above), disabling
+   connector-table auto-analyze, the 10s MV refresh floor, and the BE data
+   cache sizing. Swapping the image without carrying these forward would
+   have silently reintroduced all of them. Ported everything into two new
+   scripts, [starrocks/fe-entrypoint.sh](../starrocks/fe-entrypoint.sh) and
+   [starrocks/cn-entrypoint.sh](../starrocks/cn-entrypoint.sh), adapted to
+   the split images' conf paths (`/opt/starrocks/fe/conf/` and
+   `/opt/starrocks/cn/conf/` instead of the allin1 image's
+   `/data/deploy/starrocks/{fe,be}/conf/`). Caught the missing ADLS
+   credential immediately — a `databricks_uc` query failed with "Failed to
+   get file system for path: abfss://..." until the port was done.
+2. **Existing catalogs/tables don't migrate, they get rebuilt** — a fresh
+   FE starts with empty metadata, so this was a genuine service swap, not
+   an in-place upgrade. `starrocks-init` re-registers all three external
+   catalogs automatically; the `dbt_starrocks`-managed views/MVs
+   (`mv_iceberg_countries_cache`, `dashboard_funnel_serving`, etc.) needed
+   a full `modern_dashboard_setup_job` re-run, which completed
+   `RUN_SUCCESS` with zero errors.
+
 ## Earlier approach considered: Managed Iceberg (superseded)
 
 Originally created via Databricks SQL directly (not via StarRocks

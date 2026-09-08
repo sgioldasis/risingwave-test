@@ -107,6 +107,14 @@ modern-dashboard/backend/api.py
 `funnel_summary` columns: `window_start`, `window_end`, `country`, `viewers`,
 `carters`, `purchasers`, `view_to_cart_rate`, `cart_to_buy_rate`.
 
+**StarRocks storage backend**: as of 2026-09-08, StarRocks itself runs in
+shared-data mode with its own table storage on the stack's MinIO instance
+(previously shared-nothing, local BE disk). This is unrelated to the
+zero-copy discussion below — it's about where StarRocks's *own* tables
+(the `dbt_starrocks`-managed views/MVs) physically store their data, not
+how external data is read. Full details in
+[SR_POC_STARROCKS_SHARED_DATA_MINIO.md](SR_POC_STARROCKS_SHARED_DATA_MINIO.md).
+
 StarRocks currently has three external catalogs and a dbt-managed hot view:
 
 * `databricks_uc` - Iceberg REST against Unity Catalog `de_dev`

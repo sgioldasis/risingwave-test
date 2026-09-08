@@ -21,6 +21,23 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
+echo "Creating default storage volume (shared-data, backed by MinIO)..."
+mysql -h starrocks -P 9030 -u root <<SQL
+CREATE STORAGE VOLUME IF NOT EXISTS minio_default
+    TYPE = S3
+    LOCATIONS = ('s3://starrocks/')
+    PROPERTIES (
+        "aws.s3.endpoint" = "http://minio-0:9301",
+        "aws.s3.region" = "us-east-1",
+        "aws.s3.access_key" = "hummockadmin",
+        "aws.s3.secret_key" = "hummockadmin",
+        "aws.s3.enable_path_style_access" = "true",
+        "aws.s3.use_aws_sdk_default_behavior" = "false",
+        "enabled" = "true"
+    );
+SET minio_default AS DEFAULT STORAGE VOLUME;
+SQL
+
 echo "Creating external catalog databricks_uc..."
 # The heredoc is unquoted (<<SQL) so ${VAR} expands from the container environment.
 mysql -h starrocks -P 9030 -u root <<SQL
