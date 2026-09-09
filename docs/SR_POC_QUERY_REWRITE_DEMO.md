@@ -243,6 +243,28 @@ single snapshot.
    raw table gets this speedup automatically — nobody had to teach the tool
    about `mv_funnel_daily_country_rollup`.
 
+## Re-verified after the StarRocks storage backend migration (2026-09-09)
+
+Re-checked after `starrocks` moved from `allin1-ubuntu` (shared-nothing) to
+the shared-data-on-MinIO setup (see
+[SR_POC_STARROCKS_SHARED_DATA_MINIO.md](SR_POC_STARROCKS_SHARED_DATA_MINIO.md)),
+since that was a full service swap and the MV needed rebuilding via
+`modern_dashboard_setup_job` rather than migrating. Still holds:
+
+* `QUERY_REWRITE_STATUS: VALID` on the rebuilt MV.
+* Manual refresh works (`REFRESH MATERIALIZED VIEW ... WITH SYNC MODE`),
+  now showing 3 days of data (grew from the original 2-day snapshot as
+  the historical table accumulated more).
+* `EXPLAIN` still flips cleanly between `OlapScanNode` / `MaterializedView:
+  true` (rewrite on) and `IcebergScanNode` (rewrite off) for the identical
+  query text.
+* One schema difference on the new FE image (`starrocks/fe-ubuntu:4.0-latest`
+  vs the old `allin1-ubuntu:4.1.4`):
+  `information_schema.materialized_views` no longer has a
+  `QUERY_REWRITE_STATUS_REASON` column — drop it from the eligibility-check
+  query above, or select `EXTRA_MESSAGE`/`INACTIVE_REASON` instead if a
+  reason string is needed.
+
 ## Caveats to state honestly if asked
 
 - This works because the base table is Iceberg (external catalog with
