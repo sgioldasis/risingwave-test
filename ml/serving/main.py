@@ -201,7 +201,7 @@ async def shutdown_event():
             await _mode_check_task
         except asyncio.CancelledError:
             pass
-    
+
     # Stop online learners if running
     if _river_predictor and hasattr(_river_predictor, 'learner'):
         from ..online.learner import reset_learner
@@ -286,7 +286,7 @@ async def predict_all():
     global _current_mode
     predicted_at = datetime.now(timezone.utc).isoformat()
     next_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0) + timedelta(minutes=1)
-    
+
     # Determine source based on current mode and availability
     if _current_mode == "batch":
         source = "minio"
@@ -294,7 +294,7 @@ async def predict_all():
         source = "kafka"
     else:
         source = "risingwave"
-    
+
     result = {
         "predicted_at": predicted_at,
         "timestamp": next_minute.isoformat(),
@@ -306,7 +306,7 @@ async def predict_all():
         "view_to_cart_rate": None,
         "cart_to_buy_rate": None
     }
-    
+
     # Use online learning if in online mode
     if _current_mode == "online":
         online_pred = get_online_predictor()
@@ -323,12 +323,12 @@ async def predict_all():
                 if source == "kafka" and hasattr(pred, 'kafka_connected'):
                     result[metric]["kafka_connected"] = pred.kafka_connected
         return result
-    
+
     # Use batch prediction
     predictor = get_predictor()
     predictor.check_and_reload()
     predictions = predictor.predict_all()
-    
+
     for metric, pred in predictions.items():
         model_type = "unknown"
         if metric in predictor.models:
@@ -337,14 +337,14 @@ async def predict_all():
             model_type = metadata.get("model_type", "unknown")
         elif pred.model_version == "moving_average":
             model_type = "MovingAverage"
-        
+
         result[metric] = {
             "value": pred.value,
             "confidence": pred.confidence,
             "model_version": pred.model_version,
             "model_type": model_type
         }
-    
+
     return result
 
 

@@ -695,23 +695,23 @@ async def train_predictions_models():
 async def get_next_predictions():
     """
     Get predictions for the next minute from ML models.
-    
+
     Returns predicted values for viewers, carters, purchasers,
     and conversion rates for the upcoming minute.
-    
+
     ML serving reads from funnel_summary (1-minute windows) so values are
     already at minute-level granularity - no scaling needed.
     """
     try:
         result = await call_ml_serving("/predict")
-        
+
         if "error" in result:
             logger.error(f"ML serving error: {result['error']}")
             return {
                 "error": result["error"],
                 "predicted_at": datetime.now(timezone.utc).isoformat()
             }
-        
+
         # Extract model_version and detailed model_type from first metric that has it
         # ML serving now returns per-metric model_type and uses live moving average
         model_version = "unknown"
