@@ -36,4 +36,14 @@ echo ""
 # Optional: Use Kafka source instead of RisingWave polling (uncomment if needed)
 # export USE_KAFKA_SOURCE=true
 
+# This process runs on the host (not in Docker), but .env sets
+# RISINGWAVE_HOST="frontend-node-0" -- a Docker-network-internal hostname
+# needed by in-container consumers (Trino, Grafana, dbt). devbox auto-loads
+# .env for this host process too, so without this override it inherits that
+# unreachable hostname and hangs (confirmed 2026-09-09: connection stuck in
+# SYN_SENT against an unrelated external IP instead of failing fast, taking
+# down the dashboard's Predictions tab). Same class of issue already
+# documented for STARROCKS_URL in docs/SR_POC_LIVE_DEMO_RUNBOOK.md.
+export RISINGWAVE_HOST=localhost
+
 exec uvicorn ml.serving.main:app --host 0.0.0.0 --port "$PORT" --reload

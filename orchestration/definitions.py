@@ -626,6 +626,7 @@ modern_dashboard_setup_job = define_asset_job(
             AssetKey(["public", "src_cart"]),
             AssetKey(["public", "src_purchase"]),
             AssetKey(["public", "funnel"]),
+            AssetKey(["public", "funnel_training"]),
             AssetKey(["public", "funnel_summary"]),
             AssetKey(["public", "funnel_enriched"]),
             AssetKey(["public", "funnel_for_iceberg"]),
