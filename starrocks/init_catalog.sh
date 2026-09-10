@@ -83,7 +83,16 @@ PROPERTIES (
   "type"            = "jdbc",
   "user"            = "root",
   "password"        = "root",
-  "jdbc_uri"        = "jdbc:postgresql://frontend-node-0:4566/dev",
+  # binaryTransfer=false forces the Postgres JDBC driver to use text protocol
+  # instead of binary. Without it, StarRocks CN's native JDBC scanner
+  # intermittently misdecodes RisingWave's binary-protocol timestamps as
+  # 2000-01-01 00:00:00 (Postgres's own internal epoch -- i.e. zeroed/stale
+  # buffer memory, not a StarRocks default) after a small, fixed number of
+  # queries per CN process lifetime; row counts through the catalog also
+  # fluctuated. Confirmed via 100+ repeated queries with this flag: zero
+  # corruption, vs. reliably reproducing within ~6 calls without it. See
+  # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md.
+  "jdbc_uri"        = "jdbc:postgresql://frontend-node-0:4566/dev?binaryTransfer=false",
   "driver_url"      = "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar",
   "driver_class"    = "org.postgresql.Driver",
   "schema_resolver" = "postgresql"

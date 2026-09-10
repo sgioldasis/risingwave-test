@@ -754,6 +754,106 @@ services:
     networks:
       - iceberg_net
 
+  # Open-source BI tool, demonstrating StarRocks's MySQL-wire-protocol
+  # connectivity -- see docs/SR_POC_STARROCKS_EVALUATION_SUMMARY.md (item
+  # #4 in "Genuine wins"). Metabase ships a MySQL driver out of the box,
+  # which is all that's needed to connect to StarRocks; no custom
+  # integration. Uses Metabase's default embedded H2 for its own app
+  # metadata (fine for a demo; not meant for production use).
+  # SUPERSEDED 2026-09-10 by Superset below. Metabase's own `reset-password`
+  # CLI command is broken in this image (v0.51.13): run_metabase.sh's
+  # `exec su metabase -s /bin/sh -c "exec java ... $@"` uses an unquoted
+  # mid-string `$@`, which bash's positional-parameter special-casing splits
+  # into SEPARATE ARGUMENTS to `sh -c` instead of appending to the command
+  # string -- the email argument silently becomes sh's $0 and never reaches
+  # the app. Worked around by invoking java directly, bypassing the
+  # entrypoint; the CLI then printed a valid-looking reset password each
+  # time (confirmed reading/writing the correct H2 file, confirmed "no
+  # unrun migrations" on next boot, confirmed the bcrypt hash in
+  # core_user.password changed) -- but the regular /api/session login
+  # endpoint rejected every one of three separately-generated reset
+  # passwords with "did not match stored password". Root cause not found
+  # (checked salt+password bcrypt combinations by hand, no match). Given a
+  # broken official password-reset path AND an unexplained login rejection
+  # on the same version, moved to Superset instead of continuing to fight
+  # this. Commented out (not deleted) in case of revert; `metabase-0`
+  # volume is untouched by this change.
+  # metabase:
+  #   image: metabase/metabase:v0.51.13
+  #   container_name: metabase
+  #   ports:
+  #     - "3002:3000"
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
+  #   volumes:
+  #     - "metabase-0:/metabase-data"
+  #   environment:
+  #     - MB_DB_FILE=/metabase-data/metabase.db
+  #   depends_on:
+  #     starrocks:
+  #       condition: service_healthy
+  #   restart: always
+  #   networks:
+  #     - iceberg_net
+
+  superset:
+    image: apache/superset:3.1.3
+    container_name: superset
+    ports:
+      - "3002:8088"
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+    volumes:
+      - "superset-home:/app/superset_home"
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    restart: always
+    networks:
+      - iceberg_net
+
+  # One-shot: runs DB migrations and creates a non-interactive admin with a
+  # KNOWN password set via env vars here -- deliberately avoiding Metabase's
+  # interactive-setup-wizard-then-forgot-it failure mode. Metadata (users,
+  # the StarRocks connection, saved charts/dashboards) lives in the
+  # `superset-home` volume as a SQLite file at the default path, following
+  # Superset's own standard quickstart pattern -- not a custom
+  # migration/move script like Metabase's entrypoint, which is what caused
+  # that whole mess.
+  superset-init:
+    image: apache/superset:3.1.3
+    container_name: superset-init
+    volumes:
+      - "superset-home:/app/superset_home"
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
+      - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
+      - SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-sr_poc_admin_2026}
+      - SUPERSET_ADMIN_EMAIL=${SUPERSET_ADMIN_EMAIL:-admin@example.com}
+    # entrypoint+command deliberately kept as ["/bin/bash","-c"] + a
+    # ONE-ELEMENT command list (not a plain string): Compose shell-splits a
+    # plain string `command:` into a word array for the resolved container
+    # Cmd, which means `/bin/bash -c` only receives the FIRST word ("pip")
+    # as its script and the rest become ignored positional params ($1, $2,
+    # ...) -- confirmed via `docker compose config` showing the string
+    # tokenized into a YAML list, and confirmed live: the container ran
+    # bare `pip` (printing its top-level --help) instead of the intended
+    # script. A single-element list is passed through verbatim instead.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - "pip install --no-cache-dir pymysql==1.1.1 && superset db upgrade && (superset fab create-admin --username \"$$SUPERSET_ADMIN_USERNAME\" --firstname Admin --lastname User --email \"$$SUPERSET_ADMIN_EMAIL\" --password \"$$SUPERSET_ADMIN_PASSWORD\" || true) && superset init"
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    networks:
+      - iceberg_net
+
   # Dagster Services
   dagster-webserver:
     <<: *dagster-build
@@ -1024,7 +1124,17 @@ services:
   # is created by starrocks-init, not here — StarRocks shared-data doesn't take
   # object-storage credentials via fe.conf.
   starrocks:
-    image: starrocks/fe-ubuntu:4.0-latest
+    # Bumped from 4.0-latest to 4.1.4 on 2026-09-10. Originally tried to pick
+    # up StarRocks PR #71016 ("fix pg date time bug", absent from 4.0.14,
+    # present from 4.1.1 -- confirmed via git ancestry) as a suspected fix
+    # for the JDBC-catalog corrupted-timestamp bug in
+    # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md. That bug turned out to
+    # need a different fix (binaryTransfer=false on the risingwave catalog's
+    # jdbc_uri, see starrocks/init_catalog.sh) -- the version bump alone did
+    # NOT fix it. Kept anyway: it did fix a separate, real issue (JDBC
+    # catalog row-count instability across repeated queries), no downside
+    # found. See the doc for the full investigation.
+    image: starrocks/fe-ubuntu:4.1.4
     hostname: starrocks
     container_name: starrocks
     user: root
@@ -1066,7 +1176,7 @@ services:
       iceberg_net:
 
   starrocks-cn:
-    image: starrocks/cn-ubuntu:4.0-latest
+    image: starrocks/cn-ubuntu:4.1.4
     hostname: starrocks-cn
     container_name: starrocks-cn
     user: root
@@ -1276,6 +1386,10 @@ volumes:
   prometheus-0:
     external: false
   grafana-0:
+    external: false
+  metabase-0:
+    external: false
+  superset-home:
     external: false
   lakekeeper-db:
     external: false

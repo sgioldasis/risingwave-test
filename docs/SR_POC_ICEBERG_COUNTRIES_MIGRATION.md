@@ -899,6 +899,260 @@ history rather than StarRocks generally:
    a full `modern_dashboard_setup_job` re-run, which completed
    `RUN_SUCCESS` with zero errors.
 
+## `sink_funnel_to_databricks` silently stalled: `catalogManaged` blocking external writes
+
+Discovered 2026-09-10 while investigating why a Metabase funnel chart's
+totals kept *decreasing* over time under steady producer traffic. Root
+cause turned out to be two separate, stacked issues -- one in the
+dashboard view's query logic, one in the actual data pipeline -- worth
+recording separately since they'd otherwise look like the same bug.
+
+### Issue 1: the hot/cold cutoff itself, fixed twice
+
+`dashboard_funnel_serving.sql`'s original rolling 3-minute cutoff (hot =
+last 3 minutes from RisingWave, cold = older from Databricks) caused a
+real, observed gap: `sink_funnel_to_databricks` commits in batches (Iceberg
+sinks don't flush per-row), so a row less than ~3 minutes old that hadn't
+landed in Databricks yet was invisible to the view entirely once it aged
+past the hot window -- confirmed live via Metabase (total viewers
+decreasing) and via direct comparison of RisingWave's `funnel_summary`
+(fresh data through the current minute) against
+`databricks_uc...funnel_summary_historical` (stuck at `2026-09-07`, the
+sink wasn't committing at all -- see Issue 2 below).
+
+First fix: switched the cutoff to `CURRENT_DATE` (today always from
+RisingWave, everything before today from Databricks) -- removed the
+observed gap, since today's data no longer depended on the sink's flush
+cadence at all.
+
+That fix had its own latent issue, caught before it ever caused a visible
+problem: RisingWave's own storage is wiped by `bin/6_down.sh` (`docker
+compose down --volumes`), so a mid-day restart loses that day's
+pre-restart data from RisingWave -- and a calendar-date cutoff would then
+hide it from Databricks too (even if the sink had already replicated it
+there) until midnight rolled the cutoff over.
+
+Final fix: replaced the calendar-date cutoff with one that tracks
+RisingWave's *actual* retained range instead of a calendar boundary --
+cold serves anything strictly older than RisingWave's current
+`MIN(window_start)`, hot serves everything RisingWave currently has,
+unconditionally:
+
+```sql
+-- cold
+WHERE window_start < COALESCE(
+  (SELECT MIN(window_start) FROM {{ source('risingwave', 'funnel_summary') }}),
+  CAST('9999-12-31 00:00:00' AS DATETIME)  -- if RisingWave is empty, cold serves everything
+)
+-- hot: no date filter at all -- whatever's currently in funnel_summary
+```
+
+This self-heals after *any* restart -- partial-day or full -- as long as
+the sink has kept up, without needing to know or care what day it is.
+Verified: the view spans a continuous range (`2026-09-05` through the
+current minute) with zero duplicate `window_start` rows at the boundary.
+Note: `TIMESTAMP '...'` literal syntax isn't accepted by StarRocks here --
+use `CAST('...' AS DATETIME)` instead.
+
+### Issue 2: the sink had been silently dead since it was created
+
+The gap symptom in Issue 1 was actually masking a much bigger problem: the
+sink hadn't committed *anything* since the table was created on
+2026-09-07. Confirmed via `DESCRIBE HISTORY` on the Databricks side --
+only one version existed (`CREATE TABLE AS SELECT`, 7290 rows, all from a
+one-time backfill) -- the sink had, as far as the evidence shows, never
+actually worked.
+
+Ruled out, in order, each with concrete evidence (not assumption):
+
+1. Network reachability to both the Iceberg REST endpoint and the
+   Microsoft OAuth token server -- both fast, both correct responses.
+2. OAuth credential validity -- a live token request returned `HTTP 200`
+   with a real access token.
+3. A poisoned JVM/connector state in `compute-node-0` -- restarting the
+   container and recreating the sink reproduced the exact same silent
+   hang (no errors, no commits) on a completely fresh process.
+4. Unity Catalog grants -- the service principal had `ALL_PRIVILEGES` at
+   the schema level.
+5. Azure RBAC -- the same principal had `Storage Blob Data Contributor` on
+   the exact storage account.
+
+Every external permission and auth boundary checked out. The actual root
+cause: **`funnel_summary_historical` had the `delta.feature.catalogManaged`
+protocol feature**, which this project had already discovered once before
+on an isolated probe table (see "StarRocks write capability" section
+below / docs/SR_POC_TESTING_PLAN.md section 2.1.9) -- it silently blocks
+external-engine (RisingWave/StarRocks/Trino) writes via Unity Catalog's
+Iceberg REST Catalog commit endpoint, with **zero error surfaced anywhere**,
+even though reads, auth, and metadata fetches all work normally. It
+apparently got reintroduced when the table was last recreated (via CTAS,
+2026-09-07) -- the CTAS's own recorded properties show
+`databricks.internal.autoUpgrades.delta.feature.catalogManaged: supported`,
+suggesting Databricks adds this automatically on new managed-Iceberg-shaped
+tables rather than it being something set explicitly.
+
+Fix (a plain property unset is not enough -- confirmed the same finding
+twice now):
+
+```sql
+-- Does NOT remove the protocol feature:
+ALTER TABLE de_dev.sr_poc_external.funnel_summary_historical
+UNSET TBLPROPERTIES ('delta.feature.catalogManaged');
+
+-- This is the actual fix -- a Delta protocol-feature operation:
+ALTER TABLE de_dev.sr_poc_external.funnel_summary_historical
+DROP FEATURE catalogManaged;
+```
+
+Verified: recreated the sink after the fix, and `funnel_summary_historical`
+went from 7290 rows (stuck since Sep 7) to actively growing within one
+commit cycle, with real new `window_start` values landing continuously.
+
+**Saved to memory** (this Claude session's persistent memory, not this
+repo) so a future session checks for `catalogManaged` first, before
+re-deriving all five ruled-out causes above from scratch.
+
+### Follow-up: commit cadence aligned to the data's natural window
+
+While fixing the above, also changed `sink_funnel_to_databricks`'s
+`commit_checkpoint_interval` from `20` to `15`. At this project's
+`barrier_interval_ms=2000` / `checkpoint_frequency=2` (4s per checkpoint),
+that's a commit roughly every 60s instead of ~80s -- aligning with
+`funnel_summary`'s own 1-minute tumbling window rather than an interval
+arbitrary relative to it. Not a correctness fix (the Issue 1 fix above
+already made commit cadence a non-issue for user-facing freshness); just a
+cleanliness improvement, chosen to stay well clear of this project's
+existing documented lesson that committing *too* frequently (per-checkpoint
+Stream Load, tried earlier in this doc's history) overloads compaction.
+
+## StarRocks JDBC catalog returning corrupted timestamps (2026-09-10)
+
+### Symptom
+
+While capturing a baseline before testing `bin/6_down.sh`'s restart
+behavior (see Issue 1 above), queries against the `risingwave` JDBC
+catalog started intermittently returning garbage. `SELECT MIN(window_start)
+FROM risingwave.public.funnel_summary` -- and even a plain `ORDER BY
+window_start DESC LIMIT 1`, no aggregate, no `WHERE` -- would sometimes
+return `2000-01-01 00:00:00` instead of the real value. Row counts through
+the same catalog also fluctuated across identical repeated calls (e.g. 431,
+148, 148, 149 across 5 calls). Direct comparison against RisingWave itself
+(via `psql`) confirmed RisingWave's own data was always correct -- the
+corruption was introduced entirely on the StarRocks side.
+
+### Investigation
+
+Ruled out, with evidence, before finding the real cause:
+
+- **Stats-cache shortcut** (this project's known JDBC-catalog stats-cache
+  issue, see the GC-pause section earlier in this doc): ruled out via
+  `EXPLAIN`, which showed a genuine pushed-down scan
+  (`SELECT "window_start" FROM "public"."funnel_summary"`) with TOP-N
+  applied on the CN side, not a stats-based shortcut.
+- **`ClosedChannelException` noise in FE logs**: red herring -- routine,
+  benign closes from short-lived `docker exec ... mysql -e` CLI
+  connections, uncorrelated with which specific calls returned good vs.
+  bad data.
+- **`frontend-node-0`'s steady 5s "early eof" pgwire errors**: red herring
+  -- that's the container's own Docker healthcheck (`docker-compose.yml`)
+  sending a garbage HTTP GET to the pgwire port every 5s, present since
+  container start, unrelated to JDBC catalog traffic.
+- **A one-time `HikariPool$PoolInitializationException`** in FE logs from
+  ~3 hours before the investigation window (right after an earlier stack
+  restart, before RisingWave was reachable): a real event, but a dead end
+  -- unrelated to the ongoing symptom.
+- **Query cache**: confirmed disabled (`enable_query_cache = false`).
+- **Connector I/O concurrency** (`connector_io_tasks_per_scan_operator`,
+  `enable_connector_split_io_tasks`, `enable_connector_adaptive_io_tasks`,
+  `enable_connector_async_list_partitions`,
+  `enable_connector_deploy_scan_ranges_background`): all forced to
+  single-threaded/disabled and retested with a fresh CN process. **Zero
+  effect** -- the corruption still appeared at exactly the 6th query after
+  every CN restart, with or without concurrency. This determinism (always
+  call #6, never earlier or later, regardless of concurrency) is what
+  ruled out a race condition and pointed at a fixed-size buffer/cache
+  instead.
+
+The key clue: `2000-01-01 00:00:00` is not a StarRocks default -- it's
+**PostgreSQL's own internal timestamp epoch** (Postgres stores timestamps
+as microseconds since 2000-01-01, unlike Unix's 1970-01-01 epoch). That
+strongly suggested the CN's native JDBC bridge was, on some calls,
+decoding a zeroed/never-written buffer as "0 microseconds since the
+Postgres epoch" -- i.e. an uninitialized-memory bug specific to how it
+parses RisingWave's Postgres binary-wire-protocol timestamps, not a
+general StarRocks/JDBC corruption.
+
+### StarRocks version upgrade: tried, did not fix it
+
+Before finding the binary-protocol angle, the project was running
+`starrocks/fe-ubuntu:4.0-latest` / `starrocks/cn-ubuntu:4.0-latest`
+(4.0.14) -- itself an unintended regression: the shared-data migration
+(see "StarRocks storage backend: shared-nothing -> shared-data on MinIO"
+above) copied image tags verbatim from StarRocks's own official
+shared-data quickstart `docker-compose.yml`
+(`github.com/StarRocks/demo`), which happens to pin `4.0-latest`; the
+project had previously run `allin1-ubuntu:4.1.4` before that migration.
+
+A specific fix -- StarRocks PR
+[#71016](https://github.com/StarRocks/starrocks/pull/71016), "fix pg date
+time bug", which replaced two `Calendar` fields in `JDBCScanner.java` that
+were incorrectly reused/mutated across rows under a mistaken
+single-threaded assumption -- looked like a strong match. Confirmed via
+git ancestry against the real StarRocks repo: absent from 4.0.14, present
+starting at 4.1.1. Upgraded to `starrocks/fe-ubuntu:4.1.4` /
+`starrocks/cn-ubuntu:4.1.4` (pinned exact version, not `4.1-latest`) and
+re-ran the stress test.
+
+**Result: the timestamp corruption still reproduced identically** -- same
+sticky flip at call #6, cleared only by a CN restart. The upgrade did fix
+a real, separate bug: row counts through the JDBC catalog became
+perfectly stable across repeated calls (198 every time, matching
+RisingWave), where they'd fluctuated wildly on 4.0.14. But it did not fix
+the timestamp corruption -- PR #71016 was not the (or not the only) root
+cause. **The version bump to 4.1.4 was kept anyway** (real improvement,
+no downside found), but it does not by itself close this issue.
+
+### The actual fix: force text protocol on the JDBC connection
+
+Forcing the PostgreSQL JDBC driver to use text protocol instead of binary,
+via a `binaryTransfer=false` parameter on the catalog's `jdbc_uri`, was
+tested by dropping and recreating the `risingwave` catalog:
+
+```sql
+DROP CATALOG risingwave;
+CREATE EXTERNAL CATALOG risingwave
+COMMENT 'RisingWave PostgreSQL JDBC federation'
+PROPERTIES (
+  'schema_resolver' = 'postgresql',
+  'driver_class' = 'org.postgresql.Driver',
+  'driver_url' = 'https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar',
+  'type' = 'jdbc',
+  'user' = 'root',
+  'password' = 'root',
+  'jdbc_uri' = 'jdbc:postgresql://frontend-node-0:4566/dev?binaryTransfer=false'
+);
+```
+
+Confirmed clean across **100+ repeated queries** after a fresh CN restart
+-- mixing `MIN()`, `ORDER BY ASC LIMIT 1`, `ORDER BY DESC LIMIT 1`, and
+plain row counts, the exact query shapes that previously corrupted within
+~6 calls. Zero corruption, row counts stable, all values matched
+RisingWave's ground truth exactly. This is now baked into
+`starrocks/init_catalog.sh`'s `CREATE EXTERNAL CATALOG risingwave`
+statement, so a fresh `starrocks-init` run (e.g. after `bin/6_down.sh`)
+creates the catalog correctly from the start.
+
+### Cleanup: the earlier `WHERE viewers >= 0` workaround was removed
+
+`dashboard_funnel_serving.sql`'s hot/cold cutoff subquery had picked up a
+`WHERE viewers >= 0` predicate mid-investigation, on the mistaken theory
+that it forced a real scan past a stats-cache shortcut. `EXPLAIN` already
+disproved that theory (see above -- it was always a real scan), and the
+predicate did not reliably prevent the corruption anyway. Removed now that
+the real, catalog-level fix (`binaryTransfer=false`) is in place; the
+cutoff subquery is back to a plain `SELECT MIN(window_start) FROM
+{{ source('risingwave', 'funnel_summary') }}`.
+
 ## Earlier approach considered: Managed Iceberg (superseded)
 
 Originally created via Databricks SQL directly (not via StarRocks

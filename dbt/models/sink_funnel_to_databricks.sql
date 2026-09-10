@@ -40,5 +40,12 @@ WITH (
     adlsgen2.tenant_id = '{{ env_var("DATABRICKS_AZURE_TENANT_ID") }}',
     adlsgen2.client_id = '{{ env_var("DATABRICKS_AZURE_CLIENT_ID") }}',
     adlsgen2.client_secret = '{{ env_var("DATABRICKS_AZURE_CLIENT_SECRET") }}',
-    commit_checkpoint_interval = 20
+    -- 15 checkpoints * (barrier_interval_ms=2000 * checkpoint_frequency=2 =
+    -- 4s/checkpoint) = ~60s, aligning the commit cadence with
+    -- funnel_summary's own 1-minute tumbling window instead of the
+    -- previous commit_checkpoint_interval=20 (~80s, an arbitrary interval
+    -- relative to the data's natural granularity). Changed 2026-09-10
+    -- alongside the hot/cold cutoff fix in dashboard_funnel_serving.sql --
+    -- see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md.
+    commit_checkpoint_interval = 15
 )

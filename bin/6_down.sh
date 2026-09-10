@@ -311,20 +311,46 @@ fi
 
 echo ""
 echo "=== Stopping Docker Compose Services ==="
-echo "Running docker compose down --volumes from project root"
+echo "Running docker compose down (containers only, volumes handled below)"
 echo ""
 
-docker compose down --volumes
+docker compose down
 
-# Project volumes (postgres-0, minio-0, trino-data, hummock-fs-store, …) are removed by
-# `docker compose down --volumes` above — Compose creates them project-prefixed
-# (e.g. risingwave-test_postgres-0), so the old bare-name `docker volume rm` calls never
-# matched and were no-ops. Just prune any remaining dangling volumes for a clean slate.
+# Wipe every project volume EXCEPT superset-home (Superset's own admin
+# login, the StarRocks connection, saved charts/dashboards -- see
+# docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md for why this replaced
+# Metabase). None of that needs to be reset just because
+# RisingWave/MinIO/Postgres/etc. are being torn down for a clean restart.
+# metabase-0 is no longer in `docker compose config --volumes` output
+# (Compose drops volume declarations no service references), so it's
+# simply never touched by this loop -- harmless, orphaned, kept in case of
+# a revert. Compose creates volumes project-prefixed (e.g.
+# risingwave-test_postgres-0); the old bare-name `docker volume rm` calls
+# never matched, so this resolves the real prefixed names via
+# `docker compose config --format json`.
+echo ""
+echo "=== Removing project volumes (keeping superset-home) ==="
+PROJECT_NAME=$(docker compose config --format json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('name',''))" 2>/dev/null)
+for v in $(docker compose config --volumes); do
+    if [ "$v" = "superset-home" ]; then
+        echo "Skipping superset-home (preserved)"
+        continue
+    fi
+    full_name="${PROJECT_NAME}_${v}"
+    if docker volume rm -f "$full_name" > /dev/null 2>&1; then
+        echo "✅ Removed volume $full_name"
+    elif docker volume rm -f "$v" > /dev/null 2>&1; then
+        echo "✅ Removed volume $v"
+    else
+        echo "⚠️  Could not remove volume for $v (may not exist)"
+    fi
+done
+
 echo ""
 echo "=== Pruning dangling volumes ==="
 docker volume prune -f 2>/dev/null || true
 
-echo "✅ All volumes cleaned up"
+echo "✅ Volumes cleaned up (superset-home preserved)"
 
 # Run fix_alembic script to ensure clean state for next startup
 echo ""
