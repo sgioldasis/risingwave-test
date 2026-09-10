@@ -18,6 +18,7 @@ echo "  🌊 RisingWave Dashboard   http://localhost:5691"
 echo "  📈 Redpanda Console      http://localhost:9090"
 echo "  📁 Lakekeeper Catalog    http://localhost:8181"
 echo "  StarRocks UI/API         http://localhost:8030"
+echo "  📊 Superset BI            http://localhost:3002 (login: admin / sr_poc_admin_2026)"
 echo ""
 
 echo "🗄️  Databases & APIs"

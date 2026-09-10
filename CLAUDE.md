@@ -113,6 +113,7 @@ Dagster (`orchestration/`) runs on ports 3000 (webserver) + daemon. Storage is S
 | MinIO console | http://localhost:9400 (hummockadmin/hummockadmin) |
 | Trino | http://localhost:9080 |
 | React dashboard | http://localhost:4000 |
+| Superset (BI) | http://localhost:3002 (admin/sr_poc_admin_2026) |
 | ML API docs | http://localhost:8001/docs |
 | PostgreSQL | `localhost:5432` |
 
