@@ -2,9 +2,17 @@
   config(
     materialized='materialized_view',
     refresh_method='ASYNC EVERY (INTERVAL 20 SECOND)',
-    properties={'query_rewrite_consistency': 'loose'}
+    properties={'query_rewrite_consistency': 'loose'},
+    post_hook="REFRESH MATERIALIZED VIEW {{ this }} WITH SYNC MODE;"
   )
 }}
+
+-- The post_hook forces a SYNCHRONOUS initial refresh right after CREATE,
+-- so the Dagster job doesn't report success until this MV's first
+-- population is actually done -- the recurring 20s schedule above only
+-- covers refreshes AFTER that first one; the initial CREATE still returns
+-- before data exists otherwise. See mv_unified_funnel_summary.sql for the
+-- full explanation.
 
 -- Restored 2026-09-08 (was dropped as part of the zero-copy migration --
 -- see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's twelfth follow-up) to

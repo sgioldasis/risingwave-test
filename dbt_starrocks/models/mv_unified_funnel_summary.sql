@@ -3,9 +3,21 @@
     materialized='materialized_view',
     refresh_method='MANUAL',
     distributed_by=['window_start'],
-    properties={'query_rewrite_consistency': 'loose'}
+    properties={'query_rewrite_consistency': 'loose'},
+    post_hook="REFRESH MATERIALIZED VIEW {{ this }} WITH SYNC MODE;"
   )
 }}
+
+-- The post_hook forces a SYNCHRONOUS refresh right after CREATE. Without
+-- it, `CREATE MATERIALIZED VIEW ... AS SELECT` returns as soon as the MV
+-- object/task is registered -- the actual data population runs as a
+-- separate background async task (confirmed live: dbt's own step reports
+-- success in 1.86-5.42s, but the real population took 43s in one observed
+-- run, per information_schema.materialized_views.last_refresh_duration).
+-- That gap meant a Dagster job could report success while this MV (and
+-- anything reading it, like dashboard_funnel_serving_cached) was still
+-- empty or stale. `WITH SYNC MODE` blocks until the refresh actually
+-- finishes, so dbt/Dagster only reports done once the data is real.
 
 -- Restored 2026-09-08 (was dropped as part of the zero-copy migration --
 -- see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md's twelfth follow-up) to

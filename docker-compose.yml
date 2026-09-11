@@ -1081,7 +1081,7 @@ services:
   #     - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
   #     - ADLS_CONTAINER=${ADLS_CONTAINER:-sr-poc-cont1}
   #     - ADLS_PROTO_SAS_TOKEN=${ADLS_PROTO_SAS_TOKEN-}
-  #     - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-sas}
+  #     - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-oauth}
   #     - ADLS_ACCOUNT_KEY
   #     - HTTP_PROXY=
   #     - HTTPS_PROXY=
@@ -1148,7 +1148,7 @@ services:
       - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
       - ADLS_CONTAINER=${ADLS_CONTAINER:-sr-poc-cont1}
       - ADLS_PROTO_SAS_TOKEN=${ADLS_PROTO_SAS_TOKEN-}
-      - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-sas}
+      - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-oauth}
       - ADLS_ACCOUNT_KEY
     entrypoint: ["/bin/bash", "/fe-entrypoint.sh"]
     ports:
@@ -1191,7 +1191,7 @@ services:
       - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
       - ADLS_CONTAINER=${ADLS_CONTAINER:-sr-poc-cont1}
       - ADLS_PROTO_SAS_TOKEN=${ADLS_PROTO_SAS_TOKEN-}
-      - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-sas}
+      - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-oauth}
       - ADLS_ACCOUNT_KEY
     entrypoint: ["/bin/bash", "/cn-entrypoint.sh"]
     ports:

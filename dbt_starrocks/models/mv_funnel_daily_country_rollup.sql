@@ -2,9 +2,15 @@
   config(
     materialized='materialized_view',
     distributed_by=['day'],
-    properties={'query_rewrite_consistency': 'loose'}
+    properties={'query_rewrite_consistency': 'loose'},
+    post_hook="REFRESH MATERIALIZED VIEW {{ this }} WITH SYNC MODE;"
   )
 }}
+
+-- The post_hook forces a SYNCHRONOUS refresh right after CREATE, so the
+-- Dagster job doesn't report success until this MV is actually populated
+-- -- see mv_unified_funnel_summary.sql for the full explanation of the
+-- CREATE-returns-before-population gap this closes.
 
 -- Daily pre-aggregation over the Databricks cold history table, built
 -- specifically to demonstrate StarRocks' transparent query rewrite: a
