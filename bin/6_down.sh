@@ -21,6 +21,20 @@ else
     echo "No producer process found"
 fi
 
+echo "=== Stopping Wallet Producer ==="
+if pgrep -f "scripts/wallet_producer.py" > /dev/null 2>&1; then
+    echo "Stopping wallet producer process..."
+    pkill -f "scripts/wallet_producer.py" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "scripts/wallet_producer.py" > /dev/null 2>&1; then
+        pkill -9 -f "scripts/wallet_producer.py" 2>/dev/null || true
+    fi
+    echo "✅ Wallet producer stopped"
+else
+    echo "No wallet producer process found"
+fi
+
 # Also ensure producer port is closed if it uses one (though default is usually logic-based)
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS - use lsof instead
