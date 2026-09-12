@@ -1,0 +1,34 @@
+slice_name: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [RisingWave only]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 3__table
+  viz_type: echarts_timeseries_line
+  groupby: []
+  metrics:
+  - sum__viewers
+  - sum__carters
+  - sum__purchasers
+  granularity_sqla: window_start
+  time_range: '1 hour ago : now'
+  adhoc_filters:
+  - clause: WHERE
+    subject: window_start
+    operator: TEMPORAL_RANGE
+    comparator: '1 hour ago : now'
+    expressionType: SIMPLE
+  order_desc: false
+  x_axis: window_start
+  x_axis_time_format: '%H:%M'
+  y_axis_format: SMART_NUMBER
+  rich_tooltip: true
+  show_legend: true
+  row_limit: 10000
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 6297e8c9-9fa2-4f82-be65-09ec466adaee
+version: 1.0.0
+dataset_uuid: 448b7df2-264e-48c0-97bf-70fdf2c8ecf2

@@ -42,6 +42,7 @@ from .assets.databricks_turnover_views import databricks_turnover_latest_view
 from .assets.landing_to_bronze import casino_landing_to_bronze
 from .assets.kafka_topics_setup import kafka_output_topics_setup
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
+from .assets.wallet_direct_kafka_setup import wallet_transactions_direct_kafka
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -649,13 +650,16 @@ wallet_pipeline_setup_job = define_asset_job(
         AssetKey(["public", "src_wallet_transactions"]),
         AssetKey(["public", "sink_wallet_transactions_to_starrocks"]),
         AssetKey(["sr_local_db", "wallet_transactions"]),
-    ),
+    ) | AssetSelection.assets(wallet_transactions_direct_kafka),
     description=(
         "Build the synthetic wallet-transaction pipeline (StarRocks Primary "
         "Key upsert/point-lookup demo, see docs/SR_POC_WALLET_UPSERT_DEMO.md): "
         "RisingWave source, RisingWave->StarRocks upsert sink, and the "
-        "StarRocks-side Primary Key table. Scoped narrowly, separate from "
-        "modern_dashboard_setup_job, since this is an unrelated demo."
+        "StarRocks-side Primary Key table -- plus the add-on direct "
+        "Kafka->StarRocks comparison path (wallet_transactions_direct_kafka), "
+        "which needs no RisingWave asset in this selection since it only "
+        "depends on the Kafka topic and StarRocks. Scoped narrowly, separate "
+        "from modern_dashboard_setup_job, since this is an unrelated demo."
     ),
 )
 
@@ -879,6 +883,10 @@ defs = Definitions(
         kafka_output_topics_setup,
         # Landing → Bronze re-processing notebook
         casino_landing_to_bronze,
+        # Direct Kafka -> StarRocks path for the wallet upsert demo (no
+        # RisingWave in the loop), add-on comparison against the
+        # RisingWave-mediated path
+        wallet_transactions_direct_kafka,
     ],
     jobs=[
         dbt_build_job,

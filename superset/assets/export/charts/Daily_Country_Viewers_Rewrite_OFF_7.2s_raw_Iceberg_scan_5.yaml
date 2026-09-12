@@ -1,0 +1,25 @@
+slice_name: "Daily Country Viewers \u2014 Rewrite OFF (~7.2s, raw Iceberg scan)"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 1__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - day
+  - country
+  - viewers
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["day", false]'
+  time_range: No filter
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 10009d6f-2f72-45e0-af07-6797fc91a1f5
+version: 1.0.0
+dataset_uuid: 24734ab9-694f-46cf-8e58-5a81fcbd7add

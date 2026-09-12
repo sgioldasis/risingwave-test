@@ -1,0 +1,245 @@
+dashboard_title: Funnel Dashboard
+description: null
+css: null
+slug: funnel-dashboard
+certified_by: null
+certification_details: null
+published: false
+uuid: c4edaff8-42ef-4627-b4ec-3f935a149df1
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    children:
+    - ROW-HOTONLY
+    - ROW-8
+    - ROW-CACHED
+    - ROW-5
+    - ROW-LIVE
+    - ROW-6
+    parents:
+    - ROOT_ID
+  ROW-8:
+    type: ROW
+    id: ROW-8
+    children:
+    - MARKDOWN-3
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-3:
+    type: MARKDOWN
+    id: MARKDOWN-3
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-8
+    meta:
+      width: 12
+      height: 26
+      code: "**Data source:** `risingwave.public.funnel_summary`, queried directly\
+        \ via StarRocks's JDBC catalog \u2014 bypassing `dashboard_funnel_serving`\
+        \ entirely, so the Databricks Iceberg cold branch is never touched.\n\n\u2705\
+        \ **Pros:** Both fast (~0.7s) *and* genuinely fresh (zero staleness, no refresh\
+        \ cycle) \u2014 confirmed via direct benchmark against the full view for the\
+        \ identical last-hour result.\n\n\u274C **Cons:** Only shows whatever RisingWave\
+        \ currently retains \u2014 no historical fallback. If RisingWave restarts/loses\
+        \ its hot data (e.g. `bin/6_down.sh`), this chart goes blank until fresh data\
+        \ streams back in; the other two views still show Databricks-backed history."
+  ROW-5:
+    type: ROW
+    id: ROW-5
+    children:
+    - MARKDOWN-1
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-1:
+    type: MARKDOWN
+    id: MARKDOWN-1
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-5
+    meta:
+      width: 12
+      height: 30
+      code: "**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving_cached`\
+        \ -- a `UNION ALL` of the StarRocks materialized view `mv_unified_funnel_summary`\
+        \ (REFRESH MANUAL, frozen at last rebuild) and everything RisingWave currently\
+        \ retains, read live.\n\n**Intended fallback behavior:** the cutoff between\
+        \ the two branches is `window_start < COALESCE(MIN(risingwave.window_start),\
+        \ '9999-12-31')`. When RisingWave has any data, the live branch takes over\
+        \ for everything at or after its earliest retained row, and the MV only fills\
+        \ in what's older. When RisingWave is completely empty -- e.g. right after\
+        \ a restart, before the producer has caught up -- `MIN()` returns NULL, the\
+        \ COALESCE falls back to `9999-12-31`, and the MV serves as the sole source\
+        \ for the whole view, by design (this is the same bootstrap-safety fallback\
+        \ the \"Live\" view uses). Confirmed live (2026-09-11): with RisingWave at\
+        \ 0 rows, the \"Last Hour\" chart showed 06:53-07:13 data entirely from the\
+        \ MV's Databricks-cold branch as of its last rebuild (07:19) -- not live RisingWave,\
+        \ and that's expected given RisingWave was empty at query time.\n\n\u2705\
+        \ **Pros:** Fast (~1.3s), and never goes fully blank the way \"Hot-Only, Direct\"\
+        \ does when RisingWave has no data -- the MV fallback keeps something on screen.\n\
+        \n\u274C **Cons:** Whatever it's showing during a RisingWave-empty period\
+        \ is only as fresh as the MV's last rebuild, which can be arbitrarily old\
+        \ -- there's no way to tell from the chart alone which branch is currently\
+        \ serving the data."
+  ROW-6:
+    type: ROW
+    id: ROW-6
+    children:
+    - MARKDOWN-2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-2:
+    type: MARKDOWN
+    id: MARKDOWN-2
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-6
+    meta:
+      width: 12
+      height: 22
+      code: "**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving` \u2014\
+        \ a zero-copy StarRocks view that `UNION ALL`s RisingWave (hot path, live\
+        \ JDBC) with the Databricks Iceberg REST Catalog (cold path, historical).\n\
+        \n\u26A0\uFE0F **For the \"Last Hour\" line chart above specifically, the\
+        \ Databricks branch contributes ZERO rows** -- confirmed via direct benchmark:\
+        \ querying the hot branch alone takes ~0.7s, but the full view (Databricks\
+        \ branch included) takes ~5.1s for the identical last-hour result. StarRocks\
+        \ still authenticates against the Iceberg REST catalog and reads its metadata\
+        \ on every query regardless, even though nothing useful comes back -- that\
+        \ wasted work is the entire reason this chart is slow. This is the mirror\
+        \ image of the Cached chart's dead MV branch: there the dead branch is free\
+        \ to skip, here it costs ~4.3s every time. Databricks genuinely matters for\
+        \ **Daily Totals (Live)** to the right, which queries all history and really\
+        \ does need it.\n\n\u2705 **Pros:** Always fresh \u2014 reflects RisingWave's\
+        \ real-time state with zero staleness by construction, no refresh schedule\
+        \ to trust or forget.\n\n\u274C **Cons:** Slow (~2-6s per query) for exactly\
+        \ the reason above."
+  CHART-VECBRFE5:
+    children: []
+    id: CHART-VECBRFE5
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [RisingWave\
+        \ only]"
+      uuid: 6297e8c9-9fa2-4f82-be65-09ec466adaee
+      width: 12
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-HOTONLY
+  CHART-M9IV31MT:
+    children: []
+    id: CHART-M9IV31MT
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: "Daily Totals (Live) \u2014 All History [RisingWave + Databricks,\
+        \ via StarRocks]"
+      uuid: 3ea580d3-af2b-4761-b424-611100f06171
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-LIVE
+  CHART-GG7WJBIW:
+    children: []
+    id: CHART-GG7WJBIW
+    meta:
+      chartId: 8
+      height: 50
+      sliceName: "Funnel Over Time (Live - Zero-Copy) \u2014 Last Hour [RisingWave,\
+        \ via StarRocks \u2014 always queries Databricks needlessly]"
+      uuid: 45f66882-8284-44f0-8563-10ba1c19c078
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-LIVE
+  CHART-HO8CHXYJ:
+    children: []
+    id: CHART-HO8CHXYJ
+    meta:
+      chartId: 3
+      height: 50
+      sliceName: "Daily Totals (Cached) \u2014 All History [StarRocks MV + RisingWave,\
+        \ via StarRocks]"
+      uuid: 65f7df80-fc91-4300-a76d-965a8986f45e
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CACHED
+  CHART-IGZ4N0DC:
+    children: []
+    id: CHART-IGZ4N0DC
+    meta:
+      chartId: 10
+      height: 50
+      sliceName: "Funnel Over Time (Cached - Fast) \u2014 Last Hour [Live RisingWave\
+        \ via StarRocks JDBC, else StarRocks's own MV]"
+      uuid: d33b8dd6-0364-4e23-8eb6-c26410fe8445
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CACHED
+  ROW-HOTONLY:
+    type: ROW
+    id: ROW-HOTONLY
+    children:
+    - CHART-VECBRFE5
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  ROW-CACHED:
+    type: ROW
+    id: ROW-CACHED
+    children:
+    - CHART-IGZ4N0DC
+    - CHART-HO8CHXYJ
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  ROW-LIVE:
+    type: ROW
+    id: ROW-LIVE
+    children:
+    - CHART-GG7WJBIW
+    - CHART-M9IV31MT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+version: 1.0.0

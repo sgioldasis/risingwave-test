@@ -1,0 +1,28 @@
+slice_name: Count per Type
+description: null
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params:
+  datasource: 6__table
+  viz_type: dist_bar
+  groupby:
+  - type
+  metrics:
+  - cnt
+  adhoc_filters: []
+  row_limit: 100
+  time_range: No filter
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_bar_value: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 450cf43b-d5af-400a-b1e7-2030477bc096
+version: 1.0.0
+dataset_uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed

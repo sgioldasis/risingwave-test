@@ -1,0 +1,28 @@
+slice_name: Total Amount per Type
+description: null
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params:
+  datasource: 6__table
+  viz_type: dist_bar
+  groupby:
+  - type
+  metrics:
+  - sum__amount
+  adhoc_filters: []
+  row_limit: 100
+  time_range: No filter
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_bar_value: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 32b4d281-18f6-4b03-949b-a1f9bdeb1386
+version: 1.0.0
+dataset_uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed

@@ -5,6 +5,12 @@ description: Building and validating a transparent-query-rewrite demo to strengt
 
 <!-- markdownlint-disable-file -->
 
+**For exact step-by-step run instructions (script runner / Dagster /
+Superset), see
+[SR_POC_SUPERSET_DEMOS_RUNBOOK.md](SR_POC_SUPERSET_DEMOS_RUNBOOK.md).** This
+doc covers the design, the SQL-console version of the demo, and the real
+bugs found while building the Superset version.
+
 ## Goal
 
 Demonstrate StarRocks' transparent materialized-view query rewrite: an
@@ -282,3 +288,41 @@ since that was a full service swap and the MV needed rebuilding via
   (2 days, 4,280 raw rows) — a real evaluation should re-run this at
   production-representative volume before citing the multiplier as a hard
   number.
+
+## Superset dashboard (2026-09-12)
+
+Built: "StarRocks Query Rewrite Demo"
+(`/superset/dashboard/query-rewrite-demo/`) — two side-by-side table
+charts running the identical query against
+`databricks_uc.sr_poc_external.funnel_summary_historical`, one with
+rewrite on and one forced off, plus a markdown explaining the mechanism.
+
+**Real bug found and fixed:** the first version forced rewrite off via a
+`/*+ SET_VAR(enable_materialized_view_rewrite=false) */` hint embedded in
+the dataset's SQL — this works perfectly when run directly (confirmed via
+`EXPLAIN`), but **Superset silently strips the hint comment** when it
+wraps a virtual dataset's SQL in its outer
+`SELECT ... FROM (<sql>) AS virtual_table` query. Confirmed directly by
+reading the chart's own `query` field in the `/api/v1/chart/data`
+response: the hint was simply absent from what StarRocks actually
+received. Both "on" and "off" charts were quietly running with rewrite ON
+the whole time — same speed, no visible difference, no error either,
+which is what made it easy to miss (surfaced only because reloading the
+dashboard showed both charts refreshing equally fast, which shouldn't
+happen if one is genuinely hitting a ~7s raw Iceberg scan).
+
+**Fix:** a *separate* Superset database connection
+("StarRocks (rewrite disabled)") whose SQLAlchemy URI carries
+`?init_command=SET SESSION enable_materialized_view_rewrite=0`. That SQL
+runs once per pooled connection at connect time, so every query issued
+through that connection has rewrite disabled at the session level — no
+per-query SQL text for Superset's formatter to touch or strip. Confirmed
+via Superset's own API: ~0.6-0.7s (rewrite on, normal connection) vs.
+~7.2s (rewrite off, `init_command` connection) for the identical query —
+matching the raw, outside-Superset numbers closely.
+
+Lesson for future work: don't trust a query-hint-in-SQL-text approach to
+survive any BI tool's own SQL processing/formatting layer without
+verifying the *actual* SQL that reached the database — a session-level
+connection property is more robust whenever the tool sits between you and
+the query text.

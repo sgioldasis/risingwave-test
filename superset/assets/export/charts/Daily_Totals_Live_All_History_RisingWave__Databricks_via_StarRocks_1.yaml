@@ -1,0 +1,35 @@
+slice_name: "Daily Totals (Live) \u2014 All History [RisingWave + Databricks, via\
+  \ StarRocks]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 4__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - label: day
+    sqlExpression: DATE(window_start)
+    expressionType: SQL
+  metrics:
+  - sum__viewers
+  - sum__carters
+  - sum__purchasers
+  adhoc_filters: []
+  row_limit: 1000
+  time_range: No filter
+  timeseries_limit_metric:
+    label: day
+    sqlExpression: DATE(window_start)
+    expressionType: SQL
+  order_desc: true
+  table_timestamp_format: '%Y-%m-%d'
+  show_cell_bars: true
+  color_pn: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 3ea580d3-af2b-4761-b424-611100f06171
+version: 1.0.0
+dataset_uuid: 3f6ad042-8ef6-4bf3-9c05-7405652112ef

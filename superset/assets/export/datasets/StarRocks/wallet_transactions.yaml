@@ -1,0 +1,110 @@
+table_name: wallet_transactions
+main_dttm_col: event_time
+description: null
+default_endpoint: null
+offset: 0
+cache_timeout: null
+schema: sr_local_db_sr_local_db
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed
+metrics:
+- metric_name: sum__amount
+  verbose_name: Total Amount
+  metric_type: null
+  expression: SUM(amount)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: cnt
+  verbose_name: Count
+  metric_type: null
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: status
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR(16)
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: type
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR(16)
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: transaction_id
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR(64)
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: account_id
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR(64)
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: amount
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: event_time
+  verbose_name: null
+  is_dttm: true
+  is_active: true
+  type: DATETIME
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+version: 1.0.0
+database_uuid: debd0510-5d66-4f6b-9765-ccea1342506c

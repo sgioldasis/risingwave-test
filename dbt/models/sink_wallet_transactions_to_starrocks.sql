@@ -25,6 +25,17 @@
   TIMESTAMP WITH TIME ZONE ("Starrocks doesn't store time values with
   timezone information"), matching StarRocks's own `datetime` column type
   which has no timezone concept.
+
+  `commit_checkpoint_interval = 1`: this is a demo of real-time upsert
+  visibility, so commit latency matters. Sink decoupling is on by default
+  for all RisingWave sinks (confirmed via `SELECT * FROM
+  rw_sink_decouple`), which commits every 10 checkpoints by default --
+  with this project's `barrier_interval_ms = 2000` /
+  `checkpoint_frequency = 2` (risingwave.toml, i.e. a checkpoint every 4s),
+  that's up to ~40s of visibility lag on top of the StarRocks stream-load
+  round trip itself. Setting this to 1 commits on every checkpoint instead,
+  cutting worst-case lag to roughly one checkpoint interval (~4s in this
+  project's config).
 #}
 
 {{ config(
@@ -59,5 +70,6 @@ WITH (
     starrocks.user = 'root',
     starrocks.password = '',
     starrocks.database = 'sr_local_db_sr_local_db',
-    starrocks.table = 'wallet_transactions'
+    starrocks.table = 'wallet_transactions',
+    commit_checkpoint_interval = 1
 )

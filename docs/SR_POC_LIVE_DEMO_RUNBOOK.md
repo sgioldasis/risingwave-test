@@ -5,6 +5,12 @@ description: Exact commands and order to run a gapless live demo of the modern d
 
 <!-- markdownlint-disable-file -->
 
+**This doc covers the modern dashboard's own query surface (SSE live view +
+Queries tab), separate from the Superset "Funnel Dashboard".** For the
+Superset version and the other two Superset-based demos, see
+[SR_POC_SUPERSET_DEMOS_RUNBOOK.md](SR_POC_SUPERSET_DEMOS_RUNBOOK.md) — it
+reuses the same `modern_dashboard_setup_job` Dagster job as Step 2 below.
+
 ## Why this doc exists
 
 The SQL query endpoints (`/api/query/funnel`, `/api/query/funnel/aggregate`,

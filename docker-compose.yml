@@ -831,6 +831,14 @@ services:
     container_name: superset-init
     volumes:
       - "superset-home:/app/superset_home"
+      # Git-tracked, human-diffable Superset asset bundle (databases,
+      # datasets, charts, dashboards) exported via `superset/export_assets.sh`
+      # -- re-imported here on every startup so the funnel/wallet/query-rewrite
+      # demos reproduce on any machine, not just whoever's local superset-home
+      # volume happens to have them. Idempotent: re-importing over existing
+      # objects (matched by UUID) updates them in place rather than
+      # duplicating.
+      - "./superset/assets/export:/app/assets_export:ro"
     environment:
       - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
       - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
@@ -847,7 +855,20 @@ services:
     # script. A single-element list is passed through verbatim instead.
     entrypoint: ["/bin/bash", "-c"]
     command:
-      - "pip install --no-cache-dir pymysql==1.1.1 && superset db upgrade && (superset fab create-admin --username \"$$SUPERSET_ADMIN_USERNAME\" --firstname Admin --lastname User --email \"$$SUPERSET_ADMIN_EMAIL\" --password \"$$SUPERSET_ADMIN_PASSWORD\" || true) && superset init"
+      # `shutil.make_archive` reads each file's on-disk mtime for its ZIP
+      # entry -- the git-tracked export files carry Superset's own baked-in
+      # 1980-01-01 timestamps (visible in `unzip -l` on the original export),
+      # and depending on how a checkout/mount resolves that, Python's zipfile
+      # can see a pre-1980 value and raise `ValueError: ZIP does not support
+      # timestamps before 1980`. Build the zip directly with a fixed
+      # `date_time` per entry instead, so it never depends on mtimes at all.
+      # NOTE: Superset's own import CLI (get_contents_from_bundle ->
+      # remove_root) unconditionally strips the FIRST path segment of every
+      # zip entry, assuming the standard `superset export` layout of a single
+      # wrapping folder (e.g. `dashboard_export_<timestamp>/metadata.yaml`).
+      # The zip built below must have that wrapper folder or metadata.yaml
+      # itself gets stripped away and the whole bundle is silently rejected.
+      - "pip install --no-cache-dir pymysql==1.1.1 && superset db upgrade && (superset fab create-admin --username \"$$SUPERSET_ADMIN_USERNAME\" --firstname Admin --lastname User --email \"$$SUPERSET_ADMIN_EMAIL\" --password \"$$SUPERSET_ADMIN_PASSWORD\" || true) && superset init && (test -d /app/assets_export && python3 -c \"import zipfile, os; zf = zipfile.ZipFile('/tmp/assets_export.zip', 'w', zipfile.ZIP_DEFLATED); [zf.writestr(zipfile.ZipInfo(os.path.join('assets_export', os.path.relpath(os.path.join(root, f), '/app/assets_export')), date_time=(2020,1,1,0,0,0)), open(os.path.join(root, f), 'rb').read()) for root, _, files in os.walk('/app/assets_export') for f in files]; zf.close()\" && superset import-dashboards -p /tmp/assets_export.zip -u \"$$SUPERSET_ADMIN_USERNAME\" || echo 'No assets_export bundle found or import failed -- continuing without it')"
     depends_on:
       starrocks:
         condition: service_healthy

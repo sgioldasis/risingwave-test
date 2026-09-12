@@ -5,6 +5,11 @@ description: Design and build log for demonstrating StarRocks Primary Key table 
 
 <!-- markdownlint-disable-file -->
 
+**For exact step-by-step run instructions (script runner / Dagster /
+Superset), see
+[SR_POC_SUPERSET_DEMOS_RUNBOOK.md](SR_POC_SUPERSET_DEMOS_RUNBOOK.md).** This
+doc covers the design and the real bugs found while building it.
+
 ## Status: built and confirmed working (2026-09-12)
 
 Full pipeline built and validated end-to-end, including running through the
@@ -264,6 +269,111 @@ in this project. Every `wallet_pipeline_setup_job` run resets
 restarted) afterward to repopulate it. Not something to "fix" — consistent
 with how the rest of this project's StarRocks tables already behave.
 
+### End-to-end lag: ~24-40s by default, ~2-3s tuned (2026-09-12)
+
+Noticed live during a demo: the point-lookup table's newest row consistently
+lagged wall-clock time by 10-30+ seconds, even right after a "force
+refresh" in Superset (confirmed via a direct `POST
+/api/v1/chart/data` with `force: true` — the API itself returned data no
+fresher than the lag implied, so this wasn't a caching artifact anywhere
+in Superset).
+
+**Root cause:** RisingWave sink decoupling is on by default for all sinks
+(confirmed via `SELECT * FROM rw_sink_decouple` — `is_decouple = t`), and a
+decoupled sink's default `commit_checkpoint_interval` is 10 — i.e. it only
+commits to the downstream system every 10 checkpoints. This project's
+`risingwave.toml` tunes `barrier_interval_ms = 2000` /
+`checkpoint_frequency = 2`, meaning a checkpoint every ~4s — so the default
+commit cadence for this sink was every ~40s, on top of the StarRocks
+stream-load round trip itself.
+
+**Fix:** added `commit_checkpoint_interval = 1` to the sink's `WITH`
+options in
+[dbt/models/sink_wallet_transactions_to_starrocks.sql](../dbt/models/sink_wallet_transactions_to_starrocks.sql),
+committing on every checkpoint instead of every tenth one. Since the model
+uses `CREATE SINK IF NOT EXISTS`, changing the `WITH` clause alone doesn't
+take effect on an existing sink — had to `DROP SINK
+sink_wallet_transactions_to_starrocks;` manually before re-running
+`wallet_pipeline_setup_job` so it actually got recreated with the new
+option. Confirmed via `SHOW CREATE SINK` that the option was applied, then
+measured `MAX(event_time)` against wall-clock time twice a few seconds
+apart: lag dropped to ~2-3 seconds.
+
+This is a demo-specific tradeoff, not a universal "always do this" — sink
+decoupling exists to protect RisingWave from a slow/unavailable downstream
+system by buffering; setting `commit_checkpoint_interval = 1` gives up most
+of that buffering in exchange for minimum visible latency, which is exactly
+the right tradeoff for a "look how real-time this is" demo and the wrong
+one for a production pipeline whose downstream system might actually stall.
+
+## Add-on comparison: direct Kafka → StarRocks, no RisingWave (2026-09-12)
+
+The PAM Operational Query Layer proposal that motivated this whole demo
+(see "Motivation" above) specifically argues for StarRocks to serve
+upsert-heavy financial reads *directly from Kafka*, not via an intermediate
+stream processor. Since this pipeline's RisingWave hop does no
+transformation at all (straight passthrough from source to sink), it's a
+fair, cheap comparison to build the direct path too and show both side by
+side on the same live traffic.
+
+**Built:** `orchestration/assets/wallet_direct_kafka_setup.py` — a Dagster
+asset that idempotently creates a second StarRocks Primary Key table
+(`wallet_transactions_direct_kafka`, same schema, `event_time` kept as
+`VARCHAR` rather than parsed to `DATETIME` at load time — ISO 8601's
+lexicographic order already matches chronological order, so this avoids
+needing a `STR_TO_DATE` expression in the Routine Load `COLUMNS` clause) and
+a StarRocks Routine Load job (`wallet_direct_kafka_load`) that reads the
+*same* `wallet_transactions` Kafka topic straight into it. No RisingWave
+asset anywhere in this path — only the Kafka topic (already created by
+`redpanda-init`) and StarRocks itself.
+
+**Real issue found:** `max_batch_interval` (Routine Load's own micro-batch
+property) has a hard floor of 5 — `"3"` is rejected outright with
+`max_batch_interval should >= 5`. Used `5`, the minimum.
+
+**Real issue found:** StarRocks Routine Load job names aren't reusable
+while any job with that name is still active, but a `STOPPED`/`CANCELLED`
+job's name IS reusable — confirmed live: `CREATE ROUTINE LOAD` with a name
+matching a currently-`STOPPED` job succeeds immediately, no need to (and no
+way to — calling `STOP ROUTINE LOAD` on an already-stopped job errors with
+`not found when checking privilege`) clean it up first. The asset's
+idempotency check queries `information_schema.routine_load_jobs` for the
+most recent row by that name and only re-`CREATE`s if there's no row at all
+or the latest one is `STOPPED`/`CANCELLED`.
+
+**Measured:** both tables confirmed upsert-correct
+(`COUNT(*) == COUNT(DISTINCT transaction_id)`). Lag against wall-clock time:
+~2-3s for the RisingWave-mediated path (after the `commit_checkpoint_interval`
+tuning above), ~1-2s for the direct Routine Load path — the direct path is
+somewhat faster here, though both are close once the RisingWave sink was
+tuned. The real difference this comparison demonstrates is architectural:
+one fewer moving part, one fewer thing that can lag or fail, for a pipeline
+that has no actual use for RisingWave's stream-processing capabilities.
+
+**Superset:** added a second point-lookup table chart
+("Wallet Transactions — Point Lookup [direct Kafka -> StarRocks, no
+RisingWave]", dataset over `wallet_transactions_direct_kafka`) side by side
+with the existing one (renamed to "... [via RisingWave sink]" for clarity),
+plus a markdown block explaining the comparison. See "Superset" section
+above for the general dashboard layout.
+
+**Real issue found:** the new chart rendered as "There is no chart
+definition associated with this component" in the dashboard even though the
+chart existed and its `position_json` node looked correct (right `chartId`,
+right `uuid`, right `parents`). Root cause: creating a chart via a raw
+`POST /api/v1/chart/` call without a `dashboards` field in the payload
+creates the chart but never inserts the `dashboard_slices` association row
+— referencing the chart's id/uuid in the dashboard's `position_json` alone
+isn't enough, Superset's dashboard renderer also checks that association
+table. Fixed live with `PUT /api/v1/chart/{id}` `{"dashboards": [id]}`.
+Worth noting this class of bug is self-healing on the next
+`export_assets.sh` + reimport cycle regardless — Superset's own v1 importer
+(`commands/dashboard/importers/v1/__init__.py`) explicitly rebuilds
+`dashboard_slices` from the chart uuids it finds in each dashboard's
+`position_json`, so a stale/missing association in the live instance gets
+corrected automatically once the bundle is reimported. Confirmed the fixed
+association survived a fresh export.
+
 ## Everything runs through script runner + Dagster
 
 | Piece | How it runs |
@@ -271,8 +381,9 @@ with how the rest of this project's StarRocks tables already behave.
 | Producer (incl. reversal simulation) | `bin/3_run_wallet_producer.sh` via script runner |
 | RisingWave source | Dagster asset, `dbt/` project (`AssetKey(["public", "src_wallet_transactions"])`) |
 | RisingWave → StarRocks sink | Dagster asset, `dbt/` project (`AssetKey(["public", "sink_wallet_transactions_to_starrocks"])`) |
-| StarRocks Primary Key table | Dagster asset, `dbt_starrocks/` project (`AssetKey(["sr_local_db", "wallet_transactions"])`) |
-| Full pipeline build | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
+| StarRocks Primary Key table (RisingWave-mediated) | Dagster asset, `dbt_starrocks/` project (`AssetKey(["sr_local_db", "wallet_transactions"])`) |
+| StarRocks Primary Key table + Routine Load (direct Kafka) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_transactions_direct_kafka`) |
+| Full pipeline build (both paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
 | Visualization | Superset, dashboard "Wallet Upsert Demo" |
 
 No manual `starrocks-init`-style DDL step needed for this one, unlike the
@@ -288,9 +399,13 @@ external catalogs — the native Primary Key table is fully dbt-managed.
 #    via Dagster UI (http://localhost:3000 -> wallet_pipeline_setup_job -> Launch),
 #    NOT via `dg launch` from a host shell (see the DNS caveat above)
 
-# 3. verify upsert worked
+# 3. verify upsert worked -- on BOTH tables (RisingWave-mediated and
+#    direct-Kafka), same check
 mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT count(*), count(DISTINCT transaction_id)
   FROM sr_local_db_sr_local_db.wallet_transactions"
-# count(*) should equal count(DISTINCT transaction_id)
+mysql -h127.0.0.1 -P9030 -uroot -e "
+  SELECT count(*), count(DISTINCT transaction_id)
+  FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka"
+# count(*) should equal count(DISTINCT transaction_id) on both
 ```

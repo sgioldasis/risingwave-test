@@ -1,0 +1,211 @@
+dashboard_title: Wallet Upsert Demo
+description: null
+css: null
+slug: wallet-upsert-demo
+certified_by: null
+certification_details: null
+published: false
+uuid: 740f623c-c55e-4182-82bc-57c6a5b6c33f
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    children:
+    - ROW-TABLE
+    - ROW-COMPARE
+    - ROW-CHARTS
+    - ROW-2
+    parents:
+    - ROOT_ID
+  ROW-2:
+    type: ROW
+    id: ROW-2
+    children:
+    - MARKDOWN-1
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-1:
+    type: MARKDOWN
+    id: MARKDOWN-1
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-2
+    meta:
+      width: 12
+      height: 30
+      code: '**Demo:** StarRocks Primary Key table upsert visibility, motivated by
+        an internal PAM Operational Query Layer proposal that argues for StarRocks
+        to serve upsert-heavy financial reads (reversals/corrections) directly from
+        Kafka. See `docs/SR_POC_WALLET_UPSERT_DEMO.md`.
+
+
+        **Pipeline:** `scripts/wallet_producer.py` emits a synthetic transaction,
+        then ~5s later a reversal for the *same* `transaction_id` -> RisingWave source
+        (`src_wallet_transactions`) -> RisingWave''s native StarRocks sink in upsert
+        mode (`sink_wallet_transactions_to_starrocks`) -> a genuine StarRocks Primary
+        Key table (`wallet_transactions`), not a view/MV.
+
+
+        **Confirmed live (2026-09-12):** `count(*) == count(DISTINCT transaction_id)`
+        -- every reversed transaction produced 2 Kafka events, but the table holds
+        exactly 1 row per `transaction_id`, correctly showing the *latest* (reversed)
+        state, not a duplicate. A single point lookup by `transaction_id` took ~90ms
+        including `docker exec` overhead.
+
+
+        **Real issues found and fixed while building this** (see the doc for full
+        detail): StarRocks''s CTAS always coerces DOUBLE/literal-float results to
+        `decimal(38,9)` regardless of CAST, so `amount` is modeled as `decimal` end-to-end
+        (arguably more correct for money anyway); RisingWave''s StarRocks sink flatly
+        rejects `TIMESTAMP WITH TIME ZONE`, so `event_time` is cast to plain `TIMESTAMP`
+        before the sink; `starrocks.mysqlport`/`starrocks.httpport` (one word) are
+        the correct sink property names, not `query_port`/`http_port`.
+
+
+        All data is synthetic (`scripts/wallet_producer.py`) -- no real accounts,
+        amounts, or payment data anywhere in this pipeline.'
+  CHART-I080AVLI:
+    children: []
+    id: CHART-I080AVLI
+    meta:
+      chartId: 6
+      height: 50
+      sliceName: Count per Type
+      uuid: 450cf43b-d5af-400a-b1e7-2030477bc096
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CHARTS
+  CHART-21O43XMN:
+    children: []
+    id: CHART-21O43XMN
+    meta:
+      chartId: 9
+      height: 50
+      sliceName: Total Amount per Type
+      uuid: 32b4d281-18f6-4b03-949b-a1f9bdeb1386
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CHARTS
+  CHART-Q70CCUHC:
+    children: []
+    id: CHART-Q70CCUHC
+    meta:
+      chartId: 4
+      height: 50
+      sliceName: "Wallet Transactions \u2014 Point Lookup (StarRocks Primary Key,\
+        \ upsert-verified)"
+      uuid: 7659cec0-3b9d-4f4c-8114-82df77689575
+      width: 6
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-TABLE
+  ROW-TABLE:
+    type: ROW
+    id: ROW-TABLE
+    children:
+    - CHART-Q70CCUHC
+    - CHART-DIRECTKAFKA
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  ROW-CHARTS:
+    type: ROW
+    id: ROW-CHARTS
+    children:
+    - CHART-I080AVLI
+    - CHART-21O43XMN
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-DIRECTKAFKA:
+    type: CHART
+    id: CHART-DIRECTKAFKA
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-TABLE
+    meta:
+      chartId: 11
+      width: 6
+      height: 50
+      sliceName: "Wallet Transactions \u2014 Point Lookup [direct Kafka -> StarRocks,\
+        \ no RisingWave]"
+      uuid: 5a680acb-dd49-4045-85b5-358d06dc71df
+  MARKDOWN-COMPARE:
+    type: MARKDOWN
+    id: MARKDOWN-COMPARE
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-COMPARE
+    meta:
+      width: 12
+      height: 40
+      code: '**Add-on comparison (2026-09-12):** the two tables above hold the same
+        live `wallet_transactions` Kafka topic, ingested two different ways -- motivated
+        by the internal PAM Operational Query Layer proposal, which specifically argues
+        for StarRocks to serve upsert-heavy financial reads *directly from Kafka*,
+        not via an intermediate stream processor.
+
+
+        - **Left (via RisingWave sink):** Kafka -> RisingWave source -> RisingWave
+        upsert sink -> StarRocks. Tuned this session with `commit_checkpoint_interval
+        = 1` (see `dbt/models/sink_wallet_transactions_to_starrocks.sql`), measured
+        lag **~2-3s** (down from ~24-40s at the sink''s decoupled default of `commit_checkpoint_interval
+        = 10`).
+
+        - **Right (direct Kafka -> StarRocks):** a native StarRocks Routine Load job
+        (`wallet_direct_kafka_load`, see `orchestration/assets/wallet_direct_kafka_setup.py`)
+        reads the same topic straight into a second Primary Key table, no RisingWave
+        involved at all. Measured lag **~1-2s**, floored by `max_batch_interval`''s
+        hard minimum of 5s in configuration but observed lower in practice since the
+        batch fires as soon as enough data accumulates, not only at the interval boundary.
+
+
+        Both confirmed upsert-correct: `COUNT(*) == COUNT(DISTINCT transaction_id)`
+        holds on both tables, so a reversal event overwrites its original row either
+        way -- the comparison is purely about latency and architectural simplicity,
+        not correctness.
+
+
+        **Tradeoff:** the direct path is simpler and currently lower-latency for this
+        narrow case, but RisingWave in the loop brings stream processing (joins, windowing,
+        dedup, transformation) that a passthrough-only pipeline like this one doesn''t
+        need -- for a pipeline that DID need those, the direct-Kafka path wouldn''t
+        be an option at all.'
+  ROW-COMPARE:
+    type: ROW
+    id: ROW-COMPARE
+    children:
+    - MARKDOWN-COMPARE
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+version: 1.0.0
