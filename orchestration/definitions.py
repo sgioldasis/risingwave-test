@@ -642,6 +642,23 @@ modern_dashboard_setup_job = define_asset_job(
     ),
 )
 
+wallet_pipeline_setup_job = define_asset_job(
+    name="wallet_pipeline_setup_job",
+    executor_def=in_process_executor,
+    selection=AssetSelection.assets(
+        AssetKey(["public", "src_wallet_transactions"]),
+        AssetKey(["public", "sink_wallet_transactions_to_starrocks"]),
+        AssetKey(["sr_local_db", "wallet_transactions"]),
+    ),
+    description=(
+        "Build the synthetic wallet-transaction pipeline (StarRocks Primary "
+        "Key upsert/point-lookup demo, see docs/SR_POC_WALLET_UPSERT_DEMO.md): "
+        "RisingWave source, RisingWave->StarRocks upsert sink, and the "
+        "StarRocks-side Primary Key table. Scoped narrowly, separate from "
+        "modern_dashboard_setup_job, since this is an unrelated demo."
+    ),
+)
+
 # demo_warm_job and the starrocks_mv_warm asset it wrapped were retired
 # 2026-09-08 as part of the zero-copy migration -- there's no longer a
 # unified funnel MV to warm; dashboard_funnel_serving reads RisingWave and
@@ -871,6 +888,7 @@ defs = Definitions(
         postgres_sink_job,
         dbt_starrocks_build_job,
         modern_dashboard_setup_job,
+        wallet_pipeline_setup_job,
         kafka_topics_setup_job,
         casino_prd_full_job,
         casino_stg_job,
