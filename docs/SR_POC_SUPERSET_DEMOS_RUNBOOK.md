@@ -161,7 +161,13 @@ inside the same Docker network.
 | Funnel Dashboard, Query Rewrite Demo | `scripts/producer.py` | 🚀 Start Producer (`3_run_producer.sh`) |
 | Wallet Upsert Demo | `scripts/wallet_producer.py` | 💳 Start Wallet Producer (`3_run_wallet_producer.sh`) |
 
-Both accept a TPS value. The Query Rewrite Demo doesn't strictly need the
+One wallet producer run is enough to feed **all three** Wallet Upsert Demo
+write paths — it emits to two separate Kafka topics: `wallet_transactions`
+(feeds both the RisingWave-mediated and direct-Kafka point-lookup charts)
+and `wallet_status_updates` (feeds the partial-update chart only). No need
+to run anything separately for the partial-update comparison.
+
+Both producer buttons accept a TPS value. The Query Rewrite Demo doesn't strictly need the
 funnel producer running (its two charts read Databricks history + the
 already-refreshed MV, not live RisingWave data) — start it anyway if you're
 also showing the Funnel Dashboard in the same session.

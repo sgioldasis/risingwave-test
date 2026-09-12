@@ -60,9 +60,13 @@ meaningfully.
 
 `bin/3_run_wallet_producer.sh` (registered in `scripts/script_runner.py`'s
 `SCRIPTS` list and `BACKGROUND_SERVICES_CONFIG`, same pattern as the
-existing funnel producer), backed by `scripts/wallet_producer.py`. Emits
-synthetic events onto the Kafka topic `wallet_transactions` (added to
-`redpanda-init`'s topic-creation list in `docker-compose.yml`):
+existing funnel producer), backed by `scripts/wallet_producer.py`. A single
+run of this one producer emits onto **two separate Kafka topics** (both
+added to `redpanda-init`'s topic-creation list in `docker-compose.yml`),
+feeding all three write paths covered by this doc:
+
+**`wallet_transactions`** — the original transaction/reversal stream, fed
+into both the RisingWave-mediated path and the direct-Kafka path:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -76,6 +80,15 @@ synthetic events onto the Kafka topic `wallet_transactions` (added to
 `--reversal-rate` (default 0.2) of transactions get a reversal emitted
 `--reversal-delay` seconds later (default 5s), carrying the *same*
 `transaction_id`.
+
+**`wallet_status_updates`** — a separate, independent stream feeding only
+the partial-update path (see "Add-on comparison: partial-column update"
+below): `--status-update-rate` (default 0.15) of the transactions that
+did *not* get a reversal get a `{transaction_id, status}`-only event
+emitted `--status-update-delay` seconds later (default 8s), with
+`status` set to `flagged`. No `amount`/`type`/`account_id`/`event_time` in
+this event at all — the whole point of this stream is that its consumer
+never sees them.
 
 ### 2. RisingWave ingestion — `dbt/models/src_wallet_transactions.sql`
 
