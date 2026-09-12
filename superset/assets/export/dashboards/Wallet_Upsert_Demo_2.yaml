@@ -19,6 +19,8 @@ position:
     children:
     - ROW-TABLE
     - ROW-COMPARE
+    - ROW-PARTIAL
+    - ROW-PARTIAL-MD
     - ROW-CHARTS
     - ROW-2
     parents:
@@ -203,6 +205,70 @@ position:
     id: ROW-COMPARE
     children:
     - MARKDOWN-COMPARE
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-PARTIALUPDATE:
+    type: CHART
+    id: CHART-PARTIALUPDATE
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-PARTIAL
+    meta:
+      chartId: 12
+      width: 12
+      height: 50
+      sliceName: "Wallet Transactions \u2014 Flagged via Partial Update [status-only\
+        \ writer, no RisingWave]"
+      uuid: 7b0091f3-a82d-4ddd-8ab3-bb688d18578c
+  ROW-PARTIAL:
+    type: ROW
+    id: ROW-PARTIAL
+    children:
+    - CHART-PARTIALUPDATE
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-PARTIAL:
+    type: MARKDOWN
+    id: MARKDOWN-PARTIAL
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-PARTIAL-MD
+    meta:
+      width: 12
+      height: 36
+      code: '**Add-on comparison (2026-09-12): partial-column update, no RisingWave.**
+        The table above is filtered to `status = ''flagged''` on `wallet_transactions_direct_kafka`
+        -- every row there was written by an *independent* StarRocks Routine Load
+        job (`wallet_status_update_load`) reading a *separate* Kafka topic (`wallet_status_updates`)
+        that carries only `{transaction_id, status}`, loaded with `"partial_update"
+        = "true"`.
+
+
+        That writer never sees `account_id`/`type`/`amount`/`event_time` at all --
+        yet the row above still has all of them, exactly as originally written by
+        the *other* Routine Load job that ingests full transactions. This is a genuinely
+        different write pattern from the upsert demo above: not "a new event replaces
+        the whole row," but "two independent writers, each with partial knowledge
+        of a row, converge on the same table" -- something a Unique Key table''s whole-row-replace
+        model can''t express at all.
+
+
+        See `orchestration/assets/wallet_direct_kafka_setup.py` and `docs/SR_POC_WALLET_UPSERT_DEMO.md`.'
+  ROW-PARTIAL-MD:
+    type: ROW
+    id: ROW-PARTIAL-MD
+    children:
+    - MARKDOWN-PARTIAL
     parents:
     - ROOT_ID
     - GRID_ID

@@ -14,7 +14,7 @@ different thing:
 |---|---|---|
 | **Funnel Dashboard** | Live (RisingWave) + historical (Databricks) funnel data served through one StarRocks view, zero-copy | [SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md), [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) |
 | **StarRocks Query Rewrite Demo** | StarRocks transparently redirects a query against a raw Iceberg table to a pre-aggregated materialized view, ~10x faster, no query changes | [SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md) |
-| **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
+| **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load, plus a partial-column-update comparison (an independent writer updating only `status` via `partial_update`) | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
 
 This doc is the "what do I click, in what order" guide. For *why* things are
 built the way they are, or the real bugs found while building them, follow
@@ -129,7 +129,12 @@ RisingWave → StarRocks upsert sink, and the StarRocks Primary Key table
 comparison path: a second StarRocks Primary Key table
 (`wallet_transactions_direct_kafka`) plus a StarRocks Routine Load job
 (`wallet_direct_kafka_load`) reading the same Kafka topic with no
-RisingWave involved at all.
+RisingWave involved at all — **and** a third Routine Load job
+(`wallet_status_update_load`) on that same direct-Kafka table, reading an
+independent `wallet_status_updates` topic and writing only the `status`
+column via `partial_update`, demonstrating a genuinely different write
+pattern (partial-column update by an independent writer) than the full-row
+upsert both other paths use.
 
 **Expected outcome:** run status `SUCCESS`. The RisingWave-mediated table
 exists but has **zero rows** immediately after — this job's

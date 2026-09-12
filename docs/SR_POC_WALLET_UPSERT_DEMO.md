@@ -374,16 +374,77 @@ Worth noting this class of bug is self-healing on the next
 corrected automatically once the bundle is reimported. Confirmed the fixed
 association survived a fresh export.
 
+## Add-on comparison: partial-column update, no RisingWave (2026-09-12)
+
+A third write pattern, distinct from both the streaming upsert (full-row
+replace on a matching key) and the direct-Kafka comparison above (same
+full-row replace, different ingestion path): StarRocks Primary Key tables
+support **partial-column update** — writing only some columns of a row,
+leaving the rest untouched, with no need to know or resend the columns you
+don't own. Motivated by suggestion #4 from a StarRocks-skill-driven review
+of this project's `dbt_starrocks/` inventory: "a PK-table-specific feature
+... completely unexplored here."
+
+**Scenario modeled:** an independent fraud-review service that only ever
+touches the `status` column and knows nothing about `amount`/`type`/
+`account_id` — a genuinely different pattern than one writer owning the
+whole row, and something a Unique Key table's whole-row-replace model can't
+express at all (its only write path is "reload the entire row with the same
+key").
+
+**Built:**
+- `scripts/wallet_producer.py` now also emits, independently of the
+  original transaction/reversal stream, a `{transaction_id, status}`-only
+  event to a **separate** Kafka topic (`wallet_status_updates`) for a
+  random subset of settled, non-reversed transactions (`--status-update-rate`,
+  default 0.15, delayed `--status-update-delay` seconds, default 8.0 —
+  gated on NOT already chosen for reversal, so a single row's correction
+  path stays demo-legible instead of muddying which mechanism did what).
+- `orchestration/assets/wallet_direct_kafka_setup.py` — a second Routine
+  Load job (`wallet_status_update_load_job` asset,
+  `wallet_status_update_load` job name) on the *same*
+  `wallet_transactions_direct_kafka` table, reading the new topic with
+  `"partial_update" = "true"` and `COLUMNS(transaction_id, status)`. Applied
+  only to the direct-Kafka table, not the RisingWave-mediated one — no
+  RisingWave sink option needed or tested for this comparison.
+
+**Verified live before building anything** (per this project's established
+practice of testing StarRocks claims rather than trusting docs at face
+value): created a throwaway Primary Key table with columns `id, a, b, c`,
+a Routine Load job with `partial_update = true` writing only column `a`,
+produced one event, confirmed column `a` changed while `b`/`c` were
+untouched — then built the real thing.
+
+**Confirmed after building:**
+```sql
+SELECT transaction_id, account_id, type, amount, status, event_time
+FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka
+WHERE transaction_id = '<a flagged id>';
+```
+showed `status = 'flagged'` with `account_id`/`type`/`amount`/`event_time`
+all exactly as originally written — the status-update writer never touched
+them, and didn't need to know their values to write the row.
+
+**Superset:** added a table chart ("Wallet Transactions — Flagged via
+Partial Update [status-only writer, no RisingWave]") over
+`wallet_transactions_direct_kafka`, filtered to `status = 'flagged'`, plus a
+markdown block explaining the mechanism — placed in its own row right after
+the direct-Kafka comparison row, before the Count/Total-Amount bar charts.
+Linked to the dashboard correctly on creation this time (`dashboards: [2]`
+in the same `POST /api/v1/chart/` call) — see the "real issue found" note
+in the direct-Kafka section above for what happens when that's omitted.
+
 ## Everything runs through script runner + Dagster
 
 | Piece | How it runs |
 |---|---|
-| Producer (incl. reversal simulation) | `bin/3_run_wallet_producer.sh` via script runner |
+| Producer (transactions, reversals, and status updates) | `bin/3_run_wallet_producer.sh` via script runner |
 | RisingWave source | Dagster asset, `dbt/` project (`AssetKey(["public", "src_wallet_transactions"])`) |
 | RisingWave → StarRocks sink | Dagster asset, `dbt/` project (`AssetKey(["public", "sink_wallet_transactions_to_starrocks"])`) |
 | StarRocks Primary Key table (RisingWave-mediated) | Dagster asset, `dbt_starrocks/` project (`AssetKey(["sr_local_db", "wallet_transactions"])`) |
-| StarRocks Primary Key table + Routine Load (direct Kafka) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_transactions_direct_kafka`) |
-| Full pipeline build (both paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
+| StarRocks Primary Key table + Routine Load (direct Kafka, full-row) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_transactions_direct_kafka`) |
+| Second Routine Load job (partial-column status update, same table) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_status_update_load_job`) |
+| Full pipeline build (all three paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
 | Visualization | Superset, dashboard "Wallet Upsert Demo" |
 
 No manual `starrocks-init`-style DDL step needed for this one, unlike the
@@ -408,4 +469,11 @@ mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT count(*), count(DISTINCT transaction_id)
   FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka"
 # count(*) should equal count(DISTINCT transaction_id) on both
+
+# 4. verify partial update worked -- some rows should be 'flagged' with
+#    their original amount/type/account_id/event_time untouched
+mysql -h127.0.0.1 -P9030 -uroot -e "
+  SELECT transaction_id, account_id, type, amount, status, event_time
+  FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka
+  WHERE status = 'flagged' LIMIT 5"
 ```
