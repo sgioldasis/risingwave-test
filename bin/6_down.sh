@@ -333,12 +333,9 @@ docker compose down
 # Wipe every project volume EXCEPT superset-home (Superset's own admin
 # login, the StarRocks connection, saved charts/dashboards -- see
 # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md for why this replaced
-# Metabase). None of that needs to be reset just because
-# RisingWave/MinIO/Postgres/etc. are being torn down for a clean restart.
-# metabase-0 is no longer in `docker compose config --volumes` output
-# (Compose drops volume declarations no service references), so it's
-# simply never touched by this loop -- harmless, orphaned, kept in case of
-# a revert. Compose creates volumes project-prefixed (e.g.
+# Metabase, since removed entirely 2026-09-12). None of that needs to be
+# reset just because RisingWave/MinIO/Postgres/etc. are being torn down for
+# a clean restart. Compose creates volumes project-prefixed (e.g.
 # risingwave-test_postgres-0); the old bare-name `docker volume rm` calls
 # never matched, so this resolves the real prefixed names via
 # `docker compose config --format json`.

@@ -754,50 +754,6 @@ services:
     networks:
       - iceberg_net
 
-  # Open-source BI tool, demonstrating StarRocks's MySQL-wire-protocol
-  # connectivity -- see docs/SR_POC_STARROCKS_EVALUATION_SUMMARY.md (item
-  # #4 in "Genuine wins"). Metabase ships a MySQL driver out of the box,
-  # which is all that's needed to connect to StarRocks; no custom
-  # integration. Uses Metabase's default embedded H2 for its own app
-  # metadata (fine for a demo; not meant for production use).
-  # SUPERSEDED 2026-09-10 by Superset below. Metabase's own `reset-password`
-  # CLI command is broken in this image (v0.51.13): run_metabase.sh's
-  # `exec su metabase -s /bin/sh -c "exec java ... $@"` uses an unquoted
-  # mid-string `$@`, which bash's positional-parameter special-casing splits
-  # into SEPARATE ARGUMENTS to `sh -c` instead of appending to the command
-  # string -- the email argument silently becomes sh's $0 and never reaches
-  # the app. Worked around by invoking java directly, bypassing the
-  # entrypoint; the CLI then printed a valid-looking reset password each
-  # time (confirmed reading/writing the correct H2 file, confirmed "no
-  # unrun migrations" on next boot, confirmed the bcrypt hash in
-  # core_user.password changed) -- but the regular /api/session login
-  # endpoint rejected every one of three separately-generated reset
-  # passwords with "did not match stored password". Root cause not found
-  # (checked salt+password bcrypt combinations by hand, no match). Given a
-  # broken official password-reset path AND an unexplained login rejection
-  # on the same version, moved to Superset instead of continuing to fight
-  # this. Commented out (not deleted) in case of revert; `metabase-0`
-  # volume is untouched by this change.
-  # metabase:
-  #   image: metabase/metabase:v0.51.13
-  #   container_name: metabase
-  #   ports:
-  #     - "3002:3000"
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         memory: 1G
-  #   volumes:
-  #     - "metabase-0:/metabase-data"
-  #   environment:
-  #     - MB_DB_FILE=/metabase-data/metabase.db
-  #   depends_on:
-  #     starrocks:
-  #       condition: service_healthy
-  #   restart: always
-  #   networks:
-  #     - iceberg_net
-
   superset:
     image: apache/superset:3.1.3
     container_name: superset
@@ -1407,8 +1363,6 @@ volumes:
   prometheus-0:
     external: false
   grafana-0:
-    external: false
-  metabase-0:
     external: false
   superset-home:
     external: false
