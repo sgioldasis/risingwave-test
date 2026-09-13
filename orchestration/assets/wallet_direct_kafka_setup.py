@@ -32,22 +32,35 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE} (
     type VARCHAR(16),
     amount DECIMAL(38,9),
     status VARCHAR(16),
-    event_time VARCHAR(64)
+    event_time DATETIME
 )
 PRIMARY KEY (transaction_id)
 DISTRIBUTED BY HASH (transaction_id)
 """
 
-# event_time kept as VARCHAR (raw ISO 8601 string from the producer, e.g.
-# "2026-09-12T09:00:41.585742+00:00") rather than parsed into DATETIME at
-# load time -- ISO 8601's lexicographic order already matches chronological
-# order, so sorting/MAX() work correctly without a STR_TO_DATE expression in
-# the Routine Load COLUMNS clause. Keeps the load job simple; a real
-# production version would parse it, but for this latency-comparison demo
-# it's not worth the extra failure surface.
+# event_time is parsed to a real DATETIME at load time via a computed
+# column in the Routine Load COLUMNS clause -- the producer emits ISO 8601
+# (e.g. "2026-09-12T09:00:41.585742+00:00", always UTC per
+# datetime.now(timezone.utc).isoformat()), which StarRocks can't parse
+# directly as a column-to-column mapping. `event_time_raw` is a temp column
+# (positionally mapped from jsonpaths, same as any other field); the actual
+# `event_time` column is a derived expression over it. Confirmed live on a
+# throwaway table before applying here: SUBSTR(...,1,26) drops the fixed
+# 6-char "+00:00" suffix (always UTC, so always exactly this length),
+# leaving "2026-09-13T03:42:13.609764" for str_to_date's '%Y-%m-%dT%H:%i:%s.%f'
+# to parse, correctly preserving microsecond precision.
+#
+# An earlier version of this table kept event_time as VARCHAR (the raw
+# ISO 8601 string) instead, reasoning that its lexicographic order already
+# matches chronological order so sorting/MAX() would work without this
+# parsing step. That was true, but it meant this table displayed
+# differently from the RisingWave-mediated wallet_transactions table
+# (which does `CAST(event_time AS TIMESTAMP)` in its own sink) side by side
+# on the same Superset dashboard, which was confusing on inspection -- not
+# worth the display inconsistency for demo purposes.
 CREATE_ROUTINE_LOAD_SQL = f"""
 CREATE ROUTINE LOAD {SCHEMA}.{LOAD_JOB} ON {TABLE}
-COLUMNS(transaction_id, account_id, type, amount, status, event_time)
+COLUMNS(transaction_id, account_id, type, amount, status, event_time_raw, event_time = str_to_date(substr(event_time_raw, 1, 26), '%Y-%m-%dT%H:%i:%s.%f'))
 PROPERTIES (
     "format" = "json",
     "jsonpaths" = "[\\"$.transaction_id\\",\\"$.account_id\\",\\"$.type\\",\\"$.amount\\",\\"$.status\\",\\"$.event_time\\"]",

@@ -14,7 +14,7 @@ different thing:
 |---|---|---|
 | **Funnel Dashboard** | Live (RisingWave) + historical (Databricks) funnel data served through one StarRocks view, zero-copy | [SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md), [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) |
 | **StarRocks Query Rewrite Demo** | StarRocks transparently redirects a query against a raw Iceberg table to a pre-aggregated materialized view, ~10x faster, no query changes | [SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md) |
-| **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load, a partial-column-update comparison (an independent writer updating only `status` via `partial_update`), and a live-SQL `UPDATE`/`DELETE` demo bypassing the event pipeline entirely | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
+| **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus: a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load; a partial-column-update comparison (an independent writer updating only `status` via `partial_update`); a live-SQL `UPDATE`/`DELETE` demo bypassing the event pipeline entirely; and a synchronous (zero-lag, no-`REFRESH`-ever) rollup MV over a Duplicate Key log table, contrasted against this project's async MVs | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
 
 This doc is the "what do I click, in what order" guide. For *why* things are
 built the way they are, or the real bugs found while building them, follow
@@ -134,7 +134,16 @@ RisingWave involved at all — **and** a third Routine Load job
 independent `wallet_status_updates` topic and writing only the `status`
 column via `partial_update`, demonstrating a genuinely different write
 pattern (partial-column update by an independent writer) than the full-row
-upsert both other paths use.
+upsert both other paths use — **and** a fourth path: a Duplicate Key log
+table (`wallet_transactions_log`, keeps every event as a separate row, no
+upsert) fed by yet another Routine Load job on the same
+`wallet_transactions` topic, plus a **synchronous** rollup MV
+(`mv_wallet_type_rollup`) that updates in lockstep with every write — no
+`REFRESH` statement exists for it, unlike every other MV in this project.
+See
+[SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md#add-on-comparison-synchronous-rollup-materialized-view-no-risingwave-2026-09-13)
+for the full detail, including two real StarRocks gotchas found while
+building it.
 
 **Expected outcome:** run status `SUCCESS`. The RisingWave-mediated table
 exists but has **zero rows** immediately after — this job's

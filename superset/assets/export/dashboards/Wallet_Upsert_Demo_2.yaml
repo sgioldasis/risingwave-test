@@ -21,6 +21,8 @@ position:
     - ROW-COMPARE
     - ROW-PARTIAL
     - ROW-PARTIAL-MD
+    - ROW-SYNCMV
+    - ROW-SYNCMV-MD
     - ROW-CHARTS
     - ROW-2
     parents:
@@ -168,38 +170,58 @@ position:
     meta:
       width: 12
       height: 40
-      code: '**Add-on comparison (2026-09-12):** the two tables above hold the same
-        live `wallet_transactions` Kafka topic, ingested two different ways -- motivated
-        by the internal PAM Operational Query Layer proposal, which specifically argues
-        for StarRocks to serve upsert-heavy financial reads *directly from Kafka*,
-        not via an intermediate stream processor.
+      code: '**Add-on comparison (2026-09-12, latency re-measured 2026-09-13):** the
+        two tables above hold the same live `wallet_transactions` Kafka topic, ingested
+        two different ways -- motivated by the internal PAM Operational Query Layer
+        proposal, which specifically argues for StarRocks to serve upsert-heavy financial
+        reads *directly from Kafka*, not via an intermediate stream processor.
 
 
         - **Left (via RisingWave sink):** Kafka -> RisingWave source -> RisingWave
         upsert sink -> StarRocks. Tuned this session with `commit_checkpoint_interval
-        = 1` (see `dbt/models/sink_wallet_transactions_to_starrocks.sql`), measured
-        lag **~2-3s** (down from ~24-40s at the sink''s decoupled default of `commit_checkpoint_interval
+        = 1` (see `dbt/models/sink_wallet_transactions_to_starrocks.sql`), cutting
+        lag from ~24-40s at the sink''s decoupled default (`commit_checkpoint_interval
         = 10`).
 
         - **Right (direct Kafka -> StarRocks):** a native StarRocks Routine Load job
         (`wallet_direct_kafka_load`, see `orchestration/assets/wallet_direct_kafka_setup.py`)
         reads the same topic straight into a second Primary Key table, no RisingWave
-        involved at all. Measured lag **~1-2s**, floored by `max_batch_interval`''s
-        hard minimum of 5s in configuration but observed lower in practice since the
-        batch fires as soon as enough data accumulates, not only at the interval boundary.
+        involved at all.
+
+
+        **Measured rigorously (12 samples, 3s apart, 2026-09-13) -- no consistent
+        winner:**
+
+
+        | | avg lag | min | max |
+
+        |---|---|---|---|
+
+        | RisingWave-mediated | 2.97s | 1.3s | 5.3s |
+
+        | Direct Kafka Routine Load | 3.36s | 0.7s | 5.7s |
+
+
+        Both hover in the same few-seconds band; which one looks "ahead" at any single
+        glance just depends on where you catch each path''s own batch cycle (RisingWave
+        commits every checkpoint, ~4s in this project''s tuned config; the Routine
+        Load job''s `max_batch_interval` is 5s but lands bursty, not on a strict clock).
+        An earlier version of this note claimed the direct path was consistently faster
+        (~1-2s vs ~2-3s) based on a couple of single-point checks -- that wasn''t
+        rigorous and the corrected, repeated measurement doesn''t support it.
 
 
         Both confirmed upsert-correct: `COUNT(*) == COUNT(DISTINCT transaction_id)`
         holds on both tables, so a reversal event overwrites its original row either
-        way -- the comparison is purely about latency and architectural simplicity,
-        not correctness.
+        way -- the comparison is purely about architecture, not correctness or a clear
+        latency win.
 
 
-        **Tradeoff:** the direct path is simpler and currently lower-latency for this
-        narrow case, but RisingWave in the loop brings stream processing (joins, windowing,
-        dedup, transformation) that a passthrough-only pipeline like this one doesn''t
-        need -- for a pipeline that DID need those, the direct-Kafka path wouldn''t
-        be an option at all.'
+        **Tradeoff:** the direct path is simpler -- one fewer moving part, one fewer
+        thing that can lag or fail -- but RisingWave in the loop brings stream processing
+        (joins, windowing, dedup, transformation) that a passthrough-only pipeline
+        like this one doesn''t need; for a pipeline that DID need those, the direct-Kafka
+        path wouldn''t be an option at all.'
   ROW-COMPARE:
     type: ROW
     id: ROW-COMPARE
@@ -269,6 +291,75 @@ position:
     id: ROW-PARTIAL-MD
     children:
     - MARKDOWN-PARTIAL
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-SYNCMV:
+    type: CHART
+    id: CHART-SYNCMV
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-SYNCMV
+    meta:
+      chartId: 13
+      width: 12
+      height: 50
+      sliceName: "Wallet Type Breakdown \u2014 Synchronous Rollup MV [zero-lag, no\
+        \ REFRESH ever]"
+      uuid: fc88c9ae-ce00-42eb-a60a-7400cfb725d5
+  ROW-SYNCMV:
+    type: ROW
+    id: ROW-SYNCMV
+    children:
+    - CHART-SYNCMV
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-SYNCMV:
+    type: MARKDOWN
+    id: MARKDOWN-SYNCMV
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-SYNCMV-MD
+    meta:
+      width: 12
+      height: 36
+      code: '**Add-on comparison (2026-09-13): synchronous (rollup) materialized view,
+        no RisingWave.** The table above reads `wallet_transactions_log` -- a **Duplicate
+        Key** table (keeps every event as a separate row, no upsert -- an original
+        transaction and its reversal both land here, unlike the two Primary Key tables
+        above which collapse them) fed by yet another StarRocks Routine Load job on
+        the same `wallet_transactions` topic.
+
+
+        Grouped over it is `mv_wallet_type_rollup`, a **synchronous** materialized
+        view -- unlike every other MV in this project (`mv_unified_funnel_summary`,
+        `mv_funnel_daily_country_rollup`, `mv_iceberg_countries_cache`), which are
+        all *asynchronous* and need an explicit `REFRESH` to pick up new data, this
+        one is maintained directly by the storage engine and updates in lockstep with
+        every write -- **there is no `REFRESH` statement for it, it isn''t possible
+        to issue one.** Confirmed via `EXPLAIN`: querying `wallet_transactions_log
+        GROUP BY type` directly shows `rollup: mv_wallet_type_rollup` in the plan,
+        same transparent redirection as the async query-rewrite demo, but with zero
+        possible staleness.
+
+
+        See `orchestration/assets/wallet_sync_mv_setup.py` and `docs/SR_POC_WALLET_UPSERT_DEMO.md`
+        for two real StarRocks gotchas found while building this (`COUNT(*)` rejected
+        by sync MV creation, `IF NOT EXISTS` not actually idempotent for sync MVs).'
+  ROW-SYNCMV-MD:
+    type: ROW
+    id: ROW-SYNCMV-MD
+    children:
+    - MARKDOWN-SYNCMV
     parents:
     - ROOT_ID
     - GRID_ID

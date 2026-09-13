@@ -174,6 +174,27 @@ cross-checking against `dagster_dbt.asset_utils.default_asset_key_fn`'s
 source — Dagster's default asset-key function uses the *raw* configured
 schema, not dbt's fully-resolved database schema name.
 
+**Real issue found and fixed (2026-09-13): `wallet_transactions` incorrectly
+required `sink_funnel_to_databricks`.** Launching `wallet_pipeline_setup_job`
+from the Dagster Launchpad started warning "these assets may fail because
+the upstream asset `public/sink_funnel_to_databricks` has not been
+materialized" — a completely unrelated Funnel Dashboard asset with no real
+connection to the wallet pipeline. Root cause, found in
+`CustomDagsterDbtTranslator` in `orchestration/definitions.py`: a rule
+meant to wire the cross-PoC dependency for the StarRocks *unified funnel
+view* specifically was gated on `package_name ==
+"starrocks_unified_funnel"` — but that's the entire `dbt_starrocks/`
+project's `dbt_project.yml` name, so the rule silently applied to *every*
+model in the project, including `wallet_transactions` and
+`mv_iceberg_countries_cache`, neither of which reads
+`databricks_uc.funnel_summary_historical` at all. Fixed by scoping the
+rule to the three models that genuinely do:
+`dashboard_funnel_serving`, `mv_funnel_daily_country_rollup`, and
+`mv_unified_funnel_summary`. Confirmed via Dagster's own asset-graph API
+(`assetNodes { dependencyKeys }`) before and after: `wallet_transactions`
+lost the bogus dependency, the three genuine Funnel Dashboard models kept
+it, and `wallet_pipeline_setup_job` launched clean afterward.
+
 ### 6. Superset
 
 Dashboard "Wallet Upsert Demo" (`/superset/dashboard/wallet-upsert-demo/`):
@@ -331,13 +352,17 @@ side on the same live traffic.
 
 **Built:** `orchestration/assets/wallet_direct_kafka_setup.py` — a Dagster
 asset that idempotently creates a second StarRocks Primary Key table
-(`wallet_transactions_direct_kafka`, same schema, `event_time` kept as
-`VARCHAR` rather than parsed to `DATETIME` at load time — ISO 8601's
-lexicographic order already matches chronological order, so this avoids
-needing a `STR_TO_DATE` expression in the Routine Load `COLUMNS` clause) and
-a StarRocks Routine Load job (`wallet_direct_kafka_load`) that reads the
-*same* `wallet_transactions` Kafka topic straight into it. No RisingWave
-asset anywhere in this path — only the Kafka topic (already created by
+(`wallet_transactions_direct_kafka`, same schema) and a StarRocks Routine
+Load job (`wallet_direct_kafka_load`) that reads the *same*
+`wallet_transactions` Kafka topic straight into it. `event_time` is parsed
+to a real `DATETIME` at load time via a computed column in the Routine
+Load `COLUMNS` clause (`str_to_date(substr(event_time_raw, 1, 26),
+'%Y-%m-%dT%H:%i:%s.%f')` — the producer's ISO 8601 string is always UTC
+with a fixed-length `+00:00` suffix, so a plain `SUBSTR` reliably drops it
+before parsing) — see "Real issue found: event_time displayed
+inconsistently across the two point-lookup tables" below for why this
+replaced an earlier VARCHAR-based version. No RisingWave asset anywhere in
+this path — only the Kafka topic (already created by
 `redpanda-init`) and StarRocks itself.
 
 **Real issue found:** `max_batch_interval` (Routine Load's own micro-batch
@@ -355,13 +380,26 @@ most recent row by that name and only re-`CREATE`s if there's no row at all
 or the latest one is `STOPPED`/`CANCELLED`.
 
 **Measured:** both tables confirmed upsert-correct
-(`COUNT(*) == COUNT(DISTINCT transaction_id)`). Lag against wall-clock time:
-~2-3s for the RisingWave-mediated path (after the `commit_checkpoint_interval`
-tuning above), ~1-2s for the direct Routine Load path — the direct path is
-somewhat faster here, though both are close once the RisingWave sink was
-tuned. The real difference this comparison demonstrates is architectural:
-one fewer moving part, one fewer thing that can lag or fail, for a pipeline
-that has no actual use for RisingWave's stream-processing capabilities.
+(`COUNT(*) == COUNT(DISTINCT transaction_id)`). Lag against wall-clock time
+was initially eyeballed from a couple of single-point checks as "direct
+Kafka somewhat faster" — that wasn't rigorous. Re-measured properly
+(2026-09-13) with 12 samples taken 3s apart, computing lag = wall-clock
+minus each table's own `MAX(event_time)`:
+
+| | avg | min | max |
+|---|---|---|---|
+| RisingWave-mediated | 2.97s | 1.3s | 5.3s |
+| Direct Kafka Routine Load | 3.36s | 0.7s | 5.7s |
+
+**No consistent winner** — both hover in the same few-seconds band and
+fluctuate depending on where you happen to sample relative to each path's
+own batch cycle (RisingWave commits every checkpoint, ~4s in this
+project's tuned config; the Routine Load job's `max_batch_interval` is 5s
+but lands bursty rather than on a strict clock). The real difference this
+comparison demonstrates is architectural, not a latency win: one fewer
+moving part, one fewer thing that can lag or fail, for a pipeline that has
+no actual use for RisingWave's stream-processing capabilities — not "the
+direct path is faster," which the data doesn't actually support.
 
 **Superset:** added a second point-lookup table chart
 ("Wallet Transactions — Point Lookup [direct Kafka -> StarRocks, no
@@ -386,6 +424,66 @@ Worth noting this class of bug is self-healing on the next
 `position_json`, so a stale/missing association in the live instance gets
 corrected automatically once the bundle is reimported. Confirmed the fixed
 association survived a fresh export.
+
+**Real issue found: `event_time` displayed inconsistently across the two
+point-lookup tables (2026-09-13).** Originally `event_time` on
+`wallet_transactions_direct_kafka` was kept as `VARCHAR` (the producer's
+raw ISO 8601 string, e.g. `2026-09-13T03:42:13.609764+00:00`) rather than
+parsed to `DATETIME` — reasoning that ISO 8601's lexicographic order
+already matches chronological order, so sorting/`MAX()` work fine without
+a `STR_TO_DATE` expression in the Routine Load `COLUMNS` clause. That
+reasoning was correct but produced a confusing side-by-side dashboard: the
+RisingWave-mediated table's `event_time` (a real `DATETIME`, via
+`CAST(event_time AS TIMESTAMP)` in the RisingWave sink) displayed as
+`2026-09-13 03:42:18`, while the direct-Kafka table's displayed as the raw
+string — spotted live when a user asked "why do timestamps look different
+between the two tables?" and then, reasonably, "can't we have a timestamp
+in the second case as well?"
+
+Fixed by parsing `event_time` to a real `DATETIME` in the Routine Load
+`COLUMNS` clause instead: list the raw JSON field under a temp name
+(`event_time_raw`) and compute the real column from it —
+`event_time = str_to_date(substr(event_time_raw, 1, 26), '%Y-%m-%dT%H:%i:%s.%f')`.
+`SUBSTR(...,1,26)` drops the fixed 6-character `+00:00` suffix (always
+present and always this length, since the producer always emits UTC),
+leaving a string `str_to_date` can parse with microsecond precision intact
+— confirmed live on a throwaway table before touching the real one. Applied
+the same fix to `wallet_transactions_log`'s Routine Load (the synchronous-MV
+add-on below) for consistency across all three wallet tables.
+
+(A natural follow-up question: is `DATETIME` accurate enough, and does
+StarRocks even have a separate `TIMESTAMP` type? Short answer: StarRocks
+has **no `TIMESTAMP` type at all** — `DATETIME` is the only temporal
+column type, supports microsecond precision since v3.3.5 (this project
+runs v4.1.4), and is timezone-naive, same reason the sink rejects
+`TIMESTAMP WITH TIME ZONE` above. See the `starrocks` skill's "Temporal
+types" section for the full detail — not worth duplicating here.)
+
+Also had to refresh Superset's own cached column metadata for both
+affected datasets after this — Superset caches each column's type at
+dataset-creation time and doesn't auto-detect an underlying schema change.
+`PUT /api/v1/dataset/{id}/refresh` picked up the new `DATETIME` type, but
+left `is_dttm: false`; had to `PUT` the dataset's `columns` array directly
+(`?override_columns=true`) to set `is_dttm: true` on `event_time` to match
+the RisingWave-mediated table's dataset, so both charts format the column
+identically. Worth remembering for any future StarRocks column-type
+change on a table Superset already has a dataset for.
+
+**A second real issue found while applying this fix:** since the column
+type change required dropping and recreating both tables, the
+`wallet_transactions_log` asset's rollup-MV idempotency check (`SHOW ALTER
+TABLE ROLLUP FROM <schema>`, added when building the synchronous-MV
+add-on) turned out to be checking the wrong thing — that command returns
+**job history**, which survives a `DROP TABLE` + recreate under the same
+name. After recreating the table, the asset saw the old, stale `FINISHED`
+record from the dropped table and concluded the rollup already existed,
+silently skipping recreation — `EXPLAIN` confirmed queries were scanning
+the base table directly, not the rollup, with no error anywhere to signal
+it. Fixed by checking `DESC <table> ALL` instead, which reflects the
+table's actual current indexes rather than historical job records. Applied
+the missing `CREATE MATERIALIZED VIEW` manually to recover the live table,
+then verified the corrected check behaves idempotently on a subsequent run
+(`EXPLAIN` still showed `rollup: mv_wallet_type_rollup` afterward).
 
 ## Add-on comparison: partial-column update, no RisingWave (2026-09-12)
 
@@ -501,6 +599,94 @@ for the deleted row, re-insert) whatever was just shown, which would look
 like a bug rather than the two independent mechanisms operating normally
 side by side.
 
+## Add-on comparison: synchronous (rollup) materialized view, no RisingWave (2026-09-13)
+
+A fifth capability, and the only one of the five add-ons that isn't about
+a write path — it's about a *read-side* contrast: every MV elsewhere in
+this project (`mv_unified_funnel_summary`, `mv_funnel_daily_country_rollup`,
+`mv_iceberg_countries_cache`) is **asynchronous** — it needs an explicit
+`REFRESH` to pick up new data, which is exactly why staleness/refresh
+handling has been a recurring theme in this project. A **synchronous**
+MV (a "rollup") is fundamentally different: it's maintained directly by
+the storage engine on a single base table, updates in lockstep with every
+write, and has **no `REFRESH` statement at all** — it's not possible to
+issue one.
+
+**Constraint that rules out attaching this to any existing table in this
+project, checked against docs before building:** synchronous MVs only work
+on `DUPLICATE KEY` or `AGGREGATE KEY` base tables — not `PRIMARY KEY`
+(both `wallet_transactions` and `wallet_transactions_direct_kafka` are
+Primary Key), and only on a local StarRocks-native table, no external
+catalog and no joins (which rules out ever using this for the Funnel
+Dashboard — see the exploratory discussion this add-on came from). So this
+needed its own base table.
+
+**Built:**
+- `wallet_transactions_log` — a new `DUPLICATE KEY (transaction_id)` table,
+  fed by a *third* independent Routine Load job
+  (`wallet_log_kafka_load`) reading the same `wallet_transactions` Kafka
+  topic. Unlike the two Primary Key tables, Duplicate Key keeps **every**
+  event as a separate row — an original transaction and its reversal both
+  land as distinct rows here, rather than the reversal overwriting the
+  original.
+- `mv_wallet_type_rollup` — a synchronous rollup:
+  ```sql
+  CREATE MATERIALIZED VIEW sr_local_db_sr_local_db.mv_wallet_type_rollup AS
+  SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
+  FROM sr_local_db_sr_local_db.wallet_transactions_log
+  GROUP BY type;
+  ```
+  Queried transparently: you query `wallet_transactions_log GROUP BY type`
+  directly (never the rollup by name — it's an index, not a separate
+  queryable object), and the optimizer silently redirects, same "aha" as
+  the async query-rewrite demo but with zero possible staleness.
+- `orchestration/assets/wallet_sync_mv_setup.py` — idempotent Dagster
+  asset creating all three (table, Routine Load job, rollup MV), wired
+  into `wallet_pipeline_setup_job`.
+
+**Two real gotchas found, both verified live on a throwaway table before
+touching the real one:**
+1. `COUNT(*)` is **rejected** by synchronous MV creation:
+   `"The materialized view currently does not support const expr in
+   select statement: {}. Please use Asynchronous Materialized View
+   instead."` `COUNT(<real column>)` (e.g. `COUNT(transaction_id)`) works
+   fine — StarRocks apparently parses the bare `*` as a constant
+   expression in this specific code path, unlike ordinary `SELECT`s where
+   `COUNT(*)` is completely normal.
+2. `CREATE MATERIALIZED VIEW IF NOT EXISTS` does **not** suppress the
+   "already exists" error for synchronous MVs the way it does for tables —
+   confirmed live: re-running the exact same `IF NOT EXISTS` statement
+   against an already-built rollup still errors with `"Materialized
+   view[...] already exists in the table ..."`. The Dagster asset checks
+   existence manually instead (there's no `information_schema` view for
+   sync MVs the way there is for async ones via
+   `information_schema.materialized_views`) — via `DESC <table> ALL`,
+   which reflects the table's actual current indexes. An earlier version
+   checked `SHOW ALTER TABLE ROLLUP FROM <schema>` instead, which returned
+   **job history** rather than current state — that history survives a
+   `DROP TABLE` + recreate under the same name, so after this table's
+   schema was later migrated (see "Real issue found: `event_time`
+   displayed inconsistently" above), the asset saw a stale `FINISHED`
+   record from the dropped table and silently skipped recreating the
+   rollup on the new one, with `EXPLAIN` confirming queries were scanning
+   the base table directly and no error anywhere to signal it. Switched to
+   `DESC ... ALL` after finding this live.
+
+**Confirmed live (2026-09-13):** inserted/streamed rows into
+`wallet_transactions_log`, queried the base table with a matching
+`GROUP BY` immediately after each batch — the aggregate was correct every
+time, no `REFRESH` call anywhere in the whole process. `EXPLAIN` confirmed
+the rewrite: `rollup: mv_wallet_type_rollup` in the plan. With the
+producer running, row count and the four-way `type` breakdown both kept
+advancing live.
+
+**Superset:** added a table chart ("Wallet Type Breakdown — Synchronous
+Rollup MV [zero-lag, no REFRESH ever]") over `wallet_transactions_log`,
+`query_mode: aggregate` grouped by `type` with `SUM(amount)`/
+`COUNT(transaction_id)` metrics, plus a markdown block explaining the
+mechanism — placed in its own row right after the partial-update row,
+before the Count/Total-Amount bar charts.
+
 ## Everything runs through script runner + Dagster
 
 | Piece | How it runs |
@@ -511,7 +697,8 @@ side by side.
 | StarRocks Primary Key table (RisingWave-mediated) | Dagster asset, `dbt_starrocks/` project (`AssetKey(["sr_local_db", "wallet_transactions"])`) |
 | StarRocks Primary Key table + Routine Load (direct Kafka, full-row) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_transactions_direct_kafka`) |
 | Second Routine Load job (partial-column status update, same table) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_status_update_load_job`) |
-| Full pipeline build (all three paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
+| Duplicate Key log table + Routine Load + synchronous rollup MV | Dagster asset, `orchestration/assets/wallet_sync_mv_setup.py` (`wallet_transactions_log`) |
+| Full pipeline build (all four paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
 | Visualization | Superset, dashboard "Wallet Upsert Demo" |
 
 No manual `starrocks-init`-style DDL step needed for this one, unlike the
@@ -547,4 +734,15 @@ mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT transaction_id, account_id, type, amount, status, event_time
   FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka
   WHERE status = 'flagged' LIMIT 5"
+
+# 5. verify the synchronous rollup MV is live and current -- query the
+#    BASE table (never the rollup by name), then EXPLAIN the same query
+#    to confirm the optimizer actually used the rollup
+mysql -h127.0.0.1 -P9030 -uroot -e "
+  SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
+  FROM sr_local_db_sr_local_db.wallet_transactions_log GROUP BY type"
+mysql -h127.0.0.1 -P9030 -uroot -e "
+  EXPLAIN SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
+  FROM sr_local_db_sr_local_db.wallet_transactions_log GROUP BY type" | grep -i rollup
+# expect: rollup: mv_wallet_type_rollup
 ```

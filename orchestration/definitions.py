@@ -46,6 +46,7 @@ from .assets.wallet_direct_kafka_setup import (
     wallet_transactions_direct_kafka,
     wallet_status_update_load_job,
 )
+from .assets.wallet_sync_mv_setup import wallet_transactions_log
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -248,9 +249,23 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
                 existing_deps.append(AssetDep(asset=preflight_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
-        # The StarRocks unified view reads the Databricks table populated by
-        # the RisingWave funnel sink, so keep the cross-PoC dependency explicit.
-        if package_name == "starrocks_unified_funnel":
+        # Only the specific StarRocks models that actually read
+        # databricks_uc.funnel_summary_historical need this cross-PoC dep --
+        # NOT every model in the package. Was previously gated on
+        # `package_name == "starrocks_unified_funnel"`, which matches every
+        # model in dbt_starrocks/ (that's the whole project's dbt_project.yml
+        # name), so unrelated models like wallet_transactions and
+        # mv_iceberg_countries_cache incorrectly inherited a dependency on
+        # the Funnel Dashboard's Databricks sink -- confirmed live 2026-09-13:
+        # wallet_pipeline_setup_job's Launchpad warned "sink_funnel_to_databricks
+        # not materialized" even though the wallet pipeline has nothing to do
+        # with it.
+        _MODELS_READING_FUNNEL_SUMMARY_HISTORICAL = {
+            "dashboard_funnel_serving",
+            "mv_funnel_daily_country_rollup",
+            "mv_unified_funnel_summary",
+        }
+        if dbt_resource_props.get("name") in _MODELS_READING_FUNNEL_SUMMARY_HISTORICAL:
             from dagster import AssetDep
             existing_deps = list(new_spec.deps) if new_spec.deps else []
             risingwave_sink_key = AssetKey(["public", "sink_funnel_to_databricks"])
@@ -654,7 +669,8 @@ wallet_pipeline_setup_job = define_asset_job(
         AssetKey(["public", "sink_wallet_transactions_to_starrocks"]),
         AssetKey(["sr_local_db", "wallet_transactions"]),
     ) | AssetSelection.assets(wallet_transactions_direct_kafka)
-      | AssetSelection.assets(wallet_status_update_load_job),
+      | AssetSelection.assets(wallet_status_update_load_job)
+      | AssetSelection.assets(wallet_transactions_log),
     description=(
         "Build the synthetic wallet-transaction pipeline (StarRocks Primary "
         "Key upsert/point-lookup demo, see docs/SR_POC_WALLET_UPSERT_DEMO.md): "
@@ -894,6 +910,10 @@ defs = Definitions(
         # Second Routine Load job on the same table: partial_update from an
         # independent status-updates topic
         wallet_status_update_load_job,
+        # Duplicate Key log table + synchronous rollup MV -- zero-lag,
+        # no-REFRESH-ever aggregation, contrasted against the async MVs
+        # elsewhere in this project
+        wallet_transactions_log,
     ],
     jobs=[
         dbt_build_job,

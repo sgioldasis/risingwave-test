@@ -1,0 +1,34 @@
+slice_name: "Wallet Type Breakdown \u2014 Synchronous Rollup MV [zero-lag, no REFRESH\
+  \ ever]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 8__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - type
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: amount
+    aggregate: SUM
+    label: total_amount
+  - expressionType: SIMPLE
+    column:
+      column_name: transaction_id
+    aggregate: COUNT
+    label: event_count
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols: []
+  time_range: No filter
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: fc88c9ae-ce00-42eb-a60a-7400cfb725d5
+version: 1.0.0
+dataset_uuid: e504661f-b020-4438-866e-d06f8309e625

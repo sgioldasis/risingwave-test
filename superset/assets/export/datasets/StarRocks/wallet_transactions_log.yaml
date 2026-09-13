@@ -1,4 +1,4 @@
-table_name: wallet_transactions_direct_kafka
+table_name: wallet_transactions_log
 main_dttm_col: event_time
 description: null
 default_endpoint: null
@@ -13,7 +13,7 @@ fetch_values_predicate: null
 extra: null
 normalize_columns: false
 always_filter_main_dttm: false
-uuid: 61741470-522e-470b-aaf0-e7908aa8ffa5
+uuid: e504661f-b020-4438-866e-d06f8309e625
 metrics:
 - metric_name: count
   verbose_name: COUNT(*)
