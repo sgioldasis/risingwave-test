@@ -47,6 +47,8 @@ from .assets.wallet_direct_kafka_setup import (
     wallet_status_update_load_job,
 )
 from .assets.wallet_sync_mv_setup import wallet_transactions_log
+from .assets.wallet_agg_key_setup import wallet_type_totals_agg
+from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -653,11 +655,14 @@ modern_dashboard_setup_job = define_asset_job(
             AssetKey(["public", "sink_funnel_to_databricks"]),
         )
         | AssetSelection.assets(starrocks_unified_dbt_assets)
+        | AssetSelection.assets(funnel_daily_totals_agg)
     ),
     description=(
         "Create all RisingWave, Kafka sink, Iceberg/Databricks, and StarRocks "
         "objects required by the modern dashboard. Infrastructure services "
-        "must already be running."
+        "must already be running. Also includes funnel_daily_totals_agg, an "
+        "independent AGGREGATE KEY table-model demo add-on -- see "
+        "docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md."
     ),
 )
 
@@ -670,7 +675,8 @@ wallet_pipeline_setup_job = define_asset_job(
         AssetKey(["sr_local_db", "wallet_transactions"]),
     ) | AssetSelection.assets(wallet_transactions_direct_kafka)
       | AssetSelection.assets(wallet_status_update_load_job)
-      | AssetSelection.assets(wallet_transactions_log),
+      | AssetSelection.assets(wallet_transactions_log)
+      | AssetSelection.assets(wallet_type_totals_agg),
     description=(
         "Build the synthetic wallet-transaction pipeline (StarRocks Primary "
         "Key upsert/point-lookup demo, see docs/SR_POC_WALLET_UPSERT_DEMO.md): "
@@ -914,6 +920,14 @@ defs = Definitions(
         # no-REFRESH-ever aggregation, contrasted against the async MVs
         # elsewhere in this project
         wallet_transactions_log,
+        # Aggregate Key table -- storage-level incremental SUM/REPLACE on
+        # ingest, a third way (alongside the ad-hoc aggregate query and the
+        # sync rollup MV) to answer "totals per type"
+        wallet_type_totals_agg,
+        # AGGREGATE KEY table-model demo applied to the funnel use case --
+        # pure additive counts (viewers/carters/purchasers), no
+        # reversal/upsert semantics to fight, unlike the wallet attempt
+        funnel_daily_totals_agg,
     ],
     jobs=[
         dbt_build_job,

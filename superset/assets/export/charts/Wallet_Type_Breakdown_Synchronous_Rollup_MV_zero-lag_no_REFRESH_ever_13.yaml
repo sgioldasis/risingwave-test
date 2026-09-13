@@ -16,11 +16,13 @@ params:
       column_name: amount
     aggregate: SUM
     label: total_amount
+    d3format: ',.2f'
   - expressionType: SIMPLE
     column:
       column_name: transaction_id
     aggregate: COUNT
     label: event_count
+    d3format: ',d'
   adhoc_filters: []
   row_limit: 100
   server_pagination: false

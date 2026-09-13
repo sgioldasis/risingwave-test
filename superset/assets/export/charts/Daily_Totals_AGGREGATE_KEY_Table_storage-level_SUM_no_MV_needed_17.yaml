@@ -1,0 +1,32 @@
+slice_name: "Daily Totals \u2014 AGGREGATE KEY Table [storage-level SUM, no MV needed]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 10__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - day
+  metrics:
+  - sum__viewers
+  - sum__carters
+  - sum__purchasers
+  adhoc_filters: []
+  row_limit: 1000
+  time_range: No filter
+  timeseries_limit_metric:
+    label: day
+    sqlExpression: day
+    expressionType: SQL
+  order_desc: true
+  table_timestamp_format: '%Y-%m-%d'
+  show_cell_bars: true
+  color_pn: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 365d74cc-de14-4e4a-864f-6b7904557f18
+version: 1.0.0
+dataset_uuid: 43886fcf-5277-4a3a-b598-f64db79ed4db

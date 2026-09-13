@@ -1,0 +1,33 @@
+slice_name: "Count per Type \u2014 AGGREGATE KEY"
+description: null
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params:
+  datasource: 9__table
+  viz_type: dist_bar
+  groupby:
+  - type
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: event_count
+    aggregate: SUM
+    label: cnt
+    d3format: ',d'
+  adhoc_filters: []
+  row_limit: 100
+  time_range: No filter
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_bar_value: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 3e2b6bd7-e919-4230-a290-186438577a8b
+version: 1.0.0
+dataset_uuid: 6f9b1d86-a6cb-4b2f-8c3f-79e4ab346ef3

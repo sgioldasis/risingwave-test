@@ -687,6 +687,56 @@ Rollup MV [zero-lag, no REFRESH ever]") over `wallet_transactions_log`,
 mechanism — placed in its own row right after the partial-update row,
 before the Count/Total-Amount bar charts.
 
+## Add-on comparison: AGGREGATE KEY table (2026-09-13) — built, but numbers don't match, and that's the actual finding
+
+A sixth capability: suggestion #5 from the original StarRocks-skill review
+called out `AGGREGATE KEY`/`UNIQUE KEY` table models as never demonstrated
+anywhere in this project. Built `wallet_type_totals_agg`
+(`orchestration/assets/wallet_agg_key_setup.py`) — an `AGGREGATE KEY
+(type)` table, `SUM` columns for `total_amount`/`event_count`, `REPLACE`
+for `last_event_time`, fed by a fourth Routine Load job on the
+`wallet_transactions` topic. Verified live on a throwaway table first
+(mixed `SUM`/`REPLACE` aggregation merges correctly, immediately, no
+compaction wait), then built the real one and added a table chart plus two
+`dist_bar` charts ("Count per Type" / "Total Amount per Type — AGGREGATE
+KEY") to the Wallet Upsert Demo dashboard, side by side with the existing
+Primary-Key-table versions.
+
+**The numbers don't match, and after investigating, they structurally
+can't**: the `AGGREGATE KEY` table sums every *raw* event under its own
+`type` — a `bet` that later gets reversed still counts toward `bet`'s
+gross total, with its `reversal` counted separately (since the reversal
+event carries `type: 'reversal'`, a different key entirely, so there's no
+way to net it back out at the storage-aggregation layer). The Primary Key
+table's own `type` breakdown instead nets reversals out: the reversal
+event *overwrites the whole row* via upsert, moving that transaction out
+of `bet` and into `reversal` entirely. Confirmed by direct comparison at
+the same moment — `reversal` counts matched closely between the two
+(every reversal event contributes to `reversal` the same way in both),
+while `bet`/`deposit`/`win` were all noticeably higher on the `AGGREGATE
+KEY` side, by exactly the count of transactions of that type that had
+since been reversed.
+
+**The only way to make the numbers match** would be to re-key the table by
+`transaction_id` using `REPLACE` (not `SUM`) on `type`/`amount`/`status` —
+i.e. rebuild it to mirror the Primary Key table's whole-row-replace
+semantics via a different StarRocks mechanism, then `GROUP BY type` at
+query time over the result. That's a legitimate demo too, just a
+different one — "two mechanisms landing on the identical business
+answer" rather than "gross volume vs. net position." Decided against it:
+see [SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md](SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md)
+for where `AGGREGATE KEY` actually was rebuilt successfully, on data that
+doesn't have this problem in the first place
+(funnel `viewers`/`carters`/`purchasers` — pure additive counts, no
+reversal/upsert concept to fight).
+
+**Left in place, not removed**: the table, Dagster asset, and all three
+charts still exist on the Wallet Upsert Demo dashboard. The mismatch is a
+genuine, useful illustration of "same-ish question, structurally different
+answer depending on which table you ask" — documented directly in the
+dashboard's own markdown so it doesn't read as a bug to whoever's looking
+at it live.
+
 ## Everything runs through script runner + Dagster
 
 | Piece | How it runs |
@@ -698,7 +748,8 @@ before the Count/Total-Amount bar charts.
 | StarRocks Primary Key table + Routine Load (direct Kafka, full-row) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_transactions_direct_kafka`) |
 | Second Routine Load job (partial-column status update, same table) | Dagster asset, `orchestration/assets/wallet_direct_kafka_setup.py` (`wallet_status_update_load_job`) |
 | Duplicate Key log table + Routine Load + synchronous rollup MV | Dagster asset, `orchestration/assets/wallet_sync_mv_setup.py` (`wallet_transactions_log`) |
-| Full pipeline build (all four paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
+| Aggregate Key table + Routine Load (numbers deliberately don't match the PK charts — see above) | Dagster asset, `orchestration/assets/wallet_agg_key_setup.py` (`wallet_type_totals_agg`) |
+| Full pipeline build (all five paths) | `wallet_pipeline_setup_job` (confirmed via the Dagster webserver GraphQL API, run SUCCESS) |
 | Visualization | Superset, dashboard "Wallet Upsert Demo" |
 
 No manual `starrocks-init`-style DDL step needed for this one, unlike the

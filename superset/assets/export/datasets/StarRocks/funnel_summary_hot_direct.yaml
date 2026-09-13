@@ -20,7 +20,7 @@ metrics:
   metric_type: null
   expression: SUM(carters)
   description: null
-  d3format: null
+  d3format: ',d'
   currency: null
   extra: null
   warning_text: null
@@ -29,7 +29,7 @@ metrics:
   metric_type: null
   expression: SUM(purchasers)
   description: null
-  d3format: null
+  d3format: ',d'
   currency: null
   extra: null
   warning_text: null
@@ -38,7 +38,7 @@ metrics:
   metric_type: null
   expression: SUM(viewers)
   description: null
-  d3format: null
+  d3format: ',d'
   currency: null
   extra: null
   warning_text: null

@@ -23,6 +23,8 @@ position:
     - ROW-PARTIAL-MD
     - ROW-SYNCMV
     - ROW-SYNCMV-MD
+    - ROW-AGGKEY
+    - ROW-AGGKEY-MD
     - ROW-CHARTS
     - ROW-2
     parents:
@@ -87,7 +89,7 @@ position:
       height: 50
       sliceName: Count per Type
       uuid: 450cf43b-d5af-400a-b1e7-2030477bc096
-      width: 6
+      width: 3
     type: CHART
     parents:
     - ROOT_ID
@@ -101,7 +103,7 @@ position:
       height: 50
       sliceName: Total Amount per Type
       uuid: 32b4d281-18f6-4b03-949b-a1f9bdeb1386
-      width: 6
+      width: 3
     type: CHART
     parents:
     - ROOT_ID
@@ -139,6 +141,8 @@ position:
     children:
     - CHART-I080AVLI
     - CHART-21O43XMN
+    - CHART-AGGCOUNT
+    - CHART-AGGAMOUNT
     parents:
     - ROOT_ID
     - GRID_ID
@@ -365,4 +369,99 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
+  CHART-AGGKEY:
+    type: CHART
+    id: CHART-AGGKEY
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-AGGKEY
+    meta:
+      chartId: 14
+      width: 12
+      height: 50
+      sliceName: "Wallet Type Totals \u2014 AGGREGATE KEY Table [storage-level SUM/REPLACE,\
+        \ no MV needed]"
+      uuid: 28829e50-0497-4e74-b5fe-fd4e9722a7d3
+  ROW-AGGKEY:
+    type: ROW
+    id: ROW-AGGKEY
+    children:
+    - CHART-AGGKEY
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-AGGKEY:
+    type: MARKDOWN
+    id: MARKDOWN-AGGKEY
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-AGGKEY-MD
+    meta:
+      width: 12
+      height: 46
+      code: "**Add-on comparison (2026-09-13): AGGREGATE KEY table, storage-level\
+        \ incremental aggregation.** The table above (`wallet_type_totals_agg`) is\
+        \ a **third** way this project answers \"total amount / event count per type\"\
+        , each via a structurally different mechanism:\n\n1. **Ad-hoc aggregate query**\
+        \ (the bar charts below) --\n   `SELECT type, SUM(amount) ... FROM wallet_transactions\
+        \ GROUP BY type`, computed at query time over the Primary Key table.\n2. **Synchronous\
+        \ rollup MV** (above) -- a query-time *rewrite* to a pre-merged rollup index\
+        \ over the Duplicate Key log table.\n3. **AGGREGATE KEY table (here)** --\
+        \ the table itself IS the answer. On ingest, a Routine Load job (`wallet_type_totals_agg_load`)\
+        \ writes one row per `type`; when a second row for the same key arrives, StarRocks\
+        \ merges it via each column's own aggregate function -- `SUM` for `total_amount`/`event_count`,\
+        \ `REPLACE` (keep only the latest value) for `last_event_time` -- confirmed\
+        \ live: two events summed correctly with no MV, no `GROUP BY`, not even a\
+        \ compaction wait: `SELECT *`/`COUNT(*)` reflect the merged, one-row-per-key\
+        \ state immediately.\n\n**Numbers won't match the other two exactly, and that's\
+        \ expected, not a bug:** this table sums every *raw* event by its own `type`\
+        \ -- a `bet` that later gets reversed still counts toward `bet`'s gross total\
+        \ here, with its `reversal` counted separately. The Primary Key table's aggregate\
+        \ instead nets reversals out (upsert collapses each `transaction_id` to its\
+        \ latest state, moving it out of its original `type` bucket entirely). Same-ish\
+        \ question, genuinely different answer depending on which table you ask."
+  ROW-AGGKEY-MD:
+    type: ROW
+    id: ROW-AGGKEY-MD
+    children:
+    - MARKDOWN-AGGKEY
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-AGGCOUNT:
+    type: CHART
+    id: CHART-AGGCOUNT
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CHARTS
+    meta:
+      chartId: 15
+      width: 3
+      height: 50
+      sliceName: "Count per Type \u2014 AGGREGATE KEY"
+      uuid: 3e2b6bd7-e919-4230-a290-186438577a8b
+  CHART-AGGAMOUNT:
+    type: CHART
+    id: CHART-AGGAMOUNT
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CHARTS
+    meta:
+      chartId: 16
+      width: 3
+      height: 50
+      sliceName: "Total Amount per Type \u2014 AGGREGATE KEY"
+      uuid: c299212a-437e-454e-8df4-9915dcb6fd54
 version: 1.0.0

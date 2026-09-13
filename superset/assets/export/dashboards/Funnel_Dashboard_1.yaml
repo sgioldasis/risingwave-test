@@ -23,6 +23,8 @@ position:
     - ROW-5
     - ROW-LIVE
     - ROW-6
+    - ROW-AGGKEY
+    - ROW-AGGKEY-MD
     parents:
     - ROOT_ID
   ROW-8:
@@ -237,6 +239,84 @@ position:
     children:
     - CHART-GG7WJBIW
     - CHART-M9IV31MT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-AGGKEY:
+    type: CHART
+    id: CHART-AGGKEY
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-AGGKEY
+    meta:
+      chartId: 17
+      width: 12
+      height: 50
+      sliceName: "Daily Totals \u2014 AGGREGATE KEY Table [storage-level SUM, no MV\
+        \ needed]"
+      uuid: 365d74cc-de14-4e4a-864f-6b7904557f18
+  ROW-AGGKEY:
+    type: ROW
+    id: ROW-AGGKEY
+    children:
+    - CHART-AGGKEY
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-AGGKEY:
+    type: MARKDOWN
+    id: MARKDOWN-AGGKEY
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-AGGKEY-MD
+    meta:
+      width: 12
+      height: 64
+      code: "**Add-on: AGGREGATE KEY table-model demo (2026-09-13).** `funnel_daily_totals_agg`\
+        \ is a StarRocks `AGGREGATE KEY (day, country)` table -- one row per day,\
+        \ kept continuously summed at the storage layer by three independent Routine\
+        \ Load jobs reading the *raw* `page_views`/`cart_events`/`purchases` Kafka\
+        \ topics directly. No MV, no query-time `GROUP BY` -- `SELECT *` already shows\
+        \ the merged, running total.\n\n**Deliberately not sourced from the `funnel`\
+        \ topic or the `funnel`/`funnel_summary` materialized views above**, even\
+        \ though those already compute viewers/carters/purchasers: confirmed live\
+        \ that both continuously re-emit a *growing* snapshot for the same still-open\
+        \ window (e.g. `viewers` climbing 1 -> 11 -> 21 -> ... for one `window_start`,\
+        \ not a single final row), despite `funnel_summary.sql`'s own comment claiming\
+        \ otherwise. Summing those revisions would massively over-count. The raw event\
+        \ topics have no such problem -- one message per real occurrence, genuinely\
+        \ append-only.\n\n**`dbt-starrocks` cannot build this at all** -- checked\
+        \ the installed adapter's own macro source: `table_type` only accepts `DUPLICATE`/`PRIMARY`/`UNIQUE`\
+        \ (raises a compiler error for `AGGREGATE`), and there's no dbt materialization\
+        \ for Routine Load either. Built as a plain Dagster asset instead -- see `orchestration/assets/funnel_agg_key_setup.py`\
+        \ and `docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md`.\n\n**On small differences\
+        \ vs. the Daily Totals charts above (2026-09-13):** unlike the wallet demo's\
+        \ `AGGREGATE KEY` attempt (where the mismatch was structural and permanent\
+        \ \u2014 see [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md)),\
+        \ a small residual gap here (a few tenths of a percent) is just measurement-timing\
+        \ lag between two independently-refreshing live pipelines, not a semantic\
+        \ mismatch. Confirmed directly: computed both `COUNT(*)` raw page-view rows\
+        \ and `SUM(COUNT(DISTINCT user_id))` per 1-minute window from the *same* underlying\
+        \ `src_page` source at the same time \u2014 9,515 vs. 9,521, within 0.06%.\
+        \ In this synthetic producer a user essentially never generates two page views\
+        \ in the same minute, so raw event count and distinct-viewers-per-window are\
+        \ structurally almost identical; any gap you see between this chart and the\
+        \ Daily Totals ones is just each side's own ingestion lag (this table's Routine\
+        \ Load batches every ~5s; the cached view has its own MV+RisingWave union\
+        \ lag), not a different definition of \"viewers\"."
+  ROW-AGGKEY-MD:
+    type: ROW
+    id: ROW-AGGKEY-MD
+    children:
+    - MARKDOWN-AGGKEY
     parents:
     - ROOT_ID
     - GRID_ID

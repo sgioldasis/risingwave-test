@@ -1,5 +1,5 @@
-table_name: wallet_transactions
-main_dttm_col: event_time
+table_name: wallet_type_totals_agg
+main_dttm_col: last_event_time
 description: null
 default_endpoint: null
 offset: 0
@@ -13,32 +13,23 @@ fetch_values_predicate: null
 extra: null
 normalize_columns: false
 always_filter_main_dttm: false
-uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed
+uuid: 6f9b1d86-a6cb-4b2f-8c3f-79e4ab346ef3
 metrics:
-- metric_name: sum__amount
-  verbose_name: Total Amount
-  metric_type: null
-  expression: SUM(amount)
-  description: null
-  d3format: ',.2f'
-  currency: null
-  extra: null
-  warning_text: null
-- metric_name: cnt
-  verbose_name: Count
-  metric_type: null
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
   expression: COUNT(*)
   description: null
-  d3format: ',d'
+  d3format: null
   currency: null
   extra: null
   warning_text: null
 columns:
-- column_name: status
+- column_name: event_count
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: VARCHAR(16)
+  type: BIGINT(20)
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -58,31 +49,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: transaction_id
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: VARCHAR(64)
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: account_id
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: VARCHAR(64)
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: amount
+- column_name: total_amount
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -94,7 +61,7 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: event_time
+- column_name: last_event_time
   verbose_name: null
   is_dttm: true
   is_active: true

@@ -12,7 +12,7 @@ different thing:
 
 | Dashboard | Proves | Deep-dive doc |
 |---|---|---|
-| **Funnel Dashboard** | Live (RisingWave) + historical (Databricks) funnel data served through one StarRocks view, zero-copy | [SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md), [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) |
+| **Funnel Dashboard** | Live (RisingWave) + historical (Databricks) funnel data served through one StarRocks view, zero-copy — plus an `AGGREGATE KEY` table-model add-on (viewers/carters/purchasers continuously summed at the storage layer from raw Kafka events, no MV) | [SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md), [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md), [SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md](SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md) |
 | **StarRocks Query Rewrite Demo** | StarRocks transparently redirects a query against a raw Iceberg table to a pre-aggregated materialized view, ~10x faster, no query changes | [SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md) |
 | **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus: a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load; a partial-column-update comparison (an independent writer updating only `status` via `partial_update`); a live-SQL `UPDATE`/`DELETE` demo bypassing the event pipeline entirely; and a synchronous (zero-lag, no-`REFRESH`-ever) rollup MV over a Duplicate Key log table, contrasted against this project's async MVs | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
 
@@ -100,9 +100,20 @@ Creates RisingWave sources/sinks for the funnel pipeline, the StarRocks
 external catalogs (`databricks_uc`, `lakekeeper_local`, `risingwave`), and
 all `dbt_starrocks` models — including `dashboard_funnel_serving` (the
 Funnel Dashboard's data source) and `mv_funnel_daily_country_rollup` (the
-Query Rewrite Demo's materialized view).
+Query Rewrite Demo's materialized view) — **and** `funnel_daily_totals_agg`
+(a Dagster asset, not dbt — see
+[SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md](SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md)
+for why), an `AGGREGATE KEY` table fed by three Routine Load jobs on the
+raw `page_views`/`cart_events`/`purchases` topics, continuously summing
+`viewers`/`carters`/`purchasers` at the storage layer with no MV at all.
 
-**Expected outcome:** run status `SUCCESS`.
+**Expected outcome:** run status `SUCCESS`. If this job is run while the
+wallet producer/Routine Load jobs are actively writing, the unrelated
+`starrocks_unified_dbt_assets` step can fail trying to drop
+`wallet_transactions` (StarRocks refuses if it has in-flight
+transactions) — not destructive, the table survives unchanged; just retry
+once write traffic settles, or stop the wallet producer first if
+rebuilding both demos together.
 
 **One extra manual step for the Query Rewrite Demo only:**
 `mv_funnel_daily_country_rollup` is `MANUAL`-refresh with no asset wired to

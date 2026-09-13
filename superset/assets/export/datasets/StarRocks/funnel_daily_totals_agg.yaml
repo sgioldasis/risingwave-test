@@ -1,5 +1,5 @@
-table_name: wallet_transactions
-main_dttm_col: event_time
+table_name: funnel_daily_totals_agg
+main_dttm_col: day
 description: null
 default_endpoint: null
 offset: 0
@@ -13,32 +13,41 @@ fetch_values_predicate: null
 extra: null
 normalize_columns: false
 always_filter_main_dttm: false
-uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed
+uuid: 43886fcf-5277-4a3a-b598-f64db79ed4db
 metrics:
-- metric_name: sum__amount
-  verbose_name: Total Amount
+- metric_name: sum__carters
+  verbose_name: Total Carters
   metric_type: null
-  expression: SUM(amount)
+  expression: SUM(carters)
   description: null
-  d3format: ',.2f'
+  d3format: ',d'
   currency: null
   extra: null
   warning_text: null
-- metric_name: cnt
-  verbose_name: Count
+- metric_name: sum__purchasers
+  verbose_name: Total Purchasers
   metric_type: null
-  expression: COUNT(*)
+  expression: SUM(purchasers)
+  description: null
+  d3format: ',d'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: sum__viewers
+  verbose_name: Total Viewers
+  metric_type: null
+  expression: SUM(viewers)
   description: null
   d3format: ',d'
   currency: null
   extra: null
   warning_text: null
 columns:
-- column_name: status
+- column_name: purchasers
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: VARCHAR(16)
+  type: BIGINT(20)
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -46,11 +55,11 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: type
+- column_name: carters
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: VARCHAR(16)
+  type: BIGINT(20)
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -58,11 +67,11 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: transaction_id
+- column_name: viewers
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: VARCHAR(64)
+  type: BIGINT(20)
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -70,11 +79,11 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: account_id
+- column_name: country
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: VARCHAR(64)
+  type: VARCHAR(2)
   advanced_data_type: null
   groupby: true
   filterable: true
@@ -82,23 +91,11 @@ columns:
   description: null
   python_date_format: null
   extra: null
-- column_name: amount
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: DECIMAL
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: event_time
+- column_name: day
   verbose_name: null
   is_dttm: true
   is_active: true
-  type: DATETIME
+  type: DATE
   advanced_data_type: null
   groupby: true
   filterable: true
