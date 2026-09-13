@@ -447,6 +447,60 @@ Linked to the dashboard correctly on creation this time (`dashboards: [2]`
 in the same `POST /api/v1/chart/` call) — see the "real issue found" note
 in the direct-Kafka section above for what happens when that's omitted.
 
+## Add-on comparison: PK-table UPDATE and DELETE via plain SQL, no pipeline at all (2026-09-13)
+
+A fourth capability, and the cheapest of the four add-ons: StarRocks
+Primary Key tables support genuine `UPDATE ... SET ... WHERE ...` and
+`DELETE FROM ... WHERE ...` as plain SQL DML. Unique Key (and Duplicate/
+Aggregate Key) tables can't do this at all — their only write path is
+reloading a row with the same key; there's no ad-hoc `UPDATE`/`DELETE`
+statement for them. Motivated by suggestion #3 from the same
+StarRocks-skill-driven review that produced the other two add-ons.
+
+**Why this is a distinct capability, not a variant of the others:** every
+other write path in this doc (streaming upsert, direct-Kafka Routine Load,
+partial-update Routine Load) goes through the event pipeline — a new
+Kafka message triggers the change. This one bypasses the pipeline
+entirely: an operator runs SQL directly against the table, with no event,
+no topic, no Routine Load job, no RisingWave sink in the picture at all.
+
+**Not a new table or asset — just a live-demo action**, same pattern as the
+"graceful degradation" demo in
+[SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md#demo-graceful-degradation-risingwave-outage):
+run the SQL in a client in front of the audience, then refresh the Point
+Lookup chart to show the change.
+
+```sql
+-- pick a transaction_id that's already `settled` and past its ~5s
+-- reversal window first (see caveat below)
+UPDATE sr_local_db_sr_local_db.wallet_transactions
+SET status = 'under_review'
+WHERE transaction_id = '<a settled id>';
+
+DELETE FROM sr_local_db_sr_local_db.wallet_transactions
+WHERE transaction_id = '<a settled id>';
+```
+
+**Confirmed live (2026-09-13):** ran both against the RisingWave-mediated
+`wallet_transactions` table (works identically against
+`wallet_transactions_direct_kafka` — it's the same Primary Key table type).
+`UPDATE` changed only `status`, `account_id`/`type`/`amount`/`event_time`
+all exactly as before. `DELETE` removed the row entirely —
+`COUNT(*)`/`COUNT(DISTINCT transaction_id)` both dropped by exactly one,
+invariant still holds. Both confirmed visible through Superset's own
+`/api/v1/chart/data` (`force: true`) immediately after, no cache/refresh
+issue anywhere.
+
+**Caveat worth stating during the demo, not discovering live:** pick a
+`transaction_id` that's already `settled` and past its ~5s reversal window
+(and, if demoing on the direct-Kafka table specifically, also past the
+~8s status-update window) before running the `UPDATE`/`DELETE` —
+otherwise the producer's own pending reversal or status-update event for
+that same row could land moments later and silently overwrite (or,
+for the deleted row, re-insert) whatever was just shown, which would look
+like a bug rather than the two independent mechanisms operating normally
+side by side.
+
 ## Everything runs through script runner + Dagster
 
 | Piece | How it runs |
@@ -462,6 +516,10 @@ in the direct-Kafka section above for what happens when that's omitted.
 
 No manual `starrocks-init`-style DDL step needed for this one, unlike the
 external catalogs — the native Primary Key table is fully dbt-managed.
+
+The `UPDATE`/`DELETE` add-on above is the one exception to "everything runs
+through script runner + Dagster" — it's a live SQL action against the
+already-built table, no script/asset/job involved by design.
 
 ## How to reproduce
 

@@ -14,7 +14,7 @@ different thing:
 |---|---|---|
 | **Funnel Dashboard** | Live (RisingWave) + historical (Databricks) funnel data served through one StarRocks view, zero-copy | [SR_POC_LIVE_DEMO_RUNBOOK.md](SR_POC_LIVE_DEMO_RUNBOOK.md), [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) |
 | **StarRocks Query Rewrite Demo** | StarRocks transparently redirects a query against a raw Iceberg table to a pre-aggregated materialized view, ~10x faster, no query changes | [SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md) |
-| **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load, plus a partial-column-update comparison (an independent writer updating only `status` via `partial_update`) | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
+| **Wallet Upsert Demo** | StarRocks Primary Key table upsert semantics (a reversal event overwrites the original row, `COUNT(*) == COUNT(DISTINCT transaction_id)`) — plus a side-by-side comparison of the same live data ingested via RisingWave vs. direct Kafka → StarRocks Routine Load, a partial-column-update comparison (an independent writer updating only `status` via `partial_update`), and a live-SQL `UPDATE`/`DELETE` demo bypassing the event pipeline entirely | [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md) |
 
 This doc is the "what do I click, in what order" guide. For *why* things are
 built the way they are, or the real bugs found while building them, follow
@@ -153,6 +153,15 @@ job** — it hits a DNS false-positive on Docker-internal hostnames (see
 [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md#dg-launch-from-the-host-hits-a-dns-false-positive-not-a-real-limitation)).
 Always launch through the Dagster UI (or its GraphQL API), which runs
 inside the same Docker network.
+
+**Optional live-demo extra, no job needed:** once the producer has been
+running a minute or two, you can also demo a plain SQL `UPDATE`/`DELETE`
+against `wallet_transactions` (or `wallet_transactions_direct_kafka`)
+directly — no script, no Dagster asset, bypasses the event pipeline
+entirely. See
+[SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md#add-on-comparison-pk-table-update-and-delete-via-plain-sql-no-pipeline-at-all-2026-09-13)
+for the exact SQL and the timing caveat (pick a row past its reversal/
+status-update window first).
 
 ## 4. Start the producers (Script Runner)
 
