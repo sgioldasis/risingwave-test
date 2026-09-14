@@ -131,12 +131,17 @@ once write traffic settles, or stop the wallet producer first if
 rebuilding both demos together.
 
 **No manual step needed for the Query Rewrite Demo anymore:**
-`mv_funnel_daily_country_rollup` is `MANUAL`-refresh, so it used to be
-empty right after this job — `refresh_mv_funnel_daily_country_rollup`
-(part of this job's selection) now runs
-`REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` automatically. (The Funnel
-Dashboard never needed this — its view reads both sources live, no cache
-to warm.)
+`mv_funnel_daily_country_rollup` now auto-refreshes every 5 minutes
+(`REFRESH SCHEDULE EVERY (INTERVAL 5 MINUTE)`, changed from `MANUAL` on
+2026-09-14 after "Rewrite ON"/"Rewrite OFF" were seen drifting apart over
+a long session; lengthened same-day from an initial 1-minute schedule
+after profiling showed each refresh takes 20-46s regardless of tuning, so
+1 minute meant live queries too often landed inside a slow refresh window
+— see the model file's own comment for the full tradeoff), and
+`refresh_mv_funnel_daily_country_rollup` (part of this job's selection)
+also forces an immediate synchronous refresh, so it's guaranteed current
+right after this job runs too. (The Funnel Dashboard never needed this —
+its view reads both sources live, no cache to warm.)
 
 **If this fails with `Kafka topic 'funnel' is unavailable`:** see the same
 snag documented in

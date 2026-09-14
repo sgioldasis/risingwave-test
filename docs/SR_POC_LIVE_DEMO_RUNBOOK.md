@@ -97,12 +97,13 @@ sources/`funnel_summary`/sinks, the StarRocks catalogs (`databricks_uc`,
 `dashboard_funnel_serving` is a plain view with nothing to warm — both its
 branches read live at query time (see "Why this doc exists" above).
 
-**Expected outcome:** `RUN_SUCCESS`. `mv_funnel_daily_country_rollup` is
-`MANUAL`-refresh, but this job's selection includes
-`refresh_mv_funnel_daily_country_rollup` (see
-`orchestration/assets/query_rewrite_demo_refresh.py`), which runs
-`REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` automatically as part of the
-same run — no separate manual step needed if you also want the
+**Expected outcome:** `RUN_SUCCESS`. `mv_funnel_daily_country_rollup`
+auto-refreshes every 5 minutes on its own schedule now (see
+`dbt_starrocks/models/mv_funnel_daily_country_rollup.sql`), and this job's
+selection also includes `refresh_mv_funnel_daily_country_rollup` (see
+`orchestration/assets/query_rewrite_demo_refresh.py`), which forces an
+immediate synchronous refresh as part of the same run — no separate manual
+step needed if you also want the
 query-rewrite demo (see
 [SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md)).
 

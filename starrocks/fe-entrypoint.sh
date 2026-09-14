@@ -92,11 +92,17 @@ background_refresh_metadata_interval_millis = 300000
 EOF
 
 # --- reduce JVM heap ceiling from the image's default (was -Xmx8192m on allin1;
-# fe-ubuntu's own default may differ, force to the validated 3072m either way) ---
+# fe-ubuntu's own default may differ, force a fixed ceiling either way).
+# Raised 3072m -> 4096m on 2026-09-14: FE GC log showed a 3.5s "Humongous
+# Allocation" pause under real query load (Query Rewrite Demo dashboard),
+# which is long enough to blow the planner's optimize timeout and surface
+# as an "Unexpected error" in Superset. Container has a 5G memory limit /
+# 3G reservation (docker-compose.yml), so 4096m heap still leaves headroom
+# for metaspace + native memory (Iceberg metadata cache, ADLS/Hadoop libs). ---
 if grep -q -- '-Xmx' /opt/starrocks/fe/conf/fe.conf; then
-  sed -i -E 's/-Xmx[0-9]+[mMgG]/-Xmx3072m/' /opt/starrocks/fe/conf/fe.conf
+  sed -i -E 's/-Xmx[0-9]+[mMgG]/-Xmx4096m/' /opt/starrocks/fe/conf/fe.conf
 else
-  echo 'JAVA_OPTS="-Xmx3072m"' >> /opt/starrocks/fe/conf/fe.conf
+  echo 'JAVA_OPTS="-Xmx4096m"' >> /opt/starrocks/fe/conf/fe.conf
 fi
 
 # --- disable query-triggered connector-table analyze concurrency (avoids the

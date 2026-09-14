@@ -111,6 +111,23 @@ SQL
 # do not re-add a hot_funnel_kafka table/Routine Load job/native sink here
 # without reading that history first.
 
+echo "Raising planner optimize timeout for external-catalog queries..."
+# Default new_planner_optimize_timeout (3000ms) is too tight for queries
+# against databricks_uc: evaluating MV rewrite eligibility against an
+# Iceberg external catalog requires fetching Hive/Iceberg metadata during
+# planning, which alone can take ~3.1-3.6s here -- right at the default
+# timeout boundary, causing intermittent "StarRocks planner use long time"
+# 1064 errors even though the query itself (and the eventual MV-rewritten
+# plan) runs in ~1-3s. Confirmed 2026-09-14 investigating a Superset error
+# on the Query Rewrite Demo dashboard: EXPLAIN on the exact
+# Superset-wrapped query (subquery + ORDER BY + LIMIT, as Superset issues
+# it) reproduced the failure directly against StarRocks, with no
+# correlating FE GC pause -- ruling out JVM heap pressure as the cause
+# despite the error message's own "1. FE Full GC" framing. Set as a GLOBAL
+# session variable (not just fe.conf) so it applies to every connection,
+# including Superset's, without per-connection init_command changes.
+mysql -h starrocks -P 9030 -u root -e "SET GLOBAL new_planner_optimize_timeout = 15000;"
+
 echo "Verifying catalogs..."
 mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave';"
 echo "StarRocks init complete."

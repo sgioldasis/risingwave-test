@@ -1,16 +1,27 @@
 """One-shot warm-up for the StarRocks Query Rewrite Demo.
 
 `mv_funnel_daily_country_rollup` (dbt_starrocks/models/mv_funnel_daily_country_rollup.sql)
-is deliberately `refresh_method`-default (MANUAL) -- see
-docs/SR_POC_QUERY_REWRITE_DEMO.md: a demo showing StarRocks transparently
-redirecting a query to a pre-aggregated MV wants that MV to be static and
-reproducible for the whole session, not silently refreshing mid-demo. But
-that means it's genuinely empty right after dbt creates it, and the
-"Rewrite ON" chart shows nothing until someone runs `REFRESH MATERIALIZED
-VIEW ... WITH SYNC MODE` by hand -- previously a manual step documented in
-SR_POC_SUPERSET_DEMOS_RUNBOOK.md. This asset does it automatically instead,
-so a single Dagster job actually finishes with the whole Query Rewrite
-Demo ready to view.
+was originally `refresh_method`-default (MANUAL), deliberately, so a demo
+showing StarRocks transparently redirecting a query to a pre-aggregated MV
+stayed static and reproducible for the whole session. Changed to
+`REFRESH SCHEDULE EVERY (INTERVAL 5 MINUTE)` on 2026-09-14 after live use
+showed the tradeoff cutting the other way: over a long-running session, the
+"Rewrite OFF" chart (a live raw-table scan) kept advancing while "Rewrite
+ON" (this MV) stayed frozen at whatever it looked like when last refreshed
+by hand, so the two visibly diverged in row count, not just latency --
+read as a bug, not the intended contrast. Briefly set to 1 minute the same
+day, then lengthened to 5 minutes after profiling showed each refresh
+takes 20-46s regardless of tuning, so 1 minute let live queries land
+inside a slow refresh often enough to make "Rewrite ON" look as slow as
+"Rewrite OFF". See the model file's own comment for the full tradeoff.
+
+This asset still matters even with the periodic schedule: dbt-starrocks's
+`materialized_view` materialization can skip rebuilding the model (and
+therefore skip its `post_hook`'s sync refresh) if it detects no change
+since the last run -- this asset forces a synchronous refresh unconditionally
+as part of the Dagster job, independent of whether dbt decided to touch the
+model that run, so the demo is guaranteed fresh at the end of every job
+run regardless.
 """
 
 import os
@@ -27,9 +38,10 @@ MV_NAME = "mv_funnel_daily_country_rollup"
     group_name="starrocks",
     deps=[AssetKey(["sr_local_db", MV_NAME])],
     description=(
-        "One-shot REFRESH MATERIALIZED VIEW ... WITH SYNC MODE for the "
-        "Query Rewrite Demo's MANUAL-refresh MV, so the demo is fully "
-        "populated with no separate manual step. See "
+        "Forces an immediate synchronous REFRESH MATERIALIZED VIEW for the "
+        "Query Rewrite Demo's MV (which also auto-refreshes every 5 minutes "
+        "on its own schedule), guaranteeing it's current at the end of "
+        "this job regardless of whether dbt decided to rebuild it. See "
         "docs/SR_POC_QUERY_REWRITE_DEMO.md."
     ),
 )
