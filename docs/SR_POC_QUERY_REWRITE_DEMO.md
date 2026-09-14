@@ -209,15 +209,17 @@ single snapshot.
 
 **Setup, before anyone's watching:**
 
-1. Deploy the model if not already live: Dagster UI → Jobs →
-   `dbt_starrocks_build_job` → Launchpad → Launch Run. (If the model was
-   just added/changed, `dbt parse` needs to run first so Dagster's manifest
-   picks it up — see "Deployment log" above for the exact snag hit.)
-2. Refresh it once so results are static for the whole session:
-   ```sql
-   REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE;
-   ```
-3. Confirm eligibility one more time:
+1. Deploy the model and warm the MV: Dagster UI → Jobs →
+   `modern_dashboard_setup_job` (or `starrocks_demo_setup_job` for
+   everything at once) → Launchpad → Launch Run. (If the model was just
+   added/changed, `dbt parse` needs to run first so Dagster's manifest
+   picks it up — see "Deployment log" above for the exact snag hit.) The
+   `refresh_mv_funnel_daily_country_rollup` asset in that job runs
+   `REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` automatically — no
+   longer a separate manual step (see
+   `orchestration/assets/query_rewrite_demo_refresh.py`). Re-running the
+   job re-refreshes it if you want a fresh snapshot for a new session.
+2. Confirm eligibility one more time:
    ```sql
    SELECT QUERY_REWRITE_STATUS, QUERY_REWRITE_STATUS_REASON
    FROM information_schema.materialized_views WHERE TABLE_NAME='mv_funnel_daily_country_rollup';

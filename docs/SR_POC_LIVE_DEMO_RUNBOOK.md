@@ -97,13 +97,14 @@ sources/`funnel_summary`/sinks, the StarRocks catalogs (`databricks_uc`,
 `dashboard_funnel_serving` is a plain view with nothing to warm — both its
 branches read live at query time (see "Why this doc exists" above).
 
-**Expected outcome:** `RUN_SUCCESS`. `mv_funnel_daily_country_rollup` will
-still have zero rows afterward — it's `MANUAL`-refresh and no asset is wired
-to warm it, so if you also want the query-rewrite demo, refresh it once by
-hand:
-```bash
-docker exec starrocks mysql -h127.0.0.1 -P9030 -uroot -e "REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE;"
-```
+**Expected outcome:** `RUN_SUCCESS`. `mv_funnel_daily_country_rollup` is
+`MANUAL`-refresh, but this job's selection includes
+`refresh_mv_funnel_daily_country_rollup` (see
+`orchestration/assets/query_rewrite_demo_refresh.py`), which runs
+`REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` automatically as part of the
+same run — no separate manual step needed if you also want the
+query-rewrite demo (see
+[SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md)).
 
 **If this fails with `Kafka topic 'funnel' is unavailable`:** that's
 `modern_dashboard_preflight` — it hard-requires the `funnel` topic to exist,

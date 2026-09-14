@@ -49,6 +49,7 @@ from .assets.wallet_direct_kafka_setup import (
 from .assets.wallet_sync_mv_setup import wallet_transactions_log
 from .assets.wallet_agg_key_setup import wallet_type_totals_agg
 from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
+from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -626,6 +627,34 @@ dbt_starrocks_build_job = define_asset_job(
     description="Build the StarRocks hot view and unified funnel MV",
 )
 
+# Named separately (not inlined into define_asset_job calls) so
+# starrocks_demo_setup_job below can union them into one combined
+# selection without duplicating the asset lists.
+_MODERN_DASHBOARD_SELECTION = (
+    AssetSelection.assets(modern_dashboard_preflight)
+    | AssetSelection.assets(iceberg_countries)
+    | AssetSelection.assets(risingwave_python_udfs)
+    | AssetSelection.assets(modern_dashboard_databricks_table)
+    | AssetSelection.assets(
+        AssetKey(["public", "src_page"]),
+        AssetKey(["public", "src_cart"]),
+        AssetKey(["public", "src_purchase"]),
+        AssetKey(["public", "funnel"]),
+        AssetKey(["public", "funnel_training"]),
+        AssetKey(["public", "funnel_summary"]),
+        AssetKey(["public", "funnel_enriched"]),
+        AssetKey(["public", "funnel_for_iceberg"]),
+        AssetKey(["public", "sink_funnel_to_kafka"]),
+        AssetKey(["public", "sink_funnel_to_databricks"]),
+    )
+    | AssetSelection.assets(starrocks_unified_dbt_assets)
+    | AssetSelection.assets(funnel_daily_totals_agg)
+    # Warms the Query Rewrite Demo's MANUAL-refresh MV so both charts are
+    # populated with no separate manual step -- see
+    # docs/SR_POC_QUERY_REWRITE_DEMO.md.
+    | AssetSelection.assets(refresh_mv_funnel_daily_country_rollup)
+)
+
 modern_dashboard_setup_job = define_asset_job(
     name="modern_dashboard_setup_job",
     # Without this, Dagster's default multiprocess executor spawns a fresh
@@ -637,46 +666,34 @@ modern_dashboard_setup_job = define_asset_job(
     # all. Other jobs in this file already use in_process_executor for the
     # same reason; this one was missed.
     executor_def=in_process_executor,
-    selection=(
-        AssetSelection.assets(modern_dashboard_preflight)
-        | AssetSelection.assets(iceberg_countries)
-        | AssetSelection.assets(risingwave_python_udfs)
-        | AssetSelection.assets(modern_dashboard_databricks_table)
-        | AssetSelection.assets(
-            AssetKey(["public", "src_page"]),
-            AssetKey(["public", "src_cart"]),
-            AssetKey(["public", "src_purchase"]),
-            AssetKey(["public", "funnel"]),
-            AssetKey(["public", "funnel_training"]),
-            AssetKey(["public", "funnel_summary"]),
-            AssetKey(["public", "funnel_enriched"]),
-            AssetKey(["public", "funnel_for_iceberg"]),
-            AssetKey(["public", "sink_funnel_to_kafka"]),
-            AssetKey(["public", "sink_funnel_to_databricks"]),
-        )
-        | AssetSelection.assets(starrocks_unified_dbt_assets)
-        | AssetSelection.assets(funnel_daily_totals_agg)
-    ),
+    selection=_MODERN_DASHBOARD_SELECTION,
     description=(
         "Create all RisingWave, Kafka sink, Iceberg/Databricks, and StarRocks "
-        "objects required by the modern dashboard. Infrastructure services "
-        "must already be running. Also includes funnel_daily_totals_agg, an "
-        "independent AGGREGATE KEY table-model demo add-on -- see "
+        "objects required by the modern dashboard and the Query Rewrite "
+        "Demo (including a one-shot warm-up refresh of its MANUAL-refresh "
+        "MV). Infrastructure services must already be running. Also "
+        "includes funnel_daily_totals_agg, an independent AGGREGATE KEY "
+        "table-model demo add-on -- see "
         "docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md."
     ),
+)
+
+_WALLET_PIPELINE_SELECTION = (
+    AssetSelection.assets(
+        AssetKey(["public", "src_wallet_transactions"]),
+        AssetKey(["public", "sink_wallet_transactions_to_starrocks"]),
+        AssetKey(["sr_local_db", "wallet_transactions"]),
+    )
+    | AssetSelection.assets(wallet_transactions_direct_kafka)
+    | AssetSelection.assets(wallet_status_update_load_job)
+    | AssetSelection.assets(wallet_transactions_log)
+    | AssetSelection.assets(wallet_type_totals_agg)
 )
 
 wallet_pipeline_setup_job = define_asset_job(
     name="wallet_pipeline_setup_job",
     executor_def=in_process_executor,
-    selection=AssetSelection.assets(
-        AssetKey(["public", "src_wallet_transactions"]),
-        AssetKey(["public", "sink_wallet_transactions_to_starrocks"]),
-        AssetKey(["sr_local_db", "wallet_transactions"]),
-    ) | AssetSelection.assets(wallet_transactions_direct_kafka)
-      | AssetSelection.assets(wallet_status_update_load_job)
-      | AssetSelection.assets(wallet_transactions_log)
-      | AssetSelection.assets(wallet_type_totals_agg),
+    selection=_WALLET_PIPELINE_SELECTION,
     description=(
         "Build the synthetic wallet-transaction pipeline (StarRocks Primary "
         "Key upsert/point-lookup demo, see docs/SR_POC_WALLET_UPSERT_DEMO.md): "
@@ -686,6 +703,31 @@ wallet_pipeline_setup_job = define_asset_job(
         "which needs no RisingWave asset in this selection since it only "
         "depends on the Kafka topic and StarRocks. Scoped narrowly, separate "
         "from modern_dashboard_setup_job, since this is an unrelated demo."
+    ),
+)
+
+# Single entry point for "prepare everything needed for the StarRocks demo
+# session" -- the union of modern_dashboard_setup_job and
+# wallet_pipeline_setup_job's selections (Dagster dedupes the one asset
+# they share, sr_local_db.wallet_transactions, transitively via
+# starrocks_unified_dbt_assets -- see the note on that overlap in
+# docs/SR_POC_SUPERSET_DEMOS_RUNBOOK.md). One click covers the Funnel
+# Dashboard, the Query Rewrite Demo (MV warm-up included), and the Wallet
+# Upsert Demo (all five table-model add-ons). Run this before starting any
+# producers, not while one is already writing -- see the wallet_transactions
+# concurrent-rebuild caveat in docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md.
+starrocks_demo_setup_job = define_asset_job(
+    name="starrocks_demo_setup_job",
+    executor_def=in_process_executor,
+    selection=_MODERN_DASHBOARD_SELECTION | _WALLET_PIPELINE_SELECTION,
+    description=(
+        "Single entry point that builds everything for the StarRocks demo "
+        "session in one run: the Funnel Dashboard, the Query Rewrite Demo "
+        "(including its MV warm-up), and the Wallet Upsert Demo (all five "
+        "table-model add-ons). Equivalent to running "
+        "modern_dashboard_setup_job and wallet_pipeline_setup_job together. "
+        "Run before starting any producers, not while one is already "
+        "writing to wallet_transactions."
     ),
 )
 
@@ -928,6 +970,9 @@ defs = Definitions(
         # pure additive counts (viewers/carters/purchasers), no
         # reversal/upsert semantics to fight, unlike the wallet attempt
         funnel_daily_totals_agg,
+        # One-shot warm-up refresh for the Query Rewrite Demo's
+        # MANUAL-refresh MV
+        refresh_mv_funnel_daily_country_rollup,
     ],
     jobs=[
         dbt_build_job,
@@ -938,6 +983,7 @@ defs = Definitions(
         dbt_starrocks_build_job,
         modern_dashboard_setup_job,
         wallet_pipeline_setup_job,
+        starrocks_demo_setup_job,
         kafka_topics_setup_job,
         casino_prd_full_job,
         casino_stg_job,

@@ -88,8 +88,23 @@ step creates them.
 
 ## 3. Build the pipeline objects (Dagster)
 
-Two jobs cover the three dashboards between them. Both are safe to run
-back-to-back.
+**Single entry point (recommended): Dagster UI → Jobs →
+`starrocks_demo_setup_job` → Launchpad → Launch Run.**
+
+One click builds everything for all three dashboards — it's the union of
+the two more narrowly-scoped jobs described below (`modern_dashboard_setup_job`
+`|` `wallet_pipeline_setup_job`), including the Query Rewrite Demo's MV
+warm-up (`refresh_mv_funnel_daily_country_rollup`), which used to be a
+separate manual step. Dagster automatically dedupes the one asset the two
+selections share (`sr_local_db.wallet_transactions`, pulled in transitively
+by `starrocks_unified_dbt_assets` — see the note under 3b) so it only runs
+once. **Run this before starting any producers**, not while one is already
+writing — see the concurrent-rebuild caveat under 3a.
+
+The two component jobs (`modern_dashboard_setup_job`,
+`wallet_pipeline_setup_job`) still exist and are useful on their own if you
+only want to rebuild one demo without touching the other — documented below
+for that case.
 
 ### 3a. Funnel Dashboard + StarRocks Query Rewrite Demo
 
@@ -115,15 +130,13 @@ transactions) — not destructive, the table survives unchanged; just retry
 once write traffic settles, or stop the wallet producer first if
 rebuilding both demos together.
 
-**One extra manual step for the Query Rewrite Demo only:**
-`mv_funnel_daily_country_rollup` is `MANUAL`-refresh with no asset wired to
-warm it, so it's still empty right after this job. Refresh it once:
-```bash
-docker exec starrocks mysql -h127.0.0.1 -P9030 -uroot -e \
-  "REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE;"
-```
-(The Funnel Dashboard needs no such step — its view reads both sources
-live, no cache to warm.)
+**No manual step needed for the Query Rewrite Demo anymore:**
+`mv_funnel_daily_country_rollup` is `MANUAL`-refresh, so it used to be
+empty right after this job — `refresh_mv_funnel_daily_country_rollup`
+(part of this job's selection) now runs
+`REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` automatically. (The Funnel
+Dashboard never needed this — its view reads both sources live, no cache
+to warm.)
 
 **If this fails with `Kafka topic 'funnel' is unavailable`:** see the same
 snag documented in

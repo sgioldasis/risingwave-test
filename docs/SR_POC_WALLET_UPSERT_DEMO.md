@@ -766,7 +766,9 @@ already-built table, no script/asset/job involved by design.
 ./bin/3_run_wallet_producer.sh 5     # 5 TPS, via script runner or directly
 
 # 2. build the pipeline (creates source, sink, StarRocks table)
-#    via Dagster UI (http://localhost:3000 -> wallet_pipeline_setup_job -> Launch),
+#    via Dagster UI (http://localhost:3000 -> wallet_pipeline_setup_job -> Launch,
+#    or -> starrocks_demo_setup_job -> Launch to build the Funnel/Query
+#    Rewrite demos in the same run too),
 #    NOT via `dg launch` from a host shell (see the DNS caveat above)
 
 # 3. verify upsert worked -- on BOTH tables (RisingWave-mediated and
