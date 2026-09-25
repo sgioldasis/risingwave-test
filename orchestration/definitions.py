@@ -50,6 +50,7 @@ from .assets.wallet_sync_mv_setup import wallet_transactions_log
 from .assets.wallet_agg_key_setup import wallet_type_totals_agg
 from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
+from .assets.reverse_etl_cdf_setup import reverse_etl_poc_table_setup, reverse_etl_cdf_to_kafka
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -973,6 +974,10 @@ defs = Definitions(
         # One-shot warm-up refresh for the Query Rewrite Demo's
         # MANUAL-refresh MV
         refresh_mv_funnel_daily_country_rollup,
+        # APR-233 reverse-ETL evaluation: Databricks CDF -> Kafka POC, see
+        # docs/poc/REVERSE_ETL_CDF_POC_PLAN.md
+        reverse_etl_poc_table_setup,
+        reverse_etl_cdf_to_kafka,
     ],
     jobs=[
         dbt_build_job,

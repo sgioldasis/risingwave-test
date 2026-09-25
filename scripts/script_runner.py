@@ -47,6 +47,7 @@ SCRIPTS = [
     ("5_spark_iceberg.sh", "🔥 Spark Iceberg", "Query Iceberg tables with Spark SQL"),
     ("5_marimo_risingwave.sh", "🧊 Trino Iceberg", "Query Iceberg tables with Trino"),
     ("3_run_dbt.sh", "📊 Run dbt", "Execute dbt models in dagster container"),
+    ("3_run_reverse_etl_seed.sh", "🔁 Seed Reverse-ETL POC", "Insert/update/delete a few rows in the reverse-ETL CDF POC table (APR-233)"),
     ("4_run_dashboard.sh", "📈 Run Simple Dashboard", "Start the analytics dashboard"),
     # --- Protobuf & Avro demos (moved to the bottom) ----------------------
     ("3_run_protobuf_demo.sh", "🧬 Protobuf Demo", "Produce nested protobuf orders and create RisingWave source + MV"),

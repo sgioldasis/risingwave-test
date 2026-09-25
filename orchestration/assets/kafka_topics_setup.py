@@ -9,6 +9,8 @@ OUTPUT_TOPICS = [
     "rw_poc_casino_out_turnover_percentage",
     "cronus.casino.out.br.replay",
     "bets-out-br-replay",
+    # APR-233 reverse-ETL evaluation POC -- see docs/poc/REVERSE_ETL_CDF_POC_PLAN.md
+    "rw_poc_reverse_etl_cdf_out",
 ]
 
 _DEFAULT_PARTITIONS = 15
