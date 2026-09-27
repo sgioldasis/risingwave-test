@@ -51,6 +51,7 @@ from .assets.wallet_agg_key_setup import wallet_type_totals_agg
 from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
 from .assets.reverse_etl_cdf_setup import reverse_etl_poc_table_setup, reverse_etl_cdf_to_kafka
+from .assets.reverse_etl_risingwave_setup import reverse_etl_cdf_risingwave_table
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -837,6 +838,25 @@ kafka_topics_setup_job = define_asset_job(
     executor_def=in_process_executor,
 )
 
+reverse_etl_poc_setup_job = define_asset_job(
+    name="reverse_etl_poc_setup_job",
+    selection=AssetSelection.assets(
+        reverse_etl_poc_table_setup,
+        kafka_output_topics_setup,
+        reverse_etl_cdf_to_kafka,
+        reverse_etl_cdf_risingwave_table,
+    ),
+    description=(
+        "One-click setup for the APR-233 reverse-ETL CDF POC: creates the "
+        "Databricks source + watermark tables (CDF enabled), the "
+        "rw_poc_reverse_etl_cdf_out Kafka topic, runs an initial CDF sync, "
+        "and creates the RisingWave table that ingests it via FORMAT "
+        "DEBEZIUM ENCODE JSON. Everything needed is in place after one run. "
+        "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
+    ),
+    executor_def=in_process_executor,
+)
+
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -978,6 +998,7 @@ defs = Definitions(
         # docs/poc/REVERSE_ETL_CDF_POC_PLAN.md
         reverse_etl_poc_table_setup,
         reverse_etl_cdf_to_kafka,
+        reverse_etl_cdf_risingwave_table,
     ],
     jobs=[
         dbt_build_job,
@@ -990,6 +1011,7 @@ defs = Definitions(
         wallet_pipeline_setup_job,
         starrocks_demo_setup_job,
         kafka_topics_setup_job,
+        reverse_etl_poc_setup_job,
         casino_prd_full_job,
         casino_stg_job,
         casino_datafusion_job,

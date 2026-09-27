@@ -10,6 +10,15 @@ not replicate into the warehouse").
 Uses a dedicated POC table + topic in the author's own sandbox schema
 (de_dev.sr_poc_external), not any real E&A table.
 
+Payload: Debezium-style envelopes (`before`/`after`/`op`/`source`), not raw
+CDF rows -- see `_to_debezium_events()`. CDF's own `update_preimage`/
+`update_postimage` pair collapses into one event's `before`/`after` rather
+than two separate messages, and `op` uses Debezium's `c`/`u`/`d` vocabulary
+instead of CDF's four-value `_change_type`. This is what lets RisingWave's
+`FORMAT DEBEZIUM` and StarRocks Routine Load do native upsert/delete
+ingestion against this topic, rather than needing a derived "latest row per
+key" view to reconstruct current state.
+
 Auth: reuses `_get_token`/`_submit`/`_poll` from databricks_optimize.py --
 the same Azure AD service-principal client-credentials + Statement Execution
 API flow `casino_prd_setup.py` already uses. An earlier version of this
@@ -23,6 +32,7 @@ the live run" in the design doc.
 
 import json
 import os
+from itertools import zip_longest
 from typing import Any
 
 import requests
@@ -43,6 +53,8 @@ KAFKA_TOPIC = "rw_poc_reverse_etl_cdf_out"
 # CDF's own metadata columns -- see Databricks' Change Data Feed docs.
 CHANGE_TYPE_COLUMN = "_change_type"
 COMMIT_VERSION_COLUMN = "_commit_version"
+COMMIT_TIMESTAMP_COLUMN = "_commit_timestamp"
+CDF_METADATA_COLUMNS = (CHANGE_TYPE_COLUMN, COMMIT_VERSION_COLUMN, COMMIT_TIMESTAMP_COLUMN)
 
 
 def _resolve_backfill_version() -> int | None:
@@ -114,10 +126,22 @@ def _write_last_version(token: str, sync_name: str, version: int) -> None:
 
 def _read_changes(token: str, since_version: int) -> list[dict[str, Any]]:
     """Batch-read CDF rows via table_changes(), from since_version (inclusive)
-    through the latest available version."""
+    through the latest available version.
+
+    ORDER BY _commit_version is required, not cosmetic: table_changes()
+    documents no ordering guarantee, but downstream consumers (RisingWave's
+    FORMAT DEBEZIUM table, or any consumer applying before/after/op events in
+    delivery order) need commits for the same key applied oldest-to-newest --
+    confirmed live: without this, a later update could be produced to Kafka
+    ahead of an earlier one for the same id, leaving the applied state one
+    version behind. _to_debezium_events()'s (key, commit_version) grouping
+    handles preimage/postimage pairing regardless of order, but does not by
+    itself fix the order *between* different commit versions.
+    """
     response = _run_sql(
         token,
-        f"SELECT * FROM table_changes('{CATALOG}.{SCHEMA}.{SOURCE_TABLE}', {since_version})",
+        f"SELECT * FROM table_changes('{CATALOG}.{SCHEMA}.{SOURCE_TABLE}', {since_version}) "
+        "ORDER BY _commit_version",
     )
     return _rows_as_dicts(response)
 
@@ -160,15 +184,6 @@ def _get_earliest_available_version(token: str) -> int:
 # -- no Databricks/Kafka client dependency.
 
 
-def _summarize_change_types(rows: list[dict[str, Any]]) -> dict[str, int]:
-    """Count rows per CDF `_change_type` value, for run metadata."""
-    counts: dict[str, int] = {}
-    for row in rows:
-        change_type = row.get(CHANGE_TYPE_COLUMN, "unknown")
-        counts[change_type] = counts.get(change_type, 0) + 1
-    return counts
-
-
 def _next_watermark(rows: list[dict[str, Any]], current_version: int | None) -> int | None:
     """Highest `_commit_version` observed this run, or current_version if no rows.
 
@@ -185,18 +200,124 @@ def _next_watermark(rows: list[dict[str, Any]], current_version: int | None) -> 
     return max(versions)
 
 
-def _build_kafka_message(row: dict[str, Any], key_columns: list[str]) -> tuple[bytes | None, bytes]:
-    """Build the (key, value) pair for one CDF row.
+# Columns whose declared type downstream (RisingWave's reverse_etl_cdf_poc_current.id
+# BIGINT) is numeric, but which arrive as JSON strings from the Statement
+# Execution API's response (same issue _next_watermark already works around
+# for _commit_version) -- RisingWave's Debezium JSON parser does not coerce
+# a JSON string into an Int64 column; it drops the message instead (confirmed
+# live: "Cannot parse value `1` with type `string` into expected type `Int64`").
+NUMERIC_ROW_COLUMNS = ("id",)
 
-    The value carries the full row, including CDF's own `_change_type` /
-    `_commit_version` / `_commit_timestamp` columns, so a downstream consumer
-    can distinguish inserts/updates/deletes and order by commit.
+
+def _row_without_cdf_columns(row: dict[str, Any]) -> dict[str, Any]:
+    result = {k: v for k, v in row.items() if k not in CDF_METADATA_COLUMNS}
+    for col in NUMERIC_ROW_COLUMNS:
+        if result.get(col) is not None:
+            result[col] = int(result[col])
+    return result
+
+
+def _to_debezium_events(rows: list[dict[str, Any]], key_columns: list[str]) -> list[dict[str, Any]]:
+    """Group raw CDF rows into one Debezium-style envelope per logical change.
+
+    CDF emits an update as *two* rows -- update_preimage and
+    update_postimage, sharing the same key and `_commit_version` -- which is
+    audit-useful but redundant for any consumer that just wants current
+    state, and isn't a shape most downstream systems (StarRocks Routine
+    Load, RisingWave's FORMAT DEBEZIUM, generic CDC consumers) understand
+    natively. Grouping by (row key, commit version) rather than assuming
+    preimage/postimage are adjacent in the input list -- table_changes()
+    documents no ordering guarantee, and `_read_changes()` issues no
+    ORDER BY.
+
+    Groups accumulate *lists* of rows per change type, not a single row --
+    the source table has no enforced uniqueness on key_columns (confirmed
+    live: a duplicate-keyed row is a real, reachable state here, not a
+    theoretical one), so a single commit can touch more than one physical
+    row sharing the same key (e.g. `UPDATE ... WHERE id = 1` matching two
+    duplicate rows produces two preimage/postimage pairs, both keyed `id=1`,
+    same `_commit_version`). Preimages and postimages are paired
+    positionally (`zip_longest`, in table_changes()'s own per-commit
+    ordering) rather than assuming exactly one of each -- CDF emits each
+    affected physical row's own preimage next to its own postimage, so this
+    correctly reconstructs N independent update events for N duplicate rows
+    instead of silently collapsing them into one (or dropping the pairing
+    with an early implementation that used a dict, keyed by change_type,
+    which could only ever hold the *last* row of each type per commit).
+
+    Output shape per event: ``{"before": {...} | None, "after": {...} | None,
+    "op": "c" | "u" | "d", "source": {"commit_version": int,
+    "commit_timestamp": str}}`` -- before/after carry the row's own columns
+    only (CDF's `_change_type`/`_commit_version`/`_commit_timestamp` moved
+    into `source`, which is where Debezium's own convention puts
+    change-event metadata as opposed to row content).
+    """
+    groups: dict[tuple[Any, ...], dict[str, list[dict[str, Any]]]] = {}
+    order: list[tuple[Any, ...]] = []
+
+    for row in rows:
+        change_type = row.get(CHANGE_TYPE_COLUMN)
+        row_key = tuple(row.get(col) for col in key_columns)
+        group_key = (row_key, row.get(COMMIT_VERSION_COLUMN))
+        if group_key not in groups:
+            groups[group_key] = {}
+            order.append(group_key)
+        groups[group_key].setdefault(change_type, []).append(row)
+
+    events: list[dict[str, Any]] = []
+    for group_key in order:
+        group = groups[group_key]
+        _, commit_version = group_key
+        any_row = next(iter(next(iter(group.values()))))
+        source = {"commit_version": commit_version, "commit_timestamp": any_row.get(COMMIT_TIMESTAMP_COLUMN)}
+
+        for insert_row in group.get("insert", []):
+            events.append({
+                "before": None,
+                "after": _row_without_cdf_columns(insert_row),
+                "op": "c",
+                "source": source,
+            })
+        for delete_row in group.get("delete", []):
+            events.append({
+                "before": _row_without_cdf_columns(delete_row),
+                "after": None,
+                "op": "d",
+                "source": source,
+            })
+        preimages = group.get("update_preimage", [])
+        postimages = group.get("update_postimage", [])
+        for pre, post in zip_longest(preimages, postimages):
+            events.append({
+                "before": _row_without_cdf_columns(pre) if pre is not None else None,
+                "after": _row_without_cdf_columns(post) if post is not None else None,
+                "op": "u",
+                "source": source,
+            })
+    return events
+
+
+def _summarize_ops(events: list[dict[str, Any]]) -> dict[str, int]:
+    """Count events per Debezium `op` value, for run metadata."""
+    counts: dict[str, int] = {}
+    for event in events:
+        op = event.get("op", "unknown")
+        counts[op] = counts.get(op, 0) + 1
+    return counts
+
+
+def _build_kafka_message(event: dict[str, Any], key_columns: list[str]) -> tuple[bytes | None, bytes]:
+    """Build the (key, value) pair for one Debezium-style event.
+
+    Keyed from `after` (insert/update) or `before` (delete) -- whichever
+    side of the envelope actually has the row.
     """
     key: bytes | None = None
     if key_columns:
-        key_value = {col: row.get(col) for col in key_columns}
+        row_for_key = event.get("after") or event.get("before") or {}
+        key_value = {col: row_for_key.get(col) for col in key_columns}
         key = json.dumps(key_value, default=str, sort_keys=True).encode("utf-8")
-    value = json.dumps(row, default=str).encode("utf-8")
+    value = json.dumps(event, default=str).encode("utf-8")
     return key, value
 
 
@@ -228,10 +349,10 @@ def _kafka_producer_config() -> dict[str, str]:
     return conf
 
 
-def _produce_to_kafka(rows: list[dict[str, Any]], key_columns: list[str]) -> None:
+def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str]) -> None:
     producer = Producer(_kafka_producer_config())
-    for row in rows:
-        key, value = _build_kafka_message(row, key_columns)
+    for event in events:
+        key, value = _build_kafka_message(event, key_columns)
         producer.produce(topic=KAFKA_TOPIC, key=key, value=value)
     producer.flush()
 
@@ -296,8 +417,9 @@ def reverse_etl_poc_table_setup(context: AssetExecutionContext):
     deps=[reverse_etl_poc_table_setup, kafka_output_topics_setup],
     description=(
         "Batch-read new/changed/deleted rows from the POC source table's Change "
-        "Data Feed since the last watermark, and produce them as JSON to the "
-        f"{KAFKA_TOPIC} Kafka topic. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
+        "Data Feed since the last watermark, and produce them as Debezium-style "
+        f"before/after/op events to the {KAFKA_TOPIC} Kafka topic. "
+        "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
     ),
 )
 def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
@@ -352,8 +474,11 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
             context.log.info(f"Reading CDF for {SOURCE_TABLE} since version {next_version}")
             rows = _read_changes(token, next_version)
 
-    if rows:
-        _produce_to_kafka(rows, key_columns=["id"])
+    key_columns = ["id"]
+    events = _to_debezium_events(rows, key_columns) if rows else []
+
+    if events:
+        _produce_to_kafka(events, key_columns=key_columns)
 
     if last_version is None and not rows:
         new_version = _get_current_version(token)
@@ -363,12 +488,12 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
     if new_version is not None:
         _write_last_version(token, SYNC_NAME, new_version)
 
-    change_counts = _summarize_change_types(rows)
-    context.log.info(f"Produced {len(rows)} rows to {KAFKA_TOPIC}: {change_counts}")
+    op_counts = _summarize_ops(events)
+    context.log.info(f"Produced {len(events)} event(s) to {KAFKA_TOPIC}: {op_counts}")
 
     return {
-        "rows_synced": MetadataValue.int(len(rows)),
-        "change_type_counts": MetadataValue.json(change_counts),
+        "events_synced": MetadataValue.int(len(events)),
+        "op_counts": MetadataValue.json(op_counts),
         "last_commit_version": (
             MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
         ),
