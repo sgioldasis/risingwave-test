@@ -357,6 +357,28 @@ def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str]) -> N
     producer.flush()
 
 
+# Cap on how many produced messages are echoed back into the asset's run
+# metadata -- a full backfill can emit far more events than are useful to
+# render in the Dagster UI.
+MESSAGE_PREVIEW_LIMIT = 50
+
+
+def _message_previews(
+    events: list[dict[str, Any]], key_columns: list[str], limit: int = MESSAGE_PREVIEW_LIMIT
+) -> list[dict[str, Any]]:
+    """Decode the (key, value) pairs actually sent to Kafka for the first
+    `limit` events, so the run's materialization metadata can show real
+    produced messages rather than just op counts."""
+    previews = []
+    for event in events[:limit]:
+        key, value = _build_kafka_message(event, key_columns)
+        previews.append({
+            "key": json.loads(key) if key is not None else None,
+            "value": json.loads(value),
+        })
+    return previews
+
+
 # --- Dagster assets ------------------------------------------------------------
 
 
@@ -406,10 +428,10 @@ def reverse_etl_poc_table_setup(context: AssetExecutionContext):
     )
     context.log.info(f"{CATALOG}.{SCHEMA}.{STATE_TABLE} ready")
 
-    return {
+    context.add_output_metadata({
         "source_table": MetadataValue.text(f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"),
         "state_table": MetadataValue.text(f"{CATALOG}.{SCHEMA}.{STATE_TABLE}"),
-    }
+    })
 
 
 @asset(
@@ -491,11 +513,13 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
     op_counts = _summarize_ops(events)
     context.log.info(f"Produced {len(events)} event(s) to {KAFKA_TOPIC}: {op_counts}")
 
-    return {
+    context.add_output_metadata({
         "events_synced": MetadataValue.int(len(events)),
         "op_counts": MetadataValue.json(op_counts),
         "last_commit_version": (
             MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
         ),
         "kafka_topic": MetadataValue.text(KAFKA_TOPIC),
-    }
+        "kafka_messages": MetadataValue.json(_message_previews(events, key_columns)),
+        "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
+    })

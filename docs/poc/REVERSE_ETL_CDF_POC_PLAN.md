@@ -479,3 +479,31 @@ Kafka without a third-party reverse-ETL tool* — is answered: **yes.**
      live scenario (2 duplicate deletes + 2 duplicate update pairs sharing
      commit versions) — all 4 events now correctly preserved instead of
      collapsing to 2.
+
+9. **Kafka messages surfaced in the Dagster UI, and a metadata-surfacing bug
+   found and fixed in the process (2026-09-28).** To make it possible to
+   inspect what a `reverse_etl_cdf_to_kafka` run actually produced without
+   going to `kcat`/Redpanda console, both `reverse_etl_poc_table_setup` and
+   `reverse_etl_cdf_to_kafka` were changed from `return {...}` to
+   `context.add_output_metadata({...})` — the repo's existing convention
+   (`databricks_optimize.py`, `landing_to_bronze.py`, etc.). Returning a
+   plain dict from an `@asset` function does not surface it as UI metadata;
+   Dagster instead treats it as the asset's own output value and silently
+   pickles it to `/workspace/storage/<asset_name>` via the default IO
+   manager — confirmed live: the op-count/event-count metadata added
+   earlier was never visible in the Dagster UI, only the pickled-output
+   `path` was.
+   - `reverse_etl_cdf_to_kafka` now also reports `kafka_messages`: the
+     decoded `(key, value)` pairs actually produced this run (via a new
+     `_message_previews()` helper), capped at `MESSAGE_PREVIEW_LIMIT = 50`
+     with a `kafka_messages_truncated` boolean flag, so a full backfill
+     doesn't dump unbounded data into run metadata.
+   - **First-run gotcha, not a bug**: materializing `reverse_etl_poc_setup_job`
+     against a freshly-created source table produced 0 events and left both
+     the Kafka topic and `reverse_etl_cdf_poc_current` empty — the setup
+     job only creates the tables/topic and runs an initial (empty) sync, it
+     does not seed any data itself. Running `bin/3_run_reverse_etl_seed.sh`
+     followed by re-materializing `reverse_etl_cdf_to_kafka` produced real
+     events, visible via the new `kafka_messages` metadata, and
+     `reverse_etl_cdf_poc_current` populated correctly in RisingWave —
+     confirmed live.
