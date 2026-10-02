@@ -635,8 +635,18 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
     key_columns = ["id"]
     events = _to_debezium_events(rows, key_columns) if rows else []
 
+    risingwave_columns_added: list[str] = []
     if events:
-        _produce_to_kafka(events, key_columns=key_columns, row_fields=_get_row_fields(token))
+        row_fields = _get_row_fields(token)
+        # Before producing: RisingWave only fills a column from messages it
+        # reads after the column exists. Imported here because that module
+        # imports this one.
+        from .reverse_etl_risingwave_setup import add_missing_columns
+
+        risingwave_columns_added = add_missing_columns([name for name, _, _ in row_fields])
+        if risingwave_columns_added:
+            context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
+        _produce_to_kafka(events, key_columns=key_columns, row_fields=row_fields)
 
     if last_version is None and not rows:
         new_version = _get_current_version(token)
@@ -656,6 +666,7 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
             MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
         ),
         "kafka_topic": MetadataValue.text(KAFKA_TOPIC),
-        "kafka_messages": MetadataValue.json(_message_previews(events, key_columns)),
+        "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
+        "kafka_messages":MetadataValue.json(_message_previews(events, key_columns)),
         "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
     })

@@ -226,6 +226,7 @@ Nothing was committed as part of this work; all changes are in the working tree 
 | `orchestration/assets/reverse_etl_cdf_setup.py` | Added `KAFKA_JDBC_TOPIC`, `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`. `_produce_to_kafka()` now also produces each event, in the new encoding, to `KAFKA_JDBC_TOPIC`. The existing topic's message format is untouched. |
 | `Dockerfile.debezium-connect` (new) | `FROM quay.io/debezium/connect:3.7.0.Final`, downloads `debezium-connector-jdbc-3.7.0.Final-plugin.tar.gz` from Maven Central, verifies its **sha512**, extracts it into `$KAFKA_CONNECT_PLUGINS_DIR`. |
 | `docker-compose.yml` | New `kafka-connect` service (section 6). |
+| `orchestration/assets/reverse_etl_risingwave_setup.py` | Added `add_missing_columns()`, called by `reverse_etl_cdf_to_kafka` before it produces, so new Databricks columns are added to the RisingWave table as `VARCHAR`. The table and its asset are otherwise unchanged. |
 | `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_debezium_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
 | `orchestration/definitions.py` | Imported the new asset, added it to `reverse_etl_poc_setup_job` and to the `Definitions` asset list, and updated the job description. |
 
@@ -426,22 +427,21 @@ Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column beco
   *non-additive* change, which Databricks documents as able to break batch Change Data Feed reads across that
   version range, so treat the new column as permanent.
 - `scripts/reverse_etl_poc_seed.py` uses explicit column lists, so it keeps working after the `ALTER`.
-- **The RisingWave table does not pick up the new column automatically.** `reverse_etl_cdf_poc_current` declares
-  `id`, `value` and `updated_at`, and `reverse_etl_cdf_risingwave_table` uses `CREATE TABLE IF NOT EXISTS`, so
-  re-running the job does not add a column. The original topic's messages do carry the new field (they include
-  every column of the row); RisingWave is expected to ignore a field it has no column for, but this was not
-  tested, so check that the table keeps ingesting after the first insert that uses the new column. To add the
-  column, run this **before** materializing `reverse_etl_cdf_to_kafka`:
-
-  ```bash
-  psql -h localhost -p 4566 -U root -d dev \
-       -c "ALTER TABLE reverse_etl_cdf_poc_current ADD COLUMN region VARCHAR"
-  ```
-
-  Rows already in the table show `NULL` for the new column (old Kafka messages are not re-read for it); rows
-  synced after the `ALTER` fill it in. This `ALTER` was not run against a table with a Kafka connector here, so
-  confirm it succeeds on your RisingWave version. Making this automatic would mean teaching the RisingWave asset
-  to read the live column list as well; that is not implemented.
+- **The RisingWave table picks the column up too, as `VARCHAR`.** Before producing events,
+  `reverse_etl_cdf_to_kafka` calls `add_missing_columns()` (in `reverse_etl_risingwave_setup.py`), which compares
+  the live Databricks columns with `reverse_etl_cdf_poc_current` and runs `ALTER TABLE ... ADD COLUMN ... VARCHAR`
+  for each one the table lacks. It does nothing if the table doesn't exist yet. Check with
+  `psql -h localhost -p 4566 -U root -d dev -c "describe reverse_etl_cdf_poc_current"`; the run's Dagster
+  metadata also lists `risingwave_columns_added`.
+  - **Always `VARCHAR`, whatever the Databricks type.** The original topic's values arrive as JSON strings (only
+    `id` is cast to a number), and RisingWave's Debezium JSON parser drops a message whose string value it can't
+    coerce into a numeric column. So a `DOUBLE` column is `double precision` in Postgres but `VARCHAR` here.
+  - **It must happen before the events are produced.** RisingWave fills a column only from messages it reads
+    after the column exists; a row ingested earlier keeps `NULL` even if its message carried a value. That is
+    why the sync runs inside `reverse_etl_cdf_to_kafka`, ahead of the produce step, so the everyday "materialize
+    just that asset" flow stays correct.
+  - **Coupling.** When there are events to send, the asset now needs RisingWave reachable (errors propagate
+    rather than being swallowed). Without RisingWave, Postgres would not be updated either.
 
 **What was verified**
 - Locally, with the real message builder and a real connector, against a scratch Postgres: rows with three
@@ -450,9 +450,38 @@ Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column beco
   `NULL`, applied a delete from the same batch, and the connector stayed `RUNNING`.
 - Live, read-only: `_get_row_fields()` run in the Dagster container returns the table's three columns with the
   expected types.
-- **Not** run live: the `ALTER TABLE` itself and a sync that carries a new column (these write to Databricks).
-  Databricks' documentation says adding a column is an additive change that Change Data Feed supports and that
-  batch reads use the latest table schema.
+- RisingWave, on the local instance with a throwaway Kafka-connector table (`FORMAT DEBEZIUM ENCODE JSON`):
+  messages carrying fields the table has no column for are ingested normally (the extra fields are ignored);
+  `ALTER TABLE ... ADD COLUMN` works on such a table; messages read after the `ALTER` fill the new column while
+  already-ingested rows keep `NULL`; deletes still apply. `add_missing_columns()` itself was run from the
+  Dagster container against a throwaway table: it added the missing columns, was a no-op on a second call and on
+  a missing table, and handled a column name needing quotes (`my col`).
+- **Live, end to end (2026-10-02):** `ALTER TABLE ... ADD COLUMN region STRING` and an insert of ids 10 and 11
+  (`evolved-eu`, `evolved-us`) were run in Databricks, then `reverse_etl_cdf_to_kafka` was materialized. Postgres
+  got the new `region` column with `eu` / `us` on those rows, so Change Data Feed carried the added column
+  through as the Databricks documentation says (an additive change; batch reads use the latest table schema).
+  `add_missing_columns()` then added `region` to the RisingWave table (logged as `Added column(s) to the
+  RisingWave table: ['region']`), and after the fix-up below the RisingWave rows showed the values as well.
+
+**Gotcha seen during the live run: rows ingested before the column exists stay `NULL` in RisingWave.**
+The first sync of ids 10 and 11 ran on an earlier code version that had the Postgres schema logic but not
+`add_missing_columns()`. RisingWave ingested those two rows (07:20) while its table had no `region` column, and
+it does not re-read old messages for a column added later (RisingWave `_rw_timestamp` showed 07:20 for ids 10/11;
+the column was added by a later run at 07:29). Postgres was unaffected because the sink adds columns itself. With
+the current code this cannot happen for a *new* column, because the RisingWave column is added before the events
+carrying it are produced. To repair rows that were ingested too early, make a real change to them so fresh events
+are produced, then materialize `reverse_etl_cdf_to_kafka`:
+
+```sql
+UPDATE de_dev.sr_poc_external.reverse_etl_cdf_poc_source
+SET region = region, updated_at = current_timestamp()
+WHERE id IN (10, 11);
+```
+
+`updated_at` is changed on purpose: an update that changes nothing may not produce a change event. The same
+situation can arise if the RisingWave table is dropped and recreated: the asset creates it with its three base
+columns and `scan.startup.mode = 'earliest'` starts re-reading the topic immediately, so a column added a moment
+later misses the messages already read. Prefer the in-place `ALTER` path over recreating the table.
 
 ---
 
@@ -497,8 +526,8 @@ Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column beco
   not inspected (this matches the pre-existing behaviour of the original topic).
 - **Schema evolution is additive only.** Adding a column works end to end (section 10.1). Renames, drops and type
   changes are not handled: Databricks documents that batch Change Data Feed reads can fail across non-additive
-  schema changes, and the sink's `schema.evolution=basic` only adds columns. The original topic and the
-  RisingWave table keep their fixed columns (not tested with a new column present).
+  schema changes, and both the sink's `schema.evolution=basic` and `add_missing_columns()` only add columns. A
+  column dropped in Databricks stays in Postgres and RisingWave.
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
   else arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings were not exercised end to end.
 - **Key column is hardcoded.** `key_columns = ["id"]` is still fixed in `reverse_etl_cdf_to_kafka`, and the

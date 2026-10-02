@@ -59,6 +59,38 @@ def _kafka_connector_options() -> str:
     return ",\n    ".join(options)
 
 
+def add_missing_columns(column_names: list[str]) -> list[str]:
+    """Add any of `column_names` that the table lacks, as VARCHAR; returns the
+    columns added. A no-op (returns []) if the table doesn't exist yet.
+
+    Must run *before* messages carrying a new column are produced: RisingWave
+    only fills a column from messages read after it exists, so a row ingested
+    earlier keeps NULL. VARCHAR regardless of the Databricks type: this
+    topic's values arrive as JSON strings (only `id` is cast to a number),
+    and RisingWave's Debezium JSON parser drops a message whose string value
+    it can't coerce into a numeric column.
+    """
+    conn = _get_risingwave_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s",
+                (TABLE_NAME,),
+            )
+            existing = {row[0] for row in cur.fetchall()}
+            if not existing:
+                return []
+            added = [name for name in column_names if name not in existing]
+            for name in added:
+                quoted = '"' + name.replace('"', '""') + '"'
+                cur.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {quoted} VARCHAR")
+        conn.commit()
+        return added
+    finally:
+        conn.close()
+
+
 @asset(
     group_name="reverse_etl_poc",
     # Ordered after reverse_etl_cdf_to_kafka purely for job-run narrative
