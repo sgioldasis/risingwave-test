@@ -1,0 +1,13 @@
+ARG DEBEZIUM_VERSION=3.7.0.Final
+FROM quay.io/debezium/connect:${DEBEZIUM_VERSION}
+
+ARG DEBEZIUM_VERSION
+ARG JDBC_PLUGIN_SHA512=b0596cc663f197851565c6b7781be8049c2d3f06fe517384c1910d5078738e64c41c92f00fa1de7aeda92ef7fbf4d1ec037e02c770e6ae4b563c9f21c2600b95
+
+# The base image ships only source connectors; the JDBC sink is a separate
+# artifact. Pinned by sha512 (matches Maven Central's published .sha512).
+RUN curl -fsSL -o /tmp/jdbc-plugin.tar.gz \
+      "https://repo1.maven.org/maven2/io/debezium/debezium-connector-jdbc/${DEBEZIUM_VERSION}/debezium-connector-jdbc-${DEBEZIUM_VERSION}-plugin.tar.gz" \
+ && echo "${JDBC_PLUGIN_SHA512}  /tmp/jdbc-plugin.tar.gz" | sha512sum -c - \
+ && tar -xzf /tmp/jdbc-plugin.tar.gz -C "${KAFKA_CONNECT_PLUGINS_DIR}" \
+ && rm /tmp/jdbc-plugin.tar.gz

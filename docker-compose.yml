@@ -694,6 +694,58 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases funnel rw_poc_casino_out_avro wallet_transactions wallet_status_updates; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
 
+  # Kafka Connect + Debezium JDBC sink (reverse-ETL CDF topic -> host Postgres).
+  # The worker's internal topics live on local Redpanda; the connector's own
+  # consumer is pointed at the external SASL_SSL cluster via per-connector
+  # consumer.override.* (see orchestration/assets/reverse_etl_debezium_sink.py),
+  # so no topic-create rights are needed on the external cluster.
+  kafka-connect:
+    build:
+      context: .
+      dockerfile: Dockerfile.debezium-connect
+    container_name: kafka-connect
+    ports:
+      - "127.0.0.1:8083:8083"  # Connect REST API (localhost only)
+    environment:
+      - BOOTSTRAP_SERVERS=redpanda:9092
+      - GROUP_ID=debezium-connect
+      - CONFIG_STORAGE_TOPIC=_connect_configs
+      - OFFSET_STORAGE_TOPIC=_connect_offsets
+      - STATUS_STORAGE_TOPIC=_connect_statuses
+      - CONFIG_STORAGE_REPLICATION_FACTOR=1
+      - OFFSET_STORAGE_REPLICATION_FACTOR=1
+      - STATUS_STORAGE_REPLICATION_FACTOR=1
+      - KAFKA_HEAP_OPTS=-Xms256m -Xmx640m
+      # Lets a connector override its consumer's bootstrap/SASL settings.
+      - CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY=All
+      # Secrets are referenced from connector configs as ${env:NAME}, so they
+      # never appear in the stored config or the REST API. Allowlist limits
+      # which env vars a connector config can read.
+      - CONNECT_CONFIG_PROVIDERS=env
+      - CONNECT_CONFIG_PROVIDERS_ENV_CLASS=org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      - CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN=^(KAFKA_OUTPUT_SASL_USERNAME|KAFKA_OUTPUT_SASL_PASSWORD|POSTGRES_PASSWORD)$$
+      - KAFKA_OUTPUT_SASL_USERNAME
+      - KAFKA_OUTPUT_SASL_PASSWORD
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - iceberg_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: always
+
   prometheus-0:
     image: prom/prometheus:latest
     container_name: prometheus-0

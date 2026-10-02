@@ -321,6 +321,69 @@ def _build_kafka_message(event: dict[str, Any], key_columns: list[str]) -> tuple
     return key, value
 
 
+# Same events as KAFKA_TOPIC, re-encoded for the Debezium JDBC sink, which
+# requires a Kafka Connect schema in every message (RisingWave's
+# FORMAT DEBEZIUM does not, so KAFKA_TOPIC is left schemaless).
+KAFKA_JDBC_TOPIC = "rw_poc_reverse_etl_cdf_out_jdbc"
+
+# (name, connect type, optional) for the source table's row columns. The
+# envelope name follows Debezium's `<server>.<schema>.<table>.Envelope`
+# convention, which is what the sink uses to recognise a Debezium event.
+# updated_at stays a string, matching the RisingWave table's VARCHAR.
+ROW_SCHEMA_FIELDS = (("id", "int64", False), ("value", "string", True), ("updated_at", "string", True))
+ENVELOPE_SCHEMA_NAME = f"{SYNC_NAME}.{SCHEMA}.{SOURCE_TABLE}"
+
+
+def _connect_row_schema(optional: bool) -> dict[str, Any]:
+    return {
+        "type": "struct",
+        "name": f"{ENVELOPE_SCHEMA_NAME}.Value",
+        "optional": optional,
+        "fields": [{"field": n, "type": t, "optional": o} for n, t, o in ROW_SCHEMA_FIELDS],
+    }
+
+
+def _build_connect_json_message(event: dict[str, Any], key_columns: list[str]) -> tuple[bytes, bytes]:
+    """Build the (key, value) pair for one event as Kafka Connect JSON with
+    embedded schemas (`{"schema": ..., "payload": ...}`), for the Debezium
+    JDBC sink. Key must be non-null so the sink can resolve the primary key
+    from `record_key`; deletes carry the row in `before` and `op` = "d"."""
+    row_for_key = event.get("after") or event.get("before") or {}
+    field_types = {n: (t, o) for n, t, o in ROW_SCHEMA_FIELDS}
+    key_schema = {
+        "type": "struct",
+        "name": f"{ENVELOPE_SCHEMA_NAME}.Key",
+        "optional": False,
+        "fields": [{"field": c, "type": field_types[c][0], "optional": False} for c in key_columns],
+    }
+    key = {"schema": key_schema, "payload": {c: row_for_key.get(c) for c in key_columns}}
+
+    value_schema = {
+        "type": "struct",
+        "name": f"{ENVELOPE_SCHEMA_NAME}.Envelope",
+        "optional": False,
+        "fields": [
+            {"field": "before", **_connect_row_schema(optional=True)},
+            {"field": "after", **_connect_row_schema(optional=True)},
+            {"field": "op", "type": "string", "optional": False},
+            {
+                "field": "source",
+                "type": "struct",
+                "optional": True,
+                "fields": [
+                    {"field": "commit_version", "type": "int64", "optional": True},
+                    {"field": "commit_timestamp", "type": "string", "optional": True},
+                ],
+            },
+        ],
+    }
+    value = {"schema": value_schema, "payload": event}
+    return (
+        json.dumps(key, default=str, sort_keys=True).encode("utf-8"),
+        json.dumps(value, default=str).encode("utf-8"),
+    )
+
+
 # --- Kafka (confluent-kafka) --------------------------------------------------
 
 
@@ -354,6 +417,8 @@ def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str]) -> N
     for event in events:
         key, value = _build_kafka_message(event, key_columns)
         producer.produce(topic=KAFKA_TOPIC, key=key, value=value)
+        jdbc_key, jdbc_value = _build_connect_json_message(event, key_columns)
+        producer.produce(topic=KAFKA_JDBC_TOPIC, key=jdbc_key, value=jdbc_value)
     producer.flush()
 
 

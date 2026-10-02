@@ -52,6 +52,7 @@ from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
 from .assets.reverse_etl_cdf_setup import reverse_etl_poc_table_setup, reverse_etl_cdf_to_kafka
 from .assets.reverse_etl_risingwave_setup import reverse_etl_cdf_risingwave_table
+from .assets.reverse_etl_debezium_sink import reverse_etl_debezium_jdbc_sink
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -845,13 +846,16 @@ reverse_etl_poc_setup_job = define_asset_job(
         kafka_output_topics_setup,
         reverse_etl_cdf_to_kafka,
         reverse_etl_cdf_risingwave_table,
+        reverse_etl_debezium_jdbc_sink,
     ),
     description=(
         "One-click setup for the APR-233 reverse-ETL CDF POC: creates the "
         "Databricks source + watermark tables (CDF enabled), the "
         "rw_poc_reverse_etl_cdf_out Kafka topic, runs an initial CDF sync, "
-        "and creates the RisingWave table that ingests it via FORMAT "
-        "DEBEZIUM ENCODE JSON. Everything needed is in place after one run. "
+        "creates the RisingWave table that ingests it via FORMAT "
+        "DEBEZIUM ENCODE JSON, and registers the Debezium JDBC sink that "
+        "upserts the same changes into host Postgres. Everything needed is "
+        "in place after one run (requires the kafka-connect compose service). "
         "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
     ),
     executor_def=in_process_executor,
@@ -999,6 +1003,7 @@ defs = Definitions(
         reverse_etl_poc_table_setup,
         reverse_etl_cdf_to_kafka,
         reverse_etl_cdf_risingwave_table,
+        reverse_etl_debezium_jdbc_sink,
     ],
     jobs=[
         dbt_build_job,
