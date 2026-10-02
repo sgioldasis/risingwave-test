@@ -326,45 +326,106 @@ def _build_kafka_message(event: dict[str, Any], key_columns: list[str]) -> tuple
 # FORMAT DEBEZIUM does not, so KAFKA_TOPIC is left schemaless).
 KAFKA_JDBC_TOPIC = "rw_poc_reverse_etl_cdf_out_jdbc"
 
-# (name, connect type, optional) for the source table's row columns. The
-# envelope name follows Debezium's `<server>.<schema>.<table>.Envelope`
+# The envelope name follows Debezium's `<server>.<schema>.<table>.Envelope`
 # convention, which is what the sink uses to recognise a Debezium event.
-# updated_at stays a string, matching the RisingWave table's VARCHAR.
-ROW_SCHEMA_FIELDS = (("id", "int64", False), ("value", "string", True), ("updated_at", "string", True))
 ENVELOPE_SCHEMA_NAME = f"{SYNC_NAME}.{SCHEMA}.{SOURCE_TABLE}"
 
+# Databricks SQL type -> Kafka Connect schema type. Anything not listed
+# (STRING, TIMESTAMP, DATE, DECIMAL, ...) is carried as a string, exactly as
+# the Statement Execution API returned it (updated_at stays a string,
+# matching the RisingWave table's VARCHAR).
+_CONNECT_TYPE_BY_DATABRICKS_TYPE = {
+    "TINYINT": "int8",
+    "SMALLINT": "int16",
+    "INT": "int32",
+    "INTEGER": "int32",
+    "BIGINT": "int64",
+    "LONG": "int64",
+    "FLOAT": "float",
+    "DOUBLE": "double",
+    "BOOLEAN": "boolean",
+}
 
-def _connect_row_schema(optional: bool) -> dict[str, Any]:
+RowField = tuple[str, str, bool]  # (column name, connect type, optional)
+
+
+def _get_row_fields(token: str) -> list[RowField]:
+    """The source table's *current* columns, read at sync time, so a column
+    added in Databricks flows into the message schema -- and from there into
+    Postgres via the sink's schema.evolution -- with no code change. CDF
+    reads use the latest table schema, so rows and schema stay in step."""
+    response = _run_sql(
+        token,
+        f"SELECT column_name, data_type, is_nullable FROM {CATALOG}.information_schema.columns "
+        f"WHERE table_schema = '{SCHEMA}' AND table_name = '{SOURCE_TABLE}' "
+        "ORDER BY ordinal_position",
+    )
+    fields = [
+        (
+            row["column_name"],
+            _CONNECT_TYPE_BY_DATABRICKS_TYPE.get(str(row["data_type"]).upper(), "string"),
+            str(row["is_nullable"]).upper() != "NO",
+        )
+        for row in _rows_as_dicts(response)
+    ]
+    if not fields:
+        raise RuntimeError(f"No columns found for {CATALOG}.{SCHEMA}.{SOURCE_TABLE} in information_schema")
+    return fields
+
+
+def _coerce(value: Any, connect_type: str) -> Any:
+    """The Statement Execution API returns every value as a string; cast to
+    the declared Connect type, since Connect's JSON converter does not."""
+    if value is None:
+        return None
+    if connect_type.startswith("int"):
+        return int(value)
+    if connect_type in ("float", "double"):
+        return float(value)
+    if connect_type == "boolean":
+        return value if isinstance(value, bool) else str(value).lower() == "true"
+    return value
+
+
+def _coerce_row(row: dict[str, Any] | None, row_fields: list[RowField]) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {name: _coerce(row.get(name), connect_type) for name, connect_type, _ in row_fields}
+
+
+def _connect_row_schema(optional: bool, row_fields: list[RowField]) -> dict[str, Any]:
     return {
         "type": "struct",
         "name": f"{ENVELOPE_SCHEMA_NAME}.Value",
         "optional": optional,
-        "fields": [{"field": n, "type": t, "optional": o} for n, t, o in ROW_SCHEMA_FIELDS],
+        "fields": [{"field": n, "type": t, "optional": o} for n, t, o in row_fields],
     }
 
 
-def _build_connect_json_message(event: dict[str, Any], key_columns: list[str]) -> tuple[bytes, bytes]:
+def _build_connect_json_message(
+    event: dict[str, Any], key_columns: list[str], row_fields: list[RowField]
+) -> tuple[bytes, bytes]:
     """Build the (key, value) pair for one event as Kafka Connect JSON with
     embedded schemas (`{"schema": ..., "payload": ...}`), for the Debezium
     JDBC sink. Key must be non-null so the sink can resolve the primary key
     from `record_key`; deletes carry the row in `before` and `op` = "d"."""
     row_for_key = event.get("after") or event.get("before") or {}
-    field_types = {n: (t, o) for n, t, o in ROW_SCHEMA_FIELDS}
+    field_types = {n: t for n, t, _ in row_fields}
     key_schema = {
         "type": "struct",
         "name": f"{ENVELOPE_SCHEMA_NAME}.Key",
         "optional": False,
-        "fields": [{"field": c, "type": field_types[c][0], "optional": False} for c in key_columns],
+        "fields": [{"field": c, "type": field_types[c], "optional": False} for c in key_columns],
     }
-    key = {"schema": key_schema, "payload": {c: row_for_key.get(c) for c in key_columns}}
+    key = {"schema": key_schema, "payload": {c: _coerce(row_for_key.get(c), field_types[c]) for c in key_columns}}
 
     value_schema = {
         "type": "struct",
         "name": f"{ENVELOPE_SCHEMA_NAME}.Envelope",
         "optional": False,
         "fields": [
-            {"field": "before", **_connect_row_schema(optional=True)},
-            {"field": "after", **_connect_row_schema(optional=True)},
+            {"field": "before", **_connect_row_schema(optional=True, row_fields=row_fields)},
+            {"field": "after", **_connect_row_schema(optional=True, row_fields=row_fields)},
             {"field": "op", "type": "string", "optional": False},
             {
                 "field": "source",
@@ -377,7 +438,17 @@ def _build_connect_json_message(event: dict[str, Any], key_columns: list[str]) -
             },
         ],
     }
-    value = {"schema": value_schema, "payload": event}
+    source = event.get("source") or {}
+    payload = {
+        "before": _coerce_row(event.get("before"), row_fields),
+        "after": _coerce_row(event.get("after"), row_fields),
+        "op": event["op"],
+        "source": {
+            "commit_version": _coerce(source.get("commit_version"), "int64"),
+            "commit_timestamp": source.get("commit_timestamp"),
+        },
+    }
+    value = {"schema": value_schema, "payload": payload}
     return (
         json.dumps(key, default=str, sort_keys=True).encode("utf-8"),
         json.dumps(value, default=str).encode("utf-8"),
@@ -412,12 +483,12 @@ def _kafka_producer_config() -> dict[str, str]:
     return conf
 
 
-def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str]) -> None:
+def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str], row_fields: list[RowField]) -> None:
     producer = Producer(_kafka_producer_config())
     for event in events:
         key, value = _build_kafka_message(event, key_columns)
         producer.produce(topic=KAFKA_TOPIC, key=key, value=value)
-        jdbc_key, jdbc_value = _build_connect_json_message(event, key_columns)
+        jdbc_key, jdbc_value = _build_connect_json_message(event, key_columns, row_fields)
         producer.produce(topic=KAFKA_JDBC_TOPIC, key=jdbc_key, value=jdbc_value)
     producer.flush()
 
@@ -565,7 +636,7 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
     events = _to_debezium_events(rows, key_columns) if rows else []
 
     if events:
-        _produce_to_kafka(events, key_columns=key_columns)
+        _produce_to_kafka(events, key_columns=key_columns, row_fields=_get_row_fields(token))
 
     if last_version is None and not rows:
         new_version = _get_current_version(token)

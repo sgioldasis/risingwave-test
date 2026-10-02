@@ -114,7 +114,21 @@ reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Key        key st
 
 ### 4.3 Row columns
 
-Defined once in `ROW_SCHEMA_FIELDS`:
+The row schema is **derived at sync time** from the source table's current columns, not hardcoded:
+`_get_row_fields()` runs
+
+```sql
+SELECT column_name, data_type, is_nullable
+FROM de_dev.information_schema.columns
+WHERE table_schema = 'sr_poc_external' AND table_name = 'reverse_etl_cdf_poc_source'
+ORDER BY ordinal_position
+```
+
+each time `reverse_etl_cdf_to_kafka` produces events, and builds the Connect schema from the result. A column
+added in Databricks therefore reaches the message schema, and from there Postgres, with no code change
+(section 10.1). If `information_schema` returns no columns the asset fails rather than guessing.
+
+At the time of writing the table has these columns:
 
 | Column | Connect type | Optional | Resulting Postgres type |
 |---|---|---|---|
@@ -122,9 +136,30 @@ Defined once in `ROW_SCHEMA_FIELDS`:
 | `value` | `string` | yes | `text` |
 | `updated_at` | `string` | yes | `text` |
 
-`updated_at` is deliberately a string, matching the RisingWave table's `VARCHAR` (the hand-rolled envelope does
-not follow real Debezium connectors' temporal encodings, so declaring a native temporal type risked a parse
-mismatch). It can be cast downstream.
+Databricks type to Connect type mapping (`_CONNECT_TYPE_BY_DATABRICKS_TYPE`):
+
+| Databricks type | Connect JSON type | Postgres type created by the sink (verified) |
+|---|---|---|
+| `TINYINT` / `SMALLINT` | `int8` / `int16` | not tested |
+| `INT` / `INTEGER` | `int32` | `integer` |
+| `BIGINT` / `LONG` | `int64` | `bigint` |
+| `FLOAT` | `float` | not tested |
+| `DOUBLE` | `double` | `double precision` |
+| `BOOLEAN` | `boolean` | `boolean` |
+| anything else (`STRING`, `TIMESTAMP`, `DATE`, `DECIMAL`, ...) | `string` | `text` |
+
+Kafka Connect's JSON schema type names are `float` and `double`, not `float32` / `float64`. An earlier draft of
+the mapping used the latter and the converter rejected the message (`Unknown schema type: float64`); this was
+caught by the local end-to-end test before any live use.
+
+The Statement Execution API returns every value as a string, so values are cast to the declared Connect type
+(`_coerce()`) before they are written into the payload. Row payloads contain exactly the schema's fields, in
+schema order. `source.commit_version` is cast to an integer as well (in the first version it was sent as a string
+into an `int64` field, which Connect's JSON converter reads as 0; the sink ignores `source`, so it went unnoticed).
+
+`updated_at` is deliberately a string (`TIMESTAMP` falls into the "anything else" row), matching the RisingWave
+table's `VARCHAR`: the hand-rolled envelope does not follow real Debezium connectors' temporal encodings, so
+declaring a native temporal type risked a parse mismatch. It can be cast downstream.
 
 ### 4.4 Example: an insert (`op = "c"`)
 
@@ -188,7 +223,7 @@ Nothing was committed as part of this work; all changes are in the working tree 
 | File | Change |
 |---|---|
 | `orchestration/assets/kafka_topics_setup.py` | Added `rw_poc_reverse_etl_cdf_out_jdbc` to `OUTPUT_TOPICS`, so the existing `kafka_output_topics_setup` asset creates it (15 partitions, replication 1, like the others). |
-| `orchestration/assets/reverse_etl_cdf_setup.py` | Added `KAFKA_JDBC_TOPIC`, `ROW_SCHEMA_FIELDS`, `ENVELOPE_SCHEMA_NAME`, `_connect_row_schema()` and `_build_connect_json_message()`. `_produce_to_kafka()` now also produces each event, in the new encoding, to `KAFKA_JDBC_TOPIC`. The existing topic's message format is untouched. |
+| `orchestration/assets/reverse_etl_cdf_setup.py` | Added `KAFKA_JDBC_TOPIC`, `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`. `_produce_to_kafka()` now also produces each event, in the new encoding, to `KAFKA_JDBC_TOPIC`. The existing topic's message format is untouched. |
 | `Dockerfile.debezium-connect` (new) | `FROM quay.io/debezium/connect:3.7.0.Final`, downloads `debezium-connector-jdbc-3.7.0.Final-plugin.tar.gz` from Maven Central, verifies its **sha512**, extracts it into `$KAFKA_CONNECT_PLUGINS_DIR`. |
 | `docker-compose.yml` | New `kafka-connect` service (section 6). |
 | `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_debezium_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
@@ -354,6 +389,71 @@ No new pulls are needed once the image is built. A rebuild (`docker compose buil
 `up --build`) pulls `quay.io/debezium/connect:3.7.0.Final` and downloads the plugin from Maven Central, so
 do it off VPN.
 
+### 10.1 Schema evolution demo (add a column in Databricks)
+
+Because the message schema is derived from the table's current columns on every sync (section 4.3), a column
+added in Databricks appears in Postgres without touching any code or connector config.
+
+**Before you start:** the asset code changed, so make Dagster pick it up (Deployment, then Reload definitions in
+the UI, or `docker compose restart dagster-webserver dagster-daemon`). The Debezium connector itself needs no
+restart or change.
+
+**Steps** (Databricks SQL editor or UI, then Dagster, then `psql`):
+
+```sql
+-- 1. Databricks: add a column (additive change, supported by Change Data Feed)
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_cdf_poc_source ADD COLUMN region STRING;
+
+-- 2. Databricks: write a row that uses it (explicit column list)
+INSERT INTO de_dev.sr_poc_external.reverse_etl_cdf_poc_source (id, value, updated_at, region)
+VALUES (10, 'evolved', current_timestamp(), 'eu');
+```
+
+3. Dagster: materialize `reverse_etl_cdf_to_kafka`.
+4. Postgres:
+
+```bash
+psql -h localhost -U postgres -d postgres -c '\d reverse_etl_cdf_poc' \
+     -c 'select * from reverse_etl_cdf_poc order by id'
+```
+
+Expected: a new `region text` column; rows that existed before show `NULL` in it; the new row shows `eu`.
+Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column becomes `double precision`,
+`integer` or `boolean`.
+
+**Cautions**
+- The `ALTER TABLE` changes your sandbox table permanently. Dropping or renaming a column later is a
+  *non-additive* change, which Databricks documents as able to break batch Change Data Feed reads across that
+  version range, so treat the new column as permanent.
+- `scripts/reverse_etl_poc_seed.py` uses explicit column lists, so it keeps working after the `ALTER`.
+- **The RisingWave table does not pick up the new column automatically.** `reverse_etl_cdf_poc_current` declares
+  `id`, `value` and `updated_at`, and `reverse_etl_cdf_risingwave_table` uses `CREATE TABLE IF NOT EXISTS`, so
+  re-running the job does not add a column. The original topic's messages do carry the new field (they include
+  every column of the row); RisingWave is expected to ignore a field it has no column for, but this was not
+  tested, so check that the table keeps ingesting after the first insert that uses the new column. To add the
+  column, run this **before** materializing `reverse_etl_cdf_to_kafka`:
+
+  ```bash
+  psql -h localhost -p 4566 -U root -d dev \
+       -c "ALTER TABLE reverse_etl_cdf_poc_current ADD COLUMN region VARCHAR"
+  ```
+
+  Rows already in the table show `NULL` for the new column (old Kafka messages are not re-read for it); rows
+  synced after the `ALTER` fill it in. This `ALTER` was not run against a table with a Kafka connector here, so
+  confirm it succeeds on your RisingWave version. Making this automatic would mean teaching the RisingWave asset
+  to read the live column list as well; that is not implemented.
+
+**What was verified**
+- Locally, with the real message builder and a real connector, against a scratch Postgres: rows with three
+  columns, then rows with four extra columns (`string`, `double`, `int`, `boolean`). The sink issued the
+  `ALTER TABLE` itself, created `text`, `double precision`, `integer` and `boolean` columns, left earlier rows
+  `NULL`, applied a delete from the same batch, and the connector stayed `RUNNING`.
+- Live, read-only: `_get_row_fields()` run in the Dagster container returns the table's three columns with the
+  expected types.
+- **Not** run live: the `ALTER TABLE` itself and a sync that carries a new column (these write to Databricks).
+  Databricks' documentation says adding a column is an additive change that Change Data Feed supports and that
+  batch reads use the latest table schema.
+
 ---
 
 ## 11. Operating notes
@@ -395,8 +495,14 @@ do it off VPN.
 - **Not atomic across topics.** `_produce_to_kafka()` writes each event to both topics and then flushes once.
   A failure in the middle can leave the two topics with different contents. Delivery errors from `flush()` are
   not inspected (this matches the pre-existing behaviour of the original topic).
-- **Hardcoded row schema.** `ROW_SCHEMA_FIELDS` and the integer cast of `id` (`NUMERIC_ROW_COLUMNS`) are tied to
-  the POC table (`id`, `value`, `updated_at`). A different source table needs both updated.
+- **Schema evolution is additive only.** Adding a column works end to end (section 10.1). Renames, drops and type
+  changes are not handled: Databricks documents that batch Change Data Feed reads can fail across non-additive
+  schema changes, and the sink's `schema.evolution=basic` only adds columns. The original topic and the
+  RisingWave table keep their fixed columns (not tested with a new column present).
+- **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
+  else arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings were not exercised end to end.
+- **Key column is hardcoded.** `key_columns = ["id"]` is still fixed in `reverse_etl_cdf_to_kafka`, and the
+  integer cast of `id` in the original topic's rows (`NUMERIC_ROW_COLUMNS`) is unchanged.
 - **`updated_at` is text** in Postgres, not `timestamp`/`timestamptz`.
 - **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry; fine for
   a POC, worth revisiting at volume.
