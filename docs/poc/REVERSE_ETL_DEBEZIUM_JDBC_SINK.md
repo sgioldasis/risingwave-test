@@ -263,6 +263,9 @@ All changes are on branch `feature-sr` (see `git log`).
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave table now reads the single `_jdbc` topic. `reverse_etl_cdf_risingwave_table` creates it from the live Databricks columns with real types (`_create_table_sql()`), so no column is added after the table starts reading. `add_missing_columns()` (called by `reverse_etl_cdf_to_kafka` before it produces) adds later-appearing columns with their types. |
 | `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_debezium_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
 | `orchestration/definitions.py` | Imported the new asset, added it to `reverse_etl_poc_setup_job` and to the `Definitions` asset list, and updated the job description. |
+| `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`. |
+| `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_poc_reset_job` (section 14.3), registered in `definitions.py`. |
+| `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). |
 
 ---
 
@@ -372,7 +375,7 @@ with the **exact config the asset generates** (only topic, table name and Kafka 
 
 1. Generated three insert events with the real `_to_debezium_events()` + `_build_connect_json_message()`, produced
    them with `rpk`, registered the connector. Result: connector and task `RUNNING`; table auto-created as
-   `id bigint not null` (primary key), `value text`, `updated_at text`; three rows present. This also proved that
+   `id bigint not null` (primary key at that time; the key is now `rid`, section 4.6), `value text`, `updated_at text`; three rows present. This also proved that
    `${env:POSTGRES_PASSWORD}` resolves when the variable is empty.
 2. Produced an update (id 2 -> `two-v2`) and a delete (id 3). Result: id 2 updated, id 3 removed.
 3. Cleaned up afterwards: connector deleted, test topic deleted, scratch Postgres removed, containers stopped.
