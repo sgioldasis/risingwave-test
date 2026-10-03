@@ -645,9 +645,9 @@ Evaluated, not adopted: the POC keeps JSON with the schema embedded in each mess
   resolved through the ccompat API, so Confluent-style clients would need the native API or an unqualified name.
 - **Connect image:** it ships the Apicurio 3.2.5 converters but no Confluent `AvroConverter`, so Avro would need
   an extra image layer.
-- **Leftover test artifact:** a probe registered `bigdata/reverse-etl` in Apicurio staging on 2026-10-02
-  (contentId 445, globalId 2635). It is unused; delete it with
-  `DELETE {apicurio}/apis/registry/v2/groups/bigdata/artifacts/reverse-etl` (an external write: confirm first).
+- **Test artifact (cleaned up):** a probe registered `bigdata/reverse-etl` in Apicurio staging on 2026-10-02
+  (contentId 445, globalId 2635). It was unused and was deleted on 2026-10-03
+  (`DELETE .../apis/registry/v2/groups/bigdata/artifacts/reverse-etl`, HTTP 204; a follow-up GET returns 404).
 
 ### 14.2 Kafka delete permissions
 
