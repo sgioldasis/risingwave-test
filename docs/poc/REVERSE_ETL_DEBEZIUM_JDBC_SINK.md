@@ -389,6 +389,22 @@ section 1 is the result; it exercised the external SASL_SSL cluster, which the l
 Nothing runs on a schedule for this pipeline (the existing schedules and sensor are for dbt and ML). The
 Databricks -> Kafka step is manual.
 
+### Starting a new demo from a known state
+
+Run, in this order:
+
+1. Dagster: `reverse_etl_poc_reset_job` (tears everything down, section 14.3).
+2. Dagster: `reverse_etl_poc_setup_job` (recreates the Databricks tables with the original columns, the topic,
+   the RisingWave table and the connector). Its first sync runs against the empty source table, finds no
+   changes, and only records the current table version as the watermark.
+3. Script runner: **Seed Reverse-ETL POC**.
+4. Dagster: materialize `reverse_etl_cdf_to_kafka`.
+
+The schema is then always `id`, `value`, `updated_at`, whatever columns earlier demos added. The Postgres
+table `reverse_etl_cdf_poc` does **not** exist after steps 1 and 2: the sink creates it when it receives the
+first message, so it appears after step 4. A database client that still lists it is showing a cached tree
+(refresh it); querying it before step 4 fails with "relation does not exist", which is expected.
+
 ### Checking results
 
 ```bash
@@ -623,6 +639,8 @@ Notes:
 - **Single task.** `tasks.max=1`; throughput scaling would need more tasks, and the topic has 15 partitions so
   there is room.
 - **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step.
+- **Reset is destructive and total.** It drops the Databricks source table and its history, not only the
+  downstream copies; it is meant for the sandbox schema `sr_poc_external` only.
 - **Table created by the sink.** `schema.evolution=basic` auto-creates the table; there is no explicit DDL or
   migration for it.
 - **Internal topics on local Redpanda.** The Connect worker depends on the local Redpanda; if its volume is
@@ -653,22 +671,29 @@ Evaluated, not adopted: the POC keeps JSON with the schema embedded in each mess
 
 Checked with throwaway objects only (a `..._permtest` topic and a `rw-poc-permtest-*` consumer group, never the
 real ones). The principal can create and delete topics and delete consumer groups on the staging cluster. Deletes
-are asynchronous: the topic stayed listed for about 6 seconds. This is what a reset tool would rely on.
+are asynchronous: the topic stayed listed for about 6 seconds. The reset job (14.3) relies on this.
 
-### 14.3 Reset tool (designed, not built)
+### 14.3 Reset job (built, verified live)
 
-A teardown-only Dagster op job, `reverse_etl_poc_reset_job`, followed by the existing
-`reverse_etl_poc_setup_job`, would return the demo to a known state:
+`reverse_etl_poc_reset_job` (`orchestration/assets/reverse_etl_reset.py`) is a Dagster op job, not assets,
+because it destroys state instead of materializing it. It runs these steps in order:
 
 1. Delete the connector from Kafka Connect.
 2. Drop the RisingWave table `reverse_etl_cdf_poc_current`.
 3. Drop the Postgres table `reverse_etl_cdf_poc`.
-4. Delete the topic `rw_poc_reverse_etl_cdf_out_jdbc` and the connector's consumer group (wait for the
-   asynchronous topic delete to finish before recreating).
-5. Reset the watermark in Databricks.
+4. Delete the consumer group `connect-reverse_etl_cdf_jdbc_sink` (retried while the connector's consumer
+   leaves it) and the topic `rw_poc_reverse_etl_cdf_out_jdbc`, then wait until the topic is gone from the
+   metadata, since topic deletes are asynchronous.
+5. Drop the Databricks source and watermark tables (`reverse_etl_cdf_poc_source`, `reverse_etl_cdf_poc_state`).
 
-An op job rather than assets, because it destroys state instead of materializing it. Not requested to be built
-yet; a seed script `--reset` flag is a related open idea.
+Dropping the Databricks tables, rather than only resetting the watermark, is what removes columns added during
+a demo: `reverse_etl_poc_table_setup` recreates them with `CREATE TABLE IF NOT EXISTS` and the original
+columns. Every step tolerates a missing object, so a half-finished reset can be run again. A guard refuses to
+run unless every name it drops starts with a POC prefix and the schema is `sr_poc_external`.
+
+Verified live on 2026-10-03: reset, then setup (the first sync on the empty table succeeded), then seed and a
+sync produced matching rows in Postgres and RisingWave. After the reset, the connector list, topic, consumer
+group and both target tables were all absent, as expected.
 
 ---
 

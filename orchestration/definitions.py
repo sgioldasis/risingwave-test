@@ -53,6 +53,7 @@ from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_r
 from .assets.reverse_etl_cdf_setup import reverse_etl_poc_table_setup, reverse_etl_cdf_to_kafka
 from .assets.reverse_etl_risingwave_setup import reverse_etl_cdf_risingwave_table
 from .assets.reverse_etl_debezium_sink import reverse_etl_debezium_jdbc_sink
+from .assets.reverse_etl_reset import reverse_etl_poc_reset_job
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -1017,6 +1018,7 @@ defs = Definitions(
         starrocks_demo_setup_job,
         kafka_topics_setup_job,
         reverse_etl_poc_setup_job,
+        reverse_etl_poc_reset_job,
         casino_prd_full_job,
         casino_stg_job,
         casino_datafusion_job,
