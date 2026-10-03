@@ -137,7 +137,7 @@ At the time of writing the table has these columns:
 | `rid` | `int64` | no | `bigint` (primary key; identity column, see 4.6) |
 | `id` | `int64` | no | `bigint` (not unique) |
 | `value` | `string` | yes | `text` |
-| `updated_at` | `string` | yes | `text` |
+| `updated_at` | `string`, named `io.debezium.time.ZonedTimestamp` | yes | `timestamp with time zone` |
 
 Databricks type to Connect type mapping (`_CONNECT_TYPE_BY_DATABRICKS_TYPE`):
 
@@ -149,7 +149,8 @@ Databricks type to Connect type mapping (`_CONNECT_TYPE_BY_DATABRICKS_TYPE`):
 | `FLOAT` | `float` | not tested |
 | `DOUBLE` | `double` | `double precision` |
 | `BOOLEAN` | `boolean` | `boolean` |
-| anything else (`STRING`, `TIMESTAMP`, `DATE`, `DECIMAL`, ...) | `string` | `text` |
+| `TIMESTAMP` | `string` with schema name `io.debezium.time.ZonedTimestamp` (ISO-8601 with timezone) | `timestamp with time zone` |
+| anything else (`STRING`, `DATE`, `DECIMAL`, ...) | `string` | `text` |
 
 Kafka Connect's JSON schema type names are `float` and `double`, not `float32` / `float64`. An earlier draft of
 the mapping used the latter and the converter rejected the message (`Unknown schema type: float64`); this was
@@ -173,9 +174,14 @@ The Statement Execution API returns every value as a string, so values are cast 
 schema order. `source.commit_version` is cast to an integer as well (in the first version it was sent as a string
 into an `int64` field, which Connect's JSON converter reads as 0; the sink ignores `source`, so it went unnoticed).
 
-`updated_at` is deliberately a string (`TIMESTAMP` falls into the "anything else" row), matching the RisingWave
-table's `VARCHAR`: the hand-rolled envelope does not follow real Debezium connectors' temporal encodings, so
-declaring a native temporal type risked a parse mismatch. It can be cast downstream.
+`TIMESTAMP` columns are sent as ISO-8601 strings with a timezone (for example `2026-10-03T03:41:08.345Z`), and
+the schema field carries the name `io.debezium.time.ZonedTimestamp`, which the Debezium sink maps to
+`timestamp with time zone`. The RisingWave column is `TIMESTAMPTZ`. Verified live on 2026-10-03 after reset and
+setup: both targets have `timestamp with time zone` and hold identical instants (displayed in each session's
+timezone). Earlier versions sent `updated_at` as a plain string, giving `text` / `VARCHAR`; switching needed the
+tables recreated. `TIMESTAMP_NTZ` and `DATE` are still carried as plain strings (not tested as typed).
+In the code the marker is `ZONED_TIMESTAMP`; `_connect_field()` (and its copy in the notebook) turns it into the
+named schema field.
 
 ### 4.4 Example: an insert (`op = "c"`)
 
@@ -761,7 +767,6 @@ inserted. The Dagster sync reported success, but:
   needs the reset job, then the setup job. Inserts into the source table must list their columns
   (`INSERT INTO t (id, value, ...)`); a column-less `INSERT ... VALUES` does not work, and Databricks restricts
   concurrent writers on tables with identity columns.
-- **`updated_at` is text** in Postgres, not `timestamp`/`timestamptz`.
 - **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry; fine for
   a POC, worth revisiting at volume.
 - **Single task.** `tasks.max=1`; throughput scaling would need more tasks, and the topic has 15 partitions so

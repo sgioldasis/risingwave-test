@@ -21,6 +21,7 @@ from .kafka_topics_setup import kafka_output_topics_setup
 from .reverse_etl_cdf_setup import (
     KAFKA_TOPIC,
     KEY_COLUMN,
+    ZONED_TIMESTAMP,
     RowField,
     _get_row_fields,
     _require_databricks_env,
@@ -41,6 +42,7 @@ _RISINGWAVE_TYPE_BY_CONNECT_TYPE = {
     "double": "DOUBLE PRECISION",
     "boolean": "BOOLEAN",
     "string": "VARCHAR",
+    ZONED_TIMESTAMP: "TIMESTAMPTZ",
 }
 
 

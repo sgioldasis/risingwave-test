@@ -306,10 +306,16 @@ def _summarize_ops(events: list[dict[str, Any]]) -> dict[str, int]:
 # convention, which is what the sink uses to recognise a Debezium event.
 ENVELOPE_SCHEMA_NAME = f"{SYNC_NAME}.{SCHEMA}.{SOURCE_TABLE}"
 
+# Not a Connect type: marks a column carried as an ISO-8601 string with a
+# timezone (e.g. 2026-10-03T03:41:08.345Z) whose schema field is named
+# io.debezium.time.ZonedTimestamp, so the Debezium sink creates a timestamptz
+# column. See _connect_field().
+ZONED_TIMESTAMP = "zoned_timestamp"
+_ZONED_TIMESTAMP_SCHEMA_NAME = "io.debezium.time.ZonedTimestamp"
+
 # Databricks SQL type -> Kafka Connect schema type. Anything not listed
-# (STRING, TIMESTAMP, DATE, DECIMAL, ...) is carried as a string, exactly as
-# the Statement Execution API returned it (updated_at stays a string,
-# matching the RisingWave table's VARCHAR).
+# (STRING, DATE, DECIMAL, ...) is carried as a plain string, exactly as the
+# Statement Execution API returned it.
 _CONNECT_TYPE_BY_DATABRICKS_TYPE = {
     "TINYINT": "int8",
     "SMALLINT": "int16",
@@ -320,6 +326,7 @@ _CONNECT_TYPE_BY_DATABRICKS_TYPE = {
     "FLOAT": "float",
     "DOUBLE": "double",
     "BOOLEAN": "boolean",
+    "TIMESTAMP": ZONED_TIMESTAMP,
 }
 
 RowField = tuple[str, str, bool]  # (column name, connect type, optional)
@@ -369,12 +376,18 @@ def _coerce_row(row: dict[str, Any] | None, row_fields: list[RowField]) -> dict[
     return {name: _coerce(row.get(name), connect_type) for name, connect_type, _ in row_fields}
 
 
+def _connect_field(name: str, connect_type: str, optional: bool) -> dict[str, Any]:
+    if connect_type == ZONED_TIMESTAMP:
+        return {"field": name, "type": "string", "name": _ZONED_TIMESTAMP_SCHEMA_NAME, "optional": optional}
+    return {"field": name, "type": connect_type, "optional": optional}
+
+
 def _connect_row_schema(optional: bool, row_fields: list[RowField]) -> dict[str, Any]:
     return {
         "type": "struct",
         "name": f"{ENVELOPE_SCHEMA_NAME}.Value",
         "optional": optional,
-        "fields": [{"field": n, "type": t, "optional": o} for n, t, o in row_fields],
+        "fields": [_connect_field(n, t, o) for n, t, o in row_fields],
     }
 
 

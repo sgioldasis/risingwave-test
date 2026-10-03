@@ -68,7 +68,13 @@ ENVELOPE_SCHEMA_NAME = f"{SYNC_NAME}.{SCHEMA}.{SOURCE_TABLE}"
 CONNECT_TYPE = {
     "TINYINT": "int8", "SMALLINT": "int16", "INT": "int32", "INTEGER": "int32",
     "BIGINT": "int64", "LONG": "int64", "FLOAT": "float", "DOUBLE": "double", "BOOLEAN": "boolean",
+    "TIMESTAMP": "zoned_timestamp",
 }
+
+# "zoned_timestamp" is not a Connect type: it marks an ISO-8601 string with a timezone whose schema field
+# is named io.debezium.time.ZonedTimestamp, so the Debezium sink creates a timestamptz column.
+ZONED_TIMESTAMP = "zoned_timestamp"
+ZONED_TIMESTAMP_SCHEMA_NAME = "io.debezium.time.ZonedTimestamp"
 
 # COMMAND ----------
 
@@ -190,12 +196,18 @@ def coerce_row(row):
     return {name: coerce(row.get(name), ctype) for name, ctype, _ in ROW_FIELDS}
 
 
+def connect_field(name, connect_type, optional):
+    if connect_type == ZONED_TIMESTAMP:
+        return {"field": name, "type": "string", "name": ZONED_TIMESTAMP_SCHEMA_NAME, "optional": optional}
+    return {"field": name, "type": connect_type, "optional": optional}
+
+
 def row_schema(optional):
     return {
         "type": "struct",
         "name": f"{ENVELOPE_SCHEMA_NAME}.Value",
         "optional": optional,
-        "fields": [{"field": n, "type": t, "optional": o} for n, t, o in ROW_FIELDS],
+        "fields": [connect_field(n, t, o) for n, t, o in ROW_FIELDS],
     }
 
 
