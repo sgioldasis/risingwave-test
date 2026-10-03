@@ -488,6 +488,24 @@ def _message_previews(
     return previews
 
 
+RAW_MESSAGE_LIMIT = 3
+
+
+def _raw_messages(
+    events: list[dict[str, Any]],
+    key_columns: list[str],
+    row_fields: list[RowField],
+    limit: int = RAW_MESSAGE_LIMIT,
+) -> list[dict[str, Any]]:
+    """The first `limit` messages exactly as sent to Kafka, embedded
+    `schema` included (_message_previews shows payloads only)."""
+    raw = []
+    for event in events[:limit]:
+        key, value = _build_connect_json_message(event, key_columns, row_fields)
+        raw.append({"key": json.loads(key), "value": json.loads(value)})
+    return raw
+
+
 # --- Dagster assets ------------------------------------------------------------
 
 
@@ -643,4 +661,5 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
         "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
         "kafka_messages": MetadataValue.json(_message_previews(events, key_columns, row_fields)),
         "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
+        "kafka_messages_raw": MetadataValue.json(_raw_messages(events, key_columns, row_fields)),
     })

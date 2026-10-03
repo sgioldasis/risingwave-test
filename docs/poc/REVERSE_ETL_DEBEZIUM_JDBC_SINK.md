@@ -238,7 +238,7 @@ All changes are on branch `feature-sr` (see `git log`).
 | File | Change |
 |---|---|
 | `orchestration/assets/kafka_topics_setup.py` | `OUTPUT_TOPICS` lists `rw_poc_reverse_etl_cdf_out_jdbc` (created by the existing `kafka_output_topics_setup` asset: 15 partitions, replication 1, like the others). The original `rw_poc_reverse_etl_cdf_out` was removed from the list. |
-| `orchestration/assets/reverse_etl_cdf_setup.py` | `KAFKA_TOPIC` is now the single `_jdbc` topic. Added `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`; `_produce_to_kafka()` produces each event once, in that format. Removed the old schemaless `_build_kafka_message()` and the `NUMERIC_ROW_COLUMNS` cast of `id` (now handled by `_coerce()`). `_message_previews()` shows each message's payload only. |
+| `orchestration/assets/reverse_etl_cdf_setup.py` | `KAFKA_TOPIC` is now the single `_jdbc` topic. Added `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`; `_produce_to_kafka()` produces each event once, in that format. Removed the old schemaless `_build_kafka_message()` and the `NUMERIC_ROW_COLUMNS` cast of `id` (now handled by `_coerce()`). `_message_previews()` shows each message's payload only; `_raw_messages()` returns the first three messages complete with their embedded schema. |
 | `Dockerfile.debezium-connect` (new) | `FROM quay.io/debezium/connect:3.7.0.Final`, downloads `debezium-connector-jdbc-3.7.0.Final-plugin.tar.gz` from Maven Central, verifies its **sha512**, extracts it into `$KAFKA_CONNECT_PLUGINS_DIR`. |
 | `docker-compose.yml` | New `kafka-connect` service (section 6). |
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave table now reads the single `_jdbc` topic. `reverse_etl_cdf_risingwave_table` creates it from the live Databricks columns with real types (`_create_table_sql()`), so no column is added after the table starts reading. `add_missing_columns()` (called by `reverse_etl_cdf_to_kafka` before it produces) adds later-appearing columns with their types. |
@@ -404,6 +404,13 @@ The schema is then always `id`, `value`, `updated_at`, whatever columns earlier 
 table `reverse_etl_cdf_poc` does **not** exist after steps 1 and 2: the sink creates it when it receives the
 first message, so it appears after step 4. A database client that still lists it is showing a cached tree
 (refresh it); querying it before step 4 fails with "relation does not exist", which is expected.
+
+### Seeing the Kafka messages
+
+In Dagster, open the latest materialization of `reverse_etl_cdf_to_kafka` (Assets, Events tab, or the run's
+log). Its metadata has `kafka_messages` (payloads of up to 50 messages) and `kafka_messages_raw` (the first
+three messages exactly as sent, with the embedded `schema` listing the table's columns and types, and the
+`payload`). `kafka_messages_raw` is empty on a run with no changes.
 
 ### Checking results
 
