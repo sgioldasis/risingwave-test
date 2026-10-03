@@ -1,8 +1,9 @@
 """Register the Debezium JDBC sink connector: reverse-ETL CDF topic -> host Postgres.
 
-Consumes KAFKA_JDBC_TOPIC (schema-embedded Debezium envelopes produced by
-reverse_etl_cdf_setup.py) from the external SASL_SSL cluster and upserts /
-deletes into a Postgres table. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md.
+Consumes KAFKA_TOPIC (schema-embedded Debezium envelopes produced by
+reverse_etl_cdf_setup.py, also read by the RisingWave table) from the external
+SASL_SSL cluster and upserts / deletes into a Postgres table.
+See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md.
 """
 
 import os
@@ -13,7 +14,7 @@ import requests
 from dagster import AssetExecutionContext, MetadataValue, asset
 
 from .kafka_topics_setup import kafka_output_topics_setup
-from .reverse_etl_cdf_setup import KAFKA_JDBC_TOPIC, reverse_etl_cdf_to_kafka
+from .reverse_etl_cdf_setup import KAFKA_TOPIC, reverse_etl_cdf_to_kafka
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
 CONNECTOR_NAME = "reverse_etl_cdf_jdbc_sink"
@@ -32,7 +33,7 @@ def _connector_config() -> dict[str, str]:
     config = {
         "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
         "tasks.max": "1",
-        "topics": KAFKA_JDBC_TOPIC,
+        "topics": KAFKA_TOPIC,
         "connection.url": os.environ.get(
             "HOST_POSTGRES_URL", "jdbc:postgresql://host.docker.internal:5432/postgres"
         ),
@@ -105,7 +106,7 @@ def _wait_for_running(context: AssetExecutionContext, timeout_s: int = 90) -> di
     deps=[kafka_output_topics_setup, reverse_etl_cdf_to_kafka],
     description=(
         f"Create/update the Debezium JDBC sink connector that upserts and deletes rows "
-        f"from the {KAFKA_JDBC_TOPIC} Kafka topic into the host Postgres table "
+        f"from the {KAFKA_TOPIC} Kafka topic into the host Postgres table "
         f"{TARGET_TABLE}, and wait for it to be RUNNING. "
         "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
     ),
@@ -124,7 +125,7 @@ def reverse_etl_debezium_jdbc_sink(context: AssetExecutionContext):
 
     context.add_output_metadata({
         "connector": MetadataValue.text(CONNECTOR_NAME),
-        "source_topic": MetadataValue.text(KAFKA_JDBC_TOPIC),
+        "source_topic": MetadataValue.text(KAFKA_TOPIC),
         "postgres_table": MetadataValue.text(TARGET_TABLE),
         "connector_state": MetadataValue.text(status["connector"]["state"]),
         "task_states": MetadataValue.json([t["state"] for t in status["tasks"]]),

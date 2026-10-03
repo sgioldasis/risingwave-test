@@ -851,7 +851,7 @@ reverse_etl_poc_setup_job = define_asset_job(
     description=(
         "One-click setup for the APR-233 reverse-ETL CDF POC: creates the "
         "Databricks source + watermark tables (CDF enabled), the "
-        "rw_poc_reverse_etl_cdf_out Kafka topic, runs an initial CDF sync, "
+        "rw_poc_reverse_etl_cdf_out_jdbc Kafka topic, runs an initial CDF sync, "
         "creates the RisingWave table that ingests it via FORMAT "
         "DEBEZIUM ENCODE JSON, and registers the Debezium JDBC sink that "
         "upserts the same changes into host Postgres. Everything needed is "

@@ -1,5 +1,12 @@
 # Reverse-ETL POC in risingwave-test: Databricks CDF → Kafka STG
 
+> **Update 2026-10-03:** the pipeline later gained a Debezium JDBC sink into Postgres, and the Kafka output is now
+> a **single topic**, `rw_poc_reverse_etl_cdf_out_jdbc`, with an embedded Kafka Connect schema, read by both the
+> RisingWave table and the sink. The schemaless `rw_poc_reverse_etl_cdf_out` topic described below was retired, and
+> the RisingWave table is created from the live Databricks columns with real types. See
+> [`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md); the sections below describe the
+> original design and its history.
+
 ## Context
 
 This continues the APR-233 evaluation (Kaizen's "Explore & Standardize Batch

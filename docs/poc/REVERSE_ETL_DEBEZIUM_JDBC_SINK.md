@@ -1,6 +1,7 @@
 # Reverse-ETL CDF POC: Debezium JDBC sink into Postgres
 
-Date: 2026-10-02
+Date: 2026-10-02 (updated 2026-10-03: the pipeline now uses a **single topic** read by both RisingWave and the
+Debezium sink; see sections 2, 3 and 10.2)
 Branch: `feature-sr`
 Related: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) (APR-233), which describes the
 Databricks Change Data Feed (CDF) -> Kafka half of this pipeline. This document covers the second half:
@@ -43,23 +44,24 @@ Postgres and a local Redpanda topic, covering insert, update and delete.
         |  groups CDF rows into Debezium before/after/op events
         v
  External Kafka cluster (SASL_SSL)    <-- KAFKA_OUTPUT_BOOTSTRAP
-   |-- rw_poc_reverse_etl_cdf_out        schemaless Debezium JSON      -> RisingWave table (FORMAT DEBEZIUM)
-   '-- rw_poc_reverse_etl_cdf_out_jdbc   JSON + embedded Connect schema -> Debezium JDBC sink   (NEW)
-                                                        |
-                                                        |  kafka-connect container (NEW)
-                                                        |  consumer.override.* -> external SASL_SSL cluster
-                                                        |  worker internal topics -> LOCAL Redpanda
-                                                        v
-                                   Host PostgreSQL (host.docker.internal:5432, db "postgres")
-                                   table: public.reverse_etl_cdf_poc   (PK: id)
+   '-- rw_poc_reverse_etl_cdf_out_jdbc   Debezium JSON + embedded Connect schema   (ONE topic, two readers)
+         |                                |
+         |                                |  kafka-connect container
+         v                                |  consumer.override.* -> external SASL_SSL cluster
+   RisingWave table                       |  worker internal topics -> LOCAL Redpanda
+   reverse_etl_cdf_poc_current            v
+   (FORMAT DEBEZIUM ENCODE JSON,    Host PostgreSQL (host.docker.internal:5432, db "postgres")
+    typed columns, PK: id)          table: public.reverse_etl_cdf_poc   (PK: id)
 ```
 
 Key properties:
 
 - **Batch half, streaming half.** Databricks -> Kafka only moves when the Dagster asset runs. Kafka ->
   Postgres is continuous: the connector is always running and applies messages within seconds of arrival.
-- **Two topics, same events.** The original topic is unchanged so the already-verified RisingWave path is not
-  touched. The new `_jdbc` topic carries the same events with an embedded schema (section 4).
+- **One topic, two readers.** Every event is produced once, with an embedded Connect schema (section 4).
+  RisingWave and the Debezium sink both read it. (It started as two topics, one schemaless for RisingWave and one
+  with a schema for the sink; consolidated on 2026-10-03 after confirming RisingWave reads the embedded-schema
+  format, including typed columns. The `_jdbc` suffix in the name is historical.)
 - **Split Kafka usage in Connect.** The Connect worker's own bookkeeping topics live on the *local* Redpanda;
   only the connector's consumer talks to the external cluster. This means Connect does not need
   topic-creation rights on the external cluster.
@@ -78,8 +80,8 @@ Key properties:
 | Redpanda Connect (Benthos) | Rejected | A separate Go stream processor; cannot host Kafka Connect (Java) plugins, so it cannot run the Debezium JDBC sink. |
 | Redpanda Connectors (Kafka Connect packaged by Redpanda) | Rejected | The self-managed image bundles only the MirrorMaker2 connectors, no JDBC sink and no Debezium. Custom plugins can be mounted via `CONNECT_PLUGIN_PATH`, but that is the same setup as Debezium's own image on a less common base. (Source: Redpanda docs for the Connectors Docker image, partly the 24.2 version; the current page is titled "Deploy Kafka Connect in Docker".) |
 | Runtime | `quay.io/debezium/connect:3.7.0.Final` plus the JDBC plugin | 3.7.0.Final is the current release on Maven Central and quay.io as of 2026-10-02. |
-| Message format | **JSON with embedded schema** (`{"schema": ..., "payload": ...}`) | The sink requires schema information on every record. The existing topic is a hand-rolled, schemaless envelope, which the sink would reject. Avro would need a schema registry reachable from the external cluster; embedded JSON needs nothing extra. |
-| Change the existing topic or add one? | **Add a second topic** | The existing topic feeds a verified RisingWave `FORMAT DEBEZIUM` table. Re-encoding it risked breaking that parser, so the same events are published to a new topic in the new encoding. |
+| Message format | **JSON with embedded schema** (`{"schema": ..., "payload": ...}`) | The sink requires schema information on every record. The original topic was a hand-rolled, schemaless envelope, which the sink would reject. Avro would need a schema registry reachable from the external cluster; embedded JSON needs nothing extra. |
+| Change the existing topic or add one? | **Initially a second topic; consolidated to one on 2026-10-03** | At first the existing schemaless topic fed a verified RisingWave `FORMAT DEBEZIUM` table, and re-encoding it risked breaking that parser, so the events went to a new `_jdbc` topic as well. A local test then showed RisingWave parses the embedded-schema messages (insert, update, delete, and typed `DOUBLE` / `INT` / `BOOLEAN` columns), so the schemaless topic was retired and RisingWave reads the `_jdbc` topic. This removes the second produce, the non-atomic double write, and the `VARCHAR`-only restriction for RisingWave columns. |
 | Distributed vs standalone Connect | Distributed, with internal topics on **local Redpanda** | Avoids needing topic-create ACLs on the external cluster while keeping the standard Debezium image behaviour. |
 | How to reach the external SASL_SSL cluster | Per-connector `consumer.override.*` | Requires `connector.client.config.override.policy=All` on the worker. |
 | Secrets | `${env:NAME}` references via Kafka's `EnvVarConfigProvider` | Secret values never appear in the stored connector config or the REST API. |
@@ -152,6 +154,19 @@ Kafka Connect's JSON schema type names are `float` and `double`, not `float32` /
 the mapping used the latter and the converter rejected the message (`Unknown schema type: float64`); this was
 caught by the local end-to-end test before any live use.
 
+RisingWave reads the same messages, so its table uses real types too. Connect type to RisingWave type
+(`_RISINGWAVE_TYPE_BY_CONNECT_TYPE` in `reverse_etl_risingwave_setup.py`):
+
+| Connect type | RisingWave type | Tested |
+|---|---|---|
+| `int8` / `int16` | `SMALLINT` | no |
+| `int32` | `INT` | yes |
+| `int64` | `BIGINT` | yes |
+| `float` | `REAL` | no |
+| `double` | `DOUBLE PRECISION` | yes |
+| `boolean` | `BOOLEAN` | yes |
+| `string` | `VARCHAR` | yes |
+
 The Statement Execution API returns every value as a string, so values are cast to the declared Connect type
 (`_coerce()`) before they are written into the payload. Row payloads contain exactly the schema's fields, in
 schema order. `source.commit_version` is cast to an integer as well (in the first version it was sent as a string
@@ -218,15 +233,15 @@ API returns numerics as JSON strings. See `REVERSE_ETL_CDF_POC_PLAN.md` section 
 
 ## 5. What was changed in the repo
 
-Nothing was committed as part of this work; all changes are in the working tree on `feature-sr`.
+All changes are on branch `feature-sr` (see `git log`).
 
 | File | Change |
 |---|---|
-| `orchestration/assets/kafka_topics_setup.py` | Added `rw_poc_reverse_etl_cdf_out_jdbc` to `OUTPUT_TOPICS`, so the existing `kafka_output_topics_setup` asset creates it (15 partitions, replication 1, like the others). |
-| `orchestration/assets/reverse_etl_cdf_setup.py` | Added `KAFKA_JDBC_TOPIC`, `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`. `_produce_to_kafka()` now also produces each event, in the new encoding, to `KAFKA_JDBC_TOPIC`. The existing topic's message format is untouched. |
+| `orchestration/assets/kafka_topics_setup.py` | `OUTPUT_TOPICS` lists `rw_poc_reverse_etl_cdf_out_jdbc` (created by the existing `kafka_output_topics_setup` asset: 15 partitions, replication 1, like the others). The original `rw_poc_reverse_etl_cdf_out` was removed from the list. |
+| `orchestration/assets/reverse_etl_cdf_setup.py` | `KAFKA_TOPIC` is now the single `_jdbc` topic. Added `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`; `_produce_to_kafka()` produces each event once, in that format. Removed the old schemaless `_build_kafka_message()` and the `NUMERIC_ROW_COLUMNS` cast of `id` (now handled by `_coerce()`). `_message_previews()` shows each message's payload only. |
 | `Dockerfile.debezium-connect` (new) | `FROM quay.io/debezium/connect:3.7.0.Final`, downloads `debezium-connector-jdbc-3.7.0.Final-plugin.tar.gz` from Maven Central, verifies its **sha512**, extracts it into `$KAFKA_CONNECT_PLUGINS_DIR`. |
 | `docker-compose.yml` | New `kafka-connect` service (section 6). |
-| `orchestration/assets/reverse_etl_risingwave_setup.py` | Added `add_missing_columns()`, called by `reverse_etl_cdf_to_kafka` before it produces, so new Databricks columns are added to the RisingWave table as `VARCHAR`. The table and its asset are otherwise unchanged. |
+| `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave table now reads the single `_jdbc` topic. `reverse_etl_cdf_risingwave_table` creates it from the live Databricks columns with real types (`_create_table_sql()`), so no column is added after the table starts reading. `add_missing_columns()` (called by `reverse_etl_cdf_to_kafka` before it produces) adds later-appearing columns with their types. |
 | `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_debezium_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
 | `orchestration/definitions.py` | Imported the new asset, added it to `reverse_etl_poc_setup_job` and to the `Definitions` asset list, and updated the job description. |
 
@@ -420,22 +435,22 @@ psql -h localhost -U postgres -d postgres -c '\d reverse_etl_cdf_poc' \
 
 Expected: a new `region text` column; rows that existed before show `NULL` in it; the new row shows `eu`.
 Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column becomes `double precision`,
-`integer` or `boolean`.
+`integer` or `boolean`, in both Postgres and RisingWave.
 
 **Cautions**
 - The `ALTER TABLE` changes your sandbox table permanently. Dropping or renaming a column later is a
   *non-additive* change, which Databricks documents as able to break batch Change Data Feed reads across that
   version range, so treat the new column as permanent.
 - `scripts/reverse_etl_poc_seed.py` uses explicit column lists, so it keeps working after the `ALTER`.
-- **The RisingWave table picks the column up too, as `VARCHAR`.** Before producing events,
+- **The RisingWave table picks the column up too, with the matching type.** Before producing events,
   `reverse_etl_cdf_to_kafka` calls `add_missing_columns()` (in `reverse_etl_risingwave_setup.py`), which compares
-  the live Databricks columns with `reverse_etl_cdf_poc_current` and runs `ALTER TABLE ... ADD COLUMN ... VARCHAR`
-  for each one the table lacks. It does nothing if the table doesn't exist yet. Check with
-  `psql -h localhost -p 4566 -U root -d dev -c "describe reverse_etl_cdf_poc_current"`; the run's Dagster
-  metadata also lists `risingwave_columns_added`.
-  - **Always `VARCHAR`, whatever the Databricks type.** The original topic's values arrive as JSON strings (only
-    `id` is cast to a number), and RisingWave's Debezium JSON parser drops a message whose string value it can't
-    coerce into a numeric column. So a `DOUBLE` column is `double precision` in Postgres but `VARCHAR` here.
+  the live Databricks columns with `reverse_etl_cdf_poc_current` and runs `ALTER TABLE ... ADD COLUMN <name>
+  <type>` for each one the table lacks (type mapping in section 4.3). It does nothing if the table doesn't exist
+  yet. Check with `psql -h localhost -p 4566 -U root -d dev -c "describe reverse_etl_cdf_poc_current"`; the run's
+  Dagster metadata also lists `risingwave_columns_added`.
+  - **Typed, as in Postgres.** RisingWave reads the same typed, schema-embedded messages as the sink, so a
+    `DOUBLE` column is `double precision` in both. (Before the single-topic change it had to be `VARCHAR`,
+    because the old schemaless topic carried values as strings.)
   - **It must happen before the events are produced.** RisingWave fills a column only from messages it reads
     after the column exists; a row ingested earlier keeps `NULL` even if its message carried a value. That is
     why the sync runs inside `reverse_etl_cdf_to_kafka`, ahead of the produce step, so the everyday "materialize
@@ -456,6 +471,27 @@ Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column beco
   already-ingested rows keep `NULL`; deletes still apply. `add_missing_columns()` itself was run from the
   Dagster container against a throwaway table: it added the missing columns, was a no-op on a second call and on
   a missing table, and handled a column name needing quotes (`my col`).
+- Single-topic consolidation, local only (throwaway RisingWave tables and a local Redpanda topic; the real
+  RisingWave table and connector were not touched):
+  - RisingWave's `FORMAT DEBEZIUM ENCODE JSON` parsed the schema-embedded messages: inserts, an update and a
+    delete applied; typed `DOUBLE PRECISION`, `INT` and `BOOLEAN` columns filled from the payload.
+  - From the Dagster container, with the production `_produce_to_kafka()` pointed at the local topic: the table
+    created by `_create_table_sql()` had `double precision` / `integer` / `boolean` columns and
+    `add_missing_columns()` found nothing to add (no race); after two new source columns appeared,
+    `add_missing_columns()` added `country varchar` and `weight double precision` before the next produce, the new
+    values arrived typed, an update upserted, and a delete removed the row.
+  - Live migration (2026-10-03, local stack): Dagster definitions reloaded, the real
+    `reverse_etl_cdf_poc_current` dropped (nothing depended on it) and recreated by materializing
+    `reverse_etl_cdf_risingwave_table` (run succeeded). The new table reads `rw_poc_reverse_etl_cdf_out_jdbc`, was
+    created with `region` from the start, and its four rows (ids 1, 2, 10, 11, including `region` = `eu` / `us` on
+    10 and 11) matched the Postgres table exactly. The Debezium connector stayed `RUNNING` throughout.
+  - Live new-column test on the single topic (2026-10-03): in Databricks, `ALTER TABLE ... ADD COLUMN country
+    STRING`, a `MERGE` of ids 20 (`GR`) and 21 (`DE`), and an `UPDATE` of id 10 to `FR`; then `reverse_etl_cdf_to_kafka`
+    was materialized. The run read the change feed across the `ALTER`, logged `Added column(s) to the RisingWave
+    table: ['country']` *before* producing, and produced 3 events (2 creates, 1 update). Result: `country` appeared
+    as `text` in Postgres and `character varying` in RisingWave; ids 20, 21 and 10 carried `GR`, `DE` and `FR` in
+    both tables; every older row had `NULL`; the connector stayed `RUNNING`. This was a `STRING` column; typed
+    (`DOUBLE` / `INT` / `BOOLEAN`) columns were verified locally only.
 - **Live, end to end (2026-10-02):** `ALTER TABLE ... ADD COLUMN region STRING` and an insert of ids 10 and 11
   (`evolved-eu`, `evolved-us`) were run in Databricks, then `reverse_etl_cdf_to_kafka` was materialized. Postgres
   got the new `region` column with `eu` / `us` on those rows, so Change Data Feed carried the added column
@@ -479,14 +515,57 @@ WHERE id IN (10, 11);
 ```
 
 `updated_at` is changed on purpose: an update that changes nothing may not produce a change event. The same
-situation can arise if the RisingWave table is dropped and recreated: the asset creates it with its three base
-columns and `scan.startup.mode = 'earliest'` starts re-reading the topic immediately, so a column added a moment
-later misses the messages already read. Prefer the in-place `ALTER` path over recreating the table.
+situation would arise if a recreated table were created with fewer columns than the topic carries: with
+`scan.startup.mode = 'earliest'` it starts re-reading the topic immediately, so a column added a moment later
+misses the messages already read. The asset therefore creates the table with all current columns up front
+(section 10.2), which avoids this.
+
+### 10.2 Migrating an existing RisingWave table to the single topic
+
+A RisingWave table's Kafka topic is fixed when the table is created, so a `reverse_etl_cdf_poc_current` created
+before the consolidation still reads the retired schemaless topic and will no longer receive new events. To
+move it:
+
+1. Reload Dagster's definitions (or restart the Dagster containers) so the new asset code is loaded.
+2. Drop the table: `psql -h localhost -p 4566 -U root -d dev -c "DROP TABLE reverse_etl_cdf_poc_current"`.
+3. Materialize `reverse_etl_cdf_risingwave_table` (or run `reverse_etl_poc_setup_job`). It recreates the table
+   from the live Databricks columns, with real types, reading the `_jdbc` topic from the beginning.
+
+Notes:
+- The Debezium connector and the Postgres table are unaffected: they already read the `_jdbc` topic.
+- RisingWave rebuilds its state from that topic's contents, which is also exactly where Postgres' contents came
+  from, so the two stay consistent. Anything that only ever existed on the retired topic does not reappear.
+- The retired topic `rw_poc_reverse_etl_cdf_out` is left in place on the staging cluster, unused; it is no longer
+  produced to or created by `kafka_output_topics_setup`.
+- Create the table with all columns up front (the asset now does) rather than adding columns after it starts
+  reading, for the reason given in section 10.1.
 
 ---
 
 ## 11. Operating notes
 
+- **Which asset to run when.** After any change to the Databricks table, materialize **only**
+  `reverse_etl_cdf_to_kafka`: it reads the change feed since its watermark, adds any new column to the
+  RisingWave table, and produces the events; the connector and the RisingWave table pick them up within
+  seconds. Nothing is scheduled, so the sync only runs when triggered. The other two assets in
+  `reverse_etl_poc_setup_job` are one-time setup:
+  - `reverse_etl_cdf_risingwave_table` creates the RisingWave table that reads the topic. Run it again only
+    after dropping that table or changing its topic.
+  - `reverse_etl_debezium_jdbc_sink` registers the connector with Kafka Connect, which then runs it on its own.
+    Run it again only if Connect loses its state (for example its local Redpanda volume is wiped) or the
+    connector configuration changes.
+  Neither moves data; both sit after the sync in the job only for ordering.
+- **Where the sync runs.** `reverse_etl_cdf_to_kafka` runs as Python in the Dagster container. Databricks is used
+  only through the Statement Execution API (SQL, authenticated with the service principal) to read the change
+  feed, the watermark table and `information_schema`; the grouping into events, the RisingWave column sync and
+  the Kafka produce all happen in the container, which therefore needs a network path to the Kafka cluster (VPN
+  today). Running it as a Spark notebook triggered from Dagster (Jobs API or the `dagster-databricks` Pipes
+  integration) is possible and would keep large change sets out of the REST API, but needs a network path from
+  Databricks to Kafka, adds job start-up latency and cost, and moves the message and schema logic into notebook
+  code. It was considered and not done.
+- **Which Kafka.** The data topic lives on Kaizen's staging Kafka cluster (SASL_SSL, SCRAM-SHA-512), named in
+  `REVERSE_ETL_CDF_POC_PLAN.md` and read from `KAFKA_OUTPUT_BOOTSTRAP` at run time. The local Redpanda only holds
+  Kafka Connect's own bookkeeping topics; no pipeline data passes through it.
 - **Updating the Debezium version.** Change `DEBEZIUM_VERSION` in `Dockerfile.debezium-connect` and update
   `JDBC_PLUGIN_SHA512` to the value from
   `https://repo1.maven.org/maven2/io/debezium/debezium-connector-jdbc/<version>/debezium-connector-jdbc-<version>-plugin.tar.gz.sha512`.
@@ -514,6 +593,7 @@ later misses the messages already read. Prefer the in-place `ALTER` path over re
 | Connector config rejected with a config-provider / "not allowed" error | The variable is not in the allowlist pattern. Only `KAFKA_OUTPUT_SASL_USERNAME`, `KAFKA_OUTPUT_SASL_PASSWORD` and `POSTGRES_PASSWORD` can be referenced. |
 | Connector `FAILED` connecting to Postgres | Host Postgres is not running (start it via `devbox shell`), or `HOST_POSTGRES_URL` / `POSTGRES_USER` / `POSTGRES_PASSWORD` are wrong. `pg_isready -h localhost -p 5432`. |
 | Messages rejected: "schema" / not a Struct errors | The message was not produced in the schema-embedded format (for example someone produced to the `_jdbc` topic by hand with plain JSON). Only `_build_connect_json_message()` output is valid. |
+| RisingWave table `reverse_etl_cdf_poc_current` stops updating, or is missing new columns | It was created before the single-topic change and still reads the retired schemaless topic. Migrate it (section 10.2). |
 | Deletes not applied | `delete.enabled` must be `true` and `primary.key.mode` must be `record_key`, and the message must have `op = "d"` with the row in `before`. |
 | Port 8083 already in use | Another process is bound to 8083; stop it or change the host port mapping in compose. |
 
@@ -521,17 +601,22 @@ later misses the messages already read. Prefer the in-place `ALTER` path over re
 
 ## 13. Known limitations and open items
 
-- **Not atomic across topics.** `_produce_to_kafka()` writes each event to both topics and then flushes once.
-  A failure in the middle can leave the two topics with different contents. Delivery errors from `flush()` are
-  not inspected (this matches the pre-existing behaviour of the original topic).
+- **Delivery errors are not inspected.** `_produce_to_kafka()` produces each event and flushes once; a failed
+  delivery is not surfaced, and the watermark is still advanced afterwards (pre-existing behaviour).
 - **Schema evolution is additive only.** Adding a column works end to end (section 10.1). Renames, drops and type
   changes are not handled: Databricks documents that batch Change Data Feed reads can fail across non-additive
   schema changes, and both the sink's `schema.evolution=basic` and `add_missing_columns()` only add columns. A
-  column dropped in Databricks stays in Postgres and RisingWave.
+  column dropped in Databricks stays in Postgres and RisingWave. What a drop would do was reasoned through, not
+  tested: Databricks only allows `DROP COLUMN` on a table with column mapping enabled (a one-way table protocol
+  upgrade); if the change-feed read still works, messages simply stop carrying the column, so Postgres would
+  probably keep stale values in rows updated afterwards (its upsert writes only the fields present) while
+  RisingWave would probably set them to `NULL` (an upsert replaces the row), leaving the two targets disagreeing;
+  if the read fails, every sync fails until the watermark is reset by hand. Treat added columns as permanent and
+  use a new column name for repeated demos.
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
   else arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings were not exercised end to end.
-- **Key column is hardcoded.** `key_columns = ["id"]` is still fixed in `reverse_etl_cdf_to_kafka`, and the
-  integer cast of `id` in the original topic's rows (`NUMERIC_ROW_COLUMNS`) is unchanged.
+- **Key column is hardcoded.** `key_columns = ["id"]` is fixed in `reverse_etl_cdf_to_kafka`, and the RisingWave
+  table's primary key is `PRIMARY_KEY_COLUMN = "id"`.
 - **`updated_at` is text** in Postgres, not `timestamp`/`timestamptz`.
 - **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry; fine for
   a POC, worth revisiting at volume.
@@ -543,11 +628,51 @@ later misses the messages already read. Prefer the in-place `ALTER` path over re
 - **Internal topics on local Redpanda.** The Connect worker depends on the local Redpanda; if its volume is
   wiped, the connector registration is lost and the asset must be re-run (the consumer group offsets on the
   external cluster remain, so a re-registered connector resumes where it left off).
-- **Not committed.** All changes are uncommitted on `feature-sr`.
+- **Retired topic remains.** `rw_poc_reverse_etl_cdf_out` still exists on the staging cluster, unused.
 
 ---
 
-## 14. References
+## 14. Investigations and designs not adopted
+
+### 14.1 Schema registry (Avro) instead of embedded JSON schema
+
+Evaluated, not adopted: the POC keeps JSON with the schema embedded in each message (section 4).
+
+- **Local Redpanda registry** is Confluent-API compatible (default `BACKWARD` compatibility): adding an optional
+  field is accepted, adding a required field without a default is rejected with HTTP 409.
+- **Staging Apicurio 2.6.8** exposes the Confluent-compatible API at `/apis/ccompat/v7` and its native v2 API,
+  with anonymous read and write. Subjects qualified by a group (such as `bigdata/reverse-etl`) cannot be
+  resolved through the ccompat API, so Confluent-style clients would need the native API or an unqualified name.
+- **Connect image:** it ships the Apicurio 3.2.5 converters but no Confluent `AvroConverter`, so Avro would need
+  an extra image layer.
+- **Leftover test artifact:** a probe registered `bigdata/reverse-etl` in Apicurio staging on 2026-10-02
+  (contentId 445, globalId 2635). It is unused; delete it with
+  `DELETE {apicurio}/apis/registry/v2/groups/bigdata/artifacts/reverse-etl` (an external write: confirm first).
+
+### 14.2 Kafka delete permissions
+
+Checked with throwaway objects only (a `..._permtest` topic and a `rw-poc-permtest-*` consumer group, never the
+real ones). The principal can create and delete topics and delete consumer groups on the staging cluster. Deletes
+are asynchronous: the topic stayed listed for about 6 seconds. This is what a reset tool would rely on.
+
+### 14.3 Reset tool (designed, not built)
+
+A teardown-only Dagster op job, `reverse_etl_poc_reset_job`, followed by the existing
+`reverse_etl_poc_setup_job`, would return the demo to a known state:
+
+1. Delete the connector from Kafka Connect.
+2. Drop the RisingWave table `reverse_etl_cdf_poc_current`.
+3. Drop the Postgres table `reverse_etl_cdf_poc`.
+4. Delete the topic `rw_poc_reverse_etl_cdf_out_jdbc` and the connector's consumer group (wait for the
+   asynchronous topic delete to finish before recreating).
+5. Reset the watermark in Databricks.
+
+An op job rather than assets, because it destroys state instead of materializing it. Not requested to be built
+yet; a seed script `--reset` flag is a related open idea.
+
+---
+
+## 15. References
 
 - Debezium JDBC sink connector documentation (`debezium.io`, JDBC connector reference).
 - Debezium source: `debezium-sink` module, `KafkaDebeziumSinkRecord` (envelope detection, delete handling).

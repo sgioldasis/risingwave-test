@@ -10,7 +10,6 @@ OUTPUT_TOPICS = [
     "cronus.casino.out.br.replay",
     "bets-out-br-replay",
     # APR-233 reverse-ETL evaluation POC -- see docs/poc/REVERSE_ETL_CDF_POC_PLAN.md
-    "rw_poc_reverse_etl_cdf_out",
     "rw_poc_reverse_etl_cdf_out_jdbc",
 ]
 

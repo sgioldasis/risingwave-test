@@ -48,7 +48,11 @@ SOURCE_TABLE = "reverse_etl_cdf_poc_source"
 STATE_TABLE = "reverse_etl_cdf_poc_state"
 SYNC_NAME = "reverse_etl_cdf_poc"
 
-KAFKA_TOPIC = "rw_poc_reverse_etl_cdf_out"
+# The single topic both consumers read: RisingWave (FORMAT DEBEZIUM) and the
+# Debezium JDBC sink. Messages carry an embedded Connect schema (see
+# _build_connect_json_message). The "_jdbc" suffix is historical: this started
+# as a second topic beside a schemaless one, since removed.
+KAFKA_TOPIC = "rw_poc_reverse_etl_cdf_out_jdbc"
 
 # CDF's own metadata columns -- see Databricks' Change Data Feed docs.
 CHANGE_TYPE_COLUMN = "_change_type"
@@ -200,21 +204,8 @@ def _next_watermark(rows: list[dict[str, Any]], current_version: int | None) -> 
     return max(versions)
 
 
-# Columns whose declared type downstream (RisingWave's reverse_etl_cdf_poc_current.id
-# BIGINT) is numeric, but which arrive as JSON strings from the Statement
-# Execution API's response (same issue _next_watermark already works around
-# for _commit_version) -- RisingWave's Debezium JSON parser does not coerce
-# a JSON string into an Int64 column; it drops the message instead (confirmed
-# live: "Cannot parse value `1` with type `string` into expected type `Int64`").
-NUMERIC_ROW_COLUMNS = ("id",)
-
-
 def _row_without_cdf_columns(row: dict[str, Any]) -> dict[str, Any]:
-    result = {k: v for k, v in row.items() if k not in CDF_METADATA_COLUMNS}
-    for col in NUMERIC_ROW_COLUMNS:
-        if result.get(col) is not None:
-            result[col] = int(result[col])
-    return result
+    return {k: v for k, v in row.items() if k not in CDF_METADATA_COLUMNS}
 
 
 def _to_debezium_events(rows: list[dict[str, Any]], key_columns: list[str]) -> list[dict[str, Any]]:
@@ -305,26 +296,6 @@ def _summarize_ops(events: list[dict[str, Any]]) -> dict[str, int]:
         counts[op] = counts.get(op, 0) + 1
     return counts
 
-
-def _build_kafka_message(event: dict[str, Any], key_columns: list[str]) -> tuple[bytes | None, bytes]:
-    """Build the (key, value) pair for one Debezium-style event.
-
-    Keyed from `after` (insert/update) or `before` (delete) -- whichever
-    side of the envelope actually has the row.
-    """
-    key: bytes | None = None
-    if key_columns:
-        row_for_key = event.get("after") or event.get("before") or {}
-        key_value = {col: row_for_key.get(col) for col in key_columns}
-        key = json.dumps(key_value, default=str, sort_keys=True).encode("utf-8")
-    value = json.dumps(event, default=str).encode("utf-8")
-    return key, value
-
-
-# Same events as KAFKA_TOPIC, re-encoded for the Debezium JDBC sink, which
-# requires a Kafka Connect schema in every message (RisingWave's
-# FORMAT DEBEZIUM does not, so KAFKA_TOPIC is left schemaless).
-KAFKA_JDBC_TOPIC = "rw_poc_reverse_etl_cdf_out_jdbc"
 
 # The envelope name follows Debezium's `<server>.<schema>.<table>.Envelope`
 # convention, which is what the sink uses to recognise a Debezium event.
@@ -486,10 +457,8 @@ def _kafka_producer_config() -> dict[str, str]:
 def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str], row_fields: list[RowField]) -> None:
     producer = Producer(_kafka_producer_config())
     for event in events:
-        key, value = _build_kafka_message(event, key_columns)
+        key, value = _build_connect_json_message(event, key_columns, row_fields)
         producer.produce(topic=KAFKA_TOPIC, key=key, value=value)
-        jdbc_key, jdbc_value = _build_connect_json_message(event, key_columns, row_fields)
-        producer.produce(topic=KAFKA_JDBC_TOPIC, key=jdbc_key, value=jdbc_value)
     producer.flush()
 
 
@@ -500,17 +469,21 @@ MESSAGE_PREVIEW_LIMIT = 50
 
 
 def _message_previews(
-    events: list[dict[str, Any]], key_columns: list[str], limit: int = MESSAGE_PREVIEW_LIMIT
+    events: list[dict[str, Any]],
+    key_columns: list[str],
+    row_fields: list[RowField],
+    limit: int = MESSAGE_PREVIEW_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Decode the (key, value) pairs actually sent to Kafka for the first
-    `limit` events, so the run's materialization metadata can show real
-    produced messages rather than just op counts."""
+    """The (key, value) pairs actually sent to Kafka for the first `limit`
+    events, so the run's materialization metadata can show real produced
+    messages rather than just op counts. Only each message's `payload` is
+    shown: the embedded schema repeats on every message and would drown it."""
     previews = []
     for event in events[:limit]:
-        key, value = _build_kafka_message(event, key_columns)
+        key, value = _build_connect_json_message(event, key_columns, row_fields)
         previews.append({
-            "key": json.loads(key) if key is not None else None,
-            "value": json.loads(value),
+            "key": json.loads(key)["payload"],
+            "value": json.loads(value)["payload"],
         })
     return previews
 
@@ -636,6 +609,7 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
     events = _to_debezium_events(rows, key_columns) if rows else []
 
     risingwave_columns_added: list[str] = []
+    row_fields: list[RowField] = []
     if events:
         row_fields = _get_row_fields(token)
         # Before producing: RisingWave only fills a column from messages it
@@ -643,7 +617,7 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
         # imports this one.
         from .reverse_etl_risingwave_setup import add_missing_columns
 
-        risingwave_columns_added = add_missing_columns([name for name, _, _ in row_fields])
+        risingwave_columns_added = add_missing_columns(row_fields)
         if risingwave_columns_added:
             context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
         _produce_to_kafka(events, key_columns=key_columns, row_fields=row_fields)
@@ -667,6 +641,6 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
         ),
         "kafka_topic": MetadataValue.text(KAFKA_TOPIC),
         "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
-        "kafka_messages":MetadataValue.json(_message_previews(events, key_columns)),
+        "kafka_messages": MetadataValue.json(_message_previews(events, key_columns, row_fields)),
         "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
     })
