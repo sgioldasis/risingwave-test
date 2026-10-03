@@ -576,10 +576,10 @@ Verified live on 2026-10-03: an insert with a new `country` value (row 13) went 
 **Where it runs.** Import it into workspace `adb-1608121643336927` (the one the pipeline uses; Unity Catalog
 `de_dev.sr_poc_external` is readable there) and attach a **classic cluster**:
 - **Serverless compute cannot resolve the staging Kafka hostname** (`gaierror: Name or service not known`,
-  and `No resolvable bootstrap urls` from the Kafka client).
-- **The `databri-pltf-stg` workspace (`adb-2241475393894655`) does not work:** its compute gets HTTP 403
-  `AuthorizationFailure` from the `de_dev` storage account (the storage firewall does not allow it), and it
-  could not resolve Kafka either.
+  and `No resolvable bootstrap urls` from the Kafka client), in either workspace.
+- **The `databri-pltf-stg` workspace (`adb-2241475393894655`) was only tried on serverless**, where it failed
+  the same way: no DNS for Kafka, and HTTP 403 `AuthorizationFailure` from the `de_dev` storage account (probably
+  because its firewall does not allow serverless). Whether a classic cluster there works was not tested.
 
 **Setup.**
 1. Import the notebook (UI: Create, Import, or `databricks workspace import ... --format SOURCE --language PYTHON`).
