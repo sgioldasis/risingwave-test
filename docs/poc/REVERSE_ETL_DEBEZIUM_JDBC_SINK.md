@@ -563,6 +563,46 @@ Notes:
 - Create the table with all columns up front (the asset now does) rather than adding columns after it starts
   reading, for the reason given in section 10.1.
 
+### 10.3 Running the sync as a Databricks notebook
+
+`notebooks/reverse_etl_cdf_to_kafka.py` is a PySpark version of `reverse_etl_cdf_to_kafka`, in Databricks
+source format. It reads the change feed since the watermark, builds the same Debezium-style events and Connect
+JSON messages with the embedded schema, writes them with Spark's Kafka writer, and advances the watermark. A
+local test showed the events and message bytes equal the Dagster asset's for inserts, updates and deletes.
+
+Verified live on 2026-10-03: an insert with a new `country` value (row 13) went Databricks -> notebook -> Kafka
+-> Postgres and RisingWave, the watermark moved from version 8 to 9, and timestamps matched the Dagster format.
+
+**Where it runs.** Import it into workspace `adb-1608121643336927` (the one the pipeline uses; Unity Catalog
+`de_dev.sr_poc_external` is readable there) and attach a **classic cluster**:
+- **Serverless compute cannot resolve the staging Kafka hostname** (`gaierror: Name or service not known`,
+  and `No resolvable bootstrap urls` from the Kafka client).
+- **The `databri-pltf-stg` workspace (`adb-2241475393894655`) does not work:** its compute gets HTTP 403
+  `AuthorizationFailure` from the `de_dev` storage account (the storage firewall does not allow it), and it
+  could not resolve Kafka either.
+
+**Setup.**
+1. Import the notebook (UI: Create, Import, or `databricks workspace import ... --format SOURCE --language PYTHON`).
+2. Create the secret scope `rw_poc` in that workspace, with the Kafka credentials copied from your shell
+   environment so the values never appear on screen or in a command line:
+   ```bash
+   databricks --profile personal secrets create-scope rw_poc
+   printenv KAFKA_OUTPUT_SASL_USERNAME | tr -d '\n' | databricks --profile personal secrets put-secret rw_poc kafka_output_username
+   printenv KAFKA_OUTPUT_SASL_PASSWORD | tr -d '\n' | databricks --profile personal secrets put-secret rw_poc kafka_output_password
+   ```
+   (`tr -d '\n'` matters: a trailing newline would be stored in the value.)
+3. Run it: Run all. Widgets at the top (catalog, schema, tables, topic, bootstrap, secret names, optional
+   `backfill_from_version`) default to the POC's values.
+
+**Differences from the Dagster asset.**
+- It does **not** add new columns to the RisingWave table (a notebook cannot reach the local RisingWave). After
+  adding a Databricks column, run `ALTER TABLE reverse_etl_cdf_poc_current ADD COLUMN <name> <type>` in
+  RisingWave *before* the notebook, or RisingWave leaves the column `NULL` for the new rows.
+- The source and state tables must exist (`reverse_etl_poc_table_setup`); the notebook does not create them.
+- A failed Kafka write raises before the watermark moves, so the next run re-sends (the sink and RisingWave
+  upsert by key, so replays are harmless). The Dagster asset advances the watermark even if a delivery failed.
+- **Do not run both for the same change:** they share one watermark (`sync_name`) and one topic.
+
 ---
 
 ## 11. Operating notes
@@ -582,10 +622,9 @@ Notes:
   only through the Statement Execution API (SQL, authenticated with the service principal) to read the change
   feed, the watermark table and `information_schema`; the grouping into events, the RisingWave column sync and
   the Kafka produce all happen in the container, which therefore needs a network path to the Kafka cluster (VPN
-  today). Running it as a Spark notebook triggered from Dagster (Jobs API or the `dagster-databricks` Pipes
-  integration) is possible and would keep large change sets out of the REST API, but needs a network path from
-  Databricks to Kafka, adds job start-up latency and cost, and moves the message and schema logic into notebook
-  code. It was considered and not done.
+  today). A PySpark notebook that does the same
+  work exists and was verified live (section 10.3); it is an alternative trigger, not a replacement, and
+  the Dagster asset remains the default.
 - **Which Kafka.** The data topic lives on Kaizen's staging Kafka cluster (SASL_SSL, SCRAM-SHA-512), named in
   `REVERSE_ETL_CDF_POC_PLAN.md` and read from `KAFKA_OUTPUT_BOOTSTRAP` at run time. The local Redpanda only holds
   Kafka Connect's own bookkeeping topics; no pipeline data passes through it.
