@@ -43,7 +43,7 @@ BACKFILL_FROM = dbutils.widgets.get("backfill_from_version").strip()
 
 SOURCE = f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"
 STATE = f"{CATALOG}.{SCHEMA}.{STATE_TABLE}"
-KEY_COLUMNS = ["id"]
+KEY_COLUMNS = ["rid"]  # identity column on the source table; must match KEY_COLUMN in the Dagster module
 
 # UTC so timestamps render as 2026-10-03T03:41:08.345Z, as in the Dagster messages.
 spark.conf.set("spark.sql.session.timeZone", "UTC")

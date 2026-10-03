@@ -14,7 +14,7 @@ import requests
 from dagster import AssetExecutionContext, MetadataValue, asset
 
 from .kafka_topics_setup import kafka_output_topics_setup
-from .reverse_etl_cdf_setup import KAFKA_TOPIC, reverse_etl_cdf_to_kafka
+from .reverse_etl_cdf_setup import KAFKA_TOPIC, KEY_COLUMN, reverse_etl_cdf_to_kafka
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
 CONNECTOR_NAME = "reverse_etl_cdf_jdbc_sink"
@@ -41,7 +41,7 @@ def _connector_config() -> dict[str, str]:
         "connection.password": "${env:POSTGRES_PASSWORD}",
         "insert.mode": "upsert",
         "primary.key.mode": "record_key",
-        "primary.key.fields": "id",
+        "primary.key.fields": KEY_COLUMN,
         "delete.enabled": "true",
         "schema.evolution": "basic",
         "collection.name.format": TARGET_TABLE,

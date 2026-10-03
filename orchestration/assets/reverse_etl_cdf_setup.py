@@ -48,6 +48,11 @@ SOURCE_TABLE = "reverse_etl_cdf_poc_source"
 STATE_TABLE = "reverse_etl_cdf_poc_state"
 SYNC_NAME = "reverse_etl_cdf_poc"
 
+# Surrogate key: an identity column Databricks assigns on insert and never
+# changes, so rows sharing a business `id` (the table does not enforce
+# uniqueness) stay distinct downstream. Must exist from table creation.
+KEY_COLUMN = "rid"
+
 # The single topic both consumers read: RisingWave (FORMAT DEBEZIUM) and the
 # Debezium JDBC sink. Messages carry an embedded Connect schema (see
 # _build_connect_json_message). The "_jdbc" suffix is historical: this started
@@ -536,6 +541,7 @@ def reverse_etl_poc_table_setup(context: AssetExecutionContext):
         token,
         f"""
         CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA}.{SOURCE_TABLE} (
+            {KEY_COLUMN} BIGINT GENERATED ALWAYS AS IDENTITY,
             id BIGINT NOT NULL,
             value STRING,
             updated_at TIMESTAMP
@@ -623,7 +629,7 @@ def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
             context.log.info(f"Reading CDF for {SOURCE_TABLE} since version {next_version}")
             rows = _read_changes(token, next_version)
 
-    key_columns = ["id"]
+    key_columns = [KEY_COLUMN]
     events = _to_debezium_events(rows, key_columns) if rows else []
 
     risingwave_columns_added: list[str] = []

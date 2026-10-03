@@ -20,6 +20,7 @@ from .databricks_optimize import _get_token
 from .kafka_topics_setup import kafka_output_topics_setup
 from .reverse_etl_cdf_setup import (
     KAFKA_TOPIC,
+    KEY_COLUMN,
     RowField,
     _get_row_fields,
     _require_databricks_env,
@@ -27,7 +28,7 @@ from .reverse_etl_cdf_setup import (
 )
 
 TABLE_NAME = "reverse_etl_cdf_poc_current"
-PRIMARY_KEY_COLUMN = "id"
+PRIMARY_KEY_COLUMN = KEY_COLUMN
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
 # SMALLINT (RisingWave has no 1-byte integer).

@@ -134,7 +134,8 @@ At the time of writing the table has these columns:
 
 | Column | Connect type | Optional | Resulting Postgres type |
 |---|---|---|---|
-| `id` | `int64` | no | `bigint` (primary key) |
+| `rid` | `int64` | no | `bigint` (primary key; identity column, see 4.6) |
+| `id` | `int64` | no | `bigint` (not unique) |
 | `value` | `string` | yes | `text` |
 | `updated_at` | `string` | yes | `text` |
 
@@ -186,9 +187,9 @@ Key:
     "type": "struct",
     "name": "reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Key",
     "optional": false,
-    "fields": [{"field": "id", "type": "int64", "optional": false}]
+    "fields": [{"field": "rid", "type": "int64", "optional": false}]
   },
-  "payload": {"id": 1}
+  "payload": {"rid": 1}
 }
 ```
 
@@ -201,8 +202,8 @@ Value (schema abbreviated to the field list):
     "name": "reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Envelope",
     "optional": false,
     "fields": [
-      {"field": "before", "type": "struct", "optional": true, "name": "...Value", "fields": ["id", "value", "updated_at"]},
-      {"field": "after",  "type": "struct", "optional": true, "name": "...Value", "fields": ["id", "value", "updated_at"]},
+      {"field": "before", "type": "struct", "optional": true, "name": "...Value", "fields": ["rid", "id", "value", "updated_at"]},
+      {"field": "after",  "type": "struct", "optional": true, "name": "...Value", "fields": ["rid", "id", "value", "updated_at"]},
       {"field": "op",     "type": "string", "optional": false},
       {"field": "source", "type": "struct", "optional": true,
        "fields": [{"field": "commit_version", "type": "int64"}, {"field": "commit_timestamp", "type": "string"}]}
@@ -210,7 +211,7 @@ Value (schema abbreviated to the field list):
   },
   "payload": {
     "before": null,
-    "after": {"id": 1, "value": "first", "updated_at": "2026-10-02T04:18:23.009Z"},
+    "after": {"rid": 1, "id": 1, "value": "first", "updated_at": "2026-10-02T04:18:23.009Z"},
     "op": "c",
     "source": {"commit_version": 5, "commit_timestamp": "..."}
   }
@@ -226,8 +227,26 @@ Value (schema abbreviated to the field list):
 
 `_to_debezium_events()` (unchanged) turns Databricks CDF rows into one logical event per change: CDF's
 `update_preimage` + `update_postimage` pair collapses into a single `u` event, and CDF's four `_change_type`
-values map to Debezium's `c`/`u`/`d`. `id` is cast to an integer because the Databricks Statement Execution
+values map to Debezium's `c`/`u`/`d`. The key column is cast to an integer because the Databricks Statement Execution
 API returns numerics as JSON strings. See `REVERSE_ETL_CDF_POC_PLAN.md` section "3c" for the full reasoning.
+
+### 4.6 Key: why `rid` and not `id`
+
+The source table does not enforce uniqueness of `id` (Unity Catalog primary keys are informational only), so two
+rows can share an `id`. Keyed by `id`, that loses data downstream: deleting one of two rows with `id = 14` sent a
+delete for key 14, which removed the *other* row from Postgres and RisingWave while Databricks still had it
+(seen live, 2026-10-03).
+
+The source table therefore has `rid BIGINT GENERATED ALWAYS AS IDENTITY`: Databricks assigns it on insert and
+never changes it, and it appears in the change feed like any column. Everything is keyed on it. `id` is just a
+column that may repeat, as in the source.
+
+Alternatives tested and rejected: Delta **row tracking** gives each physical row a stable `_metadata.row_id`, but
+neither the SQL `table_changes()` nor the Spark `readChangeFeed` reader exposes it, so it cannot be a key; a
+**duplicate-key check** would only turn the loss into a failed sync.
+
+Verified live after reset, setup and seed: inserting two rows with `id = 14` (`rid` 4 and 5) and deleting one by
+value left the other present and identical in Databricks, Postgres and RisingWave.
 
 ---
 
@@ -297,7 +316,7 @@ Behaviour:
 | `connection.password` | `${env:POSTGRES_PASSWORD}` | Resolved inside the Connect container. |
 | `insert.mode` | `upsert` | |
 | `primary.key.mode` | `record_key` | Key struct supplies the primary key. |
-| `primary.key.fields` | `id` | |
+| `primary.key.fields` | `rid` | The surrogate identity column (section 4.6), not the business `id`. |
 | `delete.enabled` | `true` | `op = "d"` becomes a `DELETE`. |
 | `schema.evolution` | `basic` | The sink creates the table (with the primary key) on first use and adds columns if the schema grows. No separate table-creation asset is needed. |
 | `collection.name.format` | `reverse_etl_cdf_poc` | Target table name. Without it the table would be named after the topic. |
@@ -677,8 +696,13 @@ Verified live on 2026-10-03: an insert with a new `country` value (row 13) went 
   use a new column name for repeated demos.
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
   else arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings were not exercised end to end.
-- **Key column is hardcoded.** `key_columns = ["id"]` is fixed in `reverse_etl_cdf_to_kafka`, and the RisingWave
-  table's primary key is `PRIMARY_KEY_COLUMN = "id"`.
+- **Key column is fixed.** `KEY_COLUMN = "rid"` (in `reverse_etl_cdf_setup.py`) is the key for the Kafka message,
+  the RisingWave primary key and the connector's `primary.key.fields`; the notebook repeats it as `KEY_COLUMNS`.
+  A different key means changing the constant, the notebook and recreating the source table.
+- **`rid` must exist from table creation.** An identity column cannot be added to an existing table, so this
+  needs the reset job, then the setup job. Inserts into the source table must list their columns
+  (`INSERT INTO t (id, value, ...)`); a column-less `INSERT ... VALUES` does not work, and Databricks restricts
+  concurrent writers on tables with identity columns.
 - **`updated_at` is text** in Postgres, not `timestamp`/`timestamptz`.
 - **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry; fine for
   a POC, worth revisiting at volume.
