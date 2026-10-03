@@ -627,7 +627,7 @@ Verified live on 2026-10-03: an insert with a new `country` value (row 13) went 
 
 ---
 
-### 10.4 Dropping a column or changing a type (Databricks side, tested)
+### 10.4 Dropping a column or changing a type (tested)
 
 Tested on 2026-10-03 on two throwaway tables in `de_dev.sr_poc_external` (dropped afterwards), with Change Data
 Feed enabled. The demo tables were not touched.
@@ -652,16 +652,39 @@ A type change behaves the same way (a read spanning it fails with the same error
 then reports the widened type (`LONG` for `BIGINT`), which `_CONNECT_TYPE_BY_DATABRICKS_TYPE` already maps to
 `int64`.
 
-**What this means for the sync.** The sync reads from `last_commit_version + 1`. If everything was synced
-before the schema change, the next read starts at or after it and works. If any changes from before the
-schema change were still unsynced, every sync fails with the error above until the watermark is moved to the
-change's version, which skips those earlier changes. Safe order: **sync, change the schema, sync again.**
+**What this means for the sync.** The sync reads from `last_commit_version + 1`, and the watermark only advances
+when a sync reads data rows. Enabling column mapping or type widening is a table commit with no data, so it
+does not move the watermark, and the drop or retype that follows is then still ahead of the next read's
+starting version. Confirmed on a scratch table: with the watermark at version 1, a read starting at version 2
+(the no-data upgrade commit, before a drop at 3) fails with `DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_DATA_SCHEMA`,
+while a read starting at the drop (3) works. If the sync fails this way it fails on every run until the
+watermark is moved to the change's version, which skips any earlier unsynced changes. Safe order: **enable
+column mapping / type widening, make one data change, sync (the watermark now passes the upgrade), make the
+schema change, sync again.**
 
-**Not tested (downstream).** How the targets react: Postgres probably keeps a dropped column (the sink never
-drops columns) and probably rejects a widened value that no longer fits an `integer` column (the sink does not
-alter types), failing the connector task; RisingWave probably keeps the column and sets it to `NULL` on rows
-written afterwards, or rejects the widened value. Confirming this needs a live run on the demo tables, after
-which the reset and setup jobs would restore the original schema.
+**Live run on the demo table (2026-10-03), using that order.** Column mapping was enabled and a row inserted,
+then synced; then `region` was dropped, a row inserted and another updated, then synced. The sync succeeded and
+the connector stayed healthy. The targets kept the column and disagreed afterwards:
+
+| Row | Databricks | Postgres `region` | RisingWave `region` |
+|---|---|---|---|
+| Written before the drop (id 16) | column gone | `eu` | `eu` |
+| Updated after the drop (id 15) | column gone | `eu` (stale; the upsert did not write the missing field) | `NULL` (the upsert replaced the row) |
+| Inserted after the drop (id 17) | column gone | `NULL` | `NULL` |
+
+The same run for a type change: `score INT` was added and synced (Postgres `integer`, RisingWave `integer`),
+then type widening enabled, a row synced, `score` widened to `BIGINT`, and a row with `score = 9999999999`
+inserted. The Dagster sync reported success, but:
+- **Postgres:** the sink's insert failed because the value did not fit the `integer` column. The connector
+  reported `RUNNING` while its **task was `FAILED`**, and no later message was applied. The connector state alone
+  looks healthy; check `tasks[].state` in `GET /connectors/<name>/status`.
+- **RisingWave:** the row arrived with `score = NULL`, silently (no error).
+- **Recovery for Postgres:** `ALTER TABLE reverse_etl_cdf_poc ALTER COLUMN score TYPE bigint`, then
+  `POST /connectors/reverse_etl_cdf_jdbc_sink/tasks/0/restart`; the task resumed from its offset and the row
+  appeared with the right value.
+- **RisingWave cannot be repaired in place** (no column type change): the table must be recreated, in practice
+  with the reset job and then setup, which also restores the original schema and removes the column-mapping
+  and type-widening upgrades from the demo table.
 
 ## 11. Operating notes
 
@@ -724,10 +747,11 @@ which the reset and setup jobs would restore the original schema.
 - **Delivery errors are not inspected.** `_produce_to_kafka()` produces each event and flushes once; a failed
   delivery is not surfaced, and the watermark is still advanced afterwards (pre-existing behaviour).
 - **Schema evolution is additive only.** Adding a column works end to end (section 10.1). Dropping a column or
-  changing a type was tested on the Databricks side only (section 10.4): both need an opt-in, and a change feed
-  read that spans the change fails. `schema.evolution=basic` and `add_missing_columns()` only add columns, so
-  the Postgres and RisingWave side of a drop or retype is reasoned, not tested. Treat added columns as
-  permanent and use a new column name for repeated demos.
+  widening a type was run live (section 10.4): both need an opt-in on the Databricks side, and the sync only
+  works if run in the safe order given there. A dropped column stays in both targets and they disagree on rows
+  updated afterwards; a widened value that no longer fits fails the Postgres sink task and becomes `NULL` in
+  RisingWave. Treat added columns as permanent, use a new column name for repeated demos, and use the reset and
+  setup jobs to return to the original schema.
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
   else arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings were not exercised end to end.
 - **Key column is fixed.** `KEY_COLUMN = "rid"` (in `reverse_etl_cdf_setup.py`) is the key for the Kafka message,
