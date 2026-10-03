@@ -673,7 +673,24 @@ then synced; then `region` was dropped, a row inserted and another updated, then
 the connector stayed healthy. The targets kept the column and disagreed afterwards:
 
 | Row | Databricks | Postgres `region` | RisingWave `region` |
-|---|---|---|---|
+|---|---|---|**Why the targets keep a dropped column.** This is the Debezium JDBC sink's design, not a bug. Its only schema
+operation is `ALTER TABLE ... ADD COLUMN` (`schema.evolution=basic`; the only other value, `none`, does nothing),
+because dropping or retyping destroys data. It also could not tell that a drop happened: it receives records, not
+DDL events, and the message schema describes the shape of that one record, which after a drop simply lacks the
+field (our schema was correct: it is built from the live columns). Debezium source connectors publish DDL
+changes on a separate schema-change topic, which the JDBC sink does not read and this pipeline does not
+produce. RisingWave is not a Debezium component: it ignores fields it does not know, and our code only adds
+missing columns (`add_missing_columns()`).
+
+**Repairing rows that have `NULL` after a late column add.** `ALTER TABLE ... ADD COLUMN` in RisingWave fills the
+column only from messages read afterwards, so rows already ingested stay `NULL`. Either update those rows in
+Databricks (new change events carry the value) or rebuild the table: `DROP TABLE reverse_etl_cdf_poc_current`,
+then materialize `reverse_etl_cdf_risingwave_table`. It recreates the table with all live columns and re-reads
+the topic from the start, so every row is filled. Verified live on 2026-10-03 (rows 10 and 11 had `region`
+only in Postgres; after the rebuild both targets matched). The drop does not cascade, so it fails if anything
+depends on the table; during the rebuild the table is briefly empty or partial.
+
+---|
 | Written before the drop (id 16) | column gone | `eu` | `eu` |
 | Updated after the drop (id 15) | column gone | `eu` (stale; the upsert did not write the missing field) | `NULL` (the upsert replaced the row) |
 | Inserted after the drop (id 17) | column gone | `NULL` | `NULL` |
@@ -827,6 +844,25 @@ run unless every name it drops starts with a POC prefix and the schema is `sr_po
 Verified live on 2026-10-03: reset, then setup (the first sync on the empty table succeeded), then seed and a
 sync produced matching rows in Postgres and RisingWave. After the reset, the connector list, topic, consumer
 group and both target tables were all absent, as expected.
+
+### 14.4 Discussed and not built
+
+- **Propagating column drops to the targets.** In `reverse_etl_cdf_to_kafka`, after reading the live columns and
+  before producing, compare them with each target's columns and run `ALTER TABLE ... DROP COLUMN` for any extra
+  one (never the key). The Postgres side must first wait until the connector has no lag: older Kafka messages
+  still carry the column, and the sink would add it straight back through `schema.evolution`. RisingWave has no
+  such race (it ignores unknown fields) but dropping a column on this Kafka-backed table is untested. Guard it
+  behind an explicit setting and report `columns_dropped` in the asset metadata. Renaming the column to
+  `_dropped_<name>` instead keeps the data. The notebook cannot do this (it cannot reach Postgres or RisingWave).
+  Type changes are harder: Postgres can widen in place, RisingWave cannot change a column type.
+- **A separate column-sync job** (Dagster, which reaches both Databricks and RisingWave) that adds missing
+  RisingWave columns, run before the notebook, on a schedule, or from a sensor watching the source table's history
+  for `ADD COLUMNS`. Rows that arrive before the column exists still end up `NULL` until the table is rebuilt.
+- **A one-click rebuild job** doing the two-step RisingWave rebuild above.
+- **Enabling column mapping and type widening in `reverse_etl_poc_table_setup`.** Not done on purpose: today
+  Databricks refuses a drop or retype, which protects the pipeline from changes the targets cannot follow. They are
+  also one-way table upgrades. If wanted for a deliberate schema-change demo, make it an optional switch.
+- **Typed `DATE` / `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3).
 
 ---
 
