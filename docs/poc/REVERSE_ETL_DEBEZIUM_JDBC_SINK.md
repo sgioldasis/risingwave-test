@@ -989,6 +989,12 @@ group and both target tables were all absent, as expected.
     `reverse_etl_poc_setup_job`. Older sections that describe past runs may still show some of them.
   - **Not exposed.** Kafka connection settings, a schedule and an asset check (the connection is still the
     `KAFKA_OUTPUT_*` env vars).
+  - **The orders table.** Its columns are `rid`, `id`, `description`, `total`, `updated_at` (in that order, which is
+    the order of `source_columns` after the key). Verified live (2026-10-04) after reset, setup and a sync: both
+    targets show ids 1 and 2 with those columns (`description` as text, `updated_at` as a timestamp with time
+    zone in Postgres and `TIMESTAMPTZ` in RisingWave, id 3 deleted), and the connector and its task were
+    `RUNNING`. Column order is fixed when the table is created, so changing `source_columns` needs the
+    reset and setup jobs.
   - **Verified live** after the last rename: both syncs' reset jobs, setup jobs and syncs ran, an insert, update and
     delete on the orders table and the seeds reached Postgres and RisingWave in each, both connectors were
     `RUNNING`, and no objects under the old names remained (Databricks, Postgres, RisingWave, Connect). Not
