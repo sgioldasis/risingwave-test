@@ -945,8 +945,8 @@ group and both target tables were all absent, as expected.
     name: orders            # the label; every name below is derived from it
     catalog: de_dev
     schema_name: sr_poc_external
-    source_columns: ["id BIGINT NOT NULL", "total DOUBLE"]
-    # key_column: rid   (default)
+    source_columns: ["id BIGINT NOT NULL", "description STRING", "total DOUBLE", "updated_at TIMESTAMP"]
+    # key_column: rid   (default); seed_statements: see defs/reverse_etl_orders/defs.yaml
   ```
 
   It calls `build_reverse_etl_defs(ReverseEtlSyncConfig.for_name(...))`. Every name is `reverse_etl_<label>_<role>`,
