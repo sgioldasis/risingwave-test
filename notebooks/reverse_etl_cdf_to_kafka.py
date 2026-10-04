@@ -10,24 +10,29 @@
 # Differences from the Dagster asset:
 #   - It does not add new columns to the RisingWave table (a notebook cannot reach the
 #     local RisingWave). After adding a column in Databricks, run
-#     ALTER TABLE reverse_etl_cdf_target ADD COLUMN ... in RisingWave *before*
+#     ALTER TABLE reverse_etl_<label>_target ADD COLUMN ... in RisingWave *before*
 #     running this notebook, or RisingWave leaves that column NULL for the new rows.
-#   - The source and state tables must already exist (reverse_etl_cdf_table_setup).
+#   - The source and state tables must already exist (reverse_etl_<label>_table_setup).
+#
+# One notebook serves every sync: set the `label` widget (for example cdf or orders) and
+# the table, watermark and topic names are derived from it.
 #
 # Kafka credentials come from a Databricks secret scope, never from the notebook.
 # The cluster needs a network path to the Kafka brokers.
 
 # COMMAND ----------
 
-# Defaults below (and KEY_COLUMNS) mirror the config built from
-# orchestration/defs/reverse_etl_cdf/defs.yaml (names derived by ReverseEtlSyncConfig.for_name).
-# This notebook runs in Databricks and cannot import it, so change both together.
+# The names are derived from `label` exactly as ReverseEtlSyncConfig.for_name does in
+# orchestration/assets/reverse_etl_config.py (reverse_etl_<label>_<role>). This notebook runs in
+# Databricks and cannot import it, so change both together. The four override widgets below
+# are normally left empty; fill one in only for a sync that overrides that name in its defs.yaml.
+dbutils.widgets.text("label", "cdf")
 dbutils.widgets.text("catalog", "de_dev")
 dbutils.widgets.text("schema", "sr_poc_external")
-dbutils.widgets.text("source_table", "reverse_etl_cdf_source")
-dbutils.widgets.text("state_table", "reverse_etl_cdf_state")
-dbutils.widgets.text("sync_name", "reverse_etl_cdf")
-dbutils.widgets.text("kafka_topic", "reverse_etl_cdf_topic")
+dbutils.widgets.text("source_table", "")  # default reverse_etl_<label>_source
+dbutils.widgets.text("state_table", "")   # default reverse_etl_<label>_state
+dbutils.widgets.text("sync_name", "")     # default reverse_etl_<label>
+dbutils.widgets.text("kafka_topic", "")   # default reverse_etl_<label>_topic
 dbutils.widgets.text("kafka_bootstrap", "stg-ocp-kfk01-bootstrap.kaizengaming.net:9096")
 dbutils.widgets.text("secret_scope", "rw_poc")
 dbutils.widgets.text("secret_key_username", "kafka_output_username")
@@ -36,17 +41,21 @@ dbutils.widgets.text("backfill_from_version", "")  # optional first-run override
 
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
-SOURCE_TABLE = dbutils.widgets.get("source_table")
-STATE_TABLE = dbutils.widgets.get("state_table")
-SYNC_NAME = dbutils.widgets.get("sync_name")
-KAFKA_TOPIC = dbutils.widgets.get("kafka_topic")
+LABEL = dbutils.widgets.get("label").strip()
+if not LABEL:
+    raise ValueError("The label widget is required (for example cdf or orders)")
+BASE = f"reverse_etl_{LABEL}"
+SOURCE_TABLE = dbutils.widgets.get("source_table").strip() or f"{BASE}_source"
+STATE_TABLE = dbutils.widgets.get("state_table").strip() or f"{BASE}_state"
+SYNC_NAME = dbutils.widgets.get("sync_name").strip() or BASE
+KAFKA_TOPIC = dbutils.widgets.get("kafka_topic").strip() or f"{BASE}_topic"
 KAFKA_BOOTSTRAP = dbutils.widgets.get("kafka_bootstrap")
 SECRET_SCOPE = dbutils.widgets.get("secret_scope")
 BACKFILL_FROM = dbutils.widgets.get("backfill_from_version").strip()
 
 SOURCE = f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"
 STATE = f"{CATALOG}.{SCHEMA}.{STATE_TABLE}"
-KEY_COLUMNS = ["rid"]  # identity column on the source table; must match KEY_COLUMN in the Dagster module
+KEY_COLUMNS = ["rid"]  # identity column on the source table; must match key_column in the sync's defs.yaml (default rid)
 
 # UTC so timestamps render as 2026-10-03T03:41:08.345Z, as in the Dagster messages.
 spark.conf.set("spark.sql.session.timeZone", "UTC")
