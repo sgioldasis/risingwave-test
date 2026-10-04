@@ -648,7 +648,7 @@ connector stayed `RUNNING`, and the watermark (5) equalled the table version.
   and `No resolvable bootstrap urls` from the Kafka client), in either workspace.
 - **The `databri-pltf-stg` workspace (`adb-2241475393894655`) was only tried on serverless**, where it failed
   the same way: no DNS for Kafka, and HTTP 403 `AuthorizationFailure` from the `de_dev` storage account (probably
-  because its firewall does not allow serverless). Whether a classic cluster there works was not tested. Its copy of the notebook was updated to the current defaults on 2026-10-04 (keeping a `socket.getaddrinfo` diagnostic cell that is only in that copy) and has not been run since.
+  because its firewall does not allow serverless). Whether a classic cluster there works was not tested. Its copy of the notebook was updated to the current label-driven version on 2026-10-04 (keeping a `socket.getaddrinfo` diagnostic cell that is only in that copy; the rest equals the repo file) and has not been run there.
 
 **Setup.**
 1. Import the notebook (UI: Create, Import, or `databricks workspace import ... --format SOURCE --language PYTHON`).
@@ -1078,7 +1078,7 @@ group and both target tables were all absent, as expected.
     `base_parameters = {"label": "orders"}` on a classic cluster (as the author's own user), after updating one
     orders row in Databricks: the run succeeded, the row changed in both Postgres and RisingWave, the orders
     watermark moved to the table version, and the POC's watermark and tables were untouched. The STG copy of the
-    notebook was not updated to the label version.
+    notebook was updated to the label version afterwards but not run.
 
 ---
 
