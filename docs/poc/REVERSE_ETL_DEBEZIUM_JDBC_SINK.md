@@ -1,9 +1,11 @@
 # Reverse-ETL CDF POC: Debezium JDBC sink into Postgres
 
-Date: 2026-10-02 (updated 2026-10-03). Since the first version: a **single topic** read by both RisingWave and
+Date: 2026-10-02 (updated 2026-10-04). Since the first version: a **single topic** read by both RisingWave and
 the Debezium sink (sections 2, 3, 10.2), a surrogate **`rid` key** (4.6), real **timestamp** types (4.3), a
-**reset job** (14.3), a **Databricks notebook** version of the sync (10.3), and tested behaviour for column
-drops and type changes (10.4).
+**reset job** (14.3), a **Databricks notebook** version of the sync (10.3), tested behaviour for column
+drops and type changes (10.4), and, since 2026-10-04, a **reusable Dagster component** with uniform
+`reverse_etl_<label>_<role>` names, a **seed asset** and a **second sync** (10.5, 14.4). Names in sections that
+describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Related: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) (APR-233), which describes the
 Databricks Change Data Feed (CDF) -> Kafka half of this pipeline. This document covers the second half:
@@ -20,7 +22,7 @@ RisingWave sink).
 
 **Outcome.** Working end to end. After a Databricks table change and one run of the Dagster asset
 `reverse_etl_cdf_to_kafka` (or the equivalent notebook, section 10.3), the change appears in host Postgres
-table `reverse_etl_cdf_poc` and in the RisingWave table within seconds. Inserts, updates and deletes are all
+table `reverse_etl_cdf_target` and in the RisingWave table within seconds. Inserts, updates and deletes are all
 applied, and added columns flow through to both targets.
 
 Evidence from a live run (host Postgres after reset, setup, seeding and syncing, 2026-10-03):
@@ -40,7 +42,7 @@ Postgres and a local Redpanda topic, covering insert, update and delete.
 ## 2. Architecture
 
 ```
- Databricks (de_dev.sr_poc_external.reverse_etl_cdf_poc_source, CDF enabled)
+ Databricks (de_dev.sr_poc_external.reverse_etl_cdf_source, CDF enabled)
         |
         |  Dagster asset reverse_etl_cdf_to_kafka  OR  the Databricks notebook of the same name
         |  (BATCH, manual / on demand; section 10.3)
@@ -48,14 +50,14 @@ Postgres and a local Redpanda topic, covering insert, update and delete.
         |  groups CDF rows into Debezium before/after/op events
         v
  External Kafka cluster (SASL_SSL)    <-- KAFKA_OUTPUT_BOOTSTRAP
-   '-- rw_poc_reverse_etl_cdf_out_jdbc   Debezium JSON + embedded Connect schema   (ONE topic, two readers)
+   '-- reverse_etl_cdf_topic   Debezium JSON + embedded Connect schema   (ONE topic, two readers)
          |                                |
          |                                |  kafka-connect container
          v                                |  consumer.override.* -> external SASL_SSL cluster
    RisingWave table                       |  worker internal topics -> LOCAL Redpanda
-   reverse_etl_cdf_poc_current            v
+   reverse_etl_cdf_target            v
    (FORMAT DEBEZIUM ENCODE JSON,    Host PostgreSQL (host.docker.internal:5432, db "postgres")
-    typed columns, PK: rid)         table: public.reverse_etl_cdf_poc   (PK: rid)
+    typed columns, PK: rid)         table: public.reverse_etl_cdf_target   (PK: rid)
 ```
 
 Key properties:
@@ -65,7 +67,7 @@ Key properties:
 - **One topic, two readers.** Every event is produced once, with an embedded Connect schema (section 4).
   RisingWave and the Debezium sink both read it. (It started as two topics, one schemaless for RisingWave and one
   with a schema for the sink; consolidated on 2026-10-03 after confirming RisingWave reads the embedded-schema
-  format, including typed columns. The `_jdbc` suffix in the name is historical.)
+  format, including typed columns. The topic was later renamed `reverse_etl_cdf_topic`.)
 - **Split Kafka usage in Connect.** The Connect worker's own bookkeeping topics live on the *local* Redpanda;
   only the connector's consumer talks to the external cluster. This means Connect does not need
   topic-creation rights on the external cluster.
@@ -113,13 +115,13 @@ Verified in the Debezium source (`KafkaDebeziumSinkRecord` in the `debezium-sink
 
 ### 4.2 Schema names used
 
-Built from the existing constants in `reverse_etl_cdf_setup.py`
-(`SYNC_NAME`, `SCHEMA`, `SOURCE_TABLE`):
+Built from the sync's config (`ReverseEtlSyncConfig.envelope_schema_name` =
+`<sync_name>.<schema>.<source_table>`), shown here for the POC:
 
 ```
-reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Envelope   value (the envelope)
-reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Value      before / after row struct
-reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Key        key struct
+reverse_etl_cdf.sr_poc_external.reverse_etl_cdf_source.Envelope   value (the envelope)
+reverse_etl_cdf.sr_poc_external.reverse_etl_cdf_source.Value      before / after row struct
+reverse_etl_cdf.sr_poc_external.reverse_etl_cdf_source.Key        key struct
 ```
 
 ### 4.3 Row columns
@@ -130,7 +132,7 @@ The row schema is **derived at sync time** from the source table's current colum
 ```sql
 SELECT column_name, data_type, is_nullable
 FROM de_dev.information_schema.columns
-WHERE table_schema = 'sr_poc_external' AND table_name = 'reverse_etl_cdf_poc_source'
+WHERE table_schema = 'sr_poc_external' AND table_name = 'reverse_etl_cdf_source'
 ORDER BY ordinal_position
 ```
 
@@ -200,7 +202,7 @@ Key:
 {
   "schema": {
     "type": "struct",
-    "name": "reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Key",
+    "name": "reverse_etl_cdf.sr_poc_external.reverse_etl_cdf_source.Key",
     "optional": false,
     "fields": [{"field": "rid", "type": "int64", "optional": false}]
   },
@@ -214,7 +216,7 @@ Value (schema abbreviated to the field list):
 {
   "schema": {
     "type": "struct",
-    "name": "reverse_etl_cdf_poc.sr_poc_external.reverse_etl_cdf_poc_source.Envelope",
+    "name": "reverse_etl_cdf.sr_poc_external.reverse_etl_cdf_source.Envelope",
     "optional": false,
     "fields": [
       {"field": "before", "type": "struct", "optional": true, "name": "...Value", "fields": ["rid", "id", "value", "updated_at"]},
@@ -267,26 +269,31 @@ value left the other present and identical in Databricks, Postgres and RisingWav
 
 ## 5. What was changed in the repo
 
-All changes are on branch `feature-sr` (see `git log`).
+All changes are on branch `feature-sr` (see `git log`). The first rows are a change log: module-level constants
+they mention (`KAFKA_TOPIC`, `KEY_COLUMN`, `ENVELOPE_SCHEMA_NAME`, `SYNC_NAME`, ...) were later replaced by fields
+of `ReverseEtlSyncConfig`, and the last rows describe the current structure.
 
 | File | Change |
 |---|---|
-| `orchestration/assets/kafka_topics_setup.py` | `OUTPUT_TOPICS` lists `rw_poc_reverse_etl_cdf_out_jdbc` (created by the existing `kafka_output_topics_setup` asset: 15 partitions, replication 1, like the others). The original `rw_poc_reverse_etl_cdf_out` was removed from the list. |
-| `orchestration/assets/reverse_etl_cdf_setup.py` | `KAFKA_TOPIC` is now the single `_jdbc` topic. Added `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`; `_produce_to_kafka()` produces each event once, in that format. Removed the old schemaless `_build_kafka_message()` and the `NUMERIC_ROW_COLUMNS` cast of `id` (now handled by `_coerce()`). `_message_previews()` shows each message's payload only; `_raw_messages()` returns the first three messages complete with their embedded schema. |
+| `orchestration/assets/kafka_topics_setup.py` | `OUTPUT_TOPICS` no longer lists the reverse-ETL topic: each sync now creates its own (section 14.4). It originally listed `rw_poc_reverse_etl_cdf_out_jdbc`, which the original `rw_poc_reverse_etl_cdf_out` had replaced. |
+| `orchestration/assets/reverse_etl_cdf_setup.py` | The sync now writes to the single topic. Added `ENVELOPE_SCHEMA_NAME`, `_get_row_fields()` (live column list from `information_schema`), `_coerce()` / `_coerce_row()`, `_connect_row_schema()` and `_build_connect_json_message()`; `_produce_to_kafka()` produces each event once, in that format. Removed the old schemaless `_build_kafka_message()` and the `NUMERIC_ROW_COLUMNS` cast of `id` (now handled by `_coerce()`). `_message_previews()` shows each message's payload only; `_raw_messages()` returns the first three messages complete with their embedded schema. |
 | `Dockerfile.debezium-connect` (new) | `FROM quay.io/debezium/connect:3.7.0.Final`, downloads `debezium-connector-jdbc-3.7.0.Final-plugin.tar.gz` from Maven Central, verifies its **sha512**, extracts it into `$KAFKA_CONNECT_PLUGINS_DIR`. |
 | `docker-compose.yml` | New `kafka-connect` service (section 6). |
-| `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave table now reads the single `_jdbc` topic. `reverse_etl_cdf_risingwave_table` creates it from the live Databricks columns with real types (`_create_table_sql()`), so no column is added after the table starts reading. `add_missing_columns()` (called by `reverse_etl_cdf_to_kafka` before it produces) adds later-appearing columns with their types. |
-| `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_debezium_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
-| `orchestration/definitions.py` | Imported the new asset, added it to `reverse_etl_poc_setup_job` and to the `Definitions` asset list, and updated the job description. |
+| `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave table now reads the single topic. `reverse_etl_cdf_risingwave_target` creates it from the live Databricks columns with real types (`_create_table_sql()`), so no column is added after the table starts reading. `add_missing_columns()` (called by `reverse_etl_cdf_to_kafka` before it produces) adds later-appearing columns with their types. |
+| `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_cdf_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
+| `orchestration/definitions.py` | First imported the new asset and added it to the setup job. Later the reverse-ETL assets and jobs moved out: it now merges `load_defs(...)` of `orchestration/defs/` (section 14.4). |
 | `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `TIMESTAMP` columns use the `ZONED_TIMESTAMP` marker and `_connect_field()` (section 4.3). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`; the RisingWave type map gains `TIMESTAMPTZ`. |
-| `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_poc_reset_job` (section 14.3), built by `build_reset_job(cfg)`. |
+| `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_cdf_reset_job` (section 14.3), built by `build_reset_job(cfg)`. |
 | `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). |
-| `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig` and its instance `POC_SYNC`: the one place that names the sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it. It also names the Dagster assets, jobs and group built for the sync, the source table's column DDL, and the reset job's safety allowlist (`reset_name_prefixes`, `reset_schema`). `ReverseEtlSyncConfig.for_name()` derives every name for a new sync from one name so two syncs cannot collide. |
-| `orchestration/assets/reverse_etl_defs.py` (new) | `build_reverse_etl_defs(cfg)` returns `Definitions` with the four assets, the setup job and the reset job for one sync (plus its own topic asset if `create_topic_asset` is set). `definitions.py` calls it once for `POC_SYNC` and merges the result. |
-| Asset factories (refactor) | In `reverse_etl_cdf_setup.py`, `reverse_etl_risingwave_setup.py`, `reverse_etl_debezium_sink.py` and `reverse_etl_reset.py` the functions take the config as a parameter and the assets and the reset job are built by `build_*` factories. Dependencies between assets use `AssetKey` from the config, so a sync can depend on the shared `kafka_output_topics_setup` without importing it. Only `CATALOG`, `SCHEMA` and `SOURCE_TABLE` remain as module aliases, for the seed script. The reset job's op names now start with the sync name (`reverse_etl_cdf_poc_delete_connector`, ...) because Dagster needs unique op names across jobs; the POC's asset and job names are unchanged. |
-| `orchestration/components/reverse_etl_cdf_sync.py`, `orchestration/defs/` (new) | The `ReverseEtlCdfSync` Dagster component and the (empty) folder for its YAML instances; `definitions.py` merges `load_defs(...)` of that folder (section 14.4). |
+| `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig`: the one place that names a sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it. It also names the Dagster assets, jobs and group built for the sync, the source table's column DDL, and the reset job's safety allowlist (`reset_name_prefixes`, `reset_schema`). `ReverseEtlSyncConfig.for_name(label, ...)` derives every name as `reverse_etl_<label>_<role>` so two syncs cannot collide. |
+| `orchestration/assets/reverse_etl_defs.py` (new) | `build_reverse_etl_defs(cfg)` returns `Definitions` with the four assets, the setup job and the reset job for one sync (plus its own topic asset if `create_topic_asset` is set). The `ReverseEtlCdfSync` component calls it for each YAML instance (section 14.4). |
+| Asset factories (refactor) | In `reverse_etl_cdf_setup.py`, `reverse_etl_risingwave_setup.py`, `reverse_etl_debezium_sink.py` and `reverse_etl_reset.py` the functions take the config as a parameter and the assets and the reset job are built by `build_*` factories. Dependencies between assets use `AssetKey` from the config, so a sync can depend on the shared `kafka_output_topics_setup` without importing it. The reset job's op names start with the sync name (`reverse_etl_cdf_delete_connector`, ...) because Dagster needs unique op names across jobs; the names of the POC's assets and jobs have since changed with the uniform naming (section 14.4). |
+| `orchestration/components/reverse_etl_cdf_sync.py`, `orchestration/defs/` (new) | The `ReverseEtlCdfSync` Dagster component and the folder of its YAML instances: `defs/reverse_etl_cdf/` (the POC) and `defs/reverse_etl_orders/` (the second sync). `definitions.py` merges `load_defs(...)` of that folder (section 14.4). |
+| `build_seed_asset` in `reverse_etl_cdf_setup.py` (new) | The optional `reverse_etl_<label>_seed` asset, the last step of a sync's setup job, running the `seed_statements` from its YAML. It replaced `scripts/reverse_etl_poc_seed.py`, `bin/3_run_reverse_etl_seed.sh` and the script-runner entry "Seed Reverse-ETL POC", which were deleted. |
+| `orchestration/assets/kafka_topics_setup.py` (later) | The reverse-ETL topic was removed from `OUTPUT_TOPICS`; `reverse_etl_<label>_topic_setup` creates each sync's topic. |
+| `docker-compose.yml` (later) | `dagster-webserver` memory limit raised from `1G` to `1536M` after the webserver restarted itself once during a code-location reload (cause not found; it was not OOM-killed). |
 
-Verification of the factory refactor: the constants, generated RisingWave DDL, connector config, topic list and message bytes are identical to before the change, the definitions load with the same POC asset and job names, and a second dummy sync merges into the same `Definitions` with no name collisions. A live reset, setup, seed and sync run after this change gave the expected result in both targets (ids 1 and 2, id 3 deleted, same instants in Postgres and RisingWave). There is no second real sync, so two syncs running side by side were not tested live. Dagster allows only one module-level `Definitions`, so `definitions.py` builds `defs` as one `Definitions.merge(Definitions(...), build_reverse_etl_defs(POC_SYNC))` call.
+Verification of the factory refactor: the constants, generated RisingWave DDL, connector config, topic list and message bytes are identical to before the change, the definitions load with the same POC asset and job names, and a second dummy sync merges into the same `Definitions` with no name collisions. A live reset, setup, seed and sync run after this change gave the expected result in both targets (ids 1 and 2, id 3 deleted, same instants in Postgres and RisingWave). There is no second real sync, so two syncs running side by side were not tested live. Dagster allows only one module-level `Definitions`, so `definitions.py` builds `defs` as one `Definitions.merge(Definitions(...), load_defs(...))` call (later changes: section 14.4).
 
 ---
 
@@ -316,13 +323,13 @@ Built from `Dockerfile.debezium-connect`; container name `kafka-connect`.
 
 ## 7. The connector and the Dagster asset
 
-Asset: `reverse_etl_debezium_jdbc_sink` (group `reverse_etl_poc`), dependencies
-`kafka_output_topics_setup` and `reverse_etl_cdf_to_kafka`.
+Asset: `reverse_etl_cdf_jdbc_sink` (group `reverse_etl_cdf`), dependencies
+`reverse_etl_cdf_topic_setup` and `reverse_etl_cdf_to_kafka`.
 
 Behaviour:
 
 1. Waits for the Connect REST API (`KAFKA_CONNECT_URL`, default `http://kafka-connect:8083`) for up to 120 s.
-2. `PUT /connectors/reverse_etl_cdf_jdbc_sink/config` with the generated config. PUT is idempotent: it creates
+2. `PUT /connectors/reverse_etl_cdf_sink/config` with the generated config. PUT is idempotent: it creates
    the connector or updates it. A non-2xx response raises with the response text (truncated).
 3. Polls `/status` for up to 90 s until the connector **and** its task are `RUNNING`. If anything reports
    `FAILED`, the asset fails with the first 1500 characters of the trace.
@@ -334,7 +341,7 @@ Behaviour:
 |---|---|---|
 | `connector.class` | `io.debezium.connector.jdbc.JdbcSinkConnector` | |
 | `tasks.max` | `1` | |
-| `topics` | `rw_poc_reverse_etl_cdf_out_jdbc` | |
+| `topics` | `reverse_etl_cdf_topic` | |
 | `connection.url` | `HOST_POSTGRES_URL`, default `jdbc:postgresql://host.docker.internal:5432/postgres` | Same default as the existing dbt Postgres sink. |
 | `connection.username` | `POSTGRES_USER`, default `postgres` | |
 | `connection.password` | `${env:POSTGRES_PASSWORD}` | Resolved inside the Connect container. |
@@ -343,7 +350,7 @@ Behaviour:
 | `primary.key.fields` | `rid` | The surrogate identity column (section 4.6), not the business `id`. |
 | `delete.enabled` | `true` | `op = "d"` becomes a `DELETE`. |
 | `schema.evolution` | `basic` | The sink creates the table (with the primary key) on first use and adds columns if the schema grows. No separate table-creation asset is needed. |
-| `collection.name.format` | `reverse_etl_cdf_poc` | Target table name. Without it the table would be named after the topic. |
+| `collection.name.format` | `reverse_etl_cdf_target` | Target table name. Without it the table would be named after the topic. |
 | `key.converter` / `value.converter` | `org.apache.kafka.connect.json.JsonConverter` | |
 | `key.converter.schemas.enable` / `value.converter.schemas.enable` | `true` | Schema is read from each message. |
 | `consumer.override.bootstrap.servers` | `KAFKA_OUTPUT_BOOTSTRAP` | Points the consumer at the **external** cluster. |
@@ -352,7 +359,7 @@ Behaviour:
 | `consumer.override.sasl.mechanism` | `KAFKA_OUTPUT_SASL_MECHANISM`, default `SCRAM-SHA-512` | |
 | `consumer.override.sasl.jaas.config` | `ScramLoginModule` (or `PlainLoginModule` when the mechanism is `PLAIN`) with `username="${env:KAFKA_OUTPUT_SASL_USERNAME}" password="${env:KAFKA_OUTPUT_SASL_PASSWORD}"` | The credentials are references, not values. |
 
-The consumer group is `connect-reverse_etl_cdf_jdbc_sink`.
+The consumer group is `connect-reverse_etl_cdf_sink`.
 
 ---
 
@@ -424,13 +431,11 @@ the reset job (14.3).
 2. Script runner: **Start Services** (`1_up.sh`). Tick **Offline** if on VPN; this skips the rebuild and reuses
    the locally built images, including `risingwave-test-kafka-connect`. Wait about a minute for `kafka-connect`
    to be healthy (`docker compose ps kafka-connect`).
-3. Dagster (http://localhost:3000), Jobs, `reverse_etl_poc_setup_job`, Launch. This creates the Databricks
-   source and watermark tables (the source table must exist before it can be seeded), creates the topic, runs a
-   first sync (empty at this point, so it only records the table version as the watermark), creates the
-   RisingWave table, and registers and starts the connector.
-4. Script runner: **Seed Reverse-ETL POC** (`3_run_reverse_etl_seed.sh`). This makes the first Databricks table
-   changes.
-5. Dagster: materialize `reverse_etl_cdf_to_kafka` (or run the notebook, section 10.3) to sync the seed rows.
+3. Dagster (http://localhost:3000), Jobs, `reverse_etl_cdf_setup_job`, Launch. This creates the Databricks
+   source and watermark tables, creates the topic, runs a first sync (empty at this point, so it only records the
+   table version as the watermark), creates the RisingWave table, registers and starts the connector, and last runs
+   the seed asset `reverse_etl_cdf_seed` (insert, update, delete in Databricks; the rows are not synced yet).
+4. Dagster: materialize `reverse_etl_cdf_to_kafka` (or run the notebook, section 10.3) to sync the seed rows.
 
 ### Every time after
 
@@ -446,17 +451,17 @@ Databricks -> Kafka step is manual.
 
 Run, in this order:
 
-1. Dagster: `reverse_etl_poc_reset_job` (tears everything down, section 14.3).
-2. Dagster: `reverse_etl_poc_setup_job` (recreates the Databricks tables with the original columns, the topic,
+1. Dagster: `reverse_etl_cdf_reset_job` (tears everything down, section 14.3).
+2. Dagster: `reverse_etl_cdf_setup_job` (recreates the Databricks tables with the original columns, the topic,
    the RisingWave table and the connector). Its first sync runs against the empty source table, finds no
-   changes, and only records the current table version as the watermark.
-3. Script runner: **Seed Reverse-ETL POC**.
-4. Dagster: materialize `reverse_etl_cdf_to_kafka`.
+   changes, and only records the current table version as the watermark. Its last step, `reverse_etl_cdf_seed`,
+   writes the demo rows to Databricks.
+3. Dagster: materialize `reverse_etl_cdf_to_kafka`.
 
 The schema is then always `rid`, `id`, `value`, `updated_at`, whatever columns earlier demos added. The Postgres
-table `reverse_etl_cdf_poc` does **not** exist after steps 1 and 2: the sink creates it when it receives the
-first message, so it appears after step 4. A database client that still lists it is showing a cached tree
-(refresh it); querying it before step 4 fails with "relation does not exist", which is expected.
+table `reverse_etl_cdf_target` does **not** exist after steps 1 and 2: the sink creates it when it receives the
+first message, so it appears after step 3. A database client that still lists it is showing a cached tree
+(refresh it); querying it before step 3 fails with "relation does not exist", which is expected.
 
 ### Seeing the Kafka messages
 
@@ -469,10 +474,10 @@ three messages exactly as sent, with the embedded `schema` listing the table's c
 
 ```bash
 # Connector and task state
-curl -s localhost:8083/connectors/reverse_etl_cdf_jdbc_sink/status
+curl -s localhost:8083/connectors/reverse_etl_cdf_sink/status
 
 # Rows in the target
-psql -h localhost -U postgres -d postgres -c "select * from reverse_etl_cdf_poc order by rid"
+psql -h localhost -U postgres -d postgres -c "select * from reverse_etl_cdf_target order by rid"
 ```
 
 ### Images needed (VPN note)
@@ -494,10 +499,10 @@ restart or change.
 
 ```sql
 -- 1. Databricks: add a column (additive change, supported by Change Data Feed)
-ALTER TABLE de_dev.sr_poc_external.reverse_etl_cdf_poc_source ADD COLUMN region STRING;
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_cdf_source ADD COLUMN region STRING;
 
 -- 2. Databricks: write a row that uses it (explicit column list)
-INSERT INTO de_dev.sr_poc_external.reverse_etl_cdf_poc_source (id, value, updated_at, region)
+INSERT INTO de_dev.sr_poc_external.reverse_etl_cdf_source (id, value, updated_at, region)
 VALUES (10, 'evolved', current_timestamp(), 'eu');
 ```
 
@@ -505,8 +510,8 @@ VALUES (10, 'evolved', current_timestamp(), 'eu');
 4. Postgres:
 
 ```bash
-psql -h localhost -U postgres -d postgres -c '\d reverse_etl_cdf_poc' \
-     -c 'select * from reverse_etl_cdf_poc order by rid'
+psql -h localhost -U postgres -d postgres -c '\d reverse_etl_cdf_target' \
+     -c 'select * from reverse_etl_cdf_target order by rid'
 ```
 
 Expected: a new `region text` column; rows that existed before show `NULL` in it; the new row shows `eu`.
@@ -519,13 +524,13 @@ Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column beco
   and the targets do not follow it. What was tested is in section 10.4. Treat the new column as permanent, or use
   the reset and setup jobs to start over.
 - **Running the notebook instead of the asset?** It cannot reach RisingWave, so run
-  `ALTER TABLE reverse_etl_cdf_poc_current ADD COLUMN <name> <type>` there first (section 10.3).
-- `scripts/reverse_etl_poc_seed.py` uses explicit column lists, so it keeps working after the `ALTER`.
+  `ALTER TABLE reverse_etl_cdf_target ADD COLUMN <name> <type>` there first (section 10.3).
+- The seed statements (in `defs.yaml`) use explicit column lists, so they keep working after the `ALTER`.
 - **The RisingWave table picks the column up too, with the matching type.** Before producing events,
   `reverse_etl_cdf_to_kafka` calls `add_missing_columns()` (in `reverse_etl_risingwave_setup.py`), which compares
-  the live Databricks columns with `reverse_etl_cdf_poc_current` and runs `ALTER TABLE ... ADD COLUMN <name>
+  the live Databricks columns with `reverse_etl_cdf_target` and runs `ALTER TABLE ... ADD COLUMN <name>
   <type>` for each one the table lacks (type mapping in section 4.3). It does nothing if the table doesn't exist
-  yet. Check with `psql -h localhost -p 4566 -U root -d dev -c "describe reverse_etl_cdf_poc_current"`; the run's
+  yet. Check with `psql -h localhost -p 4566 -U root -d dev -c "describe reverse_etl_cdf_target"`; the run's
   Dagster metadata also lists `risingwave_columns_added`.
   - **Typed, as in Postgres.** RisingWave reads the same typed, schema-embedded messages as the sink, so a
     `DOUBLE` column is `double precision` in both. (Before the single-topic change it had to be `VARCHAR`,
@@ -560,8 +565,8 @@ Other column types work the same way: a `DOUBLE`, `INT` or `BOOLEAN` column beco
     `add_missing_columns()` added `country varchar` and `weight double precision` before the next produce, the new
     values arrived typed, an update upserted, and a delete removed the row.
   - Live migration (2026-10-03, local stack): Dagster definitions reloaded, the real
-    `reverse_etl_cdf_poc_current` dropped (nothing depended on it) and recreated by materializing
-    `reverse_etl_cdf_risingwave_table` (run succeeded). The new table reads `rw_poc_reverse_etl_cdf_out_jdbc`, was
+    `reverse_etl_cdf_target` dropped (nothing depended on it) and recreated by materializing
+    `reverse_etl_cdf_risingwave_target` (run succeeded). The new table reads `reverse_etl_cdf_topic`, was
     created with `region` from the start, and its four rows (ids 1, 2, 10, 11, including `region` = `eu` / `us` on
     10 and 11) matched the Postgres table exactly. The Debezium connector stayed `RUNNING` throughout.
   - Live new-column test on the single topic (2026-10-03): in Databricks, `ALTER TABLE ... ADD COLUMN country
@@ -588,7 +593,7 @@ carrying it are produced. To repair rows that were ingested too early, make a re
 are produced, then materialize `reverse_etl_cdf_to_kafka`:
 
 ```sql
-UPDATE de_dev.sr_poc_external.reverse_etl_cdf_poc_source
+UPDATE de_dev.sr_poc_external.reverse_etl_cdf_source
 SET region = region, updated_at = current_timestamp()
 WHERE id IN (10, 11);
 ```
@@ -602,21 +607,21 @@ misses the messages already read. The asset therefore creates the table with all
 
 ### 10.2 Migrating an existing RisingWave table to the single topic
 
-A RisingWave table's Kafka topic is fixed when the table is created, so a `reverse_etl_cdf_poc_current` created
+A RisingWave table's Kafka topic is fixed when the table is created, so a `reverse_etl_cdf_target` created
 before the consolidation still reads the retired schemaless topic and will no longer receive new events. To
 move it:
 
 1. Reload Dagster's definitions (or restart the Dagster containers) so the new asset code is loaded.
-2. Drop the table: `psql -h localhost -p 4566 -U root -d dev -c "DROP TABLE reverse_etl_cdf_poc_current"`.
-3. Materialize `reverse_etl_cdf_risingwave_table` (or run `reverse_etl_poc_setup_job`). It recreates the table
-   from the live Databricks columns, with real types, reading the `_jdbc` topic from the beginning.
+2. Drop the table: `psql -h localhost -p 4566 -U root -d dev -c "DROP TABLE reverse_etl_cdf_target"`.
+3. Materialize `reverse_etl_cdf_risingwave_target` (or run `reverse_etl_cdf_setup_job`). It recreates the table
+   from the live Databricks columns, with real types, reading the topic from the beginning.
 
 Notes:
-- The Debezium connector and the Postgres table are unaffected: they already read the `_jdbc` topic.
+- The Debezium connector and the Postgres table are unaffected: they already read that topic.
 - RisingWave rebuilds its state from that topic's contents, which is also exactly where Postgres' contents came
   from, so the two stay consistent. Anything that only ever existed on the retired topic does not reappear.
 - The retired topic `rw_poc_reverse_etl_cdf_out` is left in place on the staging cluster, unused; it is no longer
-  produced to or created by `kafka_output_topics_setup`.
+  produced to or created by anything.
 - Create the table with all columns up front (the asset now does) rather than adding columns after it starts
   reading, for the reason given in section 10.1.
 - The same drop-and-recreate is the repair for rows left `NULL` by a column added late (section 10.4).
@@ -654,9 +659,9 @@ Verified live on 2026-10-03: an insert with a new `country` value (row 13) went 
 
 **Differences from the Dagster asset.**
 - It does **not** add new columns to the RisingWave table (a notebook cannot reach the local RisingWave). After
-  adding a Databricks column, run `ALTER TABLE reverse_etl_cdf_poc_current ADD COLUMN <name> <type>` in
+  adding a Databricks column, run `ALTER TABLE reverse_etl_cdf_target ADD COLUMN <name> <type>` in
   RisingWave *before* the notebook, or RisingWave leaves the column `NULL` for the new rows.
-- The source and state tables must exist (`reverse_etl_poc_table_setup`); the notebook does not create them.
+- The source and state tables must exist (`reverse_etl_cdf_table_setup`); the notebook does not create them.
 - A failed Kafka write raises before the watermark moves, so the next run re-sends (the sink and RisingWave
   upsert by key, so replays are harmless). The Dagster asset advances the watermark even if a delivery failed.
 - **Do not run both for the same change:** they share one watermark (`sync_name`) and one topic.
@@ -714,8 +719,8 @@ inserted. The Dagster sync reported success, but:
   reported `RUNNING` while its **task was `FAILED`**, and no later message was applied. The connector state alone
   looks healthy; check `tasks[].state` in `GET /connectors/<name>/status`.
 - **RisingWave:** the row arrived with `score = NULL`, silently (no error).
-- **Recovery for Postgres:** `ALTER TABLE reverse_etl_cdf_poc ALTER COLUMN score TYPE bigint`, then
-  `POST /connectors/reverse_etl_cdf_jdbc_sink/tasks/0/restart`; the task resumed from its offset and the row
+- **Recovery for Postgres:** `ALTER TABLE reverse_etl_cdf_target ALTER COLUMN score TYPE bigint`, then
+  `POST /connectors/reverse_etl_cdf_sink/tasks/0/restart`; the task resumed from its offset and the row
   appeared with the right value.
 - **RisingWave cannot be repaired in place** (no column type change): the table must be recreated, in practice
   with the reset job and then setup, which also restores the original schema and removes the column-mapping
@@ -732,11 +737,31 @@ missing columns (`add_missing_columns()`).
 
 **Repairing rows that have `NULL` after a late column add.** `ALTER TABLE ... ADD COLUMN` in RisingWave fills the
 column only from messages read afterwards, so rows already ingested stay `NULL`. Either update those rows in
-Databricks (new change events carry the value) or rebuild the table: `DROP TABLE reverse_etl_cdf_poc_current`,
-then materialize `reverse_etl_cdf_risingwave_table`. It recreates the table with all live columns and re-reads
+Databricks (new change events carry the value) or rebuild the table: `DROP TABLE reverse_etl_cdf_target`,
+then materialize `reverse_etl_cdf_risingwave_target`. It recreates the table with all live columns and re-reads
 the topic from the start, so every row is filled. Verified live on 2026-10-03 (rows 10 and 11 had `region`
 only in Postgres; after the rebuild both targets matched). The drop does not cascade, so it fails if anything
 depends on the table; during the rebuild the table is briefly empty or partial.
+
+### 10.5 Adding another sync
+
+The second sync, `orders`, was added this way (see 14.4 for the names it gets):
+
+1. Create `orchestration/defs/reverse_etl_<label>/defs.yaml` with a `ReverseEtlCdfSync` instance: `name` (the
+   label), `catalog`, `schema_name` (a scratch schema), `source_columns` (used only if the setup creates the
+   table), and optional `seed_statements` (SQL using `{source_table}`).
+2. Reload the Dagster code location (no restart needed; the containers mount `./orchestration`). The group
+   `reverse_etl_<label>`, its assets and `reverse_etl_<label>_setup_job` / `_reset_job` appear.
+3. Run `reverse_etl_<label>_setup_job`: it creates the Databricks tables (with `rid` and CDF), the topic, the
+   RisingWave table and the connector, and seeds if statements are given.
+4. Materialize `reverse_etl_<label>_to_kafka`.
+
+To start over, run `reverse_etl_<label>_reset_job`, then the setup job. To remove a sync, run its reset job first,
+then delete its folder; deleting the folder alone leaves the objects behind. The notebook serves one sync per
+widget set (set `source_table`, `state_table`, `sync_name`, `kafka_topic`); it was not run against `orders`.
+For a real, existing table: the setup only creates a table that does not exist, and the table needs a `rid`
+identity column from creation (section 13). `source_columns` is still a required field in the YAML even then; it is
+unused when the table exists (making it optional is not done).
 
 ---
 
@@ -745,11 +770,12 @@ depends on the table; during the rebuild the table is briefly empty or partial.
 - **Which asset to run when.** After any change to the Databricks table, materialize **only**
   `reverse_etl_cdf_to_kafka`: it reads the change feed since its watermark, adds any new column to the
   RisingWave table, and produces the events; the connector and the RisingWave table pick them up within
-  seconds. Nothing is scheduled, so the sync only runs when triggered. The other two assets in
-  `reverse_etl_poc_setup_job` are one-time setup:
-  - `reverse_etl_cdf_risingwave_table` creates the RisingWave table that reads the topic. Run it again only
+  seconds. Nothing is scheduled, so the sync only runs when triggered. The other assets in
+  `reverse_etl_cdf_setup_job` are one-time setup (plus `reverse_etl_cdf_table_setup`, `reverse_etl_cdf_topic_setup`
+  and the demo seed `reverse_etl_cdf_seed`, which do not move data either):
+  - `reverse_etl_cdf_risingwave_target` creates the RisingWave table that reads the topic. Run it again only
     after dropping that table or changing its topic.
-  - `reverse_etl_debezium_jdbc_sink` registers the connector with Kafka Connect, which then runs it on its own.
+  - `reverse_etl_cdf_jdbc_sink` registers the connector with Kafka Connect, which then runs it on its own.
     Run it again only if Connect loses its state (for example its local Redpanda volume is wiped) or the
     connector configuration changes.
   Neither moves data; both sit after the sync in the job only for ordering.
@@ -759,8 +785,8 @@ depends on the table; during the rebuild the table is briefly empty or partial.
   the Kafka produce all happen in the container, which therefore needs a network path to the Kafka cluster (VPN
   today). A PySpark notebook that does the same work exists and was verified live (section 10.3); it is an
   alternative trigger, not a replacement, and the Dagster asset remains the default.
-- **Starting over.** Run `reverse_etl_poc_reset_job`, then `reverse_etl_poc_setup_job`, then the seed (section 10,
-  "Starting a new demo from a known state"). To repair only the RisingWave table, rebuild it (section 10.4).
+- **Starting over.** Run `reverse_etl_cdf_reset_job`, then `reverse_etl_cdf_setup_job` (which seeds), then
+  the sync (section 10, "Starting a new demo from a known state"). To repair only the RisingWave table, rebuild it (section 10.4).
 - **Which Kafka.** The data topic lives on Kaizen's staging Kafka cluster (SASL_SSL, SCRAM-SHA-512), named in
   `REVERSE_ETL_CDF_POC_PLAN.md` and read from `KAFKA_OUTPUT_BOOTSTRAP` at run time. The local Redpanda only holds
   Kafka Connect's own bookkeeping topics; no pipeline data passes through it.
@@ -768,16 +794,16 @@ depends on the table; during the rebuild the table is briefly empty or partial.
   `JDBC_PLUGIN_SHA512` to the value from
   `https://repo1.maven.org/maven2/io/debezium/debezium-connector-jdbc/<version>/debezium-connector-jdbc-<version>-plugin.tar.gz.sha512`.
   Keep the base image and plugin versions aligned.
-- **Re-running the asset.** `reverse_etl_debezium_jdbc_sink` is idempotent; running it again updates the
+- **Re-running the asset.** `reverse_etl_cdf_jdbc_sink` is idempotent; running it again updates the
   connector config in place.
 - **Delivery semantics.** At-least-once from Kafka; upserts and deletes by primary key are idempotent, so a
   redelivered message gives the same end state.
 - **Replaying from the start.** Stop the connector, reset its offsets with the Kafka Connect offsets API (or
-  delete the connector and the `connect-reverse_etl_cdf_jdbc_sink` consumer group), then restart. Because
+  delete the connector and the `connect-reverse_etl_cdf_sink` consumer group), then restart. Because
   `auto.offset.reset=earliest`, a new consumer group re-reads the whole topic.
 - **Removing the sink.**
-  `curl -X DELETE localhost:8083/connectors/reverse_etl_cdf_jdbc_sink`, then
-  `drop table reverse_etl_cdf_poc;` in host Postgres if the data should go too.
+  `curl -X DELETE localhost:8083/connectors/reverse_etl_cdf_sink`, then
+  `drop table reverse_etl_cdf_target;` in host Postgres if the data should go too.
 
 ---
 
@@ -786,14 +812,14 @@ depends on the table; during the rebuild the table is briefly empty or partial.
 | Symptom | Likely cause and fix |
 |---|---|
 | Postgres table missing or empty after the job | The topic was empty: the CDF watermark had already advanced and there were no new table changes. Seed or change the Databricks table and re-run `reverse_etl_cdf_to_kafka`. Check the asset logged `Produced N event(s)` rather than `No new commits`. |
-| Asset `reverse_etl_debezium_jdbc_sink` fails with "Kafka Connect not reachable" | `kafka-connect` is not up or not healthy yet. `docker compose ps kafka-connect`, `docker logs kafka-connect`. |
+| Asset `reverse_etl_cdf_jdbc_sink` fails with "Kafka Connect not reachable" | `kafka-connect` is not up or not healthy yet. `docker compose ps kafka-connect`, `docker logs kafka-connect`. |
 | Connector `FAILED` with an authentication / SASL error | `KAFKA_OUTPUT_SASL_USERNAME` / `KAFKA_OUTPUT_SASL_PASSWORD` were not exported in the shell that ran compose, or the mechanism is wrong (`KAFKA_OUTPUT_SASL_MECHANISM`). Fix the environment, recreate the container (`docker compose up -d kafka-connect`), re-run the asset. |
 | Connector config rejected with a config-provider / "not allowed" error | The variable is not in the allowlist pattern. Only `KAFKA_OUTPUT_SASL_USERNAME`, `KAFKA_OUTPUT_SASL_PASSWORD` and `POSTGRES_PASSWORD` can be referenced. |
 | Connector `FAILED` connecting to Postgres | Host Postgres is not running (start it via `devbox shell`), or `HOST_POSTGRES_URL` / `POSTGRES_USER` / `POSTGRES_PASSWORD` are wrong. `pg_isready -h localhost -p 5432`. |
-| Messages rejected: "schema" / not a Struct errors | The message was not produced in the schema-embedded format (for example someone produced to the `_jdbc` topic by hand with plain JSON). Only `_build_connect_json_message()` output is valid. |
-| RisingWave table `reverse_etl_cdf_poc_current` stops updating, or is missing new columns | It was created before the single-topic change and still reads the retired schemaless topic. Migrate it (section 10.2). |
+| Messages rejected: "schema" / not a Struct errors | The message was not produced in the schema-embedded format (for example someone produced to the topic by hand with plain JSON). Only `_build_connect_json_message()` output is valid. |
+| RisingWave table `reverse_etl_cdf_target` stops updating, or is missing new columns | It was created before the single-topic change and still reads the retired schemaless topic. Migrate it (section 10.2). |
 | Deletes not applied | `delete.enabled` must be `true` and `primary.key.mode` must be `record_key`, and the message must have `op = "d"` with the row in `before`. |
-| Connector shows `RUNNING` but rows stop arriving | Check the **task** state, not just the connector: `GET /connectors/reverse_etl_cdf_jdbc_sink/status`. A `FAILED` task usually means a value the Postgres column cannot hold (for example a widened integer, section 10.4). Fix the column, then `POST /connectors/reverse_etl_cdf_jdbc_sink/tasks/0/restart`. |
+| Connector shows `RUNNING` but rows stop arriving | Check the **task** state, not just the connector: `GET /connectors/reverse_etl_cdf_sink/status`. A `FAILED` task usually means a value the Postgres column cannot hold (for example a widened integer, section 10.4). Fix the column, then `POST /connectors/reverse_etl_cdf_sink/tasks/0/restart`. |
 | Sync fails with `DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE` | A column was dropped or retyped and the change feed read starts before it. Section 10.4: it fails every run until the watermark is moved past the change; or use the reset job. |
 | Postgres table does not exist right after setup or reset | Expected: the sink creates it on the first message, so it appears after the first sync that has changes (section 10). |
 | `INSERT` into the source table fails after reset and setup | The table now has an identity column `rid`; list the columns explicitly (`INSERT INTO t (id, value, ...) VALUES (...)`). |
@@ -816,16 +842,16 @@ depends on the table; during the rebuild the table is briefly empty or partial.
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
   else (`DATE`, `TIMESTAMP_NTZ`, `DECIMAL`, ...) arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings
   were not exercised end to end.
-- **Key column is fixed.** `POC_SYNC.key_column = "rid"` (in `reverse_etl_config.py`, aliased as `KEY_COLUMN`) is
+- **Key column is fixed.** `key_column` (default `"rid"`, a component attribute) is
   the key for the Kafka message, the RisingWave primary key and the connector's `primary.key.fields`; the
   notebook repeats it as `KEY_COLUMNS`. A different key means changing the config and the notebook and
   recreating the source table.
 - **The notebook repeats the config's Databricks-side values.** It runs inside Databricks and cannot import
-  `reverse_etl_config.py`, so its widget defaults and `KEY_COLUMNS` must be kept equal to `POC_SYNC` by hand
-  (checked once after the refactor; there is no automated check).
-- **Several syncs are possible in code, untested live.** `build_reverse_etl_defs(cfg)` can be called per config,
-  but only `POC_SYNC` is registered and only it has run. Two syncs share the notebook's `sync_name` watermark
-  convention and the single Kafka Connect worker; neither has been exercised together (see 14.4).
+  `reverse_etl_config.py`, so its widget defaults and `KEY_COLUMNS` must be kept equal to the names the config derives
+  for `defs/reverse_etl_cdf/defs.yaml` by hand (there is no automated check).
+- **Two syncs have run together, no more.** The POC (`cdf`) and one more sync (`orders`, section 14.4) ran side by
+  side on the single Kafka Connect worker. The notebook's `sync_name` watermark convention and the second sync's
+  schema changes and reset were not exercised.
 - **`rid` must exist from table creation.** An identity column cannot be added to an existing table, so this
   needs the reset job, then the setup job. Inserts into the source table must list their columns
   (`INSERT INTO t (id, value, ...)`); a column-less `INSERT ... VALUES` does not work, and Databricks restricts
@@ -871,27 +897,27 @@ are asynchronous: the topic stayed listed for about 6 seconds. The reset job (14
 
 ### 14.3 Reset job (built, verified live)
 
-`reverse_etl_poc_reset_job` (`orchestration/assets/reverse_etl_reset.py`) is a Dagster op job, not assets,
+`reverse_etl_cdf_reset_job` (`orchestration/assets/reverse_etl_reset.py`) is a Dagster op job, not assets,
 because it destroys state instead of materializing it. It runs these steps in order:
 
 1. Delete the connector from Kafka Connect.
-2. Drop the RisingWave table `reverse_etl_cdf_poc_current`.
-3. Drop the Postgres table `reverse_etl_cdf_poc`.
-4. Delete the consumer group `connect-reverse_etl_cdf_jdbc_sink` (retried while the connector's consumer
-   leaves it) and the topic `rw_poc_reverse_etl_cdf_out_jdbc`, then wait until the topic is gone from the
+2. Drop the RisingWave table `reverse_etl_cdf_target`.
+3. Drop the Postgres table `reverse_etl_cdf_target`.
+4. Delete the consumer group `connect-reverse_etl_cdf_sink` (retried while the connector's consumer
+   leaves it) and the topic `reverse_etl_cdf_topic`, then wait until the topic is gone from the
    metadata, since topic deletes are asynchronous.
-5. Drop the Databricks source and watermark tables (`reverse_etl_cdf_poc_source`, `reverse_etl_cdf_poc_state`).
+5. Drop the Databricks source and watermark tables (`reverse_etl_cdf_source`, `reverse_etl_cdf_state`).
 
 Dropping the Databricks tables, rather than only resetting the watermark, is what removes columns added during
-a demo: `reverse_etl_poc_table_setup` recreates them with `CREATE TABLE IF NOT EXISTS` and the original
+a demo: `reverse_etl_cdf_table_setup` recreates them with `CREATE TABLE IF NOT EXISTS` and the original
 columns. Every step tolerates a missing object, so a half-finished reset can be run again. A guard refuses to
-run unless every name it drops starts with a POC prefix and the schema is `sr_poc_external`.
+run unless every name it drops starts with `reverse_etl_` and the schema equals the sync's `schema_name` (`sr_poc_external`). Each sync has its own reset job, with op names prefixed by its `sync_name`.
 
 Verified live on 2026-10-03: reset, then setup (the first sync on the empty table succeeded), then seed and a
 sync produced matching rows in Postgres and RisingWave. After the reset, the connector list, topic, consumer
 group and both target tables were all absent, as expected.
 
-### 14.4 Discussed and not built
+### 14.4 Discussed and not built, and the Dagster component (built)
 
 - **Propagating column drops to the targets.** In `reverse_etl_cdf_to_kafka`, after reading the live columns and
   before producing, compare them with each target's columns and run `ALTER TABLE ... DROP COLUMN` for any extra
@@ -905,40 +931,68 @@ group and both target tables were all absent, as expected.
   RisingWave columns, run before the notebook, on a schedule, or from a sensor watching the source table's history
   for `ADD COLUMNS`. Rows that arrive before the column exists still end up `NULL` until the table is rebuilt.
 - **A one-click rebuild job** doing the two-step RisingWave rebuild above.
-- **Enabling column mapping and type widening in `reverse_etl_poc_table_setup`.** Not done on purpose: today
+- **Enabling column mapping and type widening in `reverse_etl_cdf_table_setup`.** Not done on purpose: today
   Databricks refuses a drop or retype, which protects the pipeline from changes the targets cannot follow. They are
   also one-way table upgrades. If wanted for a deliberate schema-change demo, make it an optional switch.
 - **Typed `DATE` / `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3).
-- **A Dagster component for the whole pipeline** (built, minimal; verified loading in the running Dagster, not
-  run against a second real table). `orchestration/components/reverse_etl_cdf_sync.py` defines
-  `ReverseEtlCdfSync`, a regular `Component` (not state-backed, because the columns are read at run time). One
-  instance per sync under `orchestration/defs/<name>/defs.yaml`:
+- **A Dagster component for the whole pipeline** (built; both syncs run through it). `ReverseEtlCdfSync`
+  (`orchestration/components/reverse_etl_cdf_sync.py`) is a regular `Component`, not state-backed, because the
+  columns are read at run time. One instance per sync under `orchestration/defs/<folder>/defs.yaml`:
 
   ```yaml
   type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
   attributes:
-    name: orders_sync
+    name: orders            # the label; every name below is derived from it
     catalog: de_dev
     schema_name: sr_poc_external
-    source_table: orders_sync_source
     source_columns: ["id BIGINT NOT NULL", "total DOUBLE"]
     # key_column: rid   (default)
   ```
 
-  It calls `build_reverse_etl_defs(ReverseEtlSyncConfig.for_name(...))`, so every other name is derived from `name`
-  and the instance gets the four assets, `<name>_kafka_topic`, `<name>_setup_job` and `<name>_reset_job`.
+  It calls `build_reverse_etl_defs(ReverseEtlSyncConfig.for_name(...))`. Every name is `reverse_etl_<label>_<role>`,
+  shown here for the two syncs (`cdf` is the POC, `orders` the second):
+
+  | Object | `cdf` | `orders` |
+  |---|---|---|
+  | Databricks source / watermark table | `reverse_etl_cdf_source` / `reverse_etl_cdf_state` | `reverse_etl_orders_source` / `reverse_etl_orders_state` |
+  | Postgres and RisingWave table | `reverse_etl_cdf_target` | `reverse_etl_orders_target` |
+  | Kafka topic | `reverse_etl_cdf_topic` | `reverse_etl_orders_topic` |
+  | Connector (consumer group `connect-<connector>`) | `reverse_etl_cdf_sink` | `reverse_etl_orders_sink` |
+  | Setup / reset job | `reverse_etl_cdf_setup_job` / `reverse_etl_cdf_reset_job` | `reverse_etl_orders_setup_job` / `reverse_etl_orders_reset_job` |
+  | Assets (group `reverse_etl_<label>`) | `reverse_etl_cdf_table_setup`, `_topic_setup`, `_to_kafka`, `_risingwave_target`, `_jdbc_sink`, `_seed` | same with `orders` |
+  | `sync_name` (watermark key, Debezium envelope prefix) | `reverse_etl_cdf` | `reverse_etl_orders` |
+
   `definitions.py` loads the `defs/` folder with `load_defs(..., project_root=...)` and merges it with the rest.
-  The POC itself is still built from `POC_SYNC` in Python, not from YAML. Notes and limits:
+  The optional override fields (`source_table`, `sync_name`, `state_table`, `kafka_topic`, `connector_name`,
+  `postgres_table`, `risingwave_table`, `group_name`, the asset and job names, `topic_asset`,
+  `create_topic_asset`, `reset_name_prefixes`, `reset_schema`) replace a derived name, for example to point
+  `source_table` at an existing table; neither current instance uses any. Notes and limits:
+  - **The POC has one definition.** `defs/reverse_etl_cdf/defs.yaml`, including its seed. There is no Python copy
+    of the POC's names. `sync_name` is the watermark key, so changing it restarts that sync.
+  - **Seeding.** `seed_statements` (a list of SQL strings, each may use `{source_table}`) makes the component add
+    `reverse_etl_<label>_seed`, the last asset of the setup job. It runs after the first sync, so the rows wait in
+    Databricks until `reverse_etl_<label>_to_kafka` runs. Both syncs use it (a MERGE, an UPDATE of id 2 and a DELETE
+    of id 3). It replaces `scripts/reverse_etl_poc_seed.py`, which was deleted. Leave it unset for a real table.
+  - **Each sync owns its topic.** `reverse_etl_<label>_topic_setup` creates the topic (15 partitions, replication
+    1). The shared `kafka_output_topics_setup` no longer lists the POC topic.
   - **Layout.** Only this part is on the `dg` layout; the other assets stay in `definitions.py`. `project_root` is
     passed explicitly because the Dagster containers mount only `./orchestration`, so `load_defs` finds no
     `pyproject.toml` there (without it the code location failed to load).
   - **`dg` tooling does not see it.** `orchestration` is not an installed package, so `dg list components` and
     `dg scaffold defs` do not list the type; write the `defs.yaml` by hand. Runtime loading is unaffected.
   - **Field name.** `schema_name`, not `schema`, which would shadow a pydantic attribute.
-  - **Only the config's `for_name` options are exposed.** Topic, connector and table names cannot be overridden
-    from YAML; no Kafka connection settings, schedule or asset check (still the `KAFKA_OUTPUT_*` env vars).
-  - **Verified** by adding a temporary instance, reloading the running Dagster (five assets and two jobs
-    appeared, POC assets unchanged), then removing it. No sync was run for it, and `defs/` ships empty.
+  - **Reset allowlist.** The reset job refuses to run unless every name it drops starts with `reverse_etl_` and
+    the schema equals `schema_name` (the config's `reset_name_prefixes` and `reset_schema`).
+  - **History of the names.** The names above replaced earlier ones through three rounds of "reset under the old
+    names, change the config, re-run setup", for example `reverse_etl_cdf_poc_source`, `reverse_etl_cdf_poc`,
+    `reverse_etl_cdf_poc_current`, `rw_poc_reverse_etl_cdf_out_jdbc`, `reverse_etl_cdf_jdbc_sink` and
+    `reverse_etl_poc_setup_job`. Older sections that describe past runs may still show some of them.
+  - **Not exposed.** Kafka connection settings, a schedule and an asset check (the connection is still the
+    `KAFKA_OUTPUT_*` env vars).
+  - **Verified live** after the last rename: both syncs' reset jobs, setup jobs and syncs ran, an insert, update and
+    delete on the orders table and the seeds reached Postgres and RisingWave in each, both connectors were
+    `RUNNING`, and no objects under the old names remained (Databricks, Postgres, RisingWave, Connect). Not
+    tested: the notebook against the orders sync, or a column change on it.
 
 ---
 

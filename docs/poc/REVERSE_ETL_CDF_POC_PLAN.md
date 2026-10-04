@@ -1,11 +1,17 @@
 # Reverse-ETL POC in risingwave-test: Databricks CDF → Kafka STG
 
 > **Update 2026-10-03:** the pipeline later gained a Debezium JDBC sink into Postgres, and the Kafka output is now
-> a **single topic**, `rw_poc_reverse_etl_cdf_out_jdbc`, with an embedded Kafka Connect schema, read by both the
+> a **single topic** (then `rw_poc_reverse_etl_cdf_out_jdbc`, now `reverse_etl_cdf_topic`), with an embedded Kafka Connect schema, read by both the
 > RisingWave table and the sink. The schemaless `rw_poc_reverse_etl_cdf_out` topic described below was retired, and
 > the RisingWave table is created from the live Databricks columns with real types. See
 > [`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md); the sections below describe the
 > original design and its history.
+>
+> **Update 2026-10-04:** every object was later renamed to a uniform `reverse_etl_<label>_<role>` scheme (for the
+> POC, label `cdf`: tables `reverse_etl_cdf_source` / `_state` / `_target`, jobs `reverse_etl_cdf_setup_job` /
+> `_reset_job`, assets `reverse_etl_cdf_table_setup`, `_to_kafka`, ...), the pipeline is built by a reusable Dagster
+> component, and the seed script was replaced by a seed asset. **The names in the sections below are the original
+> ones and are kept as a record; use the names in the sink document.**
 
 ## Context
 
@@ -71,7 +77,7 @@ probe-then-create — but targeting the personal scratch schema, not the
 shared one:
 
 ```sql
-CREATE TABLE IF NOT EXISTS de_dev.sr_poc_external.reverse_etl_cdf_poc_source (
+CREATE TABLE IF NOT EXISTS de_dev.sr_poc_external.reverse_etl_cdf_source (
     id BIGINT NOT NULL,
     value STRING,
     updated_at TIMESTAMP
@@ -127,7 +133,7 @@ topic in that list against `KAFKA_OUTPUT_BOOTSTRAP` / `KAFKA_OUTPUT_SASL_*`.
 New asset `reverse_etl_cdf_to_kafka` in `reverse_etl_cdf_setup.py`,
 `deps=[reverse_etl_poc_table_setup, kafka_output_topics_setup]`:
 
-- **Databricks side**: `SELECT * FROM table_changes('de_dev.sr_poc_external.reverse_etl_cdf_poc_source', <since_version>)`,
+- **Databricks side**: `SELECT * FROM table_changes('de_dev.sr_poc_external.reverse_etl_cdf_source', <since_version>)`,
   executed via the Statement Execution API and parsed from its
   `result.data_array` + `manifest.schema.columns` response shape — the one
   real adaptation vs. the dagster-poc version, which used a DB-API cursor.
@@ -222,7 +228,7 @@ import block, add all three to the `Definitions` asset list, group_name
 
 A small script, `scripts/reverse_etl_poc_seed.py`, issuing a handful of
 INSERT/UPDATE/DELETE statements against
-`de_dev.sr_poc_external.reverse_etl_cdf_poc_source` (same client as the main
+`de_dev.sr_poc_external.reverse_etl_cdf_source` (same client as the main
 asset — see "3b. Auth for the live run") — just enough for the POC to have
 something to sync. Not a configurable load generator like
 `scripts/wallet_producer.py`.
@@ -234,6 +240,10 @@ scanning, so this needs two additions matching the existing one-shot style
 of `3_run_dbt.sh` (no background/pattern entry needed — this seed script
 runs a handful of statements and exits, unlike the long-running
 `wallet_producer.py`):
+
+> **Later removed:** the seed script, this wrapper and the script-runner entry below were deleted. Seeding is
+> now the `reverse_etl_<label>_seed` asset, the last step of each sync's setup job (see
+> `REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`, section 14.4).
 
 - `bin/3_run_reverse_etl_seed.sh` — thin wrapper, same shape as
   `bin/3_run_wallet_producer.sh`: `exec uv run python scripts/reverse_etl_poc_seed.py`.
@@ -260,7 +270,7 @@ New module `orchestration/assets/reverse_etl_risingwave_setup.py`, asset
 (`RISINGWAVE_HOST`/`PORT`/`DB`/`USER`/`PASSWORD`):
 
 ```sql
-CREATE TABLE IF NOT EXISTS reverse_etl_cdf_poc_current (
+CREATE TABLE IF NOT EXISTS reverse_etl_cdf_target (
     id BIGINT PRIMARY KEY,
     value VARCHAR,
     updated_at VARCHAR
@@ -319,10 +329,9 @@ hand.
    confirms the source + state tables exist in `de_dev.sr_poc_external`.
 2. `uv run dagster asset materialize --select kafka_output_topics_setup` —
    confirms `rw_poc_reverse_etl_cdf_out` exists on `KAFKA_OUTPUT_BOOTSTRAP`.
-3. Run the seed script — via the script runner UI (`🔁 Seed Reverse-ETL POC`
-   button at http://localhost:4001) or directly with
-   `uv run python scripts/reverse_etl_poc_seed.py` — to insert/update/delete
-   a few rows.
+3. Seed: now the last step of `reverse_etl_cdf_setup_job` (the seed asset
+   `reverse_etl_cdf_seed`; the original `scripts/reverse_etl_poc_seed.py` was
+   removed) — inserts/updates/deletes a few rows.
 4. `uv run dagster asset materialize --select reverse_etl_cdf_to_kafka` —
    confirms rows land on the topic (verify via `kcat` / Redpanda console) and
    `reverse_etl_cdf_poc_state.last_commit_version` advances.
@@ -330,7 +339,7 @@ hand.
    unchanged watermark), proving delta-only behavior.
 6. `reverse_etl_poc_setup_job` (Dagster UI or
    `uv run dagster job execute -j reverse_etl_poc_setup_job -m orchestration.definitions`),
-   then confirm `SELECT * FROM reverse_etl_cdf_poc_current` in RisingWave
+   then confirm `SELECT * FROM reverse_etl_cdf_target` in RisingWave
    (`psql -h localhost -p 4566`) reflects current state — present rows for
    inserts/updates, absent for deletes — without needing a reconstruction
    view. **Done, see item 7 in "Live run results" below.**
