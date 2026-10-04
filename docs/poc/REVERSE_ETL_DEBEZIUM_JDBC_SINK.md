@@ -635,6 +635,10 @@ local test showed the events and message bytes equal the Dagster asset's for ins
 
 Verified live on 2026-10-03: an insert with a new `country` value (row 13) went Databricks -> notebook -> Kafka
 -> Postgres and RisingWave, the watermark moved from version 8 to 9, and timestamps matched the Dagster format.
+Verified again on 2026-10-04 with the renamed objects: a `country STRING` column added in Databricks and set on one
+row, `ALTER TABLE reverse_etl_cdf_target ADD COLUMN country VARCHAR` run by hand in RisingWave first, then the
+notebook. Postgres added `country text` itself, both targets showed `GR` on that row and NULL on the other, the
+connector stayed `RUNNING`, and the watermark (5) equalled the table version.
 
 **Where it runs.** Import it into workspace `adb-1608121643336927` (the one the pipeline uses; Unity Catalog
 `de_dev.sr_poc_external` is readable there) and attach a **classic cluster**:
@@ -642,7 +646,7 @@ Verified live on 2026-10-03: an insert with a new `country` value (row 13) went 
   and `No resolvable bootstrap urls` from the Kafka client), in either workspace.
 - **The `databri-pltf-stg` workspace (`adb-2241475393894655`) was only tried on serverless**, where it failed
   the same way: no DNS for Kafka, and HTTP 403 `AuthorizationFailure` from the `de_dev` storage account (probably
-  because its firewall does not allow serverless). Whether a classic cluster there works was not tested.
+  because its firewall does not allow serverless). Whether a classic cluster there works was not tested. Its copy of the notebook was updated to the current defaults on 2026-10-04 (keeping a `socket.getaddrinfo` diagnostic cell that is only in that copy) and has not been run since.
 
 **Setup.**
 1. Import the notebook (UI: Create, Import, or `databricks workspace import ... --format SOURCE --language PYTHON`).
