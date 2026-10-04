@@ -915,118 +915,120 @@ external_dbt_source_assets = [
     AssetSpec(key=AssetKey(["lakekeeper_local", "funnel_summary"]), group_name="setup"),
 ]
 
-# Dagster definitions
-_base_defs = Definitions(
-    assets=[
-        *external_dbt_source_assets,
-        # Yield iceberg_countries first (dependency of dbt assets)
-        iceberg_countries,
-        modern_dashboard_preflight,
-        # Create Python UDFs before dbt models run
-        risingwave_python_udfs,
-        # Create PostgreSQL table for RisingWave sink
-        postgres_funnel_table,
-        # Create the Databricks historical funnel table before its RisingWave sink
-        modern_dashboard_databricks_table,
-        realtime_funnel_dbt_assets,
-        ml_trained_models,
-        # StarRocks unified MV (cold-path-only, Pilot B)
-        starrocks_unified_dbt_assets,
-        # Casino production prerequisites
-        casino_prd_proto_fetch,
-        casino_prd_proto_compile,
-        casino_prd_proto_upload,
-        casino_avro_schema_register,
-        databricks_uc_tables_setup,
-        # Casino dbt assets (UC1 + UC2 in one step)
-        casino_prd_dbt_assets,
-        # Trino metadata views for Grafana (snapshot count, live data files)
-        casino_trino_views,
-        # DataFusion batch analytics demo — OLAP queries on casino Iceberg tables
-        casino_datafusion_demo,
-        # Databricks OPTIMIZE + DataFusion analytics
-        databricks_optimize,
-        databricks_datafusion_demo,
-        # Databricks "latest turnover per customer" view (QUALIFY over append-only table)
-        databricks_turnover_latest_view,
-        # Kafka output topic provisioning
-        kafka_output_topics_setup,
-        # Landing → Bronze re-processing notebook
-        casino_landing_to_bronze,
-        # Direct Kafka -> StarRocks path for the wallet upsert demo (no
-        # RisingWave in the loop), add-on comparison against the
-        # RisingWave-mediated path
-        wallet_transactions_direct_kafka,
-        # Second Routine Load job on the same table: partial_update from an
-        # independent status-updates topic
-        wallet_status_update_load_job,
-        # Duplicate Key log table + synchronous rollup MV -- zero-lag,
-        # no-REFRESH-ever aggregation, contrasted against the async MVs
-        # elsewhere in this project
-        wallet_transactions_log,
-        # Aggregate Key table -- storage-level incremental SUM/REPLACE on
-        # ingest, a third way (alongside the ad-hoc aggregate query and the
-        # sync rollup MV) to answer "totals per type"
-        wallet_type_totals_agg,
-        # AGGREGATE KEY table-model demo applied to the funnel use case --
-        # pure additive counts (viewers/carters/purchasers), no
-        # reversal/upsert semantics to fight, unlike the wallet attempt
-        funnel_daily_totals_agg,
-        # One-shot warm-up refresh for the Query Rewrite Demo's
-        # MANUAL-refresh MV
-        refresh_mv_funnel_daily_country_rollup,
-    ],
-    jobs=[
-        dbt_build_job,
-        ml_training_job,
-        iceberg_countries_job,
-        iceberg_compaction_job,
-        postgres_sink_job,
-        dbt_starrocks_build_job,
-        modern_dashboard_setup_job,
-        wallet_pipeline_setup_job,
-        starrocks_demo_setup_job,
-        kafka_topics_setup_job,
-        casino_prd_full_job,
-        casino_stg_job,
-        casino_datafusion_job,
-        databricks_datafusion_job,
-        define_asset_job(
-            name="casino_landing_to_bronze_job",
-            selection=AssetSelection.assets(casino_landing_to_bronze),
-            description=(
-                "Landing → Bronze layer for casino events. Triggers the Databricks notebook "
-                "/Workspace/Shared/rw_poc/landing_to_bronze_casino on an existing cluster. "
-                "The notebook reads raw Protobuf bytes written by sink_casino_landing_databricks "
-                "into the rw_casino_landing Iceberg table, decodes them into typed columns, and "
-                "writes the result into rw_casino_landing_bronze. Run on-demand after the core "
-                "streaming pipeline (casino_prd_full_job) has landed data."
+# Dagster definitions. APR-233 reverse-ETL evaluation (Databricks CDF -> Kafka ->
+# Postgres + RisingWave, see docs/poc/REVERSE_ETL_CDF_POC_PLAN.md) is merged in at
+# the end: one build_reverse_etl_defs() call per sync. Dagster allows only one
+# module-level Definitions, so the base one is nested inside the merge.
+defs = Definitions.merge(
+    Definitions(
+        assets=[
+            *external_dbt_source_assets,
+            # Yield iceberg_countries first (dependency of dbt assets)
+            iceberg_countries,
+            modern_dashboard_preflight,
+            # Create Python UDFs before dbt models run
+            risingwave_python_udfs,
+            # Create PostgreSQL table for RisingWave sink
+            postgres_funnel_table,
+            # Create the Databricks historical funnel table before its RisingWave sink
+            modern_dashboard_databricks_table,
+            realtime_funnel_dbt_assets,
+            ml_trained_models,
+            # StarRocks unified MV (cold-path-only, Pilot B)
+            starrocks_unified_dbt_assets,
+            # Casino production prerequisites
+            casino_prd_proto_fetch,
+            casino_prd_proto_compile,
+            casino_prd_proto_upload,
+            casino_avro_schema_register,
+            databricks_uc_tables_setup,
+            # Casino dbt assets (UC1 + UC2 in one step)
+            casino_prd_dbt_assets,
+            # Trino metadata views for Grafana (snapshot count, live data files)
+            casino_trino_views,
+            # DataFusion batch analytics demo — OLAP queries on casino Iceberg tables
+            casino_datafusion_demo,
+            # Databricks OPTIMIZE + DataFusion analytics
+            databricks_optimize,
+            databricks_datafusion_demo,
+            # Databricks "latest turnover per customer" view (QUALIFY over append-only table)
+            databricks_turnover_latest_view,
+            # Kafka output topic provisioning
+            kafka_output_topics_setup,
+            # Landing → Bronze re-processing notebook
+            casino_landing_to_bronze,
+            # Direct Kafka -> StarRocks path for the wallet upsert demo (no
+            # RisingWave in the loop), add-on comparison against the
+            # RisingWave-mediated path
+            wallet_transactions_direct_kafka,
+            # Second Routine Load job on the same table: partial_update from an
+            # independent status-updates topic
+            wallet_status_update_load_job,
+            # Duplicate Key log table + synchronous rollup MV -- zero-lag,
+            # no-REFRESH-ever aggregation, contrasted against the async MVs
+            # elsewhere in this project
+            wallet_transactions_log,
+            # Aggregate Key table -- storage-level incremental SUM/REPLACE on
+            # ingest, a third way (alongside the ad-hoc aggregate query and the
+            # sync rollup MV) to answer "totals per type"
+            wallet_type_totals_agg,
+            # AGGREGATE KEY table-model demo applied to the funnel use case --
+            # pure additive counts (viewers/carters/purchasers), no
+            # reversal/upsert semantics to fight, unlike the wallet attempt
+            funnel_daily_totals_agg,
+            # One-shot warm-up refresh for the Query Rewrite Demo's
+            # MANUAL-refresh MV
+            refresh_mv_funnel_daily_country_rollup,
+        ],
+        jobs=[
+            dbt_build_job,
+            ml_training_job,
+            iceberg_countries_job,
+            iceberg_compaction_job,
+            postgres_sink_job,
+            dbt_starrocks_build_job,
+            modern_dashboard_setup_job,
+            wallet_pipeline_setup_job,
+            starrocks_demo_setup_job,
+            kafka_topics_setup_job,
+            casino_prd_full_job,
+            casino_stg_job,
+            casino_datafusion_job,
+            databricks_datafusion_job,
+            define_asset_job(
+                name="casino_landing_to_bronze_job",
+                selection=AssetSelection.assets(casino_landing_to_bronze),
+                description=(
+                    "Landing → Bronze layer for casino events. Triggers the Databricks notebook "
+                    "/Workspace/Shared/rw_poc/landing_to_bronze_casino on an existing cluster. "
+                    "The notebook reads raw Protobuf bytes written by sink_casino_landing_databricks "
+                    "into the rw_casino_landing Iceberg table, decodes them into typed columns, and "
+                    "writes the result into rw_casino_landing_bronze. Run on-demand after the core "
+                    "streaming pipeline (casino_prd_full_job) has landed data."
+                ),
+                executor_def=in_process_executor,
             ),
-            executor_def=in_process_executor,
-        ),
-    ],
-    schedules=[
-        dbt_build_schedule,
-        ml_training_schedule,
-        dbt_starrocks_build_schedule,
-    ],
-    sensors=[ml_training_sensor_realtime],
-    resources={
-        "dbt": DbtCliResource(
-            project_dir=str(dbt_PROJECT_PATH),
-            dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
-        ),
-        "starrocks_dbt": DbtCliResource(
-            project_dir=str(dbt_STARROCKS_PROJECT_PATH),
-            profiles_dir=str(dbt_STARROCKS_PROJECT_PATH),
-            profile="starrocks_profile",
-            target="dev",
-            dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
-        ),
-        "spark": spark_session_resource,
-    },
+        ],
+        schedules=[
+            dbt_build_schedule,
+            ml_training_schedule,
+            dbt_starrocks_build_schedule,
+        ],
+        sensors=[ml_training_sensor_realtime],
+        resources={
+            "dbt": DbtCliResource(
+                project_dir=str(dbt_PROJECT_PATH),
+                dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
+            ),
+            "starrocks_dbt": DbtCliResource(
+                project_dir=str(dbt_STARROCKS_PROJECT_PATH),
+                profiles_dir=str(dbt_STARROCKS_PROJECT_PATH),
+                profile="starrocks_profile",
+                target="dev",
+                dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
+            ),
+            "spark": spark_session_resource,
+        },
+    ),
+    build_reverse_etl_defs(POC_SYNC),
 )
-
-# APR-233 reverse-ETL evaluation: Databricks CDF -> Kafka -> Postgres + RisingWave.
-# See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md. One build_reverse_etl_defs() call per sync.
-defs = Definitions.merge(_base_defs, build_reverse_etl_defs(POC_SYNC))
