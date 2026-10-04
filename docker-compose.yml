@@ -951,7 +951,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 1536M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
       interval: 10s
