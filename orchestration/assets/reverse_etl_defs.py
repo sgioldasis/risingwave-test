@@ -3,7 +3,7 @@ table setup, CDF -> Kafka, RisingWave table, Debezium JDBC sink), a setup job th
 materializes them in order, and a reset job. Optionally also an asset that creates
 the sync's Kafka topic (config.create_topic_asset).
 
-    defs = Definitions.merge(base_defs, build_reverse_etl_defs(POC_SYNC))
+    defs = Definitions.merge(base_defs, build_reverse_etl_defs(config))
 """
 
 from confluent_kafka.admin import NewTopic
@@ -18,7 +18,7 @@ from dagster import (
 )
 
 from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION, _admin_client
-from .reverse_etl_cdf_setup import build_sync_asset, build_table_setup_asset
+from .reverse_etl_cdf_setup import build_seed_asset, build_sync_asset, build_table_setup_asset
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_reset import build_reset_job
@@ -54,24 +54,28 @@ def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     ]
     if cfg.create_topic_asset:
         assets.append(_build_topic_asset(cfg))
+    if cfg.seed_statements:
+        assets.append(build_seed_asset(cfg))
 
     # AssetKey selection (not asset objects) so the shared topic asset, which this
     # function does not build, is still part of the job.
-    selection = AssetSelection.assets(
-        *[AssetKey(name) for name in (
-            cfg.table_setup_asset,
-            cfg.topic_asset,
-            cfg.sync_asset,
-            cfg.risingwave_asset,
-            cfg.sink_asset,
-        )]
-    )
+    job_assets = [
+        cfg.table_setup_asset,
+        cfg.topic_asset,
+        cfg.sync_asset,
+        cfg.risingwave_asset,
+        cfg.sink_asset,
+    ]
+    if cfg.seed_statements:
+        job_assets.append(cfg.seed_asset)
+    selection = AssetSelection.assets(*[AssetKey(name) for name in job_assets])
     setup_job = define_asset_job(
         name=cfg.setup_job,
         selection=selection,
         description=(
             f"Create {cfg.sync_name}'s Databricks tables and Kafka topic, run the first sync, then "
-            "create the RisingWave table and the Debezium JDBC sink."
+            "create the RisingWave table and the Debezium JDBC sink, and last seed the demo rows if the "
+            "sync has seed statements."
         ),
         executor_def=in_process_executor,
     )

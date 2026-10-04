@@ -5,8 +5,8 @@ ReverseEtlSyncConfig names everything that identifies a sync: the Databricks
 source and watermark tables, the key column, the Kafka topic, the connector, the
 two target tables, and the Dagster assets and jobs built for it. The modules in
 this package take a config as a parameter; reverse_etl_defs.build_reverse_etl_defs
-turns one into Definitions. POC_SYNC is the demo's config, with the names the
-demo has always used. For another table use ReverseEtlSyncConfig.for_name().
+turns one into Definitions. Build one with ReverseEtlSyncConfig.for_name(), which
+derives every name from a short label; the ReverseEtlCdfSync component does so from YAML.
 
 The notebook (notebooks/reverse_etl_cdf_to_kafka.py) runs inside Databricks and
 cannot import this module, so it repeats the Databricks-side values as widget
@@ -61,6 +61,13 @@ class ReverseEtlSyncConfig:
     reset_name_prefixes: tuple[str, ...]
     reset_schema: str
 
+    # --- optional demo seed ----------------------------------------------------
+    # SQL run against the source table by the seed asset, after everything else in
+    # the setup job, so the rows wait in Databricks until the sync is run. Each
+    # statement may use {source_table}. Leave empty for a real table.
+    seed_asset: str = ""
+    seed_statements: tuple[str, ...] = ()
+
     @property
     def source_fqn(self) -> str:
         return f"{self.catalog}.{self.schema}.{self.source_table}"
@@ -87,61 +94,38 @@ class ReverseEtlSyncConfig:
         *,
         catalog: str,
         schema: str,
-        source_table: str,
         source_columns: tuple[str, ...],
         key_column: str = "rid",
+        seed_statements: tuple[str, ...] = (),
     ) -> "ReverseEtlSyncConfig":
-        """A config for a new sync, with every other name derived from `name` so two
-        syncs never collide (asset, job, topic, connector and table names)."""
+        """A config for a sync labelled `name` (for example "cdf" or "orders"): every
+        name is reverse_etl_<name>_<role>, so syncs never collide and the label shows
+        in every system (Databricks, Kafka, Connect, Postgres, RisingWave, Dagster)."""
+        base = f"reverse_etl_{name}"
         return cls(
-            sync_name=name,
+            sync_name=base,
             catalog=catalog,
             schema=schema,
-            source_table=source_table,
-            state_table=f"{name}_state",
+            source_table=f"{base}_source",
+            state_table=f"{base}_state",
             key_column=key_column,
             source_columns=source_columns,
-            kafka_topic=f"{name}_cdf",
-            connector_name=f"{name}_jdbc_sink",
-            postgres_table=name,
-            risingwave_table=f"{name}_current",
-            group_name=name,
-            table_setup_asset=f"{name}_table_setup",
-            sync_asset=f"{name}_cdf_to_kafka",
-            risingwave_asset=f"{name}_risingwave_table",
-            sink_asset=f"{name}_debezium_jdbc_sink",
-            topic_asset=f"{name}_kafka_topic",
+            kafka_topic=f"{base}_topic",
+            connector_name=f"{base}_sink",
+            postgres_table=f"{base}_target",
+            risingwave_table=f"{base}_target",
+            group_name=base,
+            table_setup_asset=f"{base}_table_setup",
+            sync_asset=f"{base}_to_kafka",
+            risingwave_asset=f"{base}_risingwave_target",
+            sink_asset=f"{base}_jdbc_sink",
+            topic_asset=f"{base}_topic_setup",
             create_topic_asset=True,
-            setup_job=f"{name}_setup_job",
-            reset_job=f"{name}_reset_job",
-            reset_name_prefixes=(name,),
+            setup_job=f"{base}_setup_job",
+            reset_job=f"{base}_reset_job",
+            reset_name_prefixes=("reverse_etl_",),
             reset_schema=schema,
+            seed_asset=f"{base}_seed",
+            seed_statements=seed_statements,
         )
 
-
-# The demo's sync. The "_jdbc" suffix on the topic is historical: it started as a
-# second topic beside a schemaless one, since removed.
-POC_SYNC = ReverseEtlSyncConfig(
-    sync_name="reverse_etl_cdf_poc",
-    catalog="de_dev",
-    schema="sr_poc_external",
-    source_table="reverse_etl_cdf_poc_source",
-    state_table="reverse_etl_cdf_poc_state",
-    key_column="rid",
-    source_columns=("id BIGINT NOT NULL", "value STRING", "updated_at TIMESTAMP"),
-    kafka_topic="rw_poc_reverse_etl_cdf_out_jdbc",
-    connector_name="reverse_etl_cdf_jdbc_sink",
-    postgres_table="reverse_etl_cdf_poc",
-    risingwave_table="reverse_etl_cdf_poc_current",
-    group_name="reverse_etl_poc",
-    table_setup_asset="reverse_etl_poc_table_setup",
-    sync_asset="reverse_etl_cdf_to_kafka",
-    risingwave_asset="reverse_etl_cdf_risingwave_table",
-    sink_asset="reverse_etl_debezium_jdbc_sink",
-    topic_asset="kafka_output_topics_setup",
-    create_topic_asset=False,
-    setup_job="reverse_etl_poc_setup_job",
-    reset_job="reverse_etl_poc_reset_job",
-    reset_name_prefixes=("rw_poc_reverse_etl_", "reverse_etl_cdf_"),
-    reset_schema="sr_poc_external",
-)

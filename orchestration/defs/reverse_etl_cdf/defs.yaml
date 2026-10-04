@@ -1,0 +1,27 @@
+# The demo sync. Every name is derived from `name`: reverse_etl_cdf_source,
+# reverse_etl_cdf_target, reverse_etl_cdf_topic, reverse_etl_cdf_sink,
+# reverse_etl_cdf_setup_job, ... This file is the only definition of the POC, including its demo seed (run as the
+# last step of reverse_etl_cdf_setup_job).
+type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+
+attributes:
+  name: cdf
+  catalog: de_dev
+  schema_name: sr_poc_external
+  source_columns:
+    - "id BIGINT NOT NULL"
+    - "value STRING"
+    - "updated_at TIMESTAMP"
+  seed_statements:
+    - |
+      MERGE INTO {source_table} AS target
+      USING (
+        SELECT 1 AS id, 'first' AS value, current_timestamp() AS updated_at
+        UNION ALL SELECT 2, 'second', current_timestamp()
+        UNION ALL SELECT 3, 'third', current_timestamp()
+      ) AS source
+      ON target.id = source.id
+      WHEN MATCHED THEN UPDATE SET target.value = source.value, target.updated_at = source.updated_at
+      WHEN NOT MATCHED THEN INSERT (id, value, updated_at) VALUES (source.id, source.value, source.updated_at)
+    - "UPDATE {source_table} SET value = 'second-updated', updated_at = current_timestamp() WHERE id = 2"
+    - "DELETE FROM {source_table} WHERE id = 3"

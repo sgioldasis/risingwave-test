@@ -40,13 +40,9 @@ from confluent_kafka import Producer
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
 from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
-from .reverse_etl_config import POC_SYNC, ReverseEtlSyncConfig
+from .reverse_etl_config import ReverseEtlSyncConfig
 
-# Every function below takes the sync's ReverseEtlSyncConfig; the names live in
-# reverse_etl_config. These three aliases are only for scripts/reverse_etl_poc_seed.py.
-CATALOG = POC_SYNC.catalog
-SCHEMA = POC_SYNC.schema
-SOURCE_TABLE = POC_SYNC.source_table
+# Every function below takes the sync's ReverseEtlSyncConfig; the names live in reverse_etl_config.
 
 # CDF's own metadata columns -- see Databricks' Change Data Feed docs.
 CHANGE_TYPE_COLUMN = "_change_type"
@@ -678,3 +674,31 @@ def build_sync_asset(cfg: ReverseEtlSyncConfig):
         })
 
     return cdf_to_kafka
+
+
+def build_seed_asset(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=cfg.seed_asset,
+        group_name=cfg.group_name,
+        # After everything else, so the rows are not picked up by the setup job's
+        # first sync and the demo can show them arriving.
+        deps=[
+            AssetKey(cfg.table_setup_asset),
+            AssetKey(cfg.sync_asset),
+            AssetKey(cfg.risingwave_asset),
+            AssetKey(cfg.sink_asset),
+        ],
+        description=(
+            f"Run the demo seed statements against {cfg.source_fqn} (insert, update, delete). "
+            f"Not synced until {cfg.sync_asset} runs."
+        ),
+    )
+    def seed(context: AssetExecutionContext):
+        _require_databricks_env()
+        token = _get_token()
+        for statement in cfg.seed_statements:
+            _run_sql(token, statement.replace("{source_table}", cfg.source_fqn))
+        context.log.info(f"Ran {len(cfg.seed_statements)} seed statement(s) against {cfg.source_fqn}")
+        context.add_output_metadata({"statements": MetadataValue.int(len(cfg.seed_statements))})
+
+    return seed

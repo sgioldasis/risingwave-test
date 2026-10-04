@@ -10,23 +10,24 @@
 # Differences from the Dagster asset:
 #   - It does not add new columns to the RisingWave table (a notebook cannot reach the
 #     local RisingWave). After adding a column in Databricks, run
-#     ALTER TABLE reverse_etl_cdf_poc_current ADD COLUMN ... in RisingWave *before*
+#     ALTER TABLE reverse_etl_cdf_target ADD COLUMN ... in RisingWave *before*
 #     running this notebook, or RisingWave leaves that column NULL for the new rows.
-#   - The source and state tables must already exist (reverse_etl_poc_table_setup).
+#   - The source and state tables must already exist (reverse_etl_cdf_table_setup).
 #
 # Kafka credentials come from a Databricks secret scope, never from the notebook.
 # The cluster needs a network path to the Kafka brokers.
 
 # COMMAND ----------
 
-# Defaults below (and KEY_COLUMNS) mirror orchestration/assets/reverse_etl_config.py POC_SYNC. This notebook runs
-# in Databricks and cannot import it, so change both together.
+# Defaults below (and KEY_COLUMNS) mirror the config built from
+# orchestration/defs/reverse_etl_cdf/defs.yaml (names derived by ReverseEtlSyncConfig.for_name).
+# This notebook runs in Databricks and cannot import it, so change both together.
 dbutils.widgets.text("catalog", "de_dev")
 dbutils.widgets.text("schema", "sr_poc_external")
-dbutils.widgets.text("source_table", "reverse_etl_cdf_poc_source")
-dbutils.widgets.text("state_table", "reverse_etl_cdf_poc_state")
-dbutils.widgets.text("sync_name", "reverse_etl_cdf_poc")
-dbutils.widgets.text("kafka_topic", "rw_poc_reverse_etl_cdf_out_jdbc")
+dbutils.widgets.text("source_table", "reverse_etl_cdf_source")
+dbutils.widgets.text("state_table", "reverse_etl_cdf_state")
+dbutils.widgets.text("sync_name", "reverse_etl_cdf")
+dbutils.widgets.text("kafka_topic", "reverse_etl_cdf_topic")
 dbutils.widgets.text("kafka_bootstrap", "stg-ocp-kfk01-bootstrap.kaizengaming.net:9096")
 dbutils.widgets.text("secret_scope", "rw_poc")
 dbutils.widgets.text("secret_key_username", "kafka_output_username")

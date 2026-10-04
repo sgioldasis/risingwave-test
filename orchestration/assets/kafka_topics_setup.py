@@ -3,16 +3,12 @@ import os
 from confluent_kafka.admin import AdminClient, NewPartitions, NewTopic
 from dagster import AssetExecutionContext, MetadataValue, asset
 
-from .reverse_etl_config import POC_SYNC
-
 OUTPUT_TOPICS = [
     "rw_poc_casino_out_avro",
     "rw_poc_casino_out_real_bet",
     "rw_poc_casino_out_turnover_percentage",
     "cronus.casino.out.br.replay",
     "bets-out-br-replay",
-    # APR-233 reverse-ETL evaluation POC -- see docs/poc/REVERSE_ETL_CDF_POC_PLAN.md
-    POC_SYNC.kafka_topic,
 ]
 
 _DEFAULT_PARTITIONS = 15

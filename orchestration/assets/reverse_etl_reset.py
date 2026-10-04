@@ -1,6 +1,6 @@
 """Tear down a reverse-ETL CDF sync so the demo can start again from a known state.
 
-For the POC: run reverse_etl_poc_reset_job, then reverse_etl_poc_setup_job, then the
+For the POC: run reverse_etl_cdf_reset_job, then reverse_etl_cdf_setup_job, then the
 seed script. Setup recreates everything with the original schema (rid, id, value,
 updated_at), so columns added during a demo do not survive a reset. See
 docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.3.
