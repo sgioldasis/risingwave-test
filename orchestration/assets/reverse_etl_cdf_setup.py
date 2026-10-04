@@ -41,23 +41,18 @@ from dagster import AssetExecutionContext, MetadataValue, asset
 
 from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
 from .kafka_topics_setup import kafka_output_topics_setup
+from .reverse_etl_config import POC_SYNC
 
-CATALOG = "de_dev"
-SCHEMA = "sr_poc_external"
-SOURCE_TABLE = "reverse_etl_cdf_poc_source"
-STATE_TABLE = "reverse_etl_cdf_poc_state"
-SYNC_NAME = "reverse_etl_cdf_poc"
-
-# Surrogate key: an identity column Databricks assigns on insert and never
-# changes, so rows sharing a business `id` (the table does not enforce
-# uniqueness) stay distinct downstream. Must exist from table creation.
-KEY_COLUMN = "rid"
-
-# The single topic both consumers read: RisingWave (FORMAT DEBEZIUM) and the
-# Debezium JDBC sink. Messages carry an embedded Connect schema (see
-# _build_connect_json_message). The "_jdbc" suffix is historical: this started
-# as a second topic beside a schemaless one, since removed.
-KAFKA_TOPIC = "rw_poc_reverse_etl_cdf_out_jdbc"
+# Names come from reverse_etl_config.POC_SYNC (one place for every module and the
+# notebook's widget defaults); the aliases below keep existing imports working.
+CATALOG = POC_SYNC.catalog
+SCHEMA = POC_SYNC.schema
+SOURCE_TABLE = POC_SYNC.source_table
+STATE_TABLE = POC_SYNC.state_table
+SYNC_NAME = POC_SYNC.sync_name
+KEY_COLUMN = POC_SYNC.key_column
+# Messages on this topic carry an embedded Connect schema (see _build_connect_json_message).
+KAFKA_TOPIC = POC_SYNC.kafka_topic
 
 # CDF's own metadata columns -- see Databricks' Change Data Feed docs.
 CHANGE_TYPE_COLUMN = "_change_type"
@@ -304,7 +299,7 @@ def _summarize_ops(events: list[dict[str, Any]]) -> dict[str, int]:
 
 # The envelope name follows Debezium's `<server>.<schema>.<table>.Envelope`
 # convention, which is what the sink uses to recognise a Debezium event.
-ENVELOPE_SCHEMA_NAME = f"{SYNC_NAME}.{SCHEMA}.{SOURCE_TABLE}"
+ENVELOPE_SCHEMA_NAME = POC_SYNC.envelope_schema_name
 
 # Not a Connect type: marks a column carried as an ISO-8601 string with a
 # timezone (e.g. 2026-10-03T03:41:08.345Z) whose schema field is named

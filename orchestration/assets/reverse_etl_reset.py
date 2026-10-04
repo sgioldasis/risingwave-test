@@ -1,7 +1,7 @@
 """Tear down the reverse-ETL CDF POC so the demo can start again from a known state.
 
 Run reverse_etl_poc_reset_job, then reverse_etl_poc_setup_job, then the seed
-script: setup recreates everything with the original schema (id, value,
+script: setup recreates everything with the original schema (rid, id, value,
 updated_at), so columns added during a demo do not survive a reset. See
 docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.3.
 
@@ -17,6 +17,7 @@ from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, o
 from .databricks_optimize import _get_token
 from .kafka_topics_setup import _admin_client
 from .postgres_sink_setup import get_postgres_connection
+from .reverse_etl_config import POC_SYNC
 from .reverse_etl_cdf_setup import (
     CATALOG,
     KAFKA_TOPIC,
@@ -30,9 +31,10 @@ from .reverse_etl_debezium_sink import CONNECT_URL, CONNECTOR_NAME, TARGET_TABLE
 from .reverse_etl_risingwave_setup import TABLE_NAME as RISINGWAVE_TABLE
 from .reverse_etl_risingwave_setup import _get_risingwave_connection
 
-# Kafka Connect names a sink connector's consumer group connect-<connector name>.
-CONSUMER_GROUP = f"connect-{CONNECTOR_NAME}"
+CONSUMER_GROUP = POC_SYNC.consumer_group
 
+# The guard below is deliberately independent of the config: it is an allowlist, so
+# pointing the config at other names makes the reset refuse, not follow.
 _POC_PREFIXES = ("rw_poc_reverse_etl_", "reverse_etl_cdf_")
 
 

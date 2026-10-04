@@ -19,6 +19,8 @@
 
 # COMMAND ----------
 
+# Defaults below (and KEY_COLUMNS) mirror orchestration/assets/reverse_etl_config.py POC_SYNC. This notebook runs
+# in Databricks and cannot import it, so change both together.
 dbutils.widgets.text("catalog", "de_dev")
 dbutils.widgets.text("schema", "sr_poc_external")
 dbutils.widgets.text("source_table", "reverse_etl_cdf_poc_source")

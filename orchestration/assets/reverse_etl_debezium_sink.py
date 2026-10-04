@@ -14,11 +14,12 @@ import requests
 from dagster import AssetExecutionContext, MetadataValue, asset
 
 from .kafka_topics_setup import kafka_output_topics_setup
+from .reverse_etl_config import POC_SYNC
 from .reverse_etl_cdf_setup import KAFKA_TOPIC, KEY_COLUMN, reverse_etl_cdf_to_kafka
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
-CONNECTOR_NAME = "reverse_etl_cdf_jdbc_sink"
-TARGET_TABLE = "reverse_etl_cdf_poc"
+CONNECTOR_NAME = POC_SYNC.connector_name
+TARGET_TABLE = POC_SYNC.postgres_table
 
 _PLAIN_LOGIN = "org.apache.kafka.common.security.plain.PlainLoginModule"
 _SCRAM_LOGIN = "org.apache.kafka.common.security.scram.ScramLoginModule"

@@ -18,6 +18,7 @@ from dagster import AssetExecutionContext, MetadataValue, asset
 
 from .databricks_optimize import _get_token
 from .kafka_topics_setup import kafka_output_topics_setup
+from .reverse_etl_config import POC_SYNC
 from .reverse_etl_cdf_setup import (
     KAFKA_TOPIC,
     KEY_COLUMN,
@@ -28,7 +29,7 @@ from .reverse_etl_cdf_setup import (
     reverse_etl_cdf_to_kafka,
 )
 
-TABLE_NAME = "reverse_etl_cdf_poc_current"
+TABLE_NAME = POC_SYNC.risingwave_table
 PRIMARY_KEY_COLUMN = KEY_COLUMN
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
