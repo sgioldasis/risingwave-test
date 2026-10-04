@@ -50,10 +50,8 @@ from .assets.wallet_sync_mv_setup import wallet_transactions_log
 from .assets.wallet_agg_key_setup import wallet_type_totals_agg
 from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
-from .assets.reverse_etl_cdf_setup import reverse_etl_poc_table_setup, reverse_etl_cdf_to_kafka
-from .assets.reverse_etl_risingwave_setup import reverse_etl_cdf_risingwave_table
-from .assets.reverse_etl_debezium_sink import reverse_etl_debezium_jdbc_sink
-from .assets.reverse_etl_reset import reverse_etl_poc_reset_job
+from .assets.reverse_etl_config import POC_SYNC
+from .assets.reverse_etl_defs import build_reverse_etl_defs
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -840,28 +838,6 @@ kafka_topics_setup_job = define_asset_job(
     executor_def=in_process_executor,
 )
 
-reverse_etl_poc_setup_job = define_asset_job(
-    name="reverse_etl_poc_setup_job",
-    selection=AssetSelection.assets(
-        reverse_etl_poc_table_setup,
-        kafka_output_topics_setup,
-        reverse_etl_cdf_to_kafka,
-        reverse_etl_cdf_risingwave_table,
-        reverse_etl_debezium_jdbc_sink,
-    ),
-    description=(
-        "One-click setup for the APR-233 reverse-ETL CDF POC: creates the "
-        "Databricks source + watermark tables (CDF enabled), the "
-        "rw_poc_reverse_etl_cdf_out_jdbc Kafka topic, runs an initial CDF sync, "
-        "creates the RisingWave table that ingests it via FORMAT "
-        "DEBEZIUM ENCODE JSON, and registers the Debezium JDBC sink that "
-        "upserts the same changes into host Postgres. Everything needed is "
-        "in place after one run (requires the kafka-connect compose service). "
-        "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
-    ),
-    executor_def=in_process_executor,
-)
-
 casino_prd_full_job = define_asset_job(
     name="casino_prd_full_job",
     selection=(
@@ -940,7 +916,7 @@ external_dbt_source_assets = [
 ]
 
 # Dagster definitions
-defs = Definitions(
+_base_defs = Definitions(
     assets=[
         *external_dbt_source_assets,
         # Yield iceberg_countries first (dependency of dbt assets)
@@ -999,12 +975,6 @@ defs = Definitions(
         # One-shot warm-up refresh for the Query Rewrite Demo's
         # MANUAL-refresh MV
         refresh_mv_funnel_daily_country_rollup,
-        # APR-233 reverse-ETL evaluation: Databricks CDF -> Kafka POC, see
-        # docs/poc/REVERSE_ETL_CDF_POC_PLAN.md
-        reverse_etl_poc_table_setup,
-        reverse_etl_cdf_to_kafka,
-        reverse_etl_cdf_risingwave_table,
-        reverse_etl_debezium_jdbc_sink,
     ],
     jobs=[
         dbt_build_job,
@@ -1017,8 +987,6 @@ defs = Definitions(
         wallet_pipeline_setup_job,
         starrocks_demo_setup_job,
         kafka_topics_setup_job,
-        reverse_etl_poc_setup_job,
-        reverse_etl_poc_reset_job,
         casino_prd_full_job,
         casino_stg_job,
         casino_datafusion_job,
@@ -1058,3 +1026,7 @@ defs = Definitions(
         "spark": spark_session_resource,
     },
 )
+
+# APR-233 reverse-ETL evaluation: Databricks CDF -> Kafka -> Postgres + RisingWave.
+# See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md. One build_reverse_etl_defs() call per sync.
+defs = Definitions.merge(_base_defs, build_reverse_etl_defs(POC_SYNC))

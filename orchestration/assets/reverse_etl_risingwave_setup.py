@@ -14,23 +14,16 @@ payload and reads typed values from it.
 import os
 
 import psycopg2
-from dagster import AssetExecutionContext, MetadataValue, asset
+from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
 from .databricks_optimize import _get_token
-from .kafka_topics_setup import kafka_output_topics_setup
-from .reverse_etl_config import POC_SYNC
+from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_cdf_setup import (
-    KAFKA_TOPIC,
-    KEY_COLUMN,
     ZONED_TIMESTAMP,
     RowField,
     _get_row_fields,
     _require_databricks_env,
-    reverse_etl_cdf_to_kafka,
 )
-
-TABLE_NAME = POC_SYNC.risingwave_table
-PRIMARY_KEY_COLUMN = KEY_COLUMN
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
 # SMALLINT (RisingWave has no 1-byte integer).
@@ -62,7 +55,7 @@ def _get_risingwave_connection():
     )
 
 
-def _kafka_connector_options() -> str:
+def _kafka_connector_options(cfg: ReverseEtlSyncConfig) -> str:
     """WITH (...) clause options for the Kafka connector, matching
     kafka_topics_setup.py's _admin_client() credential convention (same
     OUTPUT_TOPICS-scoped credentials this topic lives under)."""
@@ -72,7 +65,7 @@ def _kafka_connector_options() -> str:
 
     options = [
         "connector = 'kafka'",
-        f"topic = '{KAFKA_TOPIC}'",
+        f"topic = '{cfg.kafka_topic}'",
         f"properties.bootstrap.server = '{bootstrap}'",
         "scan.startup.mode = 'earliest'",
     ]
@@ -94,27 +87,27 @@ def _column_ddl(field: RowField) -> str:
     return f"{_quote(name)} {_RISINGWAVE_TYPE_BY_CONNECT_TYPE[connect_type]}"
 
 
-def _create_table_sql(row_fields: list[RowField]) -> str:
+def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> str:
     """CREATE TABLE with *all* live columns up front. Creating with only a
     few and adding the rest afterwards would race the table's
     scan.startup.mode='earliest' read of the topic: a column added a moment
     later misses the messages already read (they keep NULL)."""
     column_defs = [
-        _column_ddl(field) + (" PRIMARY KEY" if field[0] == PRIMARY_KEY_COLUMN else "")
+        _column_ddl(field) + (" PRIMARY KEY" if field[0] == cfg.key_column else "")
         for field in row_fields
     ]
     return f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+        CREATE TABLE IF NOT EXISTS {cfg.risingwave_table} (
             {", ".join(column_defs)}
         )
         WITH (
-            {_kafka_connector_options()}
+            {_kafka_connector_options(cfg)}
         )
         FORMAT DEBEZIUM ENCODE JSON
     """
 
 
-def add_missing_columns(row_fields: list[RowField]) -> list[str]:
+def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> list[str]:
     """Add any of `row_fields` the table lacks, with the matching RisingWave
     type; returns the names added. A no-op (returns []) if the table doesn't
     exist yet.
@@ -129,53 +122,57 @@ def add_missing_columns(row_fields: list[RowField]) -> list[str]:
             cur.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema = 'public' AND table_name = %s",
-                (TABLE_NAME,),
+                (cfg.risingwave_table,),
             )
             existing = {row[0] for row in cur.fetchall()}
             if not existing:
                 return []
             missing = [field for field in row_fields if field[0] not in existing]
             for field in missing:
-                cur.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {_column_ddl(field)}")
+                cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {_column_ddl(field)}")
         conn.commit()
         return [name for name, _, _ in missing]
     finally:
         conn.close()
 
 
-@asset(
-    group_name="reverse_etl_poc",
-    # Ordered after reverse_etl_cdf_to_kafka purely for job-run narrative
-    # (confirms messages exist by the time this materializes) -- not a
-    # functional requirement: scan.startup.mode='earliest' below reads from
-    # the topic's beginning regardless of creation order.
-    deps=[kafka_output_topics_setup, reverse_etl_cdf_to_kafka],
-    description=(
-        f"Create a RisingWave table ingesting {KAFKA_TOPIC} via "
-        "FORMAT DEBEZIUM ENCODE JSON -- a live upsert/delete table (keyed by "
-        "id), not a derived view, with the source table's current columns and "
-        "types. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
-    ),
-)
-def reverse_etl_cdf_risingwave_table(context: AssetExecutionContext):
-    _require_databricks_env()
-    row_fields = _get_row_fields(_get_token())
+def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=cfg.risingwave_asset,
+        group_name=cfg.group_name,
+        # Ordered after the sync asset purely for job-run narrative (confirms
+        # messages exist by the time this materializes) -- not a functional
+        # requirement: scan.startup.mode='earliest' below reads from the
+        # topic's beginning regardless of creation order.
+        deps=[AssetKey(cfg.topic_asset), AssetKey(cfg.sync_asset)],
+        description=(
+            f"Create a RisingWave table ingesting {cfg.kafka_topic} via "
+            "FORMAT DEBEZIUM ENCODE JSON -- a live upsert/delete table (keyed by "
+            f"{cfg.key_column}), not a derived view, with the source table's current "
+            "columns and types. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
+        ),
+    )
+    def risingwave_table(context: AssetExecutionContext):
+        _require_databricks_env()
+        row_fields = _get_row_fields(_get_token(), cfg)
 
-    conn = _get_risingwave_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(_create_table_sql(row_fields))
-        conn.commit()
-        context.log.info(f"{TABLE_NAME} ready, sourced from {KAFKA_TOPIC}")
+        conn = _get_risingwave_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_create_table_sql(cfg, row_fields))
+            conn.commit()
+            context.log.info(f"{cfg.risingwave_table} ready, sourced from {cfg.kafka_topic}")
 
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}")
-            count = cur.fetchone()[0]
-    finally:
-        conn.close()
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {cfg.risingwave_table}")
+                count = cur.fetchone()[0]
+        finally:
+            conn.close()
 
-    return {
-        "table": MetadataValue.text(TABLE_NAME),
-        "kafka_topic": MetadataValue.text(KAFKA_TOPIC),
-        "row_count_at_setup_time": MetadataValue.int(count),
-    }
+        return {
+            "table": MetadataValue.text(cfg.risingwave_table),
+            "kafka_topic": MetadataValue.text(cfg.kafka_topic),
+            "row_count_at_setup_time": MetadataValue.int(count),
+        }
+
+    return risingwave_table

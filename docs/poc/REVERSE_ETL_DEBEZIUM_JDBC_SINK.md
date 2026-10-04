@@ -279,9 +279,13 @@ All changes are on branch `feature-sr` (see `git log`).
 | `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_debezium_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
 | `orchestration/definitions.py` | Imported the new asset, added it to `reverse_etl_poc_setup_job` and to the `Definitions` asset list, and updated the job description. |
 | `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `TIMESTAMP` columns use the `ZONED_TIMESTAMP` marker and `_connect_field()` (section 4.3). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`; the RisingWave type map gains `TIMESTAMPTZ`. |
-| `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_poc_reset_job` (section 14.3), registered in `definitions.py`. |
+| `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_poc_reset_job` (section 14.3), built by `build_reset_job(cfg)`. |
 | `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). |
-| `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig` and its instance `POC_SYNC`: the one place that names the sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it; their old module-level names (`CATALOG`, `KAFKA_TOPIC`, `KEY_COLUMN`, ...) remain as aliases so existing imports keep working. The reset job's safety guard is deliberately **not** derived from it. Refactor only: the constants, generated DDL, connector config, topic list and message bytes were compared before and after and are identical, and the reset, setup, seed and sync sequence was re-run live. |
+| `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig` and its instance `POC_SYNC`: the one place that names the sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it. It also names the Dagster assets, jobs and group built for the sync, the source table's column DDL, and the reset job's safety allowlist (`reset_name_prefixes`, `reset_schema`). `ReverseEtlSyncConfig.for_name()` derives every name for a new sync from one name so two syncs cannot collide. |
+| `orchestration/assets/reverse_etl_defs.py` (new) | `build_reverse_etl_defs(cfg)` returns `Definitions` with the four assets, the setup job and the reset job for one sync (plus its own topic asset if `create_topic_asset` is set). `definitions.py` calls it once for `POC_SYNC` and merges the result. |
+| Asset factories (refactor) | In `reverse_etl_cdf_setup.py`, `reverse_etl_risingwave_setup.py`, `reverse_etl_debezium_sink.py` and `reverse_etl_reset.py` the functions take the config as a parameter and the assets and the reset job are built by `build_*` factories. Dependencies between assets use `AssetKey` from the config, so a sync can depend on the shared `kafka_output_topics_setup` without importing it. Only `CATALOG`, `SCHEMA` and `SOURCE_TABLE` remain as module aliases, for the seed script. The reset job's op names now start with the sync name (`reverse_etl_cdf_poc_delete_connector`, ...) because Dagster needs unique op names across jobs; the POC's asset and job names are unchanged. |
+
+Verification of the factory refactor: the constants, generated RisingWave DDL, connector config, topic list and message bytes are identical to before the change, the definitions load with the same POC asset and job names, and a second dummy sync merges into the same `Definitions` with no name collisions. A live reset, setup, seed and sync run after this change has **not** been done yet. There is no second real sync to run.
 
 ---
 
@@ -818,8 +822,9 @@ depends on the table; during the rebuild the table is briefly empty or partial.
 - **The notebook repeats the config's Databricks-side values.** It runs inside Databricks and cannot import
   `reverse_etl_config.py`, so its widget defaults and `KEY_COLUMNS` must be kept equal to `POC_SYNC` by hand
   (checked once after the refactor; there is no automated check).
-- **One sync only.** The config is a single instance (`POC_SYNC`) and the modules read it through module-level
-  aliases, so a second sync would still need the functions to take the config as a parameter (see 14.4).
+- **Several syncs are possible in code, untested live.** `build_reverse_etl_defs(cfg)` can be called per config,
+  but only `POC_SYNC` is registered and only it has run. Two syncs share the notebook's `sync_name` watermark
+  convention and the single Kafka Connect worker; neither has been exercised together (see 14.4).
 - **`rid` must exist from table creation.** An identity column cannot be added to an existing table, so this
   needs the reset job, then the setup job. Inserts into the source table must list their columns
   (`INSERT INTO t (id, value, ...)`); a column-less `INSERT ... VALUES` does not work, and Databricks restricts
@@ -908,11 +913,10 @@ group and both target tables were all absent, as expected.
   typed targets such as `postgres_jdbc_sink` and `risingwave_table`), generating the assets, the setup and reset
   jobs, and optionally a schedule and a row-count asset check. It would be a regular `Component`, not a
   state-backed one, because the columns are read at run time and nothing needs to be fetched to define the
-  assets. Dagster 1.13.19 here has `dg`, `Component` and `Resolvable`. The first step, the `POC_SYNC` config
-  object (section 5), is done. Still open: making the functions take the config as a parameter so several syncs
-  can coexist, and the repo layout (`orchestration/` is a flat `Definitions` module, not a `dg` project with a
-  `defs/` folder, so adoption means converting the layout or loading the component by hand). Worth doing when a
-  second table needs the same pipeline.
+  assets. Dagster 1.13.19 here has `dg`, `Component` and `Resolvable`. The first two steps, the `POC_SYNC` config
+  object and the functions and asset factories that take it (section 5), are done. Still open: the component
+  wrapper itself, and the repo layout (`orchestration/` is a flat `Definitions` module, not a `dg` project with
+  a `defs/` folder, so adoption means converting the layout or loading the component by hand).
 
 ---
 

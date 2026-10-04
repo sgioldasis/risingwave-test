@@ -11,22 +11,18 @@ import time
 from typing import Any
 
 import requests
-from dagster import AssetExecutionContext, MetadataValue, asset
+from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .kafka_topics_setup import kafka_output_topics_setup
-from .reverse_etl_config import POC_SYNC
-from .reverse_etl_cdf_setup import KAFKA_TOPIC, KEY_COLUMN, reverse_etl_cdf_to_kafka
+from .reverse_etl_config import ReverseEtlSyncConfig
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
-CONNECTOR_NAME = POC_SYNC.connector_name
-TARGET_TABLE = POC_SYNC.postgres_table
 
 _PLAIN_LOGIN = "org.apache.kafka.common.security.plain.PlainLoginModule"
 _SCRAM_LOGIN = "org.apache.kafka.common.security.scram.ScramLoginModule"
 _JSON_CONVERTER = "org.apache.kafka.connect.json.JsonConverter"
 
 
-def _connector_config() -> dict[str, str]:
+def _connector_config(cfg: ReverseEtlSyncConfig) -> dict[str, str]:
     bootstrap = os.environ.get("KAFKA_OUTPUT_BOOTSTRAP", "")
     if not bootstrap:
         raise ValueError("KAFKA_OUTPUT_BOOTSTRAP must be set in .env")
@@ -34,7 +30,7 @@ def _connector_config() -> dict[str, str]:
     config = {
         "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
         "tasks.max": "1",
-        "topics": KAFKA_TOPIC,
+        "topics": cfg.kafka_topic,
         "connection.url": os.environ.get(
             "HOST_POSTGRES_URL", "jdbc:postgresql://host.docker.internal:5432/postgres"
         ),
@@ -42,10 +38,10 @@ def _connector_config() -> dict[str, str]:
         "connection.password": "${env:POSTGRES_PASSWORD}",
         "insert.mode": "upsert",
         "primary.key.mode": "record_key",
-        "primary.key.fields": KEY_COLUMN,
+        "primary.key.fields": cfg.key_column,
         "delete.enabled": "true",
         "schema.evolution": "basic",
-        "collection.name.format": TARGET_TABLE,
+        "collection.name.format": cfg.postgres_table,
         "key.converter": _JSON_CONVERTER,
         "key.converter.schemas.enable": "true",
         "value.converter": _JSON_CONVERTER,
@@ -81,53 +77,59 @@ def _wait_for_connect(timeout_s: int = 120) -> None:
         time.sleep(3)
 
 
-def _wait_for_running(context: AssetExecutionContext, timeout_s: int = 90) -> dict[str, Any]:
+def _wait_for_running(
+    context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, timeout_s: int = 90
+) -> dict[str, Any]:
+    name = cfg.connector_name
     deadline = time.monotonic() + timeout_s
     while True:
-        resp = requests.get(f"{CONNECT_URL}/connectors/{CONNECTOR_NAME}/status", timeout=10)
+        resp = requests.get(f"{CONNECT_URL}/connectors/{name}/status", timeout=10)
         status = resp.json() if resp.ok else {}
         states = [status.get("connector", {}).get("state")] + [t.get("state") for t in status.get("tasks", [])]
-        context.log.info(f"{CONNECTOR_NAME} states: {states}")
+        context.log.info(f"{name} states: {states}")
 
         failed = [
             x for x in [status.get("connector", {})] + status.get("tasks", []) if x.get("state") == "FAILED"
         ]
         if failed:
             trace = (failed[0].get("trace") or "")[:1500]
-            raise RuntimeError(f"{CONNECTOR_NAME} FAILED: {trace}")
+            raise RuntimeError(f"{name} FAILED: {trace}")
         if status.get("tasks") and all(s == "RUNNING" for s in states):
             return status
         if time.monotonic() > deadline:
-            raise RuntimeError(f"{CONNECTOR_NAME} not RUNNING after {timeout_s}s: {states}")
+            raise RuntimeError(f"{name} not RUNNING after {timeout_s}s: {states}")
         time.sleep(3)
 
 
-@asset(
-    group_name="reverse_etl_poc",
-    deps=[kafka_output_topics_setup, reverse_etl_cdf_to_kafka],
-    description=(
-        f"Create/update the Debezium JDBC sink connector that upserts and deletes rows "
-        f"from the {KAFKA_TOPIC} Kafka topic into the host Postgres table "
-        f"{TARGET_TABLE}, and wait for it to be RUNNING. "
-        "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
-    ),
-)
-def reverse_etl_debezium_jdbc_sink(context: AssetExecutionContext):
-    _wait_for_connect()
-
-    resp = requests.put(
-        f"{CONNECT_URL}/connectors/{CONNECTOR_NAME}/config", json=_connector_config(), timeout=30
+def build_debezium_sink_asset(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=cfg.sink_asset,
+        group_name=cfg.group_name,
+        deps=[AssetKey(cfg.topic_asset), AssetKey(cfg.sync_asset)],
+        description=(
+            f"Create/update the Debezium JDBC sink connector that upserts and deletes rows "
+            f"from the {cfg.kafka_topic} Kafka topic into the host Postgres table "
+            f"{cfg.postgres_table}, and wait for it to be RUNNING. "
+            "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
+        ),
     )
-    if not resp.ok:
-        raise RuntimeError(f"Connect rejected {CONNECTOR_NAME} config ({resp.status_code}): {resp.text[:1500]}")
-    context.log.info(f"Connector {CONNECTOR_NAME} created/updated")
+    def debezium_jdbc_sink(context: AssetExecutionContext):
+        _wait_for_connect()
 
-    status = _wait_for_running(context)
+        name = cfg.connector_name
+        resp = requests.put(f"{CONNECT_URL}/connectors/{name}/config", json=_connector_config(cfg), timeout=30)
+        if not resp.ok:
+            raise RuntimeError(f"Connect rejected {name} config ({resp.status_code}): {resp.text[:1500]}")
+        context.log.info(f"Connector {name} created/updated")
 
-    context.add_output_metadata({
-        "connector": MetadataValue.text(CONNECTOR_NAME),
-        "source_topic": MetadataValue.text(KAFKA_TOPIC),
-        "postgres_table": MetadataValue.text(TARGET_TABLE),
-        "connector_state": MetadataValue.text(status["connector"]["state"]),
-        "task_states": MetadataValue.json([t["state"] for t in status["tasks"]]),
-    })
+        status = _wait_for_running(context, cfg)
+
+        context.add_output_metadata({
+            "connector": MetadataValue.text(name),
+            "source_topic": MetadataValue.text(cfg.kafka_topic),
+            "postgres_table": MetadataValue.text(cfg.postgres_table),
+            "connector_state": MetadataValue.text(status["connector"]["state"]),
+            "task_states": MetadataValue.json([t["state"] for t in status["tasks"]]),
+        })
+
+    return debezium_jdbc_sink

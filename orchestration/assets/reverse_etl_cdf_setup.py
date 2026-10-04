@@ -37,22 +37,16 @@ from typing import Any
 
 import requests
 from confluent_kafka import Producer
-from dagster import AssetExecutionContext, MetadataValue, asset
+from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
 from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
-from .kafka_topics_setup import kafka_output_topics_setup
-from .reverse_etl_config import POC_SYNC
+from .reverse_etl_config import POC_SYNC, ReverseEtlSyncConfig
 
-# Names come from reverse_etl_config.POC_SYNC (one place for every module and the
-# notebook's widget defaults); the aliases below keep existing imports working.
+# Every function below takes the sync's ReverseEtlSyncConfig; the names live in
+# reverse_etl_config. These three aliases are only for scripts/reverse_etl_poc_seed.py.
 CATALOG = POC_SYNC.catalog
 SCHEMA = POC_SYNC.schema
 SOURCE_TABLE = POC_SYNC.source_table
-STATE_TABLE = POC_SYNC.state_table
-SYNC_NAME = POC_SYNC.sync_name
-KEY_COLUMN = POC_SYNC.key_column
-# Messages on this topic carry an embedded Connect schema (see _build_connect_json_message).
-KAFKA_TOPIC = POC_SYNC.kafka_topic
 
 # CDF's own metadata columns -- see Databricks' Change Data Feed docs.
 CHANGE_TYPE_COLUMN = "_change_type"
@@ -103,23 +97,22 @@ def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in data_array]
 
 
-def _read_last_version(token: str, sync_name: str) -> int | None:
+def _read_last_version(token: str, cfg: ReverseEtlSyncConfig) -> int | None:
     response = _run_sql(
         token,
-        f"SELECT last_commit_version FROM {CATALOG}.{SCHEMA}.{STATE_TABLE} "
-        f"WHERE sync_name = '{sync_name}'",
+        f"SELECT last_commit_version FROM {cfg.state_fqn} WHERE sync_name = '{cfg.sync_name}'",
     )
     rows = _rows_as_dicts(response)
     return int(rows[0]["last_commit_version"]) if rows else None
 
 
-def _write_last_version(token: str, sync_name: str, version: int) -> None:
+def _write_last_version(token: str, cfg: ReverseEtlSyncConfig, version: int) -> None:
     # MERGE keeps this idempotent across retries of the same run.
     _run_sql(
         token,
         f"""
-        MERGE INTO {CATALOG}.{SCHEMA}.{STATE_TABLE} AS target
-        USING (SELECT '{sync_name}' AS sync_name, {version} AS last_commit_version) AS source
+        MERGE INTO {cfg.state_fqn} AS target
+        USING (SELECT '{cfg.sync_name}' AS sync_name, {version} AS last_commit_version) AS source
         ON target.sync_name = source.sync_name
         WHEN MATCHED THEN UPDATE SET target.last_commit_version = source.last_commit_version
         WHEN NOT MATCHED THEN INSERT (sync_name, last_commit_version)
@@ -128,7 +121,7 @@ def _write_last_version(token: str, sync_name: str, version: int) -> None:
     )
 
 
-def _read_changes(token: str, since_version: int) -> list[dict[str, Any]]:
+def _read_changes(token: str, cfg: ReverseEtlSyncConfig, since_version: int) -> list[dict[str, Any]]:
     """Batch-read CDF rows via table_changes(), from since_version (inclusive)
     through the latest available version.
 
@@ -144,13 +137,13 @@ def _read_changes(token: str, since_version: int) -> list[dict[str, Any]]:
     """
     response = _run_sql(
         token,
-        f"SELECT * FROM table_changes('{CATALOG}.{SCHEMA}.{SOURCE_TABLE}', {since_version}) "
+        f"SELECT * FROM table_changes('{cfg.source_fqn}', {since_version}) "
         "ORDER BY _commit_version",
     )
     return _rows_as_dicts(response)
 
 
-def _get_current_version(token: str) -> int:
+def _get_current_version(token: str, cfg: ReverseEtlSyncConfig) -> int:
     """The table's latest committed version, per DESCRIBE HISTORY.
 
     Used to baseline a sync's first run when a full backfill isn't safe (see
@@ -158,12 +151,12 @@ def _get_current_version(token: str) -> int:
     produced means the *next* run's table_changes() starts from a version
     that actually has CDF data, instead of guessing version 0.
     """
-    response = _run_sql(token, f"DESCRIBE HISTORY {CATALOG}.{SCHEMA}.{SOURCE_TABLE} LIMIT 1")
+    response = _run_sql(token, f"DESCRIBE HISTORY {cfg.source_fqn} LIMIT 1")
     rows = _rows_as_dicts(response)
     return int(rows[0]["version"])
 
 
-def _get_earliest_available_version(token: str) -> int:
+def _get_earliest_available_version(token: str, cfg: ReverseEtlSyncConfig) -> int:
     """Earliest version still present in the table's transaction log, per a
     full (unlimited) DESCRIBE HISTORY.
 
@@ -177,7 +170,7 @@ def _get_earliest_available_version(token: str) -> int:
     "partial history as synthetic inserts" result rather than error, which
     is worse than not attempting it.
     """
-    response = _run_sql(token, f"DESCRIBE HISTORY {CATALOG}.{SCHEMA}.{SOURCE_TABLE}")
+    response = _run_sql(token, f"DESCRIBE HISTORY {cfg.source_fqn}")
     rows = _rows_as_dicts(response)
     return min(int(row["version"]) for row in rows)
 
@@ -297,10 +290,6 @@ def _summarize_ops(events: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-# The envelope name follows Debezium's `<server>.<schema>.<table>.Envelope`
-# convention, which is what the sink uses to recognise a Debezium event.
-ENVELOPE_SCHEMA_NAME = POC_SYNC.envelope_schema_name
-
 # Not a Connect type: marks a column carried as an ISO-8601 string with a
 # timezone (e.g. 2026-10-03T03:41:08.345Z) whose schema field is named
 # io.debezium.time.ZonedTimestamp, so the Debezium sink creates a timestamptz
@@ -327,15 +316,15 @@ _CONNECT_TYPE_BY_DATABRICKS_TYPE = {
 RowField = tuple[str, str, bool]  # (column name, connect type, optional)
 
 
-def _get_row_fields(token: str) -> list[RowField]:
+def _get_row_fields(token: str, cfg: ReverseEtlSyncConfig) -> list[RowField]:
     """The source table's *current* columns, read at sync time, so a column
     added in Databricks flows into the message schema -- and from there into
     Postgres via the sink's schema.evolution -- with no code change. CDF
     reads use the latest table schema, so rows and schema stay in step."""
     response = _run_sql(
         token,
-        f"SELECT column_name, data_type, is_nullable FROM {CATALOG}.information_schema.columns "
-        f"WHERE table_schema = '{SCHEMA}' AND table_name = '{SOURCE_TABLE}' "
+        f"SELECT column_name, data_type, is_nullable FROM {cfg.catalog}.information_schema.columns "
+        f"WHERE table_schema = '{cfg.schema}' AND table_name = '{cfg.source_table}' "
         "ORDER BY ordinal_position",
     )
     fields = [
@@ -347,7 +336,7 @@ def _get_row_fields(token: str) -> list[RowField]:
         for row in _rows_as_dicts(response)
     ]
     if not fields:
-        raise RuntimeError(f"No columns found for {CATALOG}.{SCHEMA}.{SOURCE_TABLE} in information_schema")
+        raise RuntimeError(f"No columns found for {cfg.source_fqn} in information_schema")
     return fields
 
 
@@ -377,17 +366,17 @@ def _connect_field(name: str, connect_type: str, optional: bool) -> dict[str, An
     return {"field": name, "type": connect_type, "optional": optional}
 
 
-def _connect_row_schema(optional: bool, row_fields: list[RowField]) -> dict[str, Any]:
+def _connect_row_schema(cfg: ReverseEtlSyncConfig, optional: bool, row_fields: list[RowField]) -> dict[str, Any]:
     return {
         "type": "struct",
-        "name": f"{ENVELOPE_SCHEMA_NAME}.Value",
+        "name": f"{cfg.envelope_schema_name}.Value",
         "optional": optional,
         "fields": [_connect_field(n, t, o) for n, t, o in row_fields],
     }
 
 
 def _build_connect_json_message(
-    event: dict[str, Any], key_columns: list[str], row_fields: list[RowField]
+    cfg: ReverseEtlSyncConfig, event: dict[str, Any], key_columns: list[str], row_fields: list[RowField]
 ) -> tuple[bytes, bytes]:
     """Build the (key, value) pair for one event as Kafka Connect JSON with
     embedded schemas (`{"schema": ..., "payload": ...}`), for the Debezium
@@ -397,7 +386,7 @@ def _build_connect_json_message(
     field_types = {n: t for n, t, _ in row_fields}
     key_schema = {
         "type": "struct",
-        "name": f"{ENVELOPE_SCHEMA_NAME}.Key",
+        "name": f"{cfg.envelope_schema_name}.Key",
         "optional": False,
         "fields": [{"field": c, "type": field_types[c], "optional": False} for c in key_columns],
     }
@@ -405,11 +394,11 @@ def _build_connect_json_message(
 
     value_schema = {
         "type": "struct",
-        "name": f"{ENVELOPE_SCHEMA_NAME}.Envelope",
+        "name": f"{cfg.envelope_schema_name}.Envelope",
         "optional": False,
         "fields": [
-            {"field": "before", **_connect_row_schema(optional=True, row_fields=row_fields)},
-            {"field": "after", **_connect_row_schema(optional=True, row_fields=row_fields)},
+            {"field": "before", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},
+            {"field": "after", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},
             {"field": "op", "type": "string", "optional": False},
             {
                 "field": "source",
@@ -467,11 +456,13 @@ def _kafka_producer_config() -> dict[str, str]:
     return conf
 
 
-def _produce_to_kafka(events: list[dict[str, Any]], key_columns: list[str], row_fields: list[RowField]) -> None:
+def _produce_to_kafka(
+    cfg: ReverseEtlSyncConfig, events: list[dict[str, Any]], key_columns: list[str], row_fields: list[RowField]
+) -> None:
     producer = Producer(_kafka_producer_config())
     for event in events:
-        key, value = _build_connect_json_message(event, key_columns, row_fields)
-        producer.produce(topic=KAFKA_TOPIC, key=key, value=value)
+        key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
+        producer.produce(topic=cfg.kafka_topic, key=key, value=value)
     producer.flush()
 
 
@@ -482,6 +473,7 @@ MESSAGE_PREVIEW_LIMIT = 50
 
 
 def _message_previews(
+    cfg: ReverseEtlSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
     row_fields: list[RowField],
@@ -493,7 +485,7 @@ def _message_previews(
     shown: the embedded schema repeats on every message and would drown it."""
     previews = []
     for event in events[:limit]:
-        key, value = _build_connect_json_message(event, key_columns, row_fields)
+        key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
         previews.append({
             "key": json.loads(key)["payload"],
             "value": json.loads(value)["payload"],
@@ -505,6 +497,7 @@ RAW_MESSAGE_LIMIT = 3
 
 
 def _raw_messages(
+    cfg: ReverseEtlSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
     row_fields: list[RowField],
@@ -514,7 +507,7 @@ def _raw_messages(
     `schema` included (_message_previews shows payloads only)."""
     raw = []
     for event in events[:limit]:
-        key, value = _build_connect_json_message(event, key_columns, row_fields)
+        key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
         raw.append({"key": json.loads(key), "value": json.loads(value)})
     return raw
 
@@ -533,147 +526,155 @@ def _require_databricks_env() -> None:
         raise ValueError(f"Missing required env vars: {missing}")
 
 
-@asset(
-    group_name="reverse_etl_poc",
-    description=(
-        "Create the reverse-ETL CDF POC's source table (Change Data Feed enabled "
-        "at creation) and its watermark bookkeeping table in "
-        "de_dev.sr_poc_external, if absent. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
-    ),
-)
-def reverse_etl_poc_table_setup(context: AssetExecutionContext):
-    _require_databricks_env()
-    token = _get_token()
+def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=cfg.table_setup_asset,
+        group_name=cfg.group_name,
+        description=(
+            f"Create the reverse-ETL source table {cfg.source_fqn} (Change Data Feed enabled "
+            "at creation) and its watermark bookkeeping table, if absent. "
+            "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
+        ),
+    )
+    def table_setup(context: AssetExecutionContext):
+        _require_databricks_env()
+        token = _get_token()
 
-    _run_sql(
-        token,
-        f"""
-        CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA}.{SOURCE_TABLE} (
-            {KEY_COLUMN} BIGINT GENERATED ALWAYS AS IDENTITY,
-            id BIGINT NOT NULL,
-            value STRING,
-            updated_at TIMESTAMP
+        columns = ",\n            ".join(
+            [f"{cfg.key_column} BIGINT GENERATED ALWAYS AS IDENTITY", *cfg.source_columns]
+        )
+        _run_sql(
+            token,
+            f"""
+        CREATE TABLE IF NOT EXISTS {cfg.source_fqn} (
+            {columns}
         ) USING DELTA
         TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
         """,
-    )
-    context.log.info(f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE} ready (CDF enabled)")
+        )
+        context.log.info(f"{cfg.source_fqn} ready (CDF enabled)")
 
-    _run_sql(
-        token,
-        f"""
-        CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA}.{STATE_TABLE} (
+        _run_sql(
+            token,
+            f"""
+        CREATE TABLE IF NOT EXISTS {cfg.state_fqn} (
             sync_name STRING, last_commit_version BIGINT
         )
         """,
+        )
+        context.log.info(f"{cfg.state_fqn} ready")
+
+        context.add_output_metadata({
+            "source_table": MetadataValue.text(cfg.source_fqn),
+            "state_table": MetadataValue.text(cfg.state_fqn),
+        })
+
+    return table_setup
+
+
+def build_sync_asset(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=cfg.sync_asset,
+        group_name=cfg.group_name,
+        deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
+        description=(
+            f"Batch-read new/changed/deleted rows from {cfg.source_fqn}'s Change "
+            "Data Feed since the last watermark, and produce them as Debezium-style "
+            f"before/after/op events to the {cfg.kafka_topic} Kafka topic. "
+            "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
+        ),
     )
-    context.log.info(f"{CATALOG}.{SCHEMA}.{STATE_TABLE} ready")
+    def cdf_to_kafka(context: AssetExecutionContext):
+        _require_databricks_env()
+        token = _get_token()
 
-    context.add_output_metadata({
-        "source_table": MetadataValue.text(f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"),
-        "state_table": MetadataValue.text(f"{CATALOG}.{SCHEMA}.{STATE_TABLE}"),
-    })
+        last_version = _read_last_version(token, cfg)
 
-
-@asset(
-    group_name="reverse_etl_poc",
-    deps=[reverse_etl_poc_table_setup, kafka_output_topics_setup],
-    description=(
-        "Batch-read new/changed/deleted rows from the POC source table's Change "
-        "Data Feed since the last watermark, and produce them as Debezium-style "
-        f"before/after/op events to the {KAFKA_TOPIC} Kafka topic. "
-        "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
-    ),
-)
-def reverse_etl_cdf_to_kafka(context: AssetExecutionContext):
-    _require_databricks_env()
-    token = _get_token()
-
-    last_version = _read_last_version(token, SYNC_NAME)
-
-    if last_version is None:
-        backfill_from = _resolve_backfill_version()
-        if backfill_from is not None:
-            context.log.info(
-                f"First run for {SYNC_NAME} -- backfilling {SOURCE_TABLE} "
-                f"from explicit override version {backfill_from}"
-            )
-        else:
-            earliest_available = _get_earliest_available_version(token)
-            if earliest_available == 0:
-                backfill_from = 0
+        if last_version is None:
+            backfill_from = _resolve_backfill_version()
+            if backfill_from is not None:
                 context.log.info(
-                    f"First run for {SYNC_NAME} -- {SOURCE_TABLE}'s full history "
-                    "is intact (earliest available version is 0), backfilling "
-                    "from the beginning"
+                    f"First run for {cfg.sync_name} -- backfilling {cfg.source_table} "
+                    f"from explicit override version {backfill_from}"
                 )
             else:
-                context.log.info(
-                    f"First run for {SYNC_NAME} -- earliest available version "
-                    f"is {earliest_available} (history already partially aged "
-                    f"out of retention), baselining at {SOURCE_TABLE}'s current "
-                    "version with no historical rows synced"
-                )
+                earliest_available = _get_earliest_available_version(token, cfg)
+                if earliest_available == 0:
+                    backfill_from = 0
+                    context.log.info(
+                        f"First run for {cfg.sync_name} -- {cfg.source_table}'s full history "
+                        "is intact (earliest available version is 0), backfilling "
+                        "from the beginning"
+                    )
+                else:
+                    context.log.info(
+                        f"First run for {cfg.sync_name} -- earliest available version "
+                        f"is {earliest_available} (history already partially aged "
+                        f"out of retention), baselining at {cfg.source_table}'s current "
+                        "version with no historical rows synced"
+                    )
 
-        rows = _read_changes(token, backfill_from) if backfill_from is not None else []
-    else:
-        # table_changes()'s startingVersion is inclusive, and last_version was
-        # already fully processed (it's what the previous run watermarked) --
-        # resuming from last_version itself would re-deliver that version's
-        # rows a second time. +1 to actually resume from the first
-        # un-synced version.
-        next_version = last_version + 1
-        current_version = _get_current_version(token)
-        if next_version > current_version:
-            # No commits since the last run -- the common case for a daily
-            # batch once caught up. table_changes() errors
-            # (DELTA_CDC_START_VERSION_AFTER_LATEST) rather than returning
-            # empty if asked for a version beyond the table's latest, so this
-            # must be checked before querying rather than relying on an empty
-            # result.
-            context.log.info(f"No new commits since version {last_version} for {SYNC_NAME}")
-            rows = []
+            rows = _read_changes(token, cfg, backfill_from) if backfill_from is not None else []
         else:
-            context.log.info(f"Reading CDF for {SOURCE_TABLE} since version {next_version}")
-            rows = _read_changes(token, next_version)
+            # table_changes()'s startingVersion is inclusive, and last_version was
+            # already fully processed (it's what the previous run watermarked) --
+            # resuming from last_version itself would re-deliver that version's
+            # rows a second time. +1 to actually resume from the first
+            # un-synced version.
+            next_version = last_version + 1
+            current_version = _get_current_version(token, cfg)
+            if next_version > current_version:
+                # No commits since the last run -- the common case for a daily
+                # batch once caught up. table_changes() errors
+                # (DELTA_CDC_START_VERSION_AFTER_LATEST) rather than returning
+                # empty if asked for a version beyond the table's latest, so this
+                # must be checked before querying rather than relying on an empty
+                # result.
+                context.log.info(f"No new commits since version {last_version} for {cfg.sync_name}")
+                rows = []
+            else:
+                context.log.info(f"Reading CDF for {cfg.source_table} since version {next_version}")
+                rows = _read_changes(token, cfg, next_version)
 
-    key_columns = [KEY_COLUMN]
-    events = _to_debezium_events(rows, key_columns) if rows else []
+        key_columns = [cfg.key_column]
+        events = _to_debezium_events(rows, key_columns) if rows else []
 
-    risingwave_columns_added: list[str] = []
-    row_fields: list[RowField] = []
-    if events:
-        row_fields = _get_row_fields(token)
-        # Before producing: RisingWave only fills a column from messages it
-        # reads after the column exists. Imported here because that module
-        # imports this one.
-        from .reverse_etl_risingwave_setup import add_missing_columns
+        risingwave_columns_added: list[str] = []
+        row_fields: list[RowField] = []
+        if events:
+            row_fields = _get_row_fields(token, cfg)
+            # Before producing: RisingWave only fills a column from messages it
+            # reads after the column exists. Imported here because that module
+            # imports this one.
+            from .reverse_etl_risingwave_setup import add_missing_columns
 
-        risingwave_columns_added = add_missing_columns(row_fields)
-        if risingwave_columns_added:
-            context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
-        _produce_to_kafka(events, key_columns=key_columns, row_fields=row_fields)
+            risingwave_columns_added = add_missing_columns(cfg, row_fields)
+            if risingwave_columns_added:
+                context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
+            _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields)
 
-    if last_version is None and not rows:
-        new_version = _get_current_version(token)
-    else:
-        new_version = _next_watermark(rows, last_version)
+        if last_version is None and not rows:
+            new_version = _get_current_version(token, cfg)
+        else:
+            new_version = _next_watermark(rows, last_version)
 
-    if new_version is not None:
-        _write_last_version(token, SYNC_NAME, new_version)
+        if new_version is not None:
+            _write_last_version(token, cfg, new_version)
 
-    op_counts = _summarize_ops(events)
-    context.log.info(f"Produced {len(events)} event(s) to {KAFKA_TOPIC}: {op_counts}")
+        op_counts = _summarize_ops(events)
+        context.log.info(f"Produced {len(events)} event(s) to {cfg.kafka_topic}: {op_counts}")
 
-    context.add_output_metadata({
-        "events_synced": MetadataValue.int(len(events)),
-        "op_counts": MetadataValue.json(op_counts),
-        "last_commit_version": (
-            MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
-        ),
-        "kafka_topic": MetadataValue.text(KAFKA_TOPIC),
-        "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
-        "kafka_messages": MetadataValue.json(_message_previews(events, key_columns, row_fields)),
-        "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
-        "kafka_messages_raw": MetadataValue.json(_raw_messages(events, key_columns, row_fields)),
-    })
+        context.add_output_metadata({
+            "events_synced": MetadataValue.int(len(events)),
+            "op_counts": MetadataValue.json(op_counts),
+            "last_commit_version": (
+                MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
+            ),
+            "kafka_topic": MetadataValue.text(cfg.kafka_topic),
+            "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
+            "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
+            "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
+            "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
+        })
+
+    return cdf_to_kafka
