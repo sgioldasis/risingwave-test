@@ -284,6 +284,7 @@ All changes are on branch `feature-sr` (see `git log`).
 | `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig` and its instance `POC_SYNC`: the one place that names the sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it. It also names the Dagster assets, jobs and group built for the sync, the source table's column DDL, and the reset job's safety allowlist (`reset_name_prefixes`, `reset_schema`). `ReverseEtlSyncConfig.for_name()` derives every name for a new sync from one name so two syncs cannot collide. |
 | `orchestration/assets/reverse_etl_defs.py` (new) | `build_reverse_etl_defs(cfg)` returns `Definitions` with the four assets, the setup job and the reset job for one sync (plus its own topic asset if `create_topic_asset` is set). `definitions.py` calls it once for `POC_SYNC` and merges the result. |
 | Asset factories (refactor) | In `reverse_etl_cdf_setup.py`, `reverse_etl_risingwave_setup.py`, `reverse_etl_debezium_sink.py` and `reverse_etl_reset.py` the functions take the config as a parameter and the assets and the reset job are built by `build_*` factories. Dependencies between assets use `AssetKey` from the config, so a sync can depend on the shared `kafka_output_topics_setup` without importing it. Only `CATALOG`, `SCHEMA` and `SOURCE_TABLE` remain as module aliases, for the seed script. The reset job's op names now start with the sync name (`reverse_etl_cdf_poc_delete_connector`, ...) because Dagster needs unique op names across jobs; the POC's asset and job names are unchanged. |
+| `orchestration/components/reverse_etl_cdf_sync.py`, `orchestration/defs/` (new) | The `ReverseEtlCdfSync` Dagster component and the (empty) folder for its YAML instances; `definitions.py` merges `load_defs(...)` of that folder (section 14.4). |
 
 Verification of the factory refactor: the constants, generated RisingWave DDL, connector config, topic list and message bytes are identical to before the change, the definitions load with the same POC asset and job names, and a second dummy sync merges into the same `Definitions` with no name collisions. A live reset, setup, seed and sync run after this change gave the expected result in both targets (ids 1 and 2, id 3 deleted, same instants in Postgres and RisingWave). There is no second real sync, so two syncs running side by side were not tested live. Dagster allows only one module-level `Definitions`, so `definitions.py` builds `defs` as one `Definitions.merge(Definitions(...), build_reverse_etl_defs(POC_SYNC))` call.
 
@@ -908,15 +909,36 @@ group and both target tables were all absent, as expected.
   Databricks refuses a drop or retype, which protects the pipeline from changes the targets cannot follow. They are
   also one-way table upgrades. If wanted for a deliberate schema-change demo, make it an optional switch.
 - **Typed `DATE` / `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3).
-- **A Dagster component for the whole pipeline** (designed, not built). One `ReverseEtlCdfSync` component per
-  sync, configured in YAML (source table, key column, Kafka connection through `{{ env.X }}` templates, a list of
-  typed targets such as `postgres_jdbc_sink` and `risingwave_table`), generating the assets, the setup and reset
-  jobs, and optionally a schedule and a row-count asset check. It would be a regular `Component`, not a
-  state-backed one, because the columns are read at run time and nothing needs to be fetched to define the
-  assets. Dagster 1.13.19 here has `dg`, `Component` and `Resolvable`. The first two steps, the `POC_SYNC` config
-  object and the functions and asset factories that take it (section 5), are done. Still open: the component
-  wrapper itself, and the repo layout (`orchestration/` is a flat `Definitions` module, not a `dg` project with
-  a `defs/` folder, so adoption means converting the layout or loading the component by hand).
+- **A Dagster component for the whole pipeline** (built, minimal; verified loading in the running Dagster, not
+  run against a second real table). `orchestration/components/reverse_etl_cdf_sync.py` defines
+  `ReverseEtlCdfSync`, a regular `Component` (not state-backed, because the columns are read at run time). One
+  instance per sync under `orchestration/defs/<name>/defs.yaml`:
+
+  ```yaml
+  type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+  attributes:
+    name: orders_sync
+    catalog: de_dev
+    schema_name: sr_poc_external
+    source_table: orders_sync_source
+    source_columns: ["id BIGINT NOT NULL", "total DOUBLE"]
+    # key_column: rid   (default)
+  ```
+
+  It calls `build_reverse_etl_defs(ReverseEtlSyncConfig.for_name(...))`, so every other name is derived from `name`
+  and the instance gets the four assets, `<name>_kafka_topic`, `<name>_setup_job` and `<name>_reset_job`.
+  `definitions.py` loads the `defs/` folder with `load_defs(..., project_root=...)` and merges it with the rest.
+  The POC itself is still built from `POC_SYNC` in Python, not from YAML. Notes and limits:
+  - **Layout.** Only this part is on the `dg` layout; the other assets stay in `definitions.py`. `project_root` is
+    passed explicitly because the Dagster containers mount only `./orchestration`, so `load_defs` finds no
+    `pyproject.toml` there (without it the code location failed to load).
+  - **`dg` tooling does not see it.** `orchestration` is not an installed package, so `dg list components` and
+    `dg scaffold defs` do not list the type; write the `defs.yaml` by hand. Runtime loading is unaffected.
+  - **Field name.** `schema_name`, not `schema`, which would shadow a pydantic attribute.
+  - **Only the config's `for_name` options are exposed.** Topic, connector and table names cannot be overridden
+    from YAML; no Kafka connection settings, schedule or asset check (still the `KAFKA_OUTPUT_*` env vars).
+  - **Verified** by adding a temporary instance, reloading the running Dagster (five assets and two jobs
+    appeared, POC assets unchanged), then removing it. No sync was run for it, and `defs/` ships empty.
 
 ---
 

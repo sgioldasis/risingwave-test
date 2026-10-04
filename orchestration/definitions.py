@@ -18,6 +18,7 @@ from dagster import (
     AssetKey,
     AssetSelection,
     AssetSpec,
+    load_defs,
 )
 from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTranslator
 
@@ -52,6 +53,7 @@ from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
 from .assets.reverse_etl_config import POC_SYNC
 from .assets.reverse_etl_defs import build_reverse_etl_defs
+from . import defs as reverse_etl_yaml_defs  # not `defs`: that is the Definitions below
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -1031,4 +1033,8 @@ defs = Definitions.merge(
         },
     ),
     build_reverse_etl_defs(POC_SYNC),
+    # Syncs declared in YAML under orchestration/defs/<name>/defs.yaml (ReverseEtlCdfSync).
+    # project_root is explicit because the Dagster containers mount only
+    # ./orchestration, so there is no pyproject.toml for load_defs to search for.
+    load_defs(reverse_etl_yaml_defs, project_root=Path(__file__).resolve().parent.parent),
 )
