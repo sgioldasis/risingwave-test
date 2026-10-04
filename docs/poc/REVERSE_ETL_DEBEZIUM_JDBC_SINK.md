@@ -4,7 +4,8 @@ Date: 2026-10-02 (updated 2026-10-04). Since the first version: a **single topic
 the Debezium sink (sections 2, 3, 10.2), a surrogate **`rid` key** (4.6), real **timestamp** types (4.3), a
 **reset job** (14.3), a **Databricks notebook** version of the sync (10.3), tested behaviour for column
 drops and type changes (10.4), and, since 2026-10-04, a **reusable Dagster component** with uniform
-`reverse_etl_<label>_<role>` names, a **seed asset** and a **second sync** (10.5, 14.4). Names in sections that
+`reverse_etl_<label>_<role>` names, a **seed asset**, a **second sync** (10.5, 14.4), and a **label-driven
+notebook** with a **Dagster job** that triggers it (10.3, 10.6). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Related: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) (APR-233), which describes the
@@ -284,7 +285,8 @@ of `ReverseEtlSyncConfig`, and the last rows describe the current structure.
 | `orchestration/definitions.py` | First imported the new asset and added it to the setup job. Later the reverse-ETL assets and jobs moved out: it now merges `load_defs(...)` of `orchestration/defs/` (section 14.4). |
 | `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `TIMESTAMP` columns use the `ZONED_TIMESTAMP` marker and `_connect_field()` (section 4.3). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`; the RisingWave type map gains `TIMESTAMPTZ`. |
 | `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_cdf_reset_job` (section 14.3), built by `build_reset_job(cfg)`. |
-| `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). |
+| `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). Since 2026-10-04 one notebook serves every sync through a `label` widget. |
+| `orchestration/assets/reverse_etl_notebook_job.py` (new) | The Dagster job `reverse_etl_notebook_sync_job` that triggers the notebook's Databricks job with a `label` (section 10.6), registered in `definitions.py`. |
 | `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig`: the one place that names a sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it. It also names the Dagster assets, jobs and group built for the sync, the source table's column DDL, and the reset job's safety allowlist (`reset_name_prefixes`, `reset_schema`). `ReverseEtlSyncConfig.for_name(label, ...)` derives every name as `reverse_etl_<label>_<role>` so two syncs cannot collide. |
 | `orchestration/assets/reverse_etl_defs.py` (new) | `build_reverse_etl_defs(cfg)` returns `Definitions` with the four assets, the setup job and the reset job for one sync (plus its own topic asset if `create_topic_asset` is set). The `ReverseEtlCdfSync` component calls it for each YAML instance (section 14.4). |
 | Asset factories (refactor) | In `reverse_etl_cdf_setup.py`, `reverse_etl_risingwave_setup.py`, `reverse_etl_debezium_sink.py` and `reverse_etl_reset.py` the functions take the config as a parameter and the assets and the reset job are built by `build_*` factories. Dependencies between assets use `AssetKey` from the config, so a sync can depend on the shared `kafka_output_topics_setup` without importing it. The reset job's op names start with the sync name (`reverse_etl_cdf_delete_connector`, ...) because Dagster needs unique op names across jobs; the names of the POC's assets and jobs have since changed with the uniform naming (section 14.4). |
@@ -440,8 +442,8 @@ the reset job (14.3).
 ### Every time after
 
 1. Change the Databricks table (insert / update / delete).
-2. Materialize **only** `reverse_etl_cdf_to_kafka` in Dagster (or run the notebook, section 10.3; use one or
-   the other per change, since they share a watermark). The connector is already running and consumes the new
+2. Materialize **only** `reverse_etl_cdf_to_kafka` in Dagster (or run the notebook, section 10.3, or the Dagster job
+   that triggers it, section 10.6; use one trigger per change, since they share a watermark). The connector is already running and consumes the new
    messages continuously, so the whole job does not need to run again.
 
 Nothing runs on a schedule for this pipeline (the existing schedules and sensor are for dbt and ML). The
@@ -658,8 +660,12 @@ connector stayed `RUNNING`, and the watermark (5) equalled the table version.
    printenv KAFKA_OUTPUT_SASL_PASSWORD | tr -d '\n' | databricks --profile personal secrets put-secret rw_poc kafka_output_password
    ```
    (`tr -d '\n'` matters: a trailing newline would be stored in the value.)
-3. Run it: Run all. Widgets at the top (catalog, schema, tables, topic, bootstrap, secret names, optional
-   `backfill_from_version`) default to the POC's values.
+3. Run it: Run all. The `label` widget picks the sync (`cdf` by default, or `orders`): the source and watermark
+   tables, the sync name and the topic are derived from it as `reverse_etl_<label>_<role>`, the same rule as
+   `ReverseEtlSyncConfig.for_name`. The other widgets (catalog, schema, bootstrap, secret names, optional
+   `backfill_from_version`) keep their defaults; four optional widgets (`source_table`, `state_table`,
+   `sync_name`, `kafka_topic`) are empty by default and override a derived name only if a sync's `defs.yaml` does.
+   An empty label fails with a clear error. As a Databricks job parameter: `label` (section 10.6).
 
 **Differences from the Dagster asset.**
 - It does **not** add new columns to the RisingWave table (a notebook cannot reach the local RisingWave). After
@@ -669,6 +675,7 @@ connector stayed `RUNNING`, and the watermark (5) equalled the table version.
 - A failed Kafka write raises before the watermark moves, so the next run re-sends (the sink and RisingWave
   upsert by key, so replays are harmless). The Dagster asset advances the watermark even if a delivery failed.
 - **Do not run both for the same change:** they share one watermark (`sync_name`) and one topic.
+- **To trigger it from Dagster, for any sync, and have the RisingWave columns added first, use the job in section 10.6.**
 
 ### 10.4 Dropping a column or changing a type (tested)
 
@@ -761,11 +768,69 @@ The second sync, `orders`, was added this way (see 14.4 for the names it gets):
 4. Materialize `reverse_etl_<label>_to_kafka`.
 
 To start over, run `reverse_etl_<label>_reset_job`, then the setup job. To remove a sync, run its reset job first,
-then delete its folder; deleting the folder alone leaves the objects behind. The notebook serves one sync per
-widget set (set `source_table`, `state_table`, `sync_name`, `kafka_topic`); it was not run against `orders`.
+then delete its folder; deleting the folder alone leaves the objects behind. One notebook serves every
+sync: set its `label` widget (section 10.3). Verified for `orders` on 2026-10-04 (below).
 For a real, existing table: the setup only creates a table that does not exist, and the table needs a `rid`
 identity column from creation (section 13). `source_columns` is still a required field in the YAML even then; it is
 unused when the table exists (making it optional is not done).
+
+### 10.6 Triggering the notebook from Dagster, for any sync
+
+Built and verified on 2026-10-04. Two pieces:
+
+1. **A Databricks job** `reverse_etl_notebook_sync` in the DEV workspace (job id `511656297933301`, created with the
+   CLI, so it lives outside git). One notebook task on the author's cluster `1003-042638-xe69ne7b`, one job
+   parameter `label` (default `cdf`), `max_concurrent_runs = 1` (two concurrent runs would race on one
+   watermark). It runs as its owner, the author. To recreate it:
+   ```bash
+   databricks --profile personal jobs create --json '{
+     "name": "reverse_etl_notebook_sync", "max_concurrent_runs": 1,
+     "parameters": [{"name": "label", "default": "cdf"}],
+     "tasks": [{"task_key": "sync", "existing_cluster_id": "<cluster id>",
+                "notebook_task": {"notebook_path": "/Users/<user>/reverse_etl_cdf_to_kafka"}}]}'
+   ```
+   The service principal Dagster uses (`DATABRICKS_AZURE_CLIENT_ID`) was granted **Can Manage Run on this job
+   only** (`databricks permissions update jobs <job id> --json '{"access_control_list": [{"service_principal_name":
+   "<client id>", "permission_level": "CAN_MANAGE_RUN"}]}'`), so it can trigger the job but not edit it.
+2. **A Dagster job** `reverse_etl_notebook_sync_job` (`orchestration/assets/reverse_etl_notebook_job.py`) with one run
+   config value, `label` (default `cdf`, the POC; set `orders` for the other sync). It first adds any column the source table has and the RisingWave table lacks (the same
+   `add_missing_columns()` the Dagster asset uses), then finds the Databricks job by name, starts it with `run-now`
+   and `job_parameters = {"label": <label>}`, waits, and reports the run id, result, run URL and
+   `risingwave_columns_added` as metadata; a failed run fails the op with the Databricks state message. It finds the
+   sync's names by reading the `defs.yaml` whose `name` equals the label (so overrides in it are honoured), and
+   fails with the list of known labels if there is none. Launchpad config:
+   ```yaml
+   ops:
+     reverse_etl_trigger_notebook_sync:
+       config:
+         label: orders
+         # add_risingwave_columns: true   (default; false skips the RisingWave step)
+   ```
+   The label must be lowercase letters, digits and underscores starting with a letter (it becomes part of table and
+   topic names); anything else is rejected before any call is made.
+
+Notes and limits:
+- **It runs as the job owner, on the job's cluster.** A `run-now` executes as the job's `run_as` identity, not the
+  caller, so the author's cluster and the author's access to the secret scope `rw_poc` apply even though the
+  service principal triggered it. The service principal cannot use that single-user cluster itself, and has no
+  read access to the secret scope. If the owner's access changes or the cluster is deleted, the job breaks. A
+  terminated cluster is started by the run.
+- **One trigger per change.** The notebook, this job and the Dagster asset `reverse_etl_<label>_to_kafka` share the
+  sync's watermark.
+- **RisingWave columns are added by this job, not by the notebook.** The RisingWave step needs the Dagster
+  container to reach RisingWave, like the asset. Running the notebook on its own still needs the manual `ALTER`
+  (section 10.3).
+- **Verified:** with `label = orders`, after changing one orders row, the Dagster job succeeded, the Databricks run
+  showed the job parameter `label = orders` and ran as its owner, the change appeared in Postgres and RisingWave, the
+  orders watermark equalled the table version, and the POC tables and watermark were untouched. A second run added a `status STRING` column in
+  Databricks and set it on one row, without any manual `ALTER` in RisingWave: the job logged `Added column(s) to
+  RisingWave table reverse_etl_orders_target: ['status']` before the run, and both targets then showed `status`
+  with `shipped` on that row (Postgres added `status text` itself). The `cdf` label was run the same
+  way (a `priority STRING` column added in Databricks and set on one row): the job added `priority` to
+  `reverse_etl_cdf_target` first, both targets showed `high` on that row, the connector stayed `RUNNING`, the cdf
+  watermark equalled the table version, and the orders table and watermark were untouched. Not tested: a failed
+  run, an invalid label (the label pattern was only checked offline), `add_risingwave_columns: false`, and the job
+  on a cluster other than the author's.
 
 ---
 
@@ -829,6 +894,7 @@ unused when the table exists (making it optional is not done).
 | `INSERT` into the source table fails after reset and setup | The table now has an identity column `rid`; list the columns explicitly (`INSERT INTO t (id, value, ...) VALUES (...)`). |
 | Notebook fails with `No resolvable bootstrap urls` / `Name or service not known` | The cluster cannot resolve the staging Kafka host. Use a **classic** cluster in the pipeline workspace, not serverless (section 10.3). |
 | New column is `NULL` for rows ingested before RisingWave had the column | `ALTER` does not backfill. Rebuild the table or update those rows (section 10.4). |
+| `reverse_etl_notebook_sync_job` fails with "Databricks job reverse_etl_notebook_sync not found, or the service principal cannot see it" | The service principal lacks Can Manage Run on that Databricks job, or the job was deleted or renamed (section 10.6 has the grant and the create command). |
 | Port 8083 already in use | Another process is bound to 8083; stop it or change the host port mapping in compose. |
 
 ---
@@ -850,9 +916,10 @@ unused when the table exists (making it optional is not done).
   the key for the Kafka message, the RisingWave primary key and the connector's `primary.key.fields`; the
   notebook repeats it as `KEY_COLUMNS`. A different key means changing the config and the notebook and
   recreating the source table.
-- **The notebook repeats the config's Databricks-side values.** It runs inside Databricks and cannot import
-  `reverse_etl_config.py`, so its widget defaults and `KEY_COLUMNS` must be kept equal to the names the config derives
-  for `defs/reverse_etl_cdf/defs.yaml` by hand (there is no automated check).
+- **The notebook repeats the config's naming rule.** It runs inside Databricks and cannot import
+  `reverse_etl_config.py`, so its `reverse_etl_<label>_<role>` derivation and `KEY_COLUMNS` must be kept equal to
+  `ReverseEtlSyncConfig.for_name` by hand. They were checked equal for several labels when the label widget was
+  added (by running the notebook's parameter cell with a stub `dbutils`); there is no automated check.
 - **Two syncs have run together, no more.** The POC (`cdf`) and one more sync (`orders`, section 14.4) ran side by
   side on the single Kafka Connect worker. The notebook's `sync_name` watermark convention and the second sync's
   schema changes and reset were not exercised.
@@ -865,6 +932,10 @@ unused when the table exists (making it optional is not done).
 - **Single task.** `tasks.max=1`; throughput scaling would need more tasks, and the topic has 15 partitions so
   there is room.
 - **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step.
+- **The notebook job is outside git and tied to one person.** The Databricks job `reverse_etl_notebook_sync` was
+  created by hand, runs as its owner on the owner's single-user cluster, and the Dagster job only triggers it
+  (section 10.6). If that person's access changes or the cluster is deleted it stops working, and nothing in the
+  repo recreates it except the command in the doc.
 - **Reset is destructive and total.** It drops the Databricks source table and its history, not only the
   downstream copies; it is meant for the sandbox schema `sr_poc_external` only.
 - **Table created by the sink.** `schema.evolution=basic` auto-creates the table; there is no explicit DDL or
@@ -1002,7 +1073,12 @@ group and both target tables were all absent, as expected.
   - **Verified live** after the last rename: both syncs' reset jobs, setup jobs and syncs ran, an insert, update and
     delete on the orders table and the seeds reached Postgres and RisingWave in each, both connectors were
     `RUNNING`, and no objects under the old names remained (Databricks, Postgres, RisingWave, Connect). Not
-    tested: the notebook against the orders sync, or a column change on it.
+    tested: a column change on the orders sync.
+  - **The notebook with `label=orders`** (2026-10-04). A one-time Databricks run of the DEV notebook, submitted with
+    `base_parameters = {"label": "orders"}` on a classic cluster (as the author's own user), after updating one
+    orders row in Databricks: the run succeeded, the row changed in both Postgres and RisingWave, the orders
+    watermark moved to the table version, and the POC's watermark and tables were untouched. The STG copy of the
+    notebook was not updated to the label version.
 
 ---
 
