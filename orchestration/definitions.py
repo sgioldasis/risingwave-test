@@ -22,7 +22,11 @@ from dagster import (
 )
 from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTranslator
 
-from .assets.drt_demo import reverse_etl_cdf_drt_sync_job
+from .assets.drt_demo import (
+    reverse_etl_cdf_drt_reset_job,
+    reverse_etl_cdf_drt_setup_job,
+    reverse_etl_cdf_drt_sync_job,
+)
 from .assets.reverse_etl_notebook_job import reverse_etl_notebook_sync_job
 from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
@@ -994,6 +998,8 @@ defs = Definitions.merge(
             starrocks_demo_setup_job,
             kafka_topics_setup_job,
             reverse_etl_notebook_sync_job,
+            reverse_etl_cdf_drt_reset_job,
+            reverse_etl_cdf_drt_setup_job,
             reverse_etl_cdf_drt_sync_job,
             casino_prd_full_job,
             casino_stg_job,

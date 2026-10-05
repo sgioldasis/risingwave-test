@@ -25,18 +25,30 @@ our pipeline in parallel, which is what makes the comparison direct.
 | drt project | `orchestration/drt_demo/drt_project.yml` |
 | Sync definition | `orchestration/drt_demo/syncs/cdf_to_postgres.yml` |
 | Runner (profile, token, subprocess) | `orchestration/assets/drt_demo.py` (`run_drt`) |
-| Dagster job / op | `reverse_etl_cdf_drt_sync_job` / `reverse_etl_cdf_drt_sync` |
+| Dagster jobs | `reverse_etl_cdf_drt_setup_job` (creates the target table), `reverse_etl_cdf_drt_sync_job` (runs drt), `reverse_etl_cdf_drt_reset_job` (drops it again) |
+| Install | `pyproject.toml`: `drt-core[databricks,postgres]==1.0.0`, locked in `uv.lock` |
 | Target table | Postgres `reverse_etl_cdf_drt_target` (plus drt's own `_drt_synced_keys`) |
 
 The names follow `reverse_etl_<label>_<role>` with label `cdf_drt`.
 
 ## 2. How it is installed and run
 
-- drt is installed in its **own virtualenv** inside the `dagster-webserver` container
-  (`/home/dagster/drt-venv`, package `drt-core[databricks,postgres]`, installed with uv from PyPI), separate from the Dagster
-  environment so its dependencies cannot clash with Dagster's.
-- The venv lives in the container, not in the repo: **recreating the container removes it**.
-  If the demo is kept, install it in `Dockerfile.dagster` instead.
+- drt is a regular dependency in `pyproject.toml` (`drt-core[databricks,postgres]==1.0.0`), locked
+  in `uv.lock` with the other packages, so the Dagster image and the devbox environment get it
+  from the same lockfile and it survives container recreation. It adds seven packages
+  (`databricks-sql-connector`, `drt-core`, `et-xmlfile`, `oauthlib`, `openpyxl`, `pybreaker`,
+  `thrift`) and changes none already locked. `run_drt` starts the `drt` script of the environment
+  running Dagster, as a subprocess. An earlier version of the demo used a separate virtualenv;
+  a dry-run install showed no dependency clash, so it was dropped.
+- The setup job `reverse_etl_cdf_drt_setup_job` creates the target table, because drt never does.
+  It reads the Databricks source table's columns and creates `reverse_etl_cdf_drt_target` with the
+  matching Postgres types (the mapping the Debezium sink uses) and `rid` as the primary key. It uses
+  `CREATE TABLE IF NOT EXISTS`, so it does nothing when the table exists and never adds columns.
+- The reset job `reverse_etl_cdf_drt_reset_job` drops `reverse_etl_cdf_drt_target` and drt's
+  `_drt_synced_keys` table (a fixed drt name, in the same database, which would also hold the keys
+  of any other drt sync writing there) and deletes drt's local run state (`.drt` and `target` in the
+  work directory). It refuses to run unless the target table name starts with `reverse_etl_`. It does
+  not touch the Databricks source. After it, run the setup job; the next sync baselines again.
 - `run_drt` copies `orchestration/drt_demo/` to a writable work directory
   (`/home/dagster/drt-demo`, drt writes state next to the project), writes
   `~/.drt/profiles.yml` with only the workspace host and SQL warehouse path, and starts drt.
@@ -205,10 +217,10 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 6. **Timezone and type care.** Timestamps lost 3 hours until `PGTZ=UTC` was set (section 3.4); the
    destination column types are ours to define and keep right. [tested]
 7. **Weaker summary.** The "N synced" line does not count deletes (section 3.1). [tested]
-8. **Third-party dependency, set up less carefully.** drt is a v1.0.0 open-source project installed
-   from PyPI with no version or checksum pin here, in a virtualenv inside the Dagster container that
-   is lost when the container is recreated. Our Debezium plugin is pinned by sha512 and verified at
-   build time (sink doc section 8). [tested]
+8. **Third-party dependency.** drt is a v1.0.0 open-source project installed
+   from PyPI, pinned by version and by the hashes in `uv.lock`, and it shares Dagster's environment, so
+   its dependencies can clash with Dagster's in a future upgrade. Our Debezium plugin is pinned by sha512 and
+   verified at build time (sink doc section 8). [tested]
 9. **Latency is bounded by how often it runs.** Each run is a full read, so running it every few
    seconds is expensive; our pipeline is also batch-triggered today but reads only changes. [judgement]
 
@@ -264,7 +276,7 @@ code, without running it; **[judgement]** my assessment, not a measurement.
   source, so not usable with Databricks as the source).
 - Behaviour and run time on a large table (the demo table has a handful of rows).
 - Failure handling beyond the missing-column case (network loss, a partly failed batch).
-- Running drt on a schedule, and keeping the venv across container recreation.
+- Running drt on a schedule.
 - Other destinations (the demo only writes to Postgres).
 - A dropped source column or a changed type in drt (section 4.1 reasons about it, nothing was run).
 - drt's `on_error` options and its retry behaviour.
@@ -272,12 +284,14 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 
 ## 6. Reproducing it
 
-1. Start the stack and make sure the `cdf` sync is set up (`reverse_etl_cdf_setup_job`). Create the
-   virtualenv `/home/dagster/drt-venv` in the `dagster-webserver` container and install
-   `drt-core[databricks,postgres]` into it (the error message in `run_drt` names the package).
-2. Create the target table in Postgres: columns `rid bigint primary key`, `id`, `value`,
-   `updated_at timestamptz`, plus any other source columns (drt does not create it).
-3. Run the Dagster job `reverse_etl_cdf_drt_sync_job`. The first run baselines the tracked
+1. Build the Dagster image (`docker compose build dagster-webserver`; it installs drt from the
+   lockfile) and start the stack. Make sure the `cdf` sync is set up (`reverse_etl_cdf_setup_job`).
+2. Run `reverse_etl_cdf_drt_setup_job` to create the target table in Postgres.
+3. Run `reverse_etl_cdf_drt_sync_job`. The first run baselines the tracked
    mirror; change the source and run it again to see updates and deletes.
 4. To see the schema case, add a column to the source and run the job (it fails), then add the
-   column to `reverse_etl_cdf_drt_target` and run it again.
+   column to `reverse_etl_cdf_drt_target` by hand (`ALTER TABLE`; the setup job does not add columns)
+   and run it again.
+5. To start over, run `reverse_etl_cdf_drt_reset_job`, then the setup job again. Tested: after the
+   reset both tables and drt's local state were gone, and setup plus sync rebuilt the target (the
+   first sync baselined, "no prior state ... baselining this run's 2 key(s)").
