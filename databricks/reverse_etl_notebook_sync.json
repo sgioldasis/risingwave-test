@@ -1,0 +1,16 @@
+{
+  "name": "reverse_etl_notebook_sync",
+  "max_concurrent_runs": 1,
+  "queue": {"enabled": true},
+  "parameters": [{"name": "label", "default": "cdf"}],
+  "tasks": [
+    {
+      "task_key": "sync",
+      "existing_cluster_id": "<cluster id>",
+      "notebook_task": {
+        "notebook_path": "/Users/<user>/reverse_etl_cdf_to_kafka",
+        "source": "WORKSPACE"
+      }
+    }
+  ]
+}

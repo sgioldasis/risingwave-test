@@ -12,6 +12,10 @@
 > `_reset_job`, assets `reverse_etl_cdf_table_setup`, `_to_kafka`, ...), the pipeline is built by a reusable Dagster
 > component, and the seed script was replaced by a seed asset. **The names in the sections below are the original
 > ones and are kept as a record; use the names in the sink document.**
+>
+> **Update 2026-10-05:** drt was later tried in a demo against the same source table, and compared with this
+> pipeline: [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). The statement below that drt has no
+> Kafka destination still holds (checked in drt 1.0.0). Timestamps now keep microseconds (sink document, section 4.3).
 
 ## Context
 

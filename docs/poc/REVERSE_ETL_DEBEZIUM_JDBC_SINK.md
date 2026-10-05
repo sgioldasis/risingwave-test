@@ -1,11 +1,13 @@
 # Reverse-ETL CDF POC: Debezium JDBC sink into Postgres
 
-Date: 2026-10-02 (updated 2026-10-04). Since the first version: a **single topic** read by both RisingWave and
+Date: 2026-10-02 (updated 2026-10-05). Since the first version: a **single topic** read by both RisingWave and
 the Debezium sink (sections 2, 3, 10.2), a surrogate **`rid` key** (4.6), real **timestamp** types (4.3), a
 **reset job** (14.3), a **Databricks notebook** version of the sync (10.3), tested behaviour for column
 drops and type changes (10.4), and, since 2026-10-04, a **reusable Dagster component** with uniform
 `reverse_etl_<label>_<role>` names, a **seed asset**, a **second sync** (10.5, 14.4), and a **label-driven
-notebook** with a **Dagster job** that triggers it (10.3, 10.6). Names in sections that
+notebook** with a **Dagster job** that triggers it (10.3, 10.6), and, since 2026-10-05, **microsecond
+timestamps** (4.3), the Databricks job definition in git (10.6), and a comparison with the drt reverse-ETL tool in
+[`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Related: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) (APR-233), which describes the
@@ -186,7 +188,8 @@ The Statement Execution API returns every value as a string, so values are cast 
 schema order. `source.commit_version` is cast to an integer as well (in the first version it was sent as a string
 into an `int64` field, which Connect's JSON converter reads as 0; the sink ignores `source`, so it went unnoticed).
 
-`TIMESTAMP` columns are sent as ISO-8601 strings with a timezone (for example `2026-10-03T03:41:08.345Z`), and
+`TIMESTAMP` columns are sent as ISO-8601 strings with a timezone and **six fractional digits** (for example
+`2026-10-03T03:41:08.345678Z`), and
 the schema field carries the name `io.debezium.time.ZonedTimestamp`, which the Debezium sink maps to
 `timestamp with time zone`. The RisingWave column is `TIMESTAMPTZ`. Verified live on 2026-10-03 after reset and
 setup: both targets have `timestamp with time zone` and hold identical instants (displayed in each session's
@@ -194,6 +197,17 @@ timezone). Earlier versions sent `updated_at` as a plain string, giving `text` /
 tables recreated. `TIMESTAMP_NTZ` and `DATE` are still carried as plain strings (not tested as typed).
 In the code the marker is `ZONED_TIMESTAMP`; `_connect_field()` (and its copy in the notebook) turns it into the
 named schema field.
+
+**Precision (changed 2026-10-05).** Until then timestamps were sent with three fractional digits (the earlier
+examples in this document, such as `...23.009Z` below, show that), although Databricks stores microseconds: the
+Statement Execution API returns three digits, and the notebook formatted with `.SSS`. `_read_changes()` in
+`reverse_etl_cdf_setup.py` now lists the columns explicitly and formats each `TIMESTAMP` column and
+`_commit_timestamp` with `date_format(..., "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'")` (the column list comes from
+`_get_row_fields()`, one extra API call per read), and the notebook's `as_json_friendly` uses the same format.
+Tested: a source value `02:55:42.345053` arrived unchanged in Postgres and RisingWave for the `cdf` sync, and
+`02:58:14.167726` for `orders`; the notebook was tested on DEV for `cdf` (the STG copy has the change but was not
+run). Rows synced earlier keep three digits until they change again. See
+[`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md) section 3.3.
 
 ### 4.4 Example: an insert (`op = "c"`)
 
@@ -246,7 +260,7 @@ Value (schema abbreviated to the field list):
 `_to_debezium_events()` (unchanged) turns Databricks CDF rows into one logical event per change: CDF's
 `update_preimage` + `update_postimage` pair collapses into a single `u` event, and CDF's four `_change_type`
 values map to Debezium's `c`/`u`/`d`. The key column is cast to an integer because the Databricks Statement Execution
-API returns numerics as JSON strings. See `REVERSE_ETL_CDF_POC_PLAN.md` section "3c" for the full reasoning.
+API returns numerics as JSON strings (timestamps are formatted in the query, section 4.3). See `REVERSE_ETL_CDF_POC_PLAN.md` section "3c" for the full reasoning.
 
 ### 4.6 Key: why `rid` and not `id`
 
@@ -283,9 +297,10 @@ of `ReverseEtlSyncConfig`, and the last rows describe the current structure.
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave table now reads the single topic. `reverse_etl_cdf_risingwave_target` creates it from the live Databricks columns with real types (`_create_table_sql()`), so no column is added after the table starts reading. `add_missing_columns()` (called by `reverse_etl_cdf_to_kafka` before it produces) adds later-appearing columns with their types. |
 | `orchestration/assets/reverse_etl_debezium_sink.py` (new) | Dagster asset `reverse_etl_cdf_jdbc_sink` that registers the connector via the Connect REST API and waits until it is `RUNNING` (section 7). |
 | `orchestration/definitions.py` | First imported the new asset and added it to the setup job. Later the reverse-ETL assets and jobs moved out: it now merges `load_defs(...)` of `orchestration/defs/` (section 14.4). |
-| `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `TIMESTAMP` columns use the `ZONED_TIMESTAMP` marker and `_connect_field()` (section 4.3). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`; the RisingWave type map gains `TIMESTAMPTZ`. |
+| `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `TIMESTAMP` columns use the `ZONED_TIMESTAMP` marker and `_connect_field()` (section 4.3). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`; the RisingWave type map gains `TIMESTAMPTZ`. 2026-10-05: `_read_changes()` lists the columns and formats timestamps with six fractional digits (section 4.3). |
 | `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_cdf_reset_job` (section 14.3), built by `build_reset_job(cfg)`. |
-| `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). Since 2026-10-04 one notebook serves every sync through a `label` widget. |
+| `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). Since 2026-10-04 one notebook serves every sync through a `label` widget. 2026-10-05: timestamps formatted with six fractional digits (section 4.3). |
+| `databricks/reverse_etl_notebook_sync.json` (new) | The definition of the Databricks job that runs the notebook, with placeholders for the cluster id and notebook path (section 10.6). |
 | `orchestration/assets/reverse_etl_notebook_job.py` (new) | The Dagster job `reverse_etl_notebook_sync_job` that triggers the notebook's Databricks job with a `label` (section 10.6), registered in `definitions.py`. |
 | `orchestration/assets/reverse_etl_config.py` (new) | `ReverseEtlSyncConfig`: the one place that names a sync (Databricks catalog, schema, source and watermark tables, key column, Kafka topic, connector name, Postgres and RisingWave table names, plus derived values such as the consumer group and envelope schema name). The sync, RisingWave, connector, reset and topic modules read it. It also names the Dagster assets, jobs and group built for the sync, the source table's column DDL, and the reset job's safety allowlist (`reset_name_prefixes`, `reset_schema`). `ReverseEtlSyncConfig.for_name(label, ...)` derives every name as `reverse_etl_<label>_<role>` so two syncs cannot collide. |
 | `orchestration/assets/reverse_etl_defs.py` (new) | `build_reverse_etl_defs(cfg)` returns `Definitions` with the four assets, the setup job and the reset job for one sync (plus its own topic asset if `create_topic_asset` is set). The `ReverseEtlCdfSync` component calls it for each YAML instance (section 14.4). |
@@ -778,17 +793,18 @@ unused when the table exists (making it optional is not done).
 
 Built and verified on 2026-10-04. Two pieces:
 
-1. **A Databricks job** `reverse_etl_notebook_sync` in the DEV workspace (job id `511656297933301`, created with the
-   CLI, so it lives outside git). One notebook task on the author's cluster `1003-042638-xe69ne7b`, one job
-   parameter `label` (default `cdf`), `max_concurrent_runs = 1` (two concurrent runs would race on one
-   watermark). It runs as its owner, the author. To recreate it:
+1. **A Databricks job** `reverse_etl_notebook_sync` in the DEV workspace (job id `511656297933301`). It was first
+   created by hand with the CLI; its definition is now in git as `databricks/reverse_etl_notebook_sync.json`
+   (the job itself still lives only in the workspace). One notebook task on the author's cluster
+   `1003-042638-xe69ne7b`, one job parameter `label` (default `cdf`), `max_concurrent_runs = 1` (two concurrent
+   runs would race on one watermark). It runs as its owner, the author. To recreate it, put your cluster id and
+   notebook path in the two `<...>` placeholders of that file, then:
    ```bash
-   databricks --profile personal jobs create --json '{
-     "name": "reverse_etl_notebook_sync", "max_concurrent_runs": 1,
-     "parameters": [{"name": "label", "default": "cdf"}],
-     "tasks": [{"task_key": "sync", "existing_cluster_id": "<cluster id>",
-                "notebook_task": {"notebook_path": "/Users/<user>/reverse_etl_cdf_to_kafka"}}]}'
+   databricks --profile personal jobs create --json @databricks/reverse_etl_notebook_sync.json
    ```
+   The file was written from the live job's settings (`databricks jobs get`) and checked to be valid JSON; it was
+   not used to create a job, so running it is untested. A newly created job has a new job id; the Dagster job finds
+   it by name.
    The service principal Dagster uses (`DATABRICKS_AZURE_CLIENT_ID`) was granted **Can Manage Run on this job
    only** (`databricks permissions update jobs <job id> --json '{"access_control_list": [{"service_principal_name":
    "<client id>", "permission_level": "CAN_MANAGE_RUN"}]}'`), so it can trigger the job but not edit it.
@@ -932,10 +948,11 @@ Notes and limits:
 - **Single task.** `tasks.max=1`; throughput scaling would need more tasks, and the topic has 15 partitions so
   there is room.
 - **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step.
-- **The notebook job is outside git and tied to one person.** The Databricks job `reverse_etl_notebook_sync` was
-  created by hand, runs as its owner on the owner's single-user cluster, and the Dagster job only triggers it
-  (section 10.6). If that person's access changes or the cluster is deleted it stops working, and nothing in the
-  repo recreates it except the command in the doc.
+- **The notebook job is tied to one person.** The Databricks job `reverse_etl_notebook_sync` was created by hand
+  and runs as its owner on the owner's single-user cluster; the Dagster job only triggers it (section 10.6). Its
+  definition is in `databricks/reverse_etl_notebook_sync.json`, but nothing creates the job automatically, and the
+  service principal's Can Manage Run grant is a separate manual step. If the owner's access changes or the cluster
+  is deleted it stops working until someone recreates it.
 - **Reset is destructive and total.** It drops the Databricks source table and its history, not only the
   downstream copies; it is meant for the sandbox schema `sr_poc_external` only.
 - **Table created by the sink.** `schema.evolution=basic` auto-creates the table; there is no explicit DDL or
@@ -1088,5 +1105,6 @@ group and both target tables were all absent, as expected.
 - Debezium source: `debezium-sink` module, `KafkaDebeziumSinkRecord` (envelope detection, delete handling).
 - Maven Central: `io.debezium:debezium-connector-jdbc` (plugin archive and published checksums).
 - Redpanda docs: "Deploy Kafka Connect in Docker" / "Deploy Redpanda Connectors in Docker".
+- drt, a reverse-ETL tool tried against the same source table: `docs/poc/REVERSE_ETL_DRT_COMPARISON.md`.
 - In this repo: `docs/poc/REVERSE_ETL_CDF_POC_PLAN.md`, `dbt/models/sink_funnel_to_postgres.sql`,
   `orchestration/assets/postgres_sink_setup.py`.
