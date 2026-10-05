@@ -994,8 +994,8 @@ Evaluated, not adopted: the POC keeps JSON with the schema embedded in each mess
 **Spike results (2026-10-05, local only, not adopted).** Avro was tried end to end on the local Redpanda and its
 registry, with scratch topics, connectors and tables (all removed afterwards). The messages were hand-built with
 confluent-kafka in the Debezium envelope shape (`before`, `after`, `op`, `source`) and Confluent wire format, not
-produced by the pipeline's own code. **Not tested:** the Databricks notebook (it cannot reach a registry on this
-laptop, and it is the path that matters at scale), the staging Apicurio, message size and throughput.
+produced by the pipeline's own code. **Not tested in this local part:** the Databricks notebook (it cannot reach a
+registry on this laptop; see the notebook-side results below), message size and throughput.
 
 - **Connect needs the Confluent `AvroConverter`.** The image has only the Apicurio converters. For the spike the
   converter and its dependencies were resolved with Maven from Confluent's repository (`kafka-connect-avro-converter`
@@ -1035,11 +1035,32 @@ laptop, and it is the path that matters at scale), the staging Apicurio, message
   a different name from the Avro field). The cost is a second column per timestamp field in RisingWave, which changes
   the table's shape and `_create_table_sql` / `add_missing_columns`. Other forms, such as `local-timestamp-micros`,
   were not tried.
+- **Notebook side (2026-10-05, run by hand in a scratch cell on the sync cluster, DBR 19.x, Spark 4 / Scala 2.13;
+  the cells were removed afterwards).** The shared staging Apicurio is reachable from the cluster over HTTP with no
+  credentials.
+  - **Register and read back:** `POST /apis/ccompat/v7/subjects/<subject>/versions` with an unqualified test
+    subject succeeded (HTTP 200, id 447) and the schema came back intact, `logicalType` / name annotations included.
+  - **Spark's registry mode did not work.** `to_avro(data, subject=..., schemaRegistryAddress=...)` failed with
+    `AVRO_ENCODE_FAILED ... Unrecognized token '<subject>'` from `AvroUtils.parseAvroSchema`: the subject was parsed
+    as a JSON schema. The signature on this runtime is `to_avro(data, jsonFormatSchema=None, subject=None,
+    schemaRegistryAddress=None, options=None)`. Whether the cause is the runtime or the call was not established
+    (the code that was run on the failing attempt was not captured), so do not rely on this mode without retesting.
+  - **Manual framing works.** Fetch the schema and its id from the registry (`GET .../subjects/<subject>/versions/latest`),
+    call `to_avro(F.struct("before", "after", "op"), jsonFormatSchema=<schema>)` and prepend the 5-byte Confluent
+    header (`0x00` plus the 4-byte big-endian id). The bytes started `00 000001BF` (id 447), and `from_avro` on
+    `substring(value, 6)` with the same schema returned the original row, microsecond `updated_at` string
+    included. The subject still had only version 1 afterwards, so nothing registered a second schema. The registered
+    schema is used exactly as written, which keeps the timestamp annotations. The notebook would then own the
+    framing and the schema refresh when the registry changes.
+  - **Cleanup:** the test subject was deleted (soft, then `?permanent=true`) and a listing showed 0 occurrences.
+  - **Not tested:** producing these bytes to Kafka from the notebook, the pipeline's real envelope (including the
+    `source` field and the `ZonedTimestamp` form for every timestamp column), message size, and throughput.
 - **What a switch would involve** (beyond the timestamps): a registry for production (the staging Apicurio's
   group-qualified subjects problem above still applies); the Dagster asset building an Avro schema from
   `_get_row_fields()` on each run and serializing with confluent-kafka's `AvroSerializer` (already a dependency),
   with every column a nullable union defaulting to null so that added columns stay backward compatible; the notebook
-  doing the same from Spark with registry access from Databricks (the riskiest part, untested); the Connect image and
+  doing the same from Spark (registry reachable and manual framing works, see the notebook-side results; the
+end-to-end producer path is untested); the Connect image and
   connector converter settings; `ENCODE AVRO` in the RisingWave DDL; the reset job also deleting the registry
   subjects; a new topic or a reset, because existing JSON messages cannot be read with an Avro converter; and
   decoding in the message-preview helpers. The expected gain is smaller messages (the JSON ones measured about 1.7 KB
