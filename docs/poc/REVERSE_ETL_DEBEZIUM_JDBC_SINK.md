@@ -6,7 +6,8 @@ the Debezium sink (sections 2, 3, 10.2), a surrogate **`rid` key** (4.6), real *
 drops and type changes (10.4), and, since 2026-10-04, a **reusable Dagster component** with uniform
 `reverse_etl_<label>_<role>` names, a **seed asset**, a **second sync** (10.5, 14.4), and a **label-driven
 notebook** with a **Dagster job** that triggers it (10.3, 10.6), and, since 2026-10-05, **microsecond
-timestamps** (4.3), the Databricks job definition in git (10.6), and a comparison with the drt reverse-ETL tool in
+timestamps** (4.3), the Databricks job definition in git (10.6), a per-sync `tasks.max` with a throughput test (13),
+an Avro spike (14.1), and a comparison with the drt reverse-ETL tool in
 [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
@@ -989,6 +990,52 @@ Evaluated, not adopted: the POC keeps JSON with the schema embedded in each mess
 - **Test artifact (cleaned up):** a probe registered `bigdata/reverse-etl` in Apicurio staging on 2026-10-02
   (contentId 445, globalId 2635). It was unused and was deleted on 2026-10-03
   (`DELETE .../apis/registry/v2/groups/bigdata/artifacts/reverse-etl`, HTTP 204; a follow-up GET returns 404).
+
+**Spike results (2026-10-05, local only, not adopted).** Avro was tried end to end on the local Redpanda and its
+registry, with scratch topics, connectors and tables (all removed afterwards). The messages were hand-built with
+confluent-kafka in the Debezium envelope shape (`before`, `after`, `op`, `source`) and Confluent wire format, not
+produced by the pipeline's own code. **Not tested:** the Databricks notebook (it cannot reach a registry on this
+laptop, and it is the path that matters at scale), the staging Apicurio, message size, throughput, and an `ALTER` in
+RisingWave after a schema change.
+
+- **Connect needs the Confluent `AvroConverter`.** The image has only the Apicurio converters. For the spike the
+  converter and its dependencies were resolved with Maven from Confluent's repository (`kafka-connect-avro-converter`
+  7.7.1, 30 jars, the converter jar's checksum equal to the published one), the jackson jars were left out, and the
+  rest were copied into the running `kafka-connect` container under `/kafka/connect/confluent-avro-converter/`,
+  followed by a worker restart. That copy is lost when the container is recreated; a real change would add it in
+  `Dockerfile.debezium-connect`, pinned like the JDBC plugin. A plugin zip from Confluent's hub did not match the
+  repository's published checksum, so it was not used.
+- **The sink works with Avro.** With `AvroConverter` for key and value, the Debezium JDBC sink applied inserts, an
+  update and a delete, and created typed columns. Registering a second value-schema version with an added optional
+  `country` field was accepted by the registry, and the sink added `country text` and wrote its value. The registry
+  reported an added required field (no default) as incompatible.
+- **RisingWave reads the Avro envelope** with `FORMAT DEBEZIUM ENCODE AVRO (schema.registry = '...')`: inserts, the
+  update and the delete were applied.
+- **Timestamps are the problem: no single Avro form gives `timestamptz` with microseconds in both consumers.**
+
+  | Avro representation of `updated_at` | Debezium JDBC sink (Postgres) | RisingWave |
+  |---|---|---|
+  | String named `io.debezium.time.ZonedTimestamp` | `timestamptz`, microseconds | rejected for `TIMESTAMPTZ`; works as `VARCHAR`, or with a generated column (below) |
+  | Long, logical type `timestamp-micros` | `bigint` (raw microseconds) | `TIMESTAMPTZ`, microseconds |
+  | Long named `org.apache.kafka.connect.data.Timestamp` with `timestamp-millis` | `timestamp without time zone`, milliseconds | `TIMESTAMPTZ`, milliseconds; `TIMESTAMP` rejected |
+  | Long named `io.debezium.time.MicroTimestamp` (no logical type) | `timestamp without time zone`, microseconds | `BIGINT` only |
+
+  The JSON pipeline today gives `timestamptz` in both targets. The one combination that keeps that with Avro is the
+  `ZonedTimestamp` string plus, in RisingWave, a plain `VARCHAR` column and a generated column over it, for example
+  `updated_at VARCHAR, updated_at_ts TIMESTAMPTZ AS updated_at::timestamptz` (tested; the generated column must have
+  a different name from the Avro field). The cost is a second column per timestamp field in RisingWave, which changes
+  the table's shape and `_create_table_sql` / `add_missing_columns`. Other forms, such as `local-timestamp-micros`,
+  were not tried.
+- **What a switch would involve** (beyond the timestamps): a registry for production (the staging Apicurio's
+  group-qualified subjects problem above still applies); the Dagster asset building an Avro schema from
+  `_get_row_fields()` on each run and serializing with confluent-kafka's `AvroSerializer` (already a dependency),
+  with every column a nullable union defaulting to null so that added columns stay backward compatible; the notebook
+  doing the same from Spark with registry access from Databricks (the riskiest part, untested); the Connect image and
+  connector converter settings; `ENCODE AVRO` in the RisingWave DDL; the reset job also deleting the registry
+  subjects; a new topic or a reset, because existing JSON messages cannot be read with an Avro converter; and
+  decoding in the message-preview helpers. The expected gain is smaller messages (the JSON ones measured about 1.7 KB
+  each with the schema embedded) and registry-enforced compatibility, at the price of a registry dependency, harder
+  debugging and the timestamp workaround; the size gain was not measured.
 
 ### 14.2 Kafka delete permissions
 
