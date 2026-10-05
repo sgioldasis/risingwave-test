@@ -1,0 +1,21 @@
+name: cdf_to_postgres
+description: >
+  The same Databricks table our CDF pipeline syncs (reverse_etl_cdf_source), written
+  straight into a separate Postgres table with drt, for comparison. No Kafka, no
+  change feed, no RisingWave.
+model: |
+  SELECT * FROM de_dev.sr_poc_external.reverse_etl_cdf_source
+destination:
+  type: postgres
+  table: reverse_etl_cdf_drt_target
+  upsert_key: [rid]
+  host: host.docker.internal
+  port: 5432
+  dbname: postgres
+  user: postgres
+sync:
+  # mirror = full source scan every run, upsert everything, and delete the rows drt
+  # itself synced earlier that are no longer in the source (tracked strategy).
+  mode: mirror
+  mirror:
+    strategy: tracked
