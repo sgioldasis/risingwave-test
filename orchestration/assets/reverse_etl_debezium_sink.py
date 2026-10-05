@@ -29,7 +29,7 @@ def _connector_config(cfg: ReverseEtlSyncConfig) -> dict[str, str]:
 
     config = {
         "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
-        "tasks.max": "1",
+        "tasks.max": str(cfg.sink_tasks_max),
         "topics": cfg.kafka_topic,
         "connection.url": os.environ.get(
             "HOST_POSTGRES_URL", "jdbc:postgresql://host.docker.internal:5432/postgres"

@@ -407,9 +407,16 @@ not drt.
 1. **Run the notebook, not the Dagster asset.** The notebook runs on Spark. The asset reads through the
    Statement Execution API with inline results, which I believe are capped at roughly 25 MiB (from
    memory, not tested), so a few million changed rows would very likely break it.
-2. **Raise the sink throughput.** The connector runs with `tasks.max=1` while the topic has 15
-   partitions (sink doc section 13), so more tasks are possible; the sink's batch settings would also
-   need tuning. [source]
+2. **The sink throughput is not the limit at this volume; raise `tasks.max` for backfills.** Tested
+   locally on 2026-10-05 (300,000 insert messages of about 1.7 KB each, 12 partitions, local Redpanda
+   and Postgres): one task drained about 35,000 to 40,000 rows a second, four tasks about 92,000.
+   `dialect.postgres.unnest.insert.enabled` made no visible difference and larger batches
+   (`batch.size` and `max.poll.records` 2000) were slower. A few million changes a day is tens of rows
+   a second, so the default of one task is far more than needed; the setting is now `sink_tasks_max` on
+   the component (sink doc section 13). For a billion-row backfill, extrapolating the local rates gives
+   roughly 8 hours with one task and 3 hours with four [judgement]. Not tested: updates to existing
+   keys, millions of rows, a real network to the staging Kafka, concurrent load on Postgres; the runs
+   were 3 to 9 seconds, so differences under about 30% are noise. [tested]
 3. **Load the history separately.** The pipeline's first run baselines at the table's current version
    without loading the existing rows, unless a backfill is requested (the asset's first-run logic
    in `reverse_etl_cdf_setup.py`, the notebook's `backfill_from_version`, and

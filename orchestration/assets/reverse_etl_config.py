@@ -68,6 +68,16 @@ class ReverseEtlSyncConfig:
     seed_asset: str = ""
     seed_statements: tuple[str, ...] = ()
 
+    # --- connector throughput --------------------------------------------------
+    # tasks.max of the Debezium JDBC sink. One task drained 300,000 messages at about 35,000 to
+    # 40,000 rows a second in a local test, far more than a daily load needs; raise it (the topic has 15
+    # partitions) for a backfill. See docs/poc/REVERSE_ETL_DRT_COMPARISON.md section 4.8.
+    sink_tasks_max: int = 1
+
+    def __post_init__(self) -> None:
+        if self.sink_tasks_max < 1:
+            raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
+
     @property
     def source_fqn(self) -> str:
         return f"{self.catalog}.{self.schema}.{self.source_table}"

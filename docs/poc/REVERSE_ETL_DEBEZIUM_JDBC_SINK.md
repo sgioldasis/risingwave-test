@@ -357,7 +357,7 @@ Behaviour:
 | Key | Value | Notes |
 |---|---|---|
 | `connector.class` | `io.debezium.connector.jdbc.JdbcSinkConnector` | |
-| `tasks.max` | `1` | |
+| `tasks.max` | `1` (the config's `sink_tasks_max`; a component attribute) | One task is enough for a daily load; raise it for a backfill (see section 13, "Single task"). |
 | `topics` | `reverse_etl_cdf_topic` | |
 | `connection.url` | `HOST_POSTGRES_URL`, default `jdbc:postgresql://host.docker.internal:5432/postgres` | Same default as the existing dbt Postgres sink. |
 | `connection.username` | `POSTGRES_USER`, default `postgres` | |
@@ -945,8 +945,17 @@ Notes and limits:
   concurrent writers on tables with identity columns.
 - **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry; fine for
   a POC, worth revisiting at volume.
-- **Single task.** `tasks.max=1`; throughput scaling would need more tasks, and the topic has 15 partitions so
-  there is room.
+- **Single task, and it is enough.** `tasks.max` defaults to 1 and is now a per-sync setting
+  (`sink_tasks_max` on the component, default 1, rejected below 1). A local throughput test on 2026-10-05 (300,000
+  insert messages of about 1.7 KB, 12 partitions, local Redpanda and Postgres, scratch topic, connector and
+  table) drained at roughly 35,000 to 40,000 rows a second with one task, about 92,000 with four, and
+  `dialect.postgres.unnest.insert.enabled` and larger batches (`batch.size` and `max.poll.records` 2000) did not
+  help (the larger batches were slower). A few million changes a day is tens of rows a second on average, so one
+  task is far more than needed; raise it for a backfill (the topic has 15 partitions, so up to 15 tasks). Short
+  runs (3 to 9 seconds, polled every second), inserts into an empty table, no network latency to a remote Kafka,
+  and no updates, millions of rows or concurrent load: differences under about 30% are noise. A live check:
+  setting `sink_tasks_max: 2` on the `orders` component and rerunning `reverse_etl_orders_jdbc_sink` gave
+  `tasks.max = 2` and two RUNNING tasks; reverting gave one again.
 - **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step.
 - **The notebook job is tied to one person.** The Databricks job `reverse_etl_notebook_sync` was created by hand
   and runs as its owner on the owner's single-user cluster; the Dagster job only triggers it (section 10.6). Its
@@ -1057,7 +1066,7 @@ group and both target tables were all absent, as expected.
   `definitions.py` loads the `defs/` folder with `load_defs(..., project_root=...)` and merges it with the rest.
   The optional override fields (`source_table`, `sync_name`, `state_table`, `kafka_topic`, `connector_name`,
   `postgres_table`, `risingwave_table`, `group_name`, the asset and job names, `topic_asset`,
-  `create_topic_asset`, `reset_name_prefixes`, `reset_schema`) replace a derived name, for example to point
+  `create_topic_asset`, `reset_name_prefixes`, `reset_schema`) replace a derived name, and `sink_tasks_max` sets the sink's `tasks.max`, for example to point
   `source_table` at an existing table; neither current instance uses any. Notes and limits:
   - **The POC has one definition.** `defs/reverse_etl_cdf/defs.yaml`, including its seed. There is no Python copy
     of the POC's names. `sync_name` is the watermark key, so changing it restarts that sync.
