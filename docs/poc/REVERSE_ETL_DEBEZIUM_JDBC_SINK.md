@@ -995,8 +995,7 @@ Evaluated, not adopted: the POC keeps JSON with the schema embedded in each mess
 registry, with scratch topics, connectors and tables (all removed afterwards). The messages were hand-built with
 confluent-kafka in the Debezium envelope shape (`before`, `after`, `op`, `source`) and Confluent wire format, not
 produced by the pipeline's own code. **Not tested:** the Databricks notebook (it cannot reach a registry on this
-laptop, and it is the path that matters at scale), the staging Apicurio, message size, throughput, and an `ALTER` in
-RisingWave after a schema change.
+laptop, and it is the path that matters at scale), the staging Apicurio, message size and throughput.
 
 - **Connect needs the Confluent `AvroConverter`.** The image has only the Apicurio converters. For the spike the
   converter and its dependencies were resolved with Maven from Confluent's repository (`kafka-connect-avro-converter`
@@ -1011,6 +1010,16 @@ RisingWave after a schema change.
   reported an added required field (no default) as incompatible.
 - **RisingWave reads the Avro envelope** with `FORMAT DEBEZIUM ENCODE AVRO (schema.registry = '...')`: inserts, the
   update and the delete were applied.
+- **RisingWave does not follow a registry schema change by itself.** Tested on a topic with schema v1 and then v2
+  (an added optional `country`), with three tables: one with declared columns, one with only
+  `PRIMARY KEY (rid)` and one with `(*, PRIMARY KEY (rid))` (the last two derive their columns from the registry).
+  After the v2 message the row arrived in all three but **no table had a `country` column**. `ALTER TABLE ...
+  ADD COLUMN country VARCHAR` fixed the declared table, and `ALTER TABLE ... REFRESH SCHEMA` fixed the two derived
+  ones. The column was `NULL` for the row ingested before it existed (no backfill, as with JSON), and a message
+  produced afterwards filled it. So the ordering rule of section 10.1 still holds with Avro: add the column in
+  RisingWave (`add_missing_columns()` today, or `REFRESH SCHEMA` for a derived table) before the first message that
+  carries it. A derived table would drop the column list, but its timestamp column is `VARCHAR` (the `ZonedTimestamp`
+  string), so the timestamp workaround below still applies.
 - **Timestamps are the problem: no single Avro form gives `timestamptz` with microseconds in both consumers.**
 
   | Avro representation of `updated_at` | Debezium JDBC sink (Postgres) | RisingWave |
