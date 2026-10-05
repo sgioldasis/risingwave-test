@@ -7,8 +7,8 @@ drops and type changes (10.4), and, since 2026-10-04, a **reusable Dagster compo
 `reverse_etl_<label>_<role>` names, a **seed asset**, a **second sync** (10.5, 14.4), and a **label-driven
 notebook** with a **Dagster job** that triggers it (10.3, 10.6), and, since 2026-10-05, **microsecond
 timestamps** (4.3), the Databricks job definition in git (10.6), a per-sync `tasks.max` with a throughput test (13),
-an Avro spike (14.1), and a comparison with the drt reverse-ETL tool in
-[`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). Names in sections that
+an Avro spike and then an **Avro trial sync** (`avro` label, 14.1, 14.1.1), and a comparison with the drt
+reverse-ETL tool in [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Related: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) (APR-233), which describes the
@@ -90,7 +90,7 @@ Key properties:
 | Redpanda Connect (Benthos) | Rejected | A separate Go stream processor; cannot host Kafka Connect (Java) plugins, so it cannot run the Debezium JDBC sink. |
 | Redpanda Connectors (Kafka Connect packaged by Redpanda) | Rejected | The self-managed image bundles only the MirrorMaker2 connectors, no JDBC sink and no Debezium. Custom plugins can be mounted via `CONNECT_PLUGIN_PATH`, but that is the same setup as Debezium's own image on a less common base. (Source: Redpanda docs for the Connectors Docker image, partly the 24.2 version; the current page is titled "Deploy Kafka Connect in Docker".) |
 | Runtime | `quay.io/debezium/connect:3.7.0.Final` plus the JDBC plugin | 3.7.0.Final is the current release on Maven Central and quay.io as of 2026-10-02. |
-| Message format | **JSON with embedded schema** (`{"schema": ..., "payload": ...}`) | The sink requires schema information on every record. The original topic was a hand-rolled, schemaless envelope, which the sink would reject. Avro would need a schema registry reachable from the external cluster; embedded JSON needs nothing extra. |
+| Message format | **JSON with embedded schema** (`{"schema": ..., "payload": ...}`) | The sink requires schema information on every record. The original topic was a hand-rolled, schemaless envelope, which the sink would reject. Avro would need a schema registry reachable from the external cluster; embedded JSON needs nothing extra. Avro was tried afterwards as a trial on the `avro` label and works (14.1.1); `cdf` and `orders` stay on JSON. |
 | Change the existing topic or add one? | **Initially a second topic; consolidated to one on 2026-10-03** | At first the existing schemaless topic fed a verified RisingWave `FORMAT DEBEZIUM` table, and re-encoding it risked breaking that parser, so the events went to a new `_jdbc` topic as well. A local test then showed RisingWave parses the embedded-schema messages (insert, update, delete, and typed `DOUBLE` / `INT` / `BOOLEAN` columns), so the schemaless topic was retired and RisingWave reads the `_jdbc` topic. This removes the second produce, the non-atomic double write, and the `VARCHAR`-only restriction for RisingWave columns. |
 | Distributed vs standalone Connect | Distributed, with internal topics on **local Redpanda** | Avoids needing topic-create ACLs on the external cluster while keeping the standard Debezium image behaviour. |
 | How to reach the external SASL_SSL cluster | Per-connector `consumer.override.*` | Requires `connector.client.config.override.policy=All` on the worker. |
@@ -310,6 +310,10 @@ of `ReverseEtlSyncConfig`, and the last rows describe the current structure.
 | `build_seed_asset` in `reverse_etl_cdf_setup.py` (new) | The optional `reverse_etl_<label>_seed` asset, the last step of a sync's setup job, running the `seed_statements` from its YAML. It replaced `scripts/reverse_etl_poc_seed.py`, `bin/3_run_reverse_etl_seed.sh` and the script-runner entry "Seed Reverse-ETL POC", which were deleted. |
 | `orchestration/assets/kafka_topics_setup.py` (later) | The reverse-ETL topic was removed from `OUTPUT_TOPICS`; `reverse_etl_<label>_topic_setup` creates each sync's topic. |
 | `docker-compose.yml` (later) | `dagster-webserver` memory limit raised from `1G` to `1536M` after the webserver restarted itself once during a code-location reload (cause not found; it was not OOM-killed). |
+| Avro trial (2026-10-05, section 14.1.1) | `ReverseEtlSyncConfig` and the component gained `encoding` (`json` default, or `avro`) and `schema_registry_url`. `reverse_etl_cdf_setup.py` builds the Avro key and envelope schemas and serializes with `AvroSerializer` (`_avro_schemas`, `_build_avro_message`, `_register_avro_schemas`); `reverse_etl_debezium_sink.py` switches the converters to `io.confluent.connect.avro.AvroConverter`; `reverse_etl_risingwave_setup.py` uses `ENCODE AVRO`, a `VARCHAR` plus generated `<column>_ts` for timestamps, and registers the new schema version before adding a column; `reverse_etl_reset.py` deletes the registry subjects; `reverse_etl_notebook_job.py` sends `encoding` as a job parameter; the notebook has `encoding` and `schema_registry_url` widgets. |
+| `Dockerfile.debezium-connect`, `docker/kafka-connect-avro/pom.xml` (new) | A Maven build stage resolves Confluent's `AvroConverter` (7.7.1, checksums verified, jackson jars left out) and copies it into the Connect plugin path. |
+| `orchestration/defs/reverse_etl_avro/defs.yaml` (new) | The `avro` sync: the `cdf` data and seed with `encoding: avro`, its own source table, topic, connector and target tables. |
+| `databricks/reverse_etl_notebook_sync.json` (later) | Gained the `encoding` job parameter (default `json`). |
 
 Verification of the factory refactor: the constants, generated RisingWave DDL, connector config, topic list and message bytes are identical to before the change, the definitions load with the same POC asset and job names, and a second dummy sync merges into the same `Definitions` with no name collisions. A live reset, setup, seed and sync run after this change gave the expected result in both targets (ids 1 and 2, id 3 deleted, same instants in Postgres and RisingWave). There is no second real sync, so two syncs running side by side were not tested live. Dagster allows only one module-level `Definitions`, so `definitions.py` builds `defs` as one `Definitions.merge(Definitions(...), load_defs(...))` call (later changes: section 14.4).
 
@@ -676,12 +680,12 @@ connector stayed `RUNNING`, and the watermark (5) equalled the table version.
    printenv KAFKA_OUTPUT_SASL_PASSWORD | tr -d '\n' | databricks --profile personal secrets put-secret rw_poc kafka_output_password
    ```
    (`tr -d '\n'` matters: a trailing newline would be stored in the value.)
-3. Run it: Run all. The `label` widget picks the sync (`cdf` by default, or `orders`): the source and watermark
+3. Run it: Run all. The `label` widget picks the sync (`cdf` by default, `orders`, or `avro`): the source and watermark
    tables, the sync name and the topic are derived from it as `reverse_etl_<label>_<role>`, the same rule as
    `ReverseEtlSyncConfig.for_name`. The other widgets (catalog, schema, bootstrap, secret names, optional
    `backfill_from_version`) keep their defaults; four optional widgets (`source_table`, `state_table`,
    `sync_name`, `kafka_topic`) are empty by default and override a derived name only if a sync's `defs.yaml` does.
-   An empty label fails with a clear error. As a Databricks job parameter: `label` (section 10.6).
+   An empty label fails with a clear error. As Databricks job parameters: `label` and `encoding` (section 10.6).
 
 **Differences from the Dagster asset.**
 - It does **not** add new columns to the RisingWave table (a notebook cannot reach the local RisingWave). After
@@ -776,7 +780,8 @@ The second sync, `orders`, was added this way (see 14.4 for the names it gets):
 
 1. Create `orchestration/defs/reverse_etl_<label>/defs.yaml` with a `ReverseEtlCdfSync` instance: `name` (the
    label), `catalog`, `schema_name` (a scratch schema), `source_columns` (used only if the setup creates the
-   table), and optional `seed_statements` (SQL using `{source_table}`).
+   table), and optional `seed_statements` (SQL using `{source_table}`). Add `encoding: avro` for Avro messages
+   (default `json`; section 14.1.1).
 2. Reload the Dagster code location (no restart needed; the containers mount `./orchestration`). The group
    `reverse_etl_<label>`, its assets and `reverse_etl_<label>_setup_job` / `_reset_job` appear.
 3. Run `reverse_etl_<label>_setup_job`: it creates the Databricks tables (with `rid` and CDF), the topic, the
@@ -797,7 +802,7 @@ Built and verified on 2026-10-04. Two pieces:
 1. **A Databricks job** `reverse_etl_notebook_sync` in the DEV workspace (job id `511656297933301`). It was first
    created by hand with the CLI; its definition is now in git as `databricks/reverse_etl_notebook_sync.json`
    (the job itself still lives only in the workspace). One notebook task on the author's cluster
-   `1003-042638-xe69ne7b`, one job parameter `label` (default `cdf`), `max_concurrent_runs = 1` (two concurrent
+   `1003-042638-xe69ne7b`, job parameters `label` (default `cdf`) and `encoding` (default `json`, added 2026-10-05 for the Avro trial), `max_concurrent_runs = 1` (two concurrent
    runs would race on one watermark). It runs as its owner, the author. To recreate it, put your cluster id and
    notebook path in the two `<...>` placeholders of that file, then:
    ```bash
@@ -810,7 +815,7 @@ Built and verified on 2026-10-04. Two pieces:
    only** (`databricks permissions update jobs <job id> --json '{"access_control_list": [{"service_principal_name":
    "<client id>", "permission_level": "CAN_MANAGE_RUN"}]}'`), so it can trigger the job but not edit it.
 2. **A Dagster job** `reverse_etl_notebook_sync_job` (`orchestration/assets/reverse_etl_notebook_job.py`) with one run
-   config value, `label` (default `cdf`, the POC; set `orders` for the other sync). It first adds any column the source table has and the RisingWave table lacks (the same
+   config value, `label` (default `cdf`, the POC; set `orders` or `avro` for the others). It first adds any column the source table has and the RisingWave table lacks (the same
    `add_missing_columns()` the Dagster asset uses), then finds the Databricks job by name, starts it with `run-now`
    and `job_parameters = {"label": <label>}`, waits, and reports the run id, result, run URL and
    `risingwave_columns_added` as metadata; a failed run fails the op with the Databricks state message. It finds the
@@ -937,15 +942,21 @@ Notes and limits:
   `reverse_etl_config.py`, so its `reverse_etl_<label>_<role>` derivation and `KEY_COLUMNS` must be kept equal to
   `ReverseEtlSyncConfig.for_name` by hand. They were checked equal for several labels when the label widget was
   added (by running the notebook's parameter cell with a stub `dbutils`); there is no automated check.
-- **Two syncs have run together, no more.** The POC (`cdf`) and one more sync (`orders`, section 14.4) ran side by
-  side on the single Kafka Connect worker. The notebook's `sync_name` watermark convention and the second sync's
+- **Three syncs have run together, no more.** The POC (`cdf`), `orders` (section 14.4) and the Avro trial `avro`
+  (section 14.1.1) ran side by side on the single Kafka Connect worker. The notebook's `sync_name` watermark convention and the second sync's
   schema changes and reset were not exercised.
 - **`rid` must exist from table creation.** An identity column cannot be added to an existing table, so this
   needs the reset job, then the setup job. Inserts into the source table must list their columns
   (`INSERT INTO t (id, value, ...)`); a column-less `INSERT ... VALUES` does not work, and Databricks restricts
   concurrent writers on tables with identity columns.
-- **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry; fine for
-  a POC, worth revisiting at volume.
+- **Schema repeated in every message.** JSON with embedded schema is larger than Avro with a registry (about 12.6
+  times for a four-column update, section 14.1.1); fine for a POC, worth revisiting at volume. The `avro` label
+  shows the alternative works; `cdf` and `orders` stay on JSON.
+- **Avro trial limits (section 14.1.1).** The schema is built twice, in the asset and in the notebook, and the
+  two must stay byte-identical (the registry matches by exact string; checked equal on 2026-10-05). Every row
+  column is a nullable union, so Avro targets lose `NOT NULL`. The registry is the shared, anonymous staging
+  Apicurio. RisingWave does not follow schema changes and rejects `ADD COLUMN` until the registry has the column.
+  Throughput, a backfill, column drops and type changes were not run with Avro.
 - **Single task, and it is enough.** `tasks.max` defaults to 1 and is now a per-sync setting
   (`sink_tasks_max` on the component, default 1, rejected below 1). A local throughput test on 2026-10-05 (300,000
   insert messages of about 1.7 KB, 12 partitions, local Redpanda and Postgres, scratch topic, connector and
@@ -978,7 +989,8 @@ Notes and limits:
 
 ### 14.1 Schema registry (Avro) instead of embedded JSON schema
 
-Evaluated, not adopted: the POC keeps JSON with the schema embedded in each message (section 4).
+Evaluated; **built as a trial on the `avro` label (2026-10-05, section 14.1.1)** and not adopted for `cdf` and
+`orders`, which keep JSON with the schema embedded in each message (section 4).
 
 - **Local Redpanda registry** is Confluent-API compatible (default `BACKWARD` compatibility): adding an optional
   field is accepted, adding a required field without a default is rejected with HTTP 409.
@@ -1066,6 +1078,43 @@ end-to-end producer path is untested); the Connect image and
   decoding in the message-preview helpers. The expected gain is smaller messages (the JSON ones measured about 1.7 KB
   each with the schema embedded) and registry-enforced compatibility, at the price of a registry dependency, harder
   debugging and the timestamp workaround; the size gain was not measured.
+
+#### 14.1.1 The `avro` trial (built 2026-10-05)
+
+A sync labelled `avro` carries the `cdf` data (own source table, topic, connector and target tables) with
+`encoding: avro` in `orchestration/defs/reverse_etl_avro/defs.yaml`. `encoding` (default `json`) and
+`schema_registry_url` (default the staging Apicurio's `/apis/ccompat/v7`) are fields of the sync config and the
+component; `cdf` and `orders` are unchanged.
+
+- **What it changes.** The asset builds the key and envelope schemas from the live columns
+  (`_avro_schemas`) and serializes with confluent-kafka's `AvroSerializer`; the notebook does the same in Spark
+  (schema registered by the notebook, header added by hand, see the notebook-side results above); the connector
+  uses `io.confluent.connect.avro.AvroConverter`; the RisingWave table uses `FORMAT DEBEZIUM ENCODE AVRO`, with
+  `updated_at VARCHAR` plus a generated `updated_at_ts TIMESTAMPTZ`; the reset job deletes the two subjects
+  (`<topic>-key`, `<topic>-value`; soft, then permanent). `Dockerfile.debezium-connect` now adds the converter in a
+  Maven build stage (`docker/kafka-connect-avro/pom.xml`, checksums verified, jackson jars left out).
+  The Databricks job takes an `encoding` parameter, which the Dagster trigger sets from the sync's config.
+- **Schemas must be registered in the Avro library's compact canonical form.** Apicurio matches a schema by its
+  exact string, and the Confluent converter looks the schema up in that form; a schema registered with spaces made
+  the sink task fail (`The given schema does not match any schema under the subject ...-key`, 40403). So schemas
+  are compact JSON with the namespace only on the top-level record and nested records referenced by short name.
+  The asset and the notebook produce the identical string, so the notebook registered nothing new.
+- **With Avro the order of a column change is different.** RisingWave rejects `ALTER TABLE ... ADD COLUMN
+  country` until `country` is in the registry schema (`Column "country" is defined in SQL but not found in the
+  source`), so `add_missing_columns` registers the new schema version first, then adds the column, then the
+  messages are produced. The same function serves the asset and the Dagster notebook-trigger job.
+- **Verified (2026-10-05, DEV Databricks, local Connect and RisingWave, staging Apicurio).** Setup job, first
+  sync and seed through Dagster: Postgres and RisingWave matched (the update applied, the delete applied,
+  microseconds kept in `updated_at_ts`). Adding `country` in Databricks: registry version 2 accepted, the sink
+  added the column, RisingWave added it, and the new value arrived in both. The notebook (Dagster trigger,
+  label `avro`, `encoding=avro` job parameter) produced an update and an insert that appeared in both targets, and
+  the `cdf` and `orders` triggers still succeeded with the new parameter.
+- **Size.** For one update event with four columns: JSON 1,726 bytes (key 210, value 1,516), Avro 137 bytes
+  (key 6, value 131), about 12.6 times smaller. Computed offline from the same event, not measured on the topic.
+- **Not tested:** throughput, a backfill, dropping a column or changing a type with Avro, a registry compatibility
+  rejection from the Dagster path, behaviour when the registry is unreachable, the STG workspace, and a
+  registry other than the shared staging Apicurio (which is anonymous and shared with other teams).
+- **Reset.** `reverse_etl_avro_reset_job` removes the sync's objects and its registry subjects.
 
 ### 14.2 Kafka delete permissions
 

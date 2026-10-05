@@ -427,7 +427,9 @@ not drt.
    far as the table's retained history, so a run that waits longer than that cannot resume; a read
    that spans a column drop also fails (sink doc section 10.4). [tested for the drop]
 5. **Reconsider the message format.** Each message carries its schema as JSON; at volume Avro with a
-   schema registry (sink doc section 14.1) or compression would make messages smaller. [judgement]
+   schema registry (sink doc section 14.1) or compression would make messages smaller. [Avro now tried: the
+   `avro` sync works and its messages were about 12.6 times smaller for a four-column update, sink doc section
+   14.1.1; not tried at volume.]
 6. **Check that Postgres is the right target** for billions of rows; that depends on what reads it.
    [judgement]
 7. **Source prerequisites.** The table needs Change Data Feed enabled and an identity `rid` key from

@@ -3,9 +3,10 @@
 # reverse_etl_cdf_to_kafka (orchestration/assets/reverse_etl_cdf_setup.py).
 #
 # Reads the source table's Change Data Feed since the last watermark, turns it into
-# Debezium-style before/after/op events, produces them to Kafka as Kafka Connect JSON
-# with the schema embedded in every message (the same bytes the Dagster asset sends),
-# then advances the watermark.
+# Debezium-style before/after/op events, produces them to Kafka (the same bytes the Dagster asset
+# sends), then advances the watermark. The `encoding` widget picks the format: "json" is Kafka
+# Connect JSON with the schema embedded in every message; "avro" is the Confluent wire format with
+# the schemas in the registry (registered here, under <topic>-key and <topic>-value).
 #
 # Differences from the Dagster asset:
 #   - It does not add new columns to the RisingWave table (a notebook cannot reach the
@@ -38,6 +39,8 @@ dbutils.widgets.text("secret_scope", "rw_poc")
 dbutils.widgets.text("secret_key_username", "kafka_output_username")
 dbutils.widgets.text("secret_key_password", "kafka_output_password")
 dbutils.widgets.text("backfill_from_version", "")  # optional first-run override
+dbutils.widgets.text("encoding", "json")  # json or avro; the Databricks job passes the sync's setting
+dbutils.widgets.text("schema_registry_url", "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7")
 
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
@@ -52,6 +55,10 @@ KAFKA_TOPIC = dbutils.widgets.get("kafka_topic").strip() or f"{BASE}_topic"
 KAFKA_BOOTSTRAP = dbutils.widgets.get("kafka_bootstrap")
 SECRET_SCOPE = dbutils.widgets.get("secret_scope")
 BACKFILL_FROM = dbutils.widgets.get("backfill_from_version").strip()
+ENCODING = dbutils.widgets.get("encoding").strip()
+if ENCODING not in ("json", "avro"):
+    raise ValueError(f"The encoding widget must be json or avro, got {ENCODING!r}")
+REGISTRY_URL = dbutils.widgets.get("schema_registry_url").strip().rstrip("/")
 
 SOURCE = f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"
 STATE = f"{CATALOG}.{SCHEMA}.{STATE_TABLE}"
@@ -63,9 +70,12 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 # COMMAND ----------
 
 import json
+import struct
 from itertools import zip_longest
 
+import requests
 from pyspark.sql import functions as F
+from pyspark.sql.avro.functions import to_avro
 from pyspark.sql import types as T
 
 CHANGE_TYPE = "_change_type"
@@ -269,8 +279,95 @@ def build_message(event):
     )
 
 
+# Avro (Confluent wire format). The schema matches the Dagster asset's (_avro_schemas in
+# orchestration/assets/reverse_etl_cdf_setup.py): every row column is a nullable union defaulting to
+# null; timestamps stay ZonedTimestamp strings. Spark's registry mode (to_avro with subject=) did not
+# work on DBR 19.x, so the schema is registered here and the 5-byte header (a zero byte and the schema
+# id) is added by hand. Schemas are registered as compact JSON with the namespace only on the top-level
+# record: the registry matches a schema by its exact string, and the Confluent converter looks the schema
+# up in the Avro library's canonical form.
+AVRO_TYPE = {
+    "int8": "int", "int16": "int", "int32": "int", "int64": "long", "float": "float",
+    "double": "double", "boolean": "boolean", "string": "string",
+    ZONED_TIMESTAMP: {"type": "string", "connect.name": ZONED_TIMESTAMP_SCHEMA_NAME},
+}
+SPARK_TYPE = {
+    "int8": "tinyint", "int16": "smallint", "int32": "int", "int64": "bigint", "float": "float",
+    "double": "double", "boolean": "boolean", "string": "string", ZONED_TIMESTAMP: "string",
+}
+
+
+def avro_schemas():
+    ns = ENVELOPE_SCHEMA_NAME
+    key = {"type": "record", "name": "Key", "namespace": ns,
+           "fields": [{"name": c, "type": AVRO_TYPE[FIELD_TYPES[c]]} for c in KEY_COLUMNS]}
+    row = {"type": "record", "name": "Value",
+           "fields": [{"name": n, "type": ["null", AVRO_TYPE[t]], "default": None} for n, t, _ in ROW_FIELDS]}
+    source = {"type": "record", "name": "Source", "fields": [
+        {"name": "commit_version", "type": ["null", "long"], "default": None},
+        {"name": "commit_timestamp", "type": ["null", "string"], "default": None}]}
+    value = {"type": "record", "name": "Envelope", "namespace": ns, "fields": [
+        {"name": "before", "type": ["null", row], "default": None},
+        {"name": "after", "type": ["null", "Value"], "default": None},
+        {"name": "op", "type": "string"},
+        {"name": "source", "type": ["null", source], "default": None}]}
+    return key, value
+
+
+def schema_string(schema):
+    return json.dumps(schema, separators=(",", ":"))
+
+
+def register_schema(subject, schema):
+    """Register (a no-op if the same schema is already there) and return the schema id."""
+    resp = requests.post(
+        f"{REGISTRY_URL}/subjects/{subject}/versions",
+        json={"schema": schema_string(schema)},
+        headers={"Content-Type": "application/vnd.schemaregistry.v1+json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+def avro_messages_df(events):
+    """DataFrame (key, value) of Avro bytes in the Confluent wire format, in event order."""
+    key_schema, value_schema = avro_schemas()
+    key_id = register_schema(f"{KAFKA_TOPIC}-key", key_schema)
+    value_id = register_schema(f"{KAFKA_TOPIC}-value", value_schema)
+    print(f"Registered {KAFKA_TOPIC}-key (id {key_id}) and {KAFKA_TOPIC}-value (id {value_id})")
+
+    row_ddl = ", ".join(f"`{n}` {SPARK_TYPE[t]}" for n, t, _ in ROW_FIELDS)
+    key_ddl = ", ".join(f"`{c}` {SPARK_TYPE[FIELD_TYPES[c]]}" for c in KEY_COLUMNS)
+    ddl = (f"idx long, key struct<{key_ddl}>, before struct<{row_ddl}>, after struct<{row_ddl}>, "
+           "op string, source struct<commit_version: bigint, commit_timestamp: string>")
+    data = []
+    for i, event in enumerate(events):
+        row_for_key = event.get("after") or event.get("before") or {}
+        source = event.get("source") or {}
+        data.append((
+            i,
+            {c: coerce(row_for_key.get(c), FIELD_TYPES[c]) for c in KEY_COLUMNS},
+            coerce_row(event.get("before")),
+            coerce_row(event.get("after")),
+            event["op"],
+            {"commit_version": coerce(source.get("commit_version"), "int64"),
+             "commit_timestamp": source.get("commit_timestamp")},
+        ))
+
+    def framed(column, schema, schema_id):
+        header = bytes([0]) + struct.pack(">I", schema_id)  # Confluent wire format: magic byte + schema id
+        return F.concat(F.lit(header), to_avro(column, jsonFormatSchema=schema_string(schema)))
+
+    return spark.createDataFrame(data, ddl).select(
+        "idx",
+        framed(F.col("key"), key_schema, key_id).alias("key"),
+        framed(F.struct("before", "after", "op", "source"), value_schema, value_id).alias("value"),
+    )
+
+
 events = to_debezium_events(rows, KEY_COLUMNS)
-messages = [build_message(e) for e in events]
+messages = [build_message(e) for e in events] if ENCODING == "json" else []
 op_counts = {}
 for e in events:
     op_counts[e["op"]] = op_counts.get(e["op"], 0) + 1
@@ -280,7 +377,7 @@ print(f"{len(events)} event(s): {op_counts}")
 
 # Produce. A failed write raises, so the watermark below is not advanced and the
 # next run re-sends (the sink and RisingWave upsert by key, so replays are harmless).
-if messages:
+if events:
     username = dbutils.secrets.get(SECRET_SCOPE, dbutils.widgets.get("secret_key_username"))
     password = dbutils.secrets.get(SECRET_SCOPE, dbutils.widgets.get("secret_key_password"))
     # The Kafka client in Databricks Runtime is shaded: note the kafkashaded. prefix.
@@ -290,12 +387,13 @@ if messages:
     )
     # idx + sortWithinPartitions keeps each key's events in commit order; Kafka's key
     # hashing then keeps one key on one partition.
-    out = (
-        spark.createDataFrame([(i, k, v) for i, (k, v) in enumerate(messages)], "idx long, key string, value string")
-        .repartition("key")
-        .sortWithinPartitions("idx")
-        .select("key", "value")
-    )
+    if ENCODING == "avro":
+        messages_df = avro_messages_df(events)
+    else:
+        messages_df = spark.createDataFrame(
+            [(i, k, v) for i, (k, v) in enumerate(messages)], "idx long, key string, value string"
+        )
+    out = messages_df.repartition("key").sortWithinPartitions("idx").select("key", "value")
     (
         out.write.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
@@ -305,7 +403,7 @@ if messages:
         .option("topic", KAFKA_TOPIC)
         .save()
     )
-    print(f"Produced {len(messages)} message(s) to {KAFKA_TOPIC}")
+    print(f"Produced {len(events)} {ENCODING} message(s) to {KAFKA_TOPIC}")
 
 # COMMAND ----------
 
@@ -331,6 +429,9 @@ print(f"Watermark: {last_version} -> {new_version}")
 
 # COMMAND ----------
 
-# Show what was sent: the first 3 messages exactly as produced, schema included.
+# Show what was sent: the first 3 messages exactly as produced, schema included (JSON), or their
+# payloads (Avro, whose schema is in the registry).
+for event in events[:3] if ENCODING == "avro" else []:
+    print(json.dumps(event, indent=2, default=str))
 for key, value in messages[:3]:
     print(json.dumps({"key": json.loads(key), "value": json.loads(value)}, indent=2))

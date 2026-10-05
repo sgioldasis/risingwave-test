@@ -37,6 +37,9 @@ from typing import Any
 
 import requests
 from confluent_kafka import Producer
+from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
 from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
@@ -438,6 +441,129 @@ def _build_connect_json_message(
     )
 
 
+# --- Avro (Confluent wire format, schemas in the registry) ----------------------
+# Same envelope as the JSON message. Every row column is a nullable union defaulting to null, so a column
+# added later is a backward-compatible schema change; timestamps stay ZonedTimestamp strings, the one form
+# that gives timestamptz with microseconds in both the sink and RisingWave (section 14.1 of the sink doc).
+# The notebook builds the same schema (notebooks/reverse_etl_cdf_to_kafka.py); change both together.
+# The registry (Apicurio) matches a schema by its exact string, and the Confluent converter looks the schema up
+# in the Avro library's compact canonical form, so schemas are registered in that form: compact JSON, with the
+# namespace only on the top-level record (nested records inherit it and are referenced by their short name).
+
+_AVRO_TYPE_BY_CONNECT_TYPE = {
+    "int8": "int",
+    "int16": "int",
+    "int32": "int",
+    "int64": "long",
+    "float": "float",
+    "double": "double",
+    "boolean": "boolean",
+    "string": "string",
+}
+
+
+def _avro_value_type(connect_type: str) -> Any:
+    if connect_type == ZONED_TIMESTAMP:
+        return {"type": "string", "connect.name": _ZONED_TIMESTAMP_SCHEMA_NAME}
+    return _AVRO_TYPE_BY_CONNECT_TYPE[connect_type]
+
+
+def _avro_schemas(
+    cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(key schema, value schema); the value schema is the Debezium envelope."""
+    namespace = cfg.envelope_schema_name
+    field_types = {n: t for n, t, _ in row_fields}
+    key_schema = {
+        "type": "record",
+        "name": "Key",
+        "namespace": namespace,
+        "fields": [{"name": c, "type": _avro_value_type(field_types[c])} for c in key_columns],
+    }
+    row_schema = {
+        "type": "record",
+        "name": "Value",
+        "fields": [{"name": n, "type": ["null", _avro_value_type(t)], "default": None} for n, t, _ in row_fields],
+    }
+    source_schema = {
+        "type": "record",
+        "name": "Source",
+        "fields": [
+            {"name": "commit_version", "type": ["null", "long"], "default": None},
+            {"name": "commit_timestamp", "type": ["null", "string"], "default": None},
+        ],
+    }
+    value_schema = {
+        "type": "record",
+        "name": "Envelope",
+        "namespace": namespace,
+        "fields": [
+            {"name": "before", "type": ["null", row_schema], "default": None},
+            {"name": "after", "type": ["null", "Value"], "default": None},
+            {"name": "op", "type": "string"},
+            {"name": "source", "type": ["null", source_schema], "default": None},
+        ],
+    }
+    return key_schema, value_schema
+
+
+def _avro_schema_string(schema: dict[str, Any]) -> str:
+    return json.dumps(schema, separators=(",", ":"))
+
+
+def _avro_payloads(
+    event: dict[str, Any], key_columns: list[str], row_fields: list[RowField]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    row_for_key = event.get("after") or event.get("before") or {}
+    field_types = {n: t for n, t, _ in row_fields}
+    source = event.get("source") or {}
+    key = {c: _coerce(row_for_key.get(c), field_types[c]) for c in key_columns}
+    value = {
+        "before": _coerce_row(event.get("before"), row_fields),
+        "after": _coerce_row(event.get("after"), row_fields),
+        "op": event["op"],
+        "source": {
+            "commit_version": _coerce(source.get("commit_version"), "int64"),
+            "commit_timestamp": source.get("commit_timestamp"),
+        },
+    }
+    return key, value
+
+
+def _avro_serializers(
+    cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]
+) -> tuple[AvroSerializer, AvroSerializer]:
+    """Serializers that register the schemas under <topic>-key / <topic>-value (a new version only if the
+    schema changed) and write the Confluent wire format."""
+    client = SchemaRegistryClient({"url": cfg.schema_registry_url})
+    key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
+    return AvroSerializer(client, _avro_schema_string(key_schema)), AvroSerializer(client, _avro_schema_string(value_schema))
+
+
+def _register_avro_schemas(cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]) -> None:
+    """Register both schemas now (a no-op when unchanged): RisingWave reads the value schema when its table is
+    created, which can be before the first message exists."""
+    client = SchemaRegistryClient({"url": cfg.schema_registry_url})
+    key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
+    client.register_schema(cfg.key_subject, Schema(_avro_schema_string(key_schema), "AVRO"))
+    client.register_schema(cfg.value_subject, Schema(_avro_schema_string(value_schema), "AVRO"))
+
+
+def _build_avro_message(
+    cfg: ReverseEtlSyncConfig,
+    event: dict[str, Any],
+    key_columns: list[str],
+    row_fields: list[RowField],
+    serializers: tuple[AvroSerializer, AvroSerializer],
+) -> tuple[bytes, bytes]:
+    key, value = _avro_payloads(event, key_columns, row_fields)
+    key_serializer, value_serializer = serializers
+    return (
+        key_serializer(key, SerializationContext(cfg.kafka_topic, MessageField.KEY)),
+        value_serializer(value, SerializationContext(cfg.kafka_topic, MessageField.VALUE)),
+    )
+
+
 # --- Kafka (confluent-kafka) --------------------------------------------------
 
 
@@ -470,8 +596,12 @@ def _produce_to_kafka(
     cfg: ReverseEtlSyncConfig, events: list[dict[str, Any]], key_columns: list[str], row_fields: list[RowField]
 ) -> None:
     producer = Producer(_kafka_producer_config())
+    serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" else None
     for event in events:
-        key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
+        if serializers:
+            key, value = _build_avro_message(cfg, event, key_columns, row_fields, serializers)
+        else:
+            key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
         producer.produce(topic=cfg.kafka_topic, key=key, value=value)
     producer.flush()
 
@@ -495,6 +625,10 @@ def _message_previews(
     shown: the embedded schema repeats on every message and would drown it."""
     previews = []
     for event in events[:limit]:
+        if cfg.encoding == "avro":
+            key_payload, value_payload = _avro_payloads(event, key_columns, row_fields)
+            previews.append({"key": key_payload, "value": value_payload})
+            continue
         key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
         previews.append({
             "key": json.loads(key)["payload"],
@@ -514,9 +648,15 @@ def _raw_messages(
     limit: int = RAW_MESSAGE_LIMIT,
 ) -> list[dict[str, Any]]:
     """The first `limit` messages exactly as sent to Kafka, embedded
-    `schema` included (_message_previews shows payloads only)."""
+    `schema` included (_message_previews shows payloads only). Avro messages are shown as hex: the
+    Confluent wire format, a zero byte and the 4-byte schema id before the Avro payload."""
     raw = []
+    serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" and events else None
     for event in events[:limit]:
+        if serializers:
+            key, value = _build_avro_message(cfg, event, key_columns, row_fields, serializers)
+            raw.append({"key_hex": key.hex(), "value_hex": value.hex()})
+            continue
         key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
         raw.append({"key": json.loads(key), "value": json.loads(value)})
     return raw

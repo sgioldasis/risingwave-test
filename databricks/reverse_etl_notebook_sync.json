@@ -2,7 +2,7 @@
   "name": "reverse_etl_notebook_sync",
   "max_concurrent_runs": 1,
   "queue": {"enabled": true},
-  "parameters": [{"name": "label", "default": "cdf"}],
+  "parameters": [{"name": "label", "default": "cdf"}, {"name": "encoding", "default": "json"}],
   "tasks": [
     {
       "task_key": "sync",

@@ -22,6 +22,7 @@ from .reverse_etl_cdf_setup import (
     ZONED_TIMESTAMP,
     RowField,
     _get_row_fields,
+    _register_avro_schemas,
     _require_databricks_env,
 )
 
@@ -82,9 +83,14 @@ def _kafka_connector_options(cfg: ReverseEtlSyncConfig) -> str:
     return ",\n    ".join(options)
 
 
-def _column_ddl(field: RowField) -> str:
+def _column_defs(cfg: ReverseEtlSyncConfig, field: RowField) -> list[str]:
+    """Column definition(s) for one field. With Avro, RisingWave cannot read the ZonedTimestamp string as
+    TIMESTAMPTZ: it reads it as VARCHAR, plus a generated TIMESTAMPTZ column named <column>_ts (section 14.1
+    of the sink doc)."""
     name, connect_type, _ = field
-    return f"{_quote(name)} {_RISINGWAVE_TYPE_BY_CONNECT_TYPE[connect_type]}"
+    if cfg.encoding == "avro" and connect_type == ZONED_TIMESTAMP:
+        return [f"{_quote(name)} VARCHAR", f"{_quote(name + '_ts')} TIMESTAMPTZ AS {_quote(name)}::timestamptz"]
+    return [f"{_quote(name)} {_RISINGWAVE_TYPE_BY_CONNECT_TYPE[connect_type]}"]
 
 
 def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> str:
@@ -93,9 +99,14 @@ def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> 
     scan.startup.mode='earliest' read of the topic: a column added a moment
     later misses the messages already read (they keep NULL)."""
     column_defs = [
-        _column_ddl(field) + (" PRIMARY KEY" if field[0] == cfg.key_column else "")
+        column_def + (" PRIMARY KEY" if field[0] == cfg.key_column else "")
         for field in row_fields
+        for column_def in _column_defs(cfg, field)
     ]
+    if cfg.encoding == "avro":
+        row_format = f"FORMAT DEBEZIUM ENCODE AVRO (schema.registry = '{cfg.schema_registry_url}')"
+    else:
+        row_format = "FORMAT DEBEZIUM ENCODE JSON"
     return f"""
         CREATE TABLE IF NOT EXISTS {cfg.risingwave_table} (
             {", ".join(column_defs)}
@@ -103,7 +114,7 @@ def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> 
         WITH (
             {_kafka_connector_options(cfg)}
         )
-        FORMAT DEBEZIUM ENCODE JSON
+        {row_format}
     """
 
 
@@ -114,7 +125,7 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
 
     Must run *before* messages carrying a new column are produced: RisingWave
     only fills a column from messages read after it exists, so a row ingested
-    earlier keeps NULL.
+    earlier keeps NULL. With Avro the new schema version is registered first.
     """
     conn = _get_risingwave_connection()
     try:
@@ -128,8 +139,12 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
             if not existing:
                 return []
             missing = [field for field in row_fields if field[0] not in existing]
+            if missing and cfg.encoding == "avro":
+                # RisingWave checks a new column against the registry schema, so the new version comes first.
+                _register_avro_schemas(cfg, [cfg.key_column], row_fields)
             for field in missing:
-                cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {_column_ddl(field)}")
+                for column_def in _column_defs(cfg, field):
+                    cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {column_def}")
         conn.commit()
         return [name for name, _, _ in missing]
     finally:
@@ -155,6 +170,8 @@ def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
     def risingwave_table(context: AssetExecutionContext):
         _require_databricks_env()
         row_fields = _get_row_fields(_get_token(), cfg)
+        if cfg.encoding == "avro":
+            _register_avro_schemas(cfg, [cfg.key_column], row_fields)
 
         conn = _get_risingwave_connection()
         try:

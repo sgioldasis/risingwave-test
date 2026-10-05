@@ -1,4 +1,12 @@
 ARG DEBEZIUM_VERSION=3.7.0.Final
+
+# Confluent's AvroConverter and its dependencies, for syncs that use Avro. Checksums are verified
+# against Maven's published ones; the jackson jars are left out because the Connect image has its own.
+FROM maven:3.9-eclipse-temurin-17 AS avro-converter
+COPY docker/kafka-connect-avro/pom.xml /build/pom.xml
+RUN mvn -q -f /build/pom.xml -Dmaven.checksum.policy=fail dependency:copy-dependencies -DoutputDirectory=/build/jars \
+ && rm -f /build/jars/jackson-*.jar
+
 FROM quay.io/debezium/connect:${DEBEZIUM_VERSION}
 
 ARG DEBEZIUM_VERSION
@@ -11,3 +19,5 @@ RUN curl -fsSL -o /tmp/jdbc-plugin.tar.gz \
  && echo "${JDBC_PLUGIN_SHA512}  /tmp/jdbc-plugin.tar.gz" | sha512sum -c - \
  && tar -xzf /tmp/jdbc-plugin.tar.gz -C "${KAFKA_CONNECT_PLUGINS_DIR}" \
  && rm /tmp/jdbc-plugin.tar.gz
+
+COPY --from=avro-converter /build/jars/ ${KAFKA_CONNECT_PLUGINS_DIR}/confluent-avro-converter/

@@ -1,7 +1,7 @@
 """Dagster job that triggers the reverse-ETL sync notebook on Databricks for one sync.
 
-The Databricks job `reverse_etl_notebook_sync` (one notebook task, one `label` job
-parameter, one concurrent run) runs the notebook notebooks/reverse_etl_cdf_to_kafka.py
+The Databricks job `reverse_etl_notebook_sync` (one notebook task, the `label` and `encoding` job
+parameters, one concurrent run) runs the notebook notebooks/reverse_etl_cdf_to_kafka.py
 as the job's owner, on the job's cluster. This Dagster job first adds any column the
 source table has and the RisingWave table lacks (the notebook cannot reach RisingWave;
 RisingWave only fills a column from messages read after it exists), then triggers the
@@ -115,7 +115,7 @@ def trigger_notebook_sync(context: OpExecutionContext, config: TriggerNotebookSy
     resp = requests.post(
         f"{DATABRICKS_HOST}/api/2.1/jobs/run-now",
         headers=_headers(token),
-        json={"job_id": job_id, "job_parameters": {"label": label}},
+        json={"job_id": job_id, "job_parameters": {"label": label, "encoding": sync_config.encoding}},
         timeout=30,
     )
     if not resp.ok:

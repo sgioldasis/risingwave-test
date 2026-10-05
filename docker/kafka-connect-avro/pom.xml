@@ -1,0 +1,18 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <!-- Resolves Confluent's AvroConverter and its dependencies for Dockerfile.debezium-connect.
+       kafka-clients and connect-api come from the Connect image itself. -->
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>reverse-etl</groupId><artifactId>avro-converter-deps</artifactId><version>1</version>
+  <repositories>
+    <repository><id>confluent</id><url>https://packages.confluent.io/maven/</url></repository>
+  </repositories>
+  <dependencies>
+    <dependency>
+      <groupId>io.confluent</groupId><artifactId>kafka-connect-avro-converter</artifactId><version>7.7.1</version>
+      <exclusions>
+        <exclusion><groupId>org.apache.kafka</groupId><artifactId>kafka-clients</artifactId></exclusion>
+        <exclusion><groupId>org.apache.kafka</groupId><artifactId>connect-api</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+</project>

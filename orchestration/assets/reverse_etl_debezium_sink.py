@@ -20,6 +20,7 @@ CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
 _PLAIN_LOGIN = "org.apache.kafka.common.security.plain.PlainLoginModule"
 _SCRAM_LOGIN = "org.apache.kafka.common.security.scram.ScramLoginModule"
 _JSON_CONVERTER = "org.apache.kafka.connect.json.JsonConverter"
+_AVRO_CONVERTER = "io.confluent.connect.avro.AvroConverter"
 
 
 def _connector_config(cfg: ReverseEtlSyncConfig) -> dict[str, str]:
@@ -42,13 +43,23 @@ def _connector_config(cfg: ReverseEtlSyncConfig) -> dict[str, str]:
         "delete.enabled": "true",
         "schema.evolution": "basic",
         "collection.name.format": cfg.postgres_table,
-        "key.converter": _JSON_CONVERTER,
-        "key.converter.schemas.enable": "true",
-        "value.converter": _JSON_CONVERTER,
-        "value.converter.schemas.enable": "true",
         "consumer.override.bootstrap.servers": bootstrap,
         "consumer.override.auto.offset.reset": "earliest",
     }
+    if cfg.encoding == "avro":
+        config.update({
+            "key.converter": _AVRO_CONVERTER,
+            "key.converter.schema.registry.url": cfg.schema_registry_url,
+            "value.converter": _AVRO_CONVERTER,
+            "value.converter.schema.registry.url": cfg.schema_registry_url,
+        })
+    else:
+        config.update({
+            "key.converter": _JSON_CONVERTER,
+            "key.converter.schemas.enable": "true",
+            "value.converter": _JSON_CONVERTER,
+            "value.converter.schemas.enable": "true",
+        })
 
     if os.environ.get("KAFKA_OUTPUT_SASL_USERNAME", ""):
         mechanism = os.environ.get("KAFKA_OUTPUT_SASL_MECHANISM", "SCRAM-SHA-512")

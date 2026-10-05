@@ -57,6 +57,9 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     reset_schema: str | None = None
     # tasks.max of the Debezium JDBC sink (default 1, enough for a daily load); raise it for a backfill.
     sink_tasks_max: int | None = None
+    # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
+    encoding: str | None = None
+    schema_registry_url: str | None = None
 
     def to_config(self) -> ReverseEtlSyncConfig:
         config = ReverseEtlSyncConfig.for_name(
@@ -88,6 +91,8 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
                 "reset_job",
                 "reset_schema",
                 "sink_tasks_max",
+                "encoding",
+                "schema_registry_url",
             )
             if getattr(self, field) is not None
         }

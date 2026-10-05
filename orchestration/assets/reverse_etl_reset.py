@@ -36,6 +36,8 @@ def _assert_reset_allowed(cfg: ReverseEtlSyncConfig) -> None:
         cfg.source_table,
         cfg.state_table,
     ]
+    if cfg.encoding == "avro":
+        names += [cfg.key_subject, cfg.value_subject]
     bad = [n for n in names if not n.startswith(cfg.reset_name_prefixes)]
     if bad or cfg.schema != cfg.reset_schema:
         raise RuntimeError(
@@ -115,6 +117,20 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
             time.sleep(3)
         context.log.info(f"Topic {topic} is gone")
 
+    @op(name=f"{prefix}_delete_registry_subjects", ins={"start": In(Nothing)})
+    def delete_registry_subjects(context: OpExecutionContext) -> None:
+        # Soft delete, then permanent: a soft-deleted subject still blocks re-registering a different schema.
+        for subject in (cfg.key_subject, cfg.value_subject):
+            url = f"{cfg.schema_registry_url}/subjects/{subject}"
+            for params in ({}, {"permanent": "true"}):
+                resp = requests.delete(url, params=params, timeout=30)
+                if resp.status_code == 404:
+                    context.log.info(f"Registry subject {subject} did not exist ({params or 'soft'})")
+                elif resp.ok:
+                    context.log.info(f"Deleted registry subject {subject} ({'permanent' if params else 'soft'})")
+                else:
+                    raise RuntimeError(f"Deleting subject {subject} failed ({resp.status_code}): {resp.text[:500]}")
+
     @op(name=f"{prefix}_drop_databricks_tables", ins={"start": In(Nothing)})
     def drop_databricks_tables(context: OpExecutionContext) -> None:
         _require_databricks_env()
@@ -127,7 +143,7 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         name=cfg.reset_job,
         description=(
             f"Tear down the {cfg.sync_name} reverse-ETL CDF sync: the Debezium JDBC sink connector, "
-            "the RisingWave and Postgres tables, the Kafka topic and consumer group, and the "
+            "the RisingWave and Postgres tables, the Kafka topic and consumer group, the registry subjects (Avro), and the "
             f"Databricks source and watermark tables. Then run {cfg.setup_job} and "
             "the seed script for a fresh demo with the original schema."
         ),
@@ -138,6 +154,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         rw_dropped = drop_risingwave_table(stopped)
         pg_dropped = drop_postgres_table(rw_dropped)
         kafka_gone = delete_kafka_topic_and_group(pg_dropped)
+        if cfg.encoding == "avro":
+            kafka_gone = delete_registry_subjects(kafka_gone)
         drop_databricks_tables(kafka_gone)
 
     return reset_job

@@ -74,9 +74,27 @@ class ReverseEtlSyncConfig:
     # partitions) for a backfill. See docs/poc/REVERSE_ETL_DRT_COMPARISON.md section 4.8.
     sink_tasks_max: int = 1
 
+    # --- message encoding ------------------------------------------------------
+    # "json": Kafka Connect JSON with the schema embedded in every message (the default).
+    # "avro": Confluent wire format, schemas in the registry under <topic>-key and <topic>-value
+    # (a Confluent-compatible API: the shared staging Apicurio's /apis/ccompat/v7). Section 14.1 of
+    # docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md. The notebook gets `encoding` as a job parameter.
+    encoding: str = "json"
+    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+
     def __post_init__(self) -> None:
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
+        if self.encoding not in ("json", "avro"):
+            raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+
+    @property
+    def key_subject(self) -> str:
+        return f"{self.kafka_topic}-key"
+
+    @property
+    def value_subject(self) -> str:
+        return f"{self.kafka_topic}-value"
 
     @property
     def source_fqn(self) -> str:

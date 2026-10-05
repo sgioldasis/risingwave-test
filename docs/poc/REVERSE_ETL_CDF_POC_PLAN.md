@@ -5,7 +5,8 @@
 > RisingWave table and the sink. The schemaless `rw_poc_reverse_etl_cdf_out` topic described below was retired, and
 > the RisingWave table is created from the live Databricks columns with real types. See
 > [`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md); the sections below describe the
-> original design and its history.
+> original design and its history. **2026-10-05:** an Avro variant (schemas in a registry instead of embedded) was
+> built as a trial sync, `avro`; see section 14.1.1 of the sink doc.
 >
 > **Update 2026-10-04:** every object was later renamed to a uniform `reverse_etl_<label>_<role>` scheme (for the
 > POC, label `cdf`: tables `reverse_etl_cdf_source` / `_state` / `_target`, jobs `reverse_etl_cdf_setup_job` /
