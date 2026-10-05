@@ -1,37 +1,44 @@
 """Run drt (https://github.com/drt-hub/drt) against the demo project in orchestration/drt_demo/.
 
-drt is a third-party reverse-ETL tool, installed with the other Python dependencies
-(pyproject.toml). It reads a Databricks table and writes it to Postgres. This module only
-starts it, as a subprocess:
+drt is a third-party reverse-ETL tool; with the community package dagster-drt (both in
+pyproject.toml) its sync shows up as the Dagster asset reverse_etl_cdf_drt_to_postgres. It reads
+the Databricks table and writes it to Postgres. dagster-drt runs drt inside the Dagster run
+process, so unlike a subprocess it sees that process's whole environment. What this module adds:
 
-- the Databricks access token is minted here with the same service-principal flow the other
-  assets use, and handed to drt in an environment variable, never written to a file;
-- drt is started with a minimal environment (PATH, HOME and that token), so it never sees the
-  service principal's client secret or the Kafka credentials in this container's environment;
-- the profile file holds only the workspace host and SQL warehouse path.
+- the Databricks access token is minted with the same service-principal flow the other assets
+  use and put in an environment variable for the run, never written to a file;
+- PGTZ=UTC, because drt writes timestamps without a timezone and Postgres would otherwise read
+  them in its own zone;
+- the profile file holds only the workspace host and SQL warehouse path;
+- dagster-drt reports a sync with failed rows as a successful materialization, so the asset
+  raises when rows_failed is above zero.
 
-For a comparison with the CDF pipeline; see docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md.
+For a comparison with the CDF pipeline; see docs/poc/REVERSE_ETL_DRT_COMPARISON.md.
 """
 
 import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
-from dagster import OpExecutionContext, in_process_executor, job, op
+from dagster import AssetExecutionContext, AssetKey, MaterializeResult, in_process_executor, job, op, OpExecutionContext
+from dagster_drt import DagsterDrtResource, DagsterDrtTranslator, drt_assets
 
 from .databricks_optimize import DATABRICKS_HOST, WAREHOUSE_ID, _get_token
 from .postgres_sink_setup import get_postgres_connection
 from .reverse_etl_cdf_setup import _get_row_fields, _require_databricks_env
 from .reverse_etl_notebook_job import _load_sync_config
 
-DRT_BIN = Path(sys.executable).parent / "drt"  # the drt script of the environment running Dagster
 PROJECT_SOURCE = Path(__file__).resolve().parent.parent / "drt_demo"
-# drt writes state next to the project, so run it from a writable copy that persists.
+# drt writes state next to the project and the source mount is read-only, so it runs from a copy.
 WORKDIR = Path(os.environ.get("DRT_WORKDIR", "/home/dagster/drt-demo"))
 PROFILE_NAME = "reverse_etl_drt"
 TOKEN_ENV = "DRT_DATABRICKS_TOKEN"
+
+# Names follow reverse_etl_<label>_<role>; the label is cdf_drt (target table reverse_etl_cdf_drt_target).
+DRT_SYNC_NAME = "cdf_to_postgres"
+DRT_ASSET_KEY = AssetKey("reverse_etl_cdf_drt_to_postgres")
+
+drt_resource = DagsterDrtResource(project_dir=str(WORKDIR))
 
 
 def _write_profile(home: Path) -> None:
@@ -49,55 +56,39 @@ def _write_profile(home: Path) -> None:
     )
 
 
-def run_drt(args: list[str], timeout: int = 900, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    """Run `drt <args>` in the demo project and return the finished process (output captured)."""
-    _require_databricks_env()
-    if not DRT_BIN.exists():
-        raise RuntimeError(f"drt is not installed at {DRT_BIN}; it is in pyproject.toml, so rebuild the Dagster image or run uv sync")
+class _DrtTranslator(DagsterDrtTranslator):
+    def get_asset_spec(self, data):
+        spec = super().get_asset_spec(data)
+        return spec.replace_attributes(
+            key=DRT_ASSET_KEY,
+            group_name="reverse_etl_cdf_drt",
+            deps=[AssetKey(_load_sync_config("cdf").table_setup_asset)],  # the Databricks source table
+        )
 
+
+# The sync definitions are read from the (read-only) project at load time; the run itself uses
+# the resource's project_dir, a writable copy.
+@drt_assets(
+    project_dir=PROJECT_SOURCE,
+    sync_names=[DRT_SYNC_NAME],
+    dagster_drt_translator=_DrtTranslator(),
+    name="reverse_etl_cdf_drt_to_postgres",
+)
+def reverse_etl_cdf_drt_to_postgres(context: AssetExecutionContext, drt: DagsterDrtResource):
+    _require_databricks_env()
     WORKDIR.mkdir(parents=True, exist_ok=True)
     shutil.copytree(PROJECT_SOURCE, WORKDIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
-    home = Path(os.environ.get("HOME", "/home/dagster"))
-    _write_profile(home)
-
-    env = {"PATH": f"{DRT_BIN.parent}:/usr/bin:/bin", "HOME": str(home), TOKEN_ENV: _get_token(), **(extra_env or {})}
-    return subprocess.run(
-        [str(DRT_BIN), *args],
-        cwd=WORKDIR,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-# Names follow reverse_etl_<label>_<role>; the label is cdf_drt (target table reverse_etl_cdf_drt_target).
-DRT_SYNC_NAME = "cdf_to_postgres"
-
-
-@op(name="reverse_etl_cdf_drt_sync")
-def run_drt_sync(context: OpExecutionContext) -> None:
-    # PGTZ=UTC: drt writes timestamps without a timezone, and Postgres would read them in its own zone.
-    result = run_drt(["run", "--select", DRT_SYNC_NAME, "--verbose"], extra_env={"PGTZ": "UTC"})
-    output = "\n".join(
-        line for line in (result.stdout + result.stderr).splitlines() if "pyarrow" not in line and line.strip()
-    )
-    context.log.info(output)
-    if result.returncode != 0:
-        raise RuntimeError(f"drt sync {DRT_SYNC_NAME} failed (exit {result.returncode}):\n{output[-1500:]}")
-
-
-@job(
-    name="reverse_etl_cdf_drt_sync_job",
-    description=(
-        "Comparison demo: sync the Databricks table reverse_etl_cdf_source straight into the Postgres table "
-        "reverse_etl_cdf_drt_target with drt (mirror, no Kafka). Does not alter the target table, so a new "
-        "source column makes it fail until the table is altered by hand."
-    ),
-    executor_def=in_process_executor,
-)
-def reverse_etl_cdf_drt_sync_job():
-    run_drt_sync()
+    _write_profile(Path.home())
+    os.environ[TOKEN_ENV] = _get_token()
+    os.environ["PGTZ"] = "UTC"
+    for event in drt.run(context=context):
+        failed = event.metadata["rows_failed"].value if isinstance(event, MaterializeResult) else 0
+        if failed:
+            raise RuntimeError(
+                f"drt sync {DRT_SYNC_NAME} failed {failed} row(s); the row errors are in the log above "
+                "(for example a source column the target table lacks)"
+            )
+        yield event
 
 
 # drt never creates or alters its destination, so this job creates it. Postgres types for the

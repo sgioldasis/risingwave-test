@@ -24,22 +24,28 @@ our pipeline in parallel, which is what makes the comparison direct.
 |---|---|
 | drt project | `orchestration/drt_demo/drt_project.yml` |
 | Sync definition | `orchestration/drt_demo/syncs/cdf_to_postgres.yml` |
-| Runner (profile, token, subprocess) | `orchestration/assets/drt_demo.py` (`run_drt`) |
-| Dagster jobs | `reverse_etl_cdf_drt_setup_job` (creates the target table), `reverse_etl_cdf_drt_sync_job` (runs drt), `reverse_etl_cdf_drt_reset_job` (drops it again) |
-| Install | `pyproject.toml`: `drt-core[databricks,postgres]==1.0.0`, locked in `uv.lock` |
+| Dagster asset | `reverse_etl_cdf_drt_to_postgres` (group `reverse_etl_cdf_drt`, built with `dagster-drt`'s `@drt_assets`, in `orchestration/assets/drt_demo.py`) |
+| Dagster jobs | `reverse_etl_cdf_drt_setup_job` (creates the target table) and `reverse_etl_cdf_drt_reset_job` (drops it again) |
+| Install | `pyproject.toml`: `drt-core[databricks,postgres]==1.0.0` and `dagster-drt==0.4.0`, locked in `uv.lock` |
 | Target table | Postgres `reverse_etl_cdf_drt_target` (plus drt's own `_drt_synced_keys`) |
 
 The names follow `reverse_etl_<label>_<role>` with label `cdf_drt`.
 
 ## 2. How it is installed and run
 
-- drt is a regular dependency in `pyproject.toml` (`drt-core[databricks,postgres]==1.0.0`), locked
-  in `uv.lock` with the other packages, so the Dagster image and the devbox environment get it
-  from the same lockfile and it survives container recreation. It adds seven packages
-  (`databricks-sql-connector`, `drt-core`, `et-xmlfile`, `oauthlib`, `openpyxl`, `pybreaker`,
-  `thrift`) and changes none already locked. `run_drt` starts the `drt` script of the environment
-  running Dagster, as a subprocess. An earlier version of the demo used a separate virtualenv;
-  a dry-run install showed no dependency clash, so it was dropped.
+- drt and the community package [dagster-drt](https://github.com/drt-hub/drt/releases/tag/dagster-drt-v0.4.0)
+  are regular dependencies in `pyproject.toml`, locked in `uv.lock` with the other packages, so the
+  Dagster image and the devbox environment get them from the same lockfile and they survive
+  container recreation. drt adds seven packages (`databricks-sql-connector`, `drt-core`,
+  `et-xmlfile`, `oauthlib`, `openpyxl`, `pybreaker`, `thrift`) and dagster-drt one; none already
+  locked changes. Earlier versions of the demo used a separate virtualenv and then a `drt`
+  subprocess started by hand-written code; a dry-run install showed no dependency clash, and
+  dagster-drt replaced the subprocess.
+- **The asset.** `reverse_etl_cdf_drt_to_postgres` is a Dagster asset made by `@drt_assets` from
+  the sync file, renamed to our convention with a `DagsterDrtTranslator`, and depending on the
+  Databricks source table's asset (`reverse_etl_cdf_table_setup`), so it appears downstream of the
+  source in the asset graph. Each run records `rows_extracted`, `rows_synced`, `rows_failed`,
+  `rows_skipped` and `duration_seconds` as metadata. It is materialized, not run as a job.
 - The setup job `reverse_etl_cdf_drt_setup_job` creates the target table, because drt never does.
   It reads the Databricks source table's columns and creates `reverse_etl_cdf_drt_target` with the
   matching Postgres types (the mapping the Debezium sink uses) and `rid` as the primary key. It uses
@@ -49,22 +55,30 @@ The names follow `reverse_etl_<label>_<role>` with label `cdf_drt`.
   of any other drt sync writing there) and deletes drt's local run state (`.drt` and `target` in the
   work directory). It refuses to run unless the target table name starts with `reverse_etl_`. It does
   not touch the Databricks source. After it, run the setup job; the next sync baselines again.
-- `run_drt` copies `orchestration/drt_demo/` to a writable work directory
-  (`/home/dagster/drt-demo`, drt writes state next to the project), writes
-  `~/.drt/profiles.yml` with only the workspace host and SQL warehouse path, and starts drt.
+- Before drt runs, the asset copies `orchestration/drt_demo/` to a writable work directory
+  (`/home/dagster/drt-demo`; drt writes state next to the project and the source mount is
+  read-only) and writes `~/.drt/profiles.yml` with only the workspace host and SQL warehouse path.
+  The sync definitions are read from the read-only project at load time; the run uses the
+  resource's `project_dir`, the copy.
 - **Credentials:** the Databricks token is minted with the same service-principal flow the other
-  assets use and passed to drt in an environment variable, never written to a file. drt runs
-  with a minimal environment (`PATH`, `HOME`, the token, and `PGTZ`, see 3.4), so it never sees the service
-  principal's client secret or the Kafka credentials. The Postgres destination in the sync file
+  assets use and put in an environment variable for the run, never written to a file. **dagster-drt
+  runs drt inside the Dagster run process**, not as a subprocess, so drt can see that process's whole
+  environment, including the service principal's client secret and the Kafka credentials. The
+  earlier subprocess version started drt with a minimal environment; that isolation is gone
+  [source: `dagster_drt/resource.py`]. The Postgres destination in the sync file
   sets host, port, database and user and **no password**: with neither `password` nor `password_env`
   set, drt's `resolve_env` returns `None` and `_connect` passes `password=None` to psycopg2
   (`destinations/postgres.py`), so this only works because the local Postgres accepts the
   connection without one. For a real database, set `password_env` in the sync file (drt reads the
-  password from the named environment variable) and pass that variable through `run_drt`.
-- The job runs `drt run --select cdf_to_postgres --verbose` with `PGTZ=UTC` (see 3.4) and fails
-  if drt exits non-zero, printing drt's row-level errors in the Dagster message.
-- The stderr line `Token exchange failed, using external token: 'access_token'` appears on every
-  run, including successful ones. It did not affect any result.
+  password from the named environment variable) and set that variable in the asset before the run.
+- The asset sets `PGTZ=UTC` in the environment (see 3.4) and **raises when `rows_failed` is above
+  zero**. Tested without that check, with a source column the target lacks: dagster-drt logged
+  `2 extracted, 0 synced, 2 failed` and the row errors as WARNING lines, **the run ended
+  SUCCESS**, and a materialization was recorded with `rows_synced: 0` and `rows_failed: 2`. With the
+  check the same run fails and the row errors are in the log.
+- With the earlier subprocess version, the stderr line `Token exchange failed, using external token:
+  'access_token'` appeared on every run, including successful ones, and did not affect any result.
+  It was not looked for in the dagster-drt runs.
 
 ## 3. Findings (tested live unless a point says it comes from source)
 
@@ -145,7 +159,7 @@ source and the connector it uses (drt 1.0.0, databricks-sql-connector 4.6.0):
   **session timezone**. Europe/Athens is UTC+3 here, so 04:39 UTC became 04:39 Athens, which is
   01:39 UTC.
 
-Confirmed by test: rerunning drt with `PGTZ=UTC` wrote values that match ours. The Dagster job
+Confirmed by test: rerunning drt with `PGTZ=UTC` wrote values that match ours. The Dagster asset
 sets `PGTZ=UTC`. When running drt by hand, set it too, or use a plain `timestamp` column. This
 also means the result depends on the Databricks session timezone being UTC, which it was here; I
 did not test a workspace configured differently.
@@ -166,7 +180,7 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 | | drt (`mirror: tracked`) | Kafka / Debezium pipeline |
 |---|---|---|
 | What reads Databricks | SQL warehouse, the whole table, every run [source] | SQL warehouse (Dagster asset) or a cluster (notebook), only the changed rows via the change feed [tested] |
-| Moving parts | drt, one YAML file, one Dagster job [tested] | notebook or asset, Kafka topic, Kafka Connect worker, Debezium connector, RisingWave table, Dagster assets and jobs [tested] |
+| Moving parts | drt, one YAML file, one Dagster asset [tested] | notebook or asset, Kafka topic, Kafka Connect worker, Debezium connector, RisingWave table, Dagster assets and jobs [tested] |
 | Destinations | Postgres here; drt has many destination types, but no Kafka destination [source] | Postgres (JDBC sink) and RisingWave, from the same topic [tested] |
 | Deletes | Yes, tracked in a `_drt_synced_keys` table in the destination [tested] | Yes, from the change feed [tested] |
 | New source column | Sync fails until the target is altered by hand [tested] | Added to RisingWave and Postgres automatically [tested] |
@@ -217,7 +231,8 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 6. **Timezone and type care.** Timestamps lost 3 hours until `PGTZ=UTC` was set (section 3.4); the
    destination column types are ours to define and keep right. [tested]
 7. **Weaker summary.** The "N synced" line does not count deletes (section 3.1). [tested]
-8. **Third-party dependency.** drt is a v1.0.0 open-source project installed
+8. **Third-party dependencies.** drt is a v1.0.0 open-source project, and dagster-drt (v0.4.0,
+   classified Alpha, community-maintained) wraps it. Both are installed
    from PyPI, pinned by version and by the hashes in `uv.lock`, and it shares Dagster's environment, so
    its dependencies can clash with Dagster's in a future upgrade. Our Debezium plugin is pinned by sha512 and
    verified at build time (sink doc section 8). [tested]
@@ -277,6 +292,10 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 - Behaviour and run time on a large table (the demo table has a handful of rows).
 - Failure handling beyond the missing-column case (network loss, a partly failed batch).
 - Running drt on a schedule.
+- dagster-drt features beyond one asset: the `DrtSyncComponent` YAML component, the dry-run run
+  config, partitions, and `build_drt_change_sensor`. The sensor's README lists only `deltalake`,
+  `iceberg`, `snowflake` and `sqlserver` source profiles, not the `databricks` profile used here
+  [source].
 - Other destinations (the demo only writes to Postgres).
 - A dropped source column or a changed type in drt (section 4.1 reasons about it, nothing was run).
 - drt's `on_error` options and its retry behaviour.
@@ -287,11 +306,11 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 1. Build the Dagster image (`docker compose build dagster-webserver`; it installs drt from the
    lockfile) and start the stack. Make sure the `cdf` sync is set up (`reverse_etl_cdf_setup_job`).
 2. Run `reverse_etl_cdf_drt_setup_job` to create the target table in Postgres.
-3. Run `reverse_etl_cdf_drt_sync_job`. The first run baselines the tracked
+3. Materialize the asset `reverse_etl_cdf_drt_to_postgres` (Assets tab). The first run baselines the tracked
    mirror; change the source and run it again to see updates and deletes.
-4. To see the schema case, add a column to the source and run the job (it fails), then add the
+4. To see the schema case, add a column to the source and materialize the asset again (the run fails, with the row errors in the log), then add the
    column to `reverse_etl_cdf_drt_target` by hand (`ALTER TABLE`; the setup job does not add columns)
-   and run it again.
+   and materialize it again.
 5. To start over, run `reverse_etl_cdf_drt_reset_job`, then the setup job again. Tested: after the
    reset both tables and drt's local state were gone, and setup plus sync rebuilt the target (the
    first sync baselined, "no prior state ... baselining this run's 2 key(s)").

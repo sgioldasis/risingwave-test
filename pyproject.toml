@@ -44,6 +44,7 @@ dependencies = [
     "pymysql>=1.1.2",
     # reverse-ETL demo, see docs/poc/REVERSE_ETL_DRT_COMPARISON.md
     "drt-core[databricks,postgres]==1.0.0",
+    "dagster-drt==0.4.0",
 ]
 
 [tool.dagster]

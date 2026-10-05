@@ -23,9 +23,10 @@ from dagster import (
 from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTranslator
 
 from .assets.drt_demo import (
+    drt_resource,
     reverse_etl_cdf_drt_reset_job,
     reverse_etl_cdf_drt_setup_job,
-    reverse_etl_cdf_drt_sync_job,
+    reverse_etl_cdf_drt_to_postgres,
 )
 from .assets.reverse_etl_notebook_job import reverse_etl_notebook_sync_job
 from .constants import dbt_PROJECT_PATH
@@ -931,6 +932,7 @@ defs = Definitions.merge(
             *external_dbt_source_assets,
             # Yield iceberg_countries first (dependency of dbt assets)
             iceberg_countries,
+            reverse_etl_cdf_drt_to_postgres,
             modern_dashboard_preflight,
             # Create Python UDFs before dbt models run
             risingwave_python_udfs,
@@ -1000,7 +1002,6 @@ defs = Definitions.merge(
             reverse_etl_notebook_sync_job,
             reverse_etl_cdf_drt_reset_job,
             reverse_etl_cdf_drt_setup_job,
-            reverse_etl_cdf_drt_sync_job,
             casino_prd_full_job,
             casino_stg_job,
             casino_datafusion_job,
@@ -1038,6 +1039,7 @@ defs = Definitions.merge(
                 dbt_executable=os.getenv("DBT_EXECUTABLE", "dbt"),
             ),
             "spark": spark_session_resource,
+            "drt": drt_resource,
         },
     ),
     # Reverse-ETL syncs, one ReverseEtlCdfSync YAML instance each under

@@ -832,6 +832,19 @@ wheels = [
 ]
 
 [[package]]
+name = "dagster-drt"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dagster" },
+    { name = "drt-core" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/50/313e063a58dd8c4214ce5895733b0b7cacefb2cb6fc4cc6ff82e547d9e98/dagster_drt-0.4.0.tar.gz", hash = "sha256:2c22d0643eb4c645fab5e889b3f32afac83510e971d306dbeb37a0970985109b", size = 32077, upload-time = "2026-08-28T04:05:15.731Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/6f/41d910d0dc6bbbe719477a8821365f5bd239d2025187192a697f8618e12b/dagster_drt-0.4.0-py3-none-any.whl", hash = "sha256:7a26c3b5727d648addb7f667fe92c1116a3029411ae078947a97a3d0cc3e2a7d", size = 25765, upload-time = "2026-08-28T04:05:14.56Z" },
+]
+
+[[package]]
 name = "dagster-graphql"
 version = "1.13.19"
 source = { registry = "https://pypi.org/simple" }
@@ -3200,6 +3213,7 @@ dependencies = [
     { name = "dagster" },
     { name = "dagster-dbt" },
     { name = "dagster-dg-cli" },
+    { name = "dagster-drt" },
     { name = "dagster-webserver" },
     { name = "dash" },
     { name = "dash-bootstrap-components" },
@@ -3240,6 +3254,7 @@ requires-dist = [
     { name = "dagster", specifier = ">=1.13.3" },
     { name = "dagster-dbt", specifier = ">=0.29.3" },
     { name = "dagster-dg-cli", specifier = "==1.13.19" },
+    { name = "dagster-drt", specifier = "==0.4.0" },
     { name = "dagster-webserver", specifier = ">=1.13.3" },
     { name = "dash", specifier = ">=3.4.0" },
     { name = "dash-bootstrap-components", specifier = ">=1.4.0" },
