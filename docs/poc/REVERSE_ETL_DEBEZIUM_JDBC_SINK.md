@@ -11,6 +11,7 @@ an Avro spike and then an **Avro trial sync** (`avro` label, 14.1, 14.1.1), and 
 reverse-ETL tool in [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
+Demo script: [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md).
 Related: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) (APR-233), which describes the
 Databricks Change Data Feed (CDF) -> Kafka half of this pipeline. This document covers the second half:
 consuming that Kafka topic with the **Debezium JDBC sink connector** on **Kafka Connect** and upserting /
