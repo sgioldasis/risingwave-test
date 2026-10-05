@@ -11,25 +11,29 @@ only pipeline changes made along the way are the timestamp fixes in section 3.3.
 ## 1. What the demo does
 
 ```
-Databricks  de_dev.sr_poc_external.reverse_etl_cdf_source
+Databricks  de_dev.sr_poc_external.reverse_etl_<label>_source
    │  (drt reads it with a SQL query: SELECT *)
    ▼
-Postgres    reverse_etl_cdf_drt_target        (mode: mirror, strategy: tracked)
+Postgres    reverse_etl_<label>_drt_target        (mode: mirror, strategy: tracked)
 ```
 
 There is no Kafka, no change feed and no RisingWave in this path. The same source table feeds
-our pipeline in parallel, which is what makes the comparison direct.
+our pipeline in parallel, which is what makes the comparison direct. It exists for two syncs,
+label `cdf` (the POC) and `orders`; the rest of this document uses `cdf` in its examples and
+section 2 says how a label is added.
 
 | Piece | Where |
 |---|---|
-| drt project | `orchestration/drt_demo/drt_project.yml` |
-| Sync definition | `orchestration/drt_demo/syncs/cdf_to_postgres.yml` |
-| Dagster asset | `reverse_etl_cdf_drt_to_postgres` (group `reverse_etl_cdf_drt`, built with `dagster-drt`'s `@drt_assets`, in `orchestration/assets/drt_demo.py`) |
-| Dagster jobs | `reverse_etl_cdf_drt_setup_job` (creates the target table) and `reverse_etl_cdf_drt_reset_job` (drops it again) |
+| drt project | `orchestration/drt_demo/drt_project.yml` (one project, one sync file per label) |
+| Sync definitions | `orchestration/drt_demo/syncs/reverse_etl_<label>_drt.yml` |
+| Generic code | `orchestration/assets/reverse_etl_drt.py` (`build_drt_defs(cfg)`), component `orchestration/components/reverse_etl_drt_sync.py` (`ReverseEtlDrtSync`) |
+| One instance per label | `orchestration/defs/reverse_etl_<label>_drt/defs.yaml`, with `name: <label>` |
+| Dagster asset | `reverse_etl_<label>_drt_to_postgres` (group `reverse_etl_<label>_drt`, built with `dagster-drt`'s `@drt_assets`) |
+| Dagster jobs | `reverse_etl_<label>_drt_setup_job` (creates the target table) and `reverse_etl_<label>_drt_reset_job` (drops it again) |
 | Install | `pyproject.toml`: `drt-core[databricks,postgres]==1.0.0` and `dagster-drt==0.4.0`, locked in `uv.lock` |
-| Target table | Postgres `reverse_etl_cdf_drt_target` (plus drt's own `_drt_synced_keys`) |
+| Target table | Postgres `reverse_etl_<label>_drt_target` (plus drt's own `_drt_synced_keys`, shared by all drt syncs) |
 
-The names follow `reverse_etl_<label>_<role>` with label `cdf_drt`.
+The names follow `reverse_etl_<label>_<role>`; the drt sync's own name is `reverse_etl_<label>_drt`.
 
 ## 2. How it is installed and run
 
@@ -41,20 +45,35 @@ The names follow `reverse_etl_<label>_<role>` with label `cdf_drt`.
   locked changes. Earlier versions of the demo used a separate virtualenv and then a `drt`
   subprocess started by hand-written code; a dry-run install showed no dependency clash, and
   dagster-drt replaced the subprocess.
-- **The asset.** `reverse_etl_cdf_drt_to_postgres` is a Dagster asset made by `@drt_assets` from
-  the sync file, renamed to our convention with a `DagsterDrtTranslator`, and depending on the
-  Databricks source table's asset (`reverse_etl_cdf_table_setup`), so it appears downstream of the
-  source in the asset graph. Each run records `rows_extracted`, `rows_synced`, `rows_failed`,
+- **A reusable pattern, one label per sync.** `build_drt_defs(cfg)` takes the same
+  `ReverseEtlSyncConfig` the pipeline uses (source table, key column, names) and builds the
+  asset, the setup job and the reset job; every name is derived from `cfg.sync_name`. The
+  component `ReverseEtlDrtSync` calls it for the label given in its `defs.yaml`, which must be the
+  `name` of an existing `ReverseEtlCdfSync` instance. **To add a sync for another label:** add
+  `orchestration/defs/reverse_etl_<label>_drt/defs.yaml` (`type:
+  orchestration.components.reverse_etl_drt_sync.ReverseEtlDrtSync`, `name: <label>`) and
+  `orchestration/drt_demo/syncs/reverse_etl_<label>_drt.yml` (copy an existing one and change the
+  name, target table and source table). The sync file repeats names the config derives, so the
+  asset checks it against the config before running (name, target table, key column, source
+  table) and fails with the differences. That check was written but never triggered in a test.
+- **The asset.** `reverse_etl_<label>_drt_to_postgres` is a Dagster asset made by `@drt_assets`
+  from the sync file, renamed to our convention with a `DagsterDrtTranslator`, and depending on
+  the Databricks source table's asset (`reverse_etl_<label>_table_setup`), so it appears
+  downstream of the source in the asset graph. Each run records `rows_extracted`, `rows_synced`, `rows_failed`,
   `rows_skipped` and `duration_seconds` as metadata. It is materialized, not run as a job.
-- The setup job `reverse_etl_cdf_drt_setup_job` creates the target table, because drt never does.
-  It reads the Databricks source table's columns and creates `reverse_etl_cdf_drt_target` with the
-  matching Postgres types (the mapping the Debezium sink uses) and `rid` as the primary key. It uses
-  `CREATE TABLE IF NOT EXISTS`, so it does nothing when the table exists and never adds columns.
-- The reset job `reverse_etl_cdf_drt_reset_job` drops `reverse_etl_cdf_drt_target` and drt's
-  `_drt_synced_keys` table (a fixed drt name, in the same database, which would also hold the keys
-  of any other drt sync writing there) and deletes drt's local run state (`.drt` and `target` in the
-  work directory). It refuses to run unless the target table name starts with `reverse_etl_`. It does
-  not touch the Databricks source. After it, run the setup job; the next sync baselines again.
+- The setup job `reverse_etl_<label>_drt_setup_job` creates the target table, because drt never
+  does. It reads the Databricks source table's columns and creates `reverse_etl_<label>_drt_target`
+  with the matching Postgres types (the mapping the Debezium sink uses) and `rid` as the primary
+  key. It uses `CREATE TABLE IF NOT EXISTS`, so it does nothing when the table exists and never
+  adds columns.
+- The reset job `reverse_etl_<label>_drt_reset_job` drops the target table and deletes **only that
+  sync's rows** from drt's `_drt_synced_keys` table. That table has a fixed name, lives in the
+  destination database and is shared by every drt sync there, but has a `sync_name` column, so one
+  sync can be reset without touching another (tested: after resetting `orders`, the `cdf` rows
+  were intact and its next run did not baseline again). The job refuses to run unless the target
+  table name starts with `reverse_etl_`, and it does not touch the Databricks source. drt's local
+  run state in the work directory is not cleared; the tracked mirror's state is the key table.
+  After a reset, run the setup job; the next sync baselines again.
 - Before drt runs, the asset copies `orchestration/drt_demo/` to a writable work directory
   (`/home/dagster/drt-demo`; drt writes state next to the project and the source mount is
   read-only) and writes `~/.drt/profiles.yml` with only the workspace host and SQL warehouse path.
@@ -114,7 +133,7 @@ After `ALTER TABLE ... ADD COLUMNS (drt_probe STRING)` on the source:
 - CDF pipeline: the Dagster job `reverse_etl_notebook_sync_job` added the column to RisingWave,
   the notebook sent it through Kafka, and the Debezium sink added it to Postgres. `hello` arrived
   in both targets.
-- After `ALTER TABLE reverse_etl_cdf_drt_target ADD COLUMN drt_probe text` the drt job succeeded
+- After `ALTER TABLE reverse_etl_cdf_drt_target ADD COLUMN drt_probe text` the drt sync succeeded
   and the targets matched.
 
 A fixed column list in the drt `model` (instead of `SELECT *`) would keep the sync running, but
@@ -292,11 +311,15 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 - Behaviour and run time on a large table (the demo table has a handful of rows).
 - Failure handling beyond the missing-column case (network loss, a partly failed batch).
 - Running drt on a schedule.
-- dagster-drt features beyond one asset: the `DrtSyncComponent` YAML component, the dry-run run
+- dagster-drt features beyond one asset: its own `DrtSyncComponent` YAML component (ours is a separate
+  component that calls `build_drt_defs`), the dry-run run
   config, partitions, and `build_drt_change_sensor`. The sensor's README lists only `deltalake`,
   `iceberg`, `snowflake` and `sqlserver` source profiles, not the `databricks` profile used here
   [source].
 - Other destinations (the demo only writes to Postgres).
+- The sync-file check in `_check_sync_file` (see section 2), and the `orders` sync beyond setup, one
+  sync and a reset: its failure cases, changes to the source after the first run and added
+  columns were not repeated for `orders`.
 - A dropped source column or a changed type in drt (section 4.1 reasons about it, nothing was run).
 - drt's `on_error` options and its retry behaviour.
 - The notebook change on STG (uploaded, not run) and the drt demo against STG.
@@ -304,13 +327,15 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 ## 6. Reproducing it
 
 1. Build the Dagster image (`docker compose build dagster-webserver`; it installs drt from the
-   lockfile) and start the stack. Make sure the `cdf` sync is set up (`reverse_etl_cdf_setup_job`).
-2. Run `reverse_etl_cdf_drt_setup_job` to create the target table in Postgres.
-3. Materialize the asset `reverse_etl_cdf_drt_to_postgres` (Assets tab). The first run baselines the tracked
-   mirror; change the source and run it again to see updates and deletes.
-4. To see the schema case, add a column to the source and materialize the asset again (the run fails, with the row errors in the log), then add the
-   column to `reverse_etl_cdf_drt_target` by hand (`ALTER TABLE`; the setup job does not add columns)
-   and materialize it again.
-5. To start over, run `reverse_etl_cdf_drt_reset_job`, then the setup job again. Tested: after the
-   reset both tables and drt's local state were gone, and setup plus sync rebuilt the target (the
-   first sync baselined, "no prior state ... baselining this run's 2 key(s)").
+   lockfile) and start the stack. Make sure the pipeline sync for the label is set up
+   (`reverse_etl_<label>_setup_job`; labels `cdf` and `orders`).
+2. Run `reverse_etl_<label>_drt_setup_job` to create the target table in Postgres.
+3. Materialize the asset `reverse_etl_<label>_drt_to_postgres` (Assets tab). The first run
+   baselines the tracked mirror; change the source and run it again to see updates and deletes.
+4. To see the schema case, add a column to the source and materialize the asset again (the run
+   fails, with the row errors in the log), then add the column to the target by hand (`ALTER TABLE`;
+   the setup job does not add columns) and materialize it again.
+5. To start over, run `reverse_etl_<label>_drt_reset_job`, then the setup job again. Tested for
+   both labels: after the reset the target and that sync's key rows were gone, and setup plus sync
+   rebuilt the target (the first sync of the `cdf` label baselined, "no prior state ...
+   baselining this run's 2 key(s)").

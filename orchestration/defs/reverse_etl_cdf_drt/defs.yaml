@@ -1,0 +1,4 @@
+type: orchestration.components.reverse_etl_drt_sync.ReverseEtlDrtSync
+
+attributes:
+  name: cdf

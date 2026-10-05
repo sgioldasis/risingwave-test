@@ -1,13 +1,13 @@
-name: cdf_to_postgres
+name: reverse_etl_orders_drt
 description: >
-  The same Databricks table our CDF pipeline syncs (reverse_etl_cdf_source), written
+  The same Databricks table our CDF pipeline syncs (reverse_etl_orders_source), written
   straight into a separate Postgres table with drt, for comparison. No Kafka, no
   change feed, no RisingWave.
 model: |
-  SELECT * FROM de_dev.sr_poc_external.reverse_etl_cdf_source
+  SELECT * FROM de_dev.sr_poc_external.reverse_etl_orders_source
 destination:
   type: postgres
-  table: reverse_etl_cdf_drt_target
+  table: reverse_etl_orders_drt_target
   upsert_key: [rid]
   host: host.docker.internal
   port: 5432
