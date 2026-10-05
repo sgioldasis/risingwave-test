@@ -117,6 +117,9 @@ def _write_last_version(token: str, cfg: ReverseEtlSyncConfig, version: int) -> 
     )
 
 
+_MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+
+
 def _read_changes(token: str, cfg: ReverseEtlSyncConfig, since_version: int) -> list[dict[str, Any]]:
     """Batch-read CDF rows via table_changes(), from since_version (inclusive)
     through the latest available version.
@@ -131,9 +134,20 @@ def _read_changes(token: str, cfg: ReverseEtlSyncConfig, since_version: int) -> 
     handles preimage/postimage pairing regardless of order, but does not by
     itself fix the order *between* different commit versions.
     """
+    # The Statement Execution API returns a TIMESTAMP with three fractional digits, although the
+    # column keeps six, so timestamps are formatted here (the API session is UTC, hence the 'Z').
+    select_list = [
+        f"date_format(`{name}`, \"{_MICROSECOND_TIMESTAMP_FORMAT}\") AS `{name}`" if connect_type == ZONED_TIMESTAMP else f"`{name}`"
+        for name, connect_type, _ in _get_row_fields(token, cfg)
+    ]
+    select_list += [
+        CHANGE_TYPE_COLUMN,
+        COMMIT_VERSION_COLUMN,
+        f"date_format({COMMIT_TIMESTAMP_COLUMN}, \"{_MICROSECOND_TIMESTAMP_FORMAT}\") AS {COMMIT_TIMESTAMP_COLUMN}",
+    ]
     response = _run_sql(
         token,
-        f"SELECT * FROM table_changes('{cfg.source_fqn}', {since_version}) "
+        f"SELECT {', '.join(select_list)} FROM table_changes('{cfg.source_fqn}', {since_version}) "
         "ORDER BY _commit_version",
     )
     return _rows_as_dicts(response)

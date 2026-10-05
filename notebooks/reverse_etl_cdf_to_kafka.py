@@ -57,7 +57,7 @@ SOURCE = f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"
 STATE = f"{CATALOG}.{SCHEMA}.{STATE_TABLE}"
 KEY_COLUMNS = ["rid"]  # identity column on the source table; must match key_column in the sync's defs.yaml (default rid)
 
-# UTC so timestamps render as 2026-10-03T03:41:08.345Z, as in the Dagster messages.
+# UTC so timestamps render as 2026-10-03T03:41:08.345678Z (microseconds, as stored in Databricks).
 spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 # COMMAND ----------
@@ -136,7 +136,7 @@ def as_json_friendly(df):
     for field in df.schema.fields:
         c = F.col(field.name)
         if isinstance(field.dataType, T.TimestampType):
-            c = F.date_format(c, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            c = F.date_format(c, "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'")
         elif not isinstance(field.dataType, (T.NumericType, T.BooleanType, T.StringType)):
             c = c.cast("string")
         exprs.append(c.alias(field.name))
