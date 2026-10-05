@@ -387,6 +387,54 @@ for deletes. The change-feed pipeline (through the notebook) is the better fit. 
 section 4.6: drt for small or medium tables, the pipeline for large ones. A test with a large
 synthetic table would be needed to put numbers on any of this.
 
+### 4.8 Recommendation for tables with billions of rows and millions of daily changes
+
+A recommendation from what was tested and read in this project. **None of it was run at that scale.**
+
+**Use the change-feed pipeline through the notebook** (Delta change feed, Kafka, Debezium JDBC sink),
+not drt.
+- Cost follows the daily change, not the history: the change feed reads only the delta, where drt's
+  `mirror` rescans everything every run and keeps a key table as large as the source (4.7). [source]
+- Deletes come from the change feed itself. In drt's `incremental` mode they need a separate cleanup
+  step and guards that rebuild what the pipeline already has (4.7). [tested]
+- Added columns, microsecond timestamps, resets and the reusable component are already built and
+  tested for this pipeline. [tested]
+- A few million changes a day is on average only tens of rows per second (3 to 5 million a day is
+  roughly 35 to 60), which should be modest for Spark, Kafka and Postgres, though bursts matter.
+  [judgement]
+
+**What to change or check before using it at that size**
+1. **Run the notebook, not the Dagster asset.** The notebook runs on Spark. The asset reads through the
+   Statement Execution API with inline results, which I believe are capped at roughly 25 MiB (from
+   memory, not tested), so a few million changed rows would very likely break it.
+2. **Raise the sink throughput.** The connector runs with `tasks.max=1` while the topic has 15
+   partitions (sink doc section 13), so more tasks are possible; the sink's batch settings would also
+   need tuning. [source]
+3. **Load the history separately.** The pipeline's first run baselines at the table's current version
+   without loading the existing rows, unless a backfill is requested (the asset's first-run logic
+   in `reverse_etl_cdf_setup.py`, the notebook's `backfill_from_version`, and
+   `REVERSE_ETL_CDF_POC_PLAN.md`). A backfill through the change feed is limited to the retained
+   history, so the billions of historical rows need their own initial load, for example a Spark
+   batch job into the target. That is not built. [source]
+4. **Match the Delta history retention to the trigger schedule.** The change feed reaches back only as
+   far as the table's retained history, so a run that waits longer than that cannot resume; a read
+   that spans a column drop also fails (sink doc section 10.4). [tested for the drop]
+5. **Reconsider the message format.** Each message carries its schema as JSON; at volume Avro with a
+   schema registry (sink doc section 14.1) or compression would make messages smaller. [judgement]
+6. **Check that Postgres is the right target** for billions of rows; that depends on what reads it.
+   [judgement]
+7. **Source prerequisites.** The table needs Change Data Feed enabled and an identity `rid` key from
+   creation, and `rid` cannot be added to an existing table, so existing large tables would need a
+   rebuild or another key choice (sink doc section 13). [tested]
+
+**Where drt could still fit.** Small or medium reference tables; a large table that never has deletes;
+or one that handles deletes as soft deletes (a flag and an updated timestamp), using `incremental`
+mode with a trusted cursor column. [judgement; soft deletes were not tested]
+
+**What to do first.** A scale test before committing: a synthetic table with the change feed on and a
+few million changes per run, measuring the notebook's runtime, the Kafka Connect lag and the load on
+Postgres, which would turn the points above from reasoning into numbers.
+
 ## 5. Not tested
 
 - drt `incremental` mode (cursor on `updated_at`) and the `diff` strategy (needs a Postgres
