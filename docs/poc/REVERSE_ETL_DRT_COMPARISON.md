@@ -236,7 +236,8 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 ### 4.3 Where drt is worse
 
 1. **Full table read on every run.** Cost and run time grow with the table, not with the amount
-   of change. Fine for thousands of rows; not tested at all on a large table. [source/judgement]
+   of change. Fine for thousands of rows; not tested at all on a large table (see 4.7 for what
+   would happen at billions of rows). [source/judgement]
 2. **Delete detection needs all keys each run.** The `tracked` strategy compares the full key set
    with the previous one, so it presumably scales with table size too [judgement]. The first run only
    baselines and detects no deletes [tested].
@@ -304,11 +305,64 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 - **They are not exclusive.** drt could handle small reference tables while the pipeline carries
   the high-volume ones. This is a suggestion from this one demo, not a tested setup.
 
+### 4.7 A very large table: billions of rows, millions of changes a day
+
+Nothing in this section was run at that scale; the demo tables have a handful of rows. The first
+points come from drt's installed source (drt 1.0.0, databricks-sql-connector 4.6.0) and the key table
+as observed in the demo; the rest is reasoning, tagged as such.
+
+**The setup used in this demo (`mirror`, strategy `tracked`) would not work.**
+- **Full scan every run.** The model is `SELECT * FROM <source table>`, so every run reads the whole
+  table, however little changed. The Databricks source reads rows by iterating the cursor, one row
+  at a time, in a single Python process [source].
+- **Every row is written again.** Each row, changed or not, is written with
+  `INSERT ... ON CONFLICT ... DO UPDATE` [source]. I did not check how rows are batched.
+- **A key table as big as the source.** `tracked` keeps one row per key in `_drt_synced_keys`
+  (`sync_name`, a 64-character `key_hash`, the key as JSON) and compares it with the source's keys
+  on every run to find deletes [tested on two rows]. At billions of rows that table is as large as
+  the source. [judgement: its cost and the run time were not measured]
+- So the daily cost would follow the size of the history, not the size of the change. I would expect
+  runs of many hours or failures. [judgement]
+
+**What drt offers instead: `incremental` mode.** drt can fetch only rows whose cursor column is
+greater than the last watermark, either through `cursor_field` (for example `updated_at`) or a
+`{{ cursor_value }}` / `{{ watermark }}` placeholder in the model SQL (`engine/resolver.py`) [source].
+That reads only the daily delta, if Databricks can apply the filter cheaply. The conditions:
+- **No deletes.** Incremental mode does not detect deletes; that needs `mirror`, which is the full scan
+  above. Deletes would have to be handled another way. [source: the delete tracking is a `mirror`
+  feature]
+- **A trustworthy cursor column.** It must be set on every insert and update and never backdated;
+  rows that arrive late with an older value are missed. [judgement]
+- **Where the watermark lives.** By default in drt's local state in the work directory, which in our
+  setup is inside the Dagster container and is lost when the container is recreated. drt also
+  supports the state backends `local`, `gcs`, `s3` and `warehouse` [source: `state/factory.py`];
+  I did not evaluate them.
+- **Scan cost in Databricks.** Without clustering or partitioning on the cursor column the query may
+  still scan most of the table. [judgement]
+- **Throughput.** A single process writing a few million rows a day row by row is plausible but was
+  not measured. [judgement]
+
+**How the Kafka / Debezium pipeline compares at that size.** It reads only the change feed, including
+deletes, so the billions of historical rows do not matter. The two ways of running it differ:
+- **The notebook** runs on Spark and is the one that should scale.
+- **The Dagster asset** reads through the Statement Execution API with inline results. From my
+  memory of that API, inline results are capped at roughly 25 MiB, so a few million changed rows
+  would very likely exceed it; I have not tested this. At that volume the notebook, or the API's
+  external-links mode in the asset, would be needed.
+- Neither path was run at that scale.
+
+**Conclusion.** For billions of rows with millions of daily changes, `mirror`/`tracked` is not
+viable, and drt only fits in `incremental` mode with a trusted cursor column and a separate answer
+for deletes. The change-feed pipeline (through the notebook) is the better fit. This agrees with
+section 4.6: drt for small or medium tables, the pipeline for large ones. A test with a large
+synthetic table would be needed to put numbers on any of this.
+
 ## 5. Not tested
 
 - drt `incremental` mode (cursor on `updated_at`) and the `diff` strategy (needs a Postgres
   source, so not usable with Databricks as the source).
-- Behaviour and run time on a large table (the demo table has a handful of rows).
+- Behaviour and run time on a large table (the demo table has a handful of rows); section 4.7 is
+  reasoning from the source, not a measurement.
 - Failure handling beyond the missing-column case (network loss, a partly failed batch).
 - Running drt on a schedule.
 - dagster-drt features beyond one asset: its own `DrtSyncComponent` YAML component (ours is a separate
