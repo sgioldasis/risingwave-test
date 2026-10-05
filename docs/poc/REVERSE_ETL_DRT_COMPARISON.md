@@ -316,7 +316,8 @@ as observed in the demo; the rest is reasoning, tagged as such.
   table, however little changed. The Databricks source reads rows by iterating the cursor, one row
   at a time, in a single Python process [source].
 - **Every row is written again.** Each row, changed or not, is written with
-  `INSERT ... ON CONFLICT ... DO UPDATE` [source]. I did not check how rows are batched.
+  `INSERT ... ON CONFLICT ... DO UPDATE` [source], in batches of `sync.batch_size`, which defaults
+  to 100 rows [source]. Millions of rows are then tens of thousands of batches. [judgement]
 - **A key table as big as the source.** `tracked` keeps one row per key in `_drt_synced_keys`
   (`sync_name`, a 64-character `key_hash`, the key as JSON) and compares it with the source's keys
   on every run to find deletes [tested on two rows]. At billions of rows that table is as large as
@@ -341,6 +342,35 @@ That reads only the daily delta, if Databricks can apply the filter cheaply. The
   still scan most of the table. [judgement]
 - **Throughput.** A single process writing a few million rows a day row by row is plausible but was
   not measured. [judgement]
+
+**Deletes in `incremental` mode: using the Delta change feed (tested).** drt's own source says
+cursor-based incremental can never detect a delete, and that `incremental_strategy: diff` is the only
+strategy that can; `diff` needs a Postgres source, so it does not apply to Databricks
+(`config/sync_options.py`) [source]. The remaining idea is to read the change feed, which lists deleted
+rows, through drt. I tried it on a scratch Delta table with the change feed on: `mode: incremental`,
+`cursor_field: _commit_version`, `watermark.default_value` set to the table's version, and a model
+`SELECT rid, id, value, _change_type, _commit_version FROM table_changes('<table>', {{ cursor_value }})
+WHERE _change_type <> 'update_preimage' ORDER BY _commit_version` [tested]:
+- The templated cursor and `table_changes()` run, the first run uses `default_value`, and the stored
+  watermark advanced to the latest commit version.
+- **A deleted row is upserted, not deleted.** After an insert, an update and a delete on the source,
+  the deleted key arrived as an ordinary row with `_change_type = delete`. drt's Postgres destination
+  deletes only in the `mirror` pass, never per row [source: `destinations/postgres.py`], so a separate
+  `DELETE ... WHERE _change_type = 'delete'` in Postgres is needed.
+- **Deleted rows come back.** The cursor window is inclusive, so the next run re-read the last commit,
+  with no new source changes, and re-inserted the key I had just cleaned up.
+- **`{{ cursor_value }} + 1` avoids that but fails when there are no new commits:**
+  `DELTA_CDC_START_VERSION_AFTER_LATEST: Start version 5 ... exceeds the latest table version 4`. A guard
+  that checks the table's latest version first would be needed (our asset has one).
+- The target also receives the change-feed columns (`_change_type`, `_commit_version`) unless a view
+  hides them, and the watermark is kept in `local`, `gcs` or `bigquery` storage (`WatermarkConfig`
+  [source]); locally it is lost when the container is recreated.
+
+So it works, but only with a cleanup step, a first-run value and a no-new-commits guard around drt,
+which rebuilds the watermark, delete handling and error cases the change-feed pipeline already has.
+For a table with deletes that must reach Postgres, the pipeline is the better fit. Other options
+for deletes in `incremental` mode: soft deletes in the source (a flag and an updated timestamp instead
+of a physical delete) or accepting stale rows; neither was tested.
 
 **How the Kafka / Debezium pipeline compares at that size.** It reads only the change feed, including
 deletes, so the billions of historical rows do not matter. The two ways of running it differ:
