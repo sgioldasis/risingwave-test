@@ -301,6 +301,7 @@ of `ReverseEtlSyncConfig`, and the last rows describe the current structure.
 | `orchestration/definitions.py` | First imported the new asset and added it to the setup job. Later the reverse-ETL assets and jobs moved out: it now merges `load_defs(...)` of `orchestration/defs/` (section 14.4). |
 | `orchestration/assets/reverse_etl_cdf_setup.py` (later changes) | Added `KEY_COLUMN = "rid"` (the identity column, section 4.6): the source table is created with `rid BIGINT GENERATED ALWAYS AS IDENTITY` and the sync's `key_columns` is `[KEY_COLUMN]`. Added `_raw_messages()` and the `kafka_messages_raw` output metadata (first three messages with their embedded schema). `TIMESTAMP` columns use the `ZONED_TIMESTAMP` marker and `_connect_field()` (section 4.3). `reverse_etl_risingwave_setup.py` and `reverse_etl_debezium_sink.py` import `KEY_COLUMN` for the RisingWave primary key and `primary.key.fields`; the RisingWave type map gains `TIMESTAMPTZ`. 2026-10-05: `_read_changes()` lists the columns and formats timestamps with six fractional digits (section 4.3). |
 | `orchestration/assets/reverse_etl_reset.py` (new) | Op job `reverse_etl_cdf_reset_job` (section 14.3), built by `build_reset_job(cfg)`. |
+| `orchestration/assets/reverse_etl_health.py` (new, 2026-10-07) | The `sink_healthy` asset check on each sync's sink asset, and its job and 5-minute schedule, built by `build_reverse_etl_defs` (section 11). |
 | `notebooks/reverse_etl_cdf_to_kafka.py` (new) | PySpark version of the sync for Databricks (section 10.3). Since 2026-10-04 one notebook serves every sync through a `label` widget. 2026-10-05: timestamps formatted with six fractional digits (section 4.3). |
 | `databricks/reverse_etl_notebook_sync.json` (new) | The definition of the Databricks job that runs the notebook, with placeholders for the cluster id and notebook path (section 10.6). |
 | `orchestration/assets/reverse_etl_notebook_job.py` (new) | The Dagster job `reverse_etl_notebook_sync_job` that triggers the notebook's Databricks job with a `label` (section 10.6), registered in `definitions.py`. |
@@ -877,6 +878,22 @@ Notes and limits:
   the Kafka produce all happen in the container, which therefore needs a network path to the Kafka cluster (VPN
   today). A PySpark notebook that does the same work exists and was verified live (section 10.3); it is an
   alternative trigger, not a replacement, and the Dagster asset remains the default.
+- **Sink health check (added 2026-10-07).** Kafka Connect shows a connector as RUNNING even when its task has
+  FAILED, and does not restart the task, so Postgres can fall behind with every Dagster run green. That happened
+  after a one-off DNS failure (`No resolvable bootstrap urls`) and went unnoticed. Each sync now has an asset
+  check `sink_healthy` on its `..._jdbc_sink` asset (`reverse_etl_health.py`): ERROR if the connector or any task
+  is not RUNNING (with the first `Caused by` line of a failed task), WARN if the sink's consumer-group lag on the
+  topic is above 10,000 messages or cannot be read. A schedule `reverse_etl_<label>_sink_health_schedule` runs it
+  every 5 minutes through `reverse_etl_<label>_sink_health_job`; pause the schedule in the Dagster UI to stop it.
+  A failed check does not fail the run: it shows on the asset's Checks tab, and nobody is notified until an alert
+  destination (Slack, email or incident.io) is added (not built). The lag is read with a consumer that uses the
+  sink's group id only for `committed()` and never subscribes, so it does not join the group (the admin client's
+  `list_consumer_group_offsets` timed out on this cluster). A single snapshot cannot tell a backlog that is
+  draining right after a sync from a sink that is stuck, which is why lag is only a warning. It does not restart
+  a failed task: do that with `POST /connectors/<name>/tasks/0/restart` on Connect.
+  Tested 2026-10-07: healthy (pass), connector paused (ERROR), mocked FAILED task, missing connector, Connect
+  error and unreachable Connect; on first run it found the `cdf` and `orders` sink tasks FAILED with the DNS
+  error. Not tested: a stuck-but-RUNNING task, and delivery of any alert.
 - **Starting over.** Run `reverse_etl_cdf_reset_job`, then `reverse_etl_cdf_setup_job` (which seeds), then
   the sync (section 10, "Starting a new demo from a known state"). To repair only the RisingWave table, rebuild it (section 10.4).
 - **Which Kafka.** The data topic lives on Kaizen's staging Kafka cluster (SASL_SSL, SCRAM-SHA-512), named in

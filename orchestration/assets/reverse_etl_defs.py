@@ -1,6 +1,6 @@
 """Turn a ReverseEtlSyncConfig into Dagster definitions: the four assets (source
 table setup, CDF -> Kafka, RisingWave table, Debezium JDBC sink), a setup job that
-materializes them in order, and a reset job. Optionally also an asset that creates
+materializes them in order, a reset job, and a sink health check with its job and schedule. Optionally also an asset that creates
 the sync's Kafka topic (config.create_topic_asset).
 
     defs = Definitions.merge(base_defs, build_reverse_etl_defs(config))
@@ -21,6 +21,7 @@ from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION, _admi
 from .reverse_etl_cdf_setup import build_seed_asset, build_sync_asset, build_table_setup_asset
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
+from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
 from .reverse_etl_reset import build_reset_job
 from .reverse_etl_risingwave_setup import build_risingwave_table_asset
 
@@ -79,4 +80,11 @@ def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         ),
         executor_def=in_process_executor,
     )
-    return Definitions(assets=assets, jobs=[setup_job, build_reset_job(cfg)])
+    health_check = build_sink_health_check(cfg)
+    health_job, health_schedule = build_sink_health_job_and_schedule(cfg, health_check)
+    return Definitions(
+        assets=assets,
+        asset_checks=[health_check],
+        jobs=[setup_job, build_reset_job(cfg), health_job],
+        schedules=[health_schedule],
+    )
