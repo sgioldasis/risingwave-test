@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1260" viewBox="0 0 1500 1260" font-family="Helvetica, Arial, sans-serif"><rect width="1500" height="1260" fill="white"/><defs><marker id="af97316" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f97316"/></marker><marker id="a16a34a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker><marker id="a2563eb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker></defs><rect x="20" y="20" width="1460" height="290" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+<text x="34" y="44" font-size="17" font-weight="700" fill="#0f172a">Databricks (DEV workspace)</text>
+<rect x="20" y="370" width="1460" height="260" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+<text x="34" y="394" font-size="17" font-weight="700" fill="#0f172a">Dagster (localhost:3000)</text>
+<rect x="300" y="700" width="900" height="170" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+<text x="314" y="724" font-size="17" font-weight="700" fill="#0f172a">Kaizen staging</text>
+<rect x="300" y="940" width="1180" height="300" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+<text x="314" y="964" font-size="17" font-weight="700" fill="#0f172a">Local (docker + host)</text>
+<path d="M1120,80 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="1260.0" y="106.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_source</text>
+<text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Delta + Change Data Feed, key rid</text>
+<path d="M60,210 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="200.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_state</text>
+<text x="200.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">watermark: last version synced</text>
+<rect x="600" y="70" width="300" height="70" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
+<text x="750.0" y="101.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION B: Databricks job</text>
+<text x="750.0" y="119.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync</text>
+<rect x="600" y="200" width="300" height="80" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="750.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Notebook reverse_etl_cdf_to_kafka</text>
+<text x="750.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(one notebook for every label)</text>
+<rect x="60" y="430" width="200" height="60" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="160.0" y="465.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_setup_job</text>
+<rect x="60" y="520" width="200" height="60" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="160.0" y="555.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_reset_job</text>
+<rect x="560" y="430" width="320" height="100" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
+<text x="720.0" y="467.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION A: asset</text>
+<text x="720.0" y="485.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_to_kafka</text>
+<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(run A OR B, never both: shared watermark)</text>
+<rect x="1000" y="430" width="280" height="70" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="1140.0" y="461.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync_job</text>
+<text x="1140.0" y="479.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(starts option B)</text>
+<polygon points="1320,430 1440,430 1460,480.0 1440,530 1320,530 1300,480.0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="1380.0" y="467.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Dagster asset check</text>
+<text x="1380.0" y="485.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">sink_healthy</text>
+<text x="1380.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">every 5 min</text>
+<rect x="360" y="740" width="300" height="80" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="510.0" y="767.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Kafka topic reverse_etl_avro_topic</text>
+<text x="510.0" y="785.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Debezium change events (Avro):</text>
+<text x="510.0" y="803.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">before / after / op</text>
+<rect x="820" y="740" width="320" height="80" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="980.0" y="776.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Apicurio registry</text>
+<text x="980.0" y="794.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">topic-key, topic-value</text>
+<path d="M340,1010 v70 a150.0,10 0 0 0 300,0 v-70 a150.0,10 0 0 0 -300,0 a150.0,10 0 0 0 300,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="490.0" y="1032.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">RisingWave</text>
+<text x="490.0" y="1050.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_target</text>
+<text x="490.0" y="1068.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">FORMAT DEBEZIUM ENCODE AVRO</text>
+<rect x="1210" y="1000" width="260" height="90" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="1340.0" y="1032.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Kafka Connect</text>
+<text x="1340.0" y="1050.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Debezium JDBC sink connector</text>
+<text x="1340.0" y="1068.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_sink</text>
+<path d="M1240,1150 v60 a100.0,10 0 0 0 200,0 v-60 a100.0,10 0 0 0 -200,0 a100.0,10 0 0 0 200,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="1340.0" y="1176.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Postgres</text>
+<text x="1340.0" y="1194.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_target</text>
+<path d="M1180,150 L1180,230 L900,230" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
+<rect x="952.2" y="219" width="175.6" height="20" fill="white" opacity="0.92"/>
+<text x="1040" y="234" font-size="13" text-anchor="middle" fill="#0f172a">changes since watermark</text>
+<path d="M750,140 L750,200" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
+<rect x="755.6" y="159" width="38.8" height="20" fill="white" opacity="0.92"/>
+<text x="775" y="174" font-size="13" text-anchor="middle" fill="#0f172a">runs</text>
+<path d="M600,255 L340,255" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
+<rect x="447.0" y="244" width="46.0" height="20" fill="white" opacity="0.92"/>
+<text x="470" y="259" font-size="13" text-anchor="middle" fill="#0f172a">moves</text>
+<path d="M1340,150 L1340,345 L800,345 L800,430" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
+<rect x="982.2" y="334" width="175.6" height="20" fill="white" opacity="0.92"/>
+<text x="1070" y="349" font-size="13" text-anchor="middle" fill="#0f172a">changes since watermark</text>
+<path d="M610,280 L610,305 L520,305 L520,740" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
+<rect x="468.2" y="409" width="103.60000000000001" height="20" fill="white" opacity="0.92"/>
+<text x="520" y="424" font-size="13" text-anchor="middle" fill="#0f172a">Avro messages</text>
+<path d="M890,280 L890,300 L940,300 L940,740" fill="none" stroke="#f97316" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#af97316)"/>
+<rect x="873.8" y="649" width="132.4" height="20" fill="white" opacity="0.92"/>
+<text x="940" y="664" font-size="13" text-anchor="middle" fill="#0f172a">registers schemas</text>
+<path d="M640,430 L640,345 L200,345 L200,280" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
+<rect x="307.0" y="334" width="46.0" height="20" fill="white" opacity="0.92"/>
+<text x="330" y="349" font-size="13" text-anchor="middle" fill="#0f172a">moves</text>
+<path d="M1040,430 L1040,105 L900,105" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
+<rect x="1009.8" y="369" width="60.4" height="20" fill="white" opacity="0.92"/>
+<text x="1040" y="384" font-size="13" text-anchor="middle" fill="#0f172a">run-now</text>
+<path d="M260,460 L420,460 L420,740" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
+<rect x="350.2" y="604" width="139.6" height="20" fill="white" opacity="0.92"/>
+<text x="420" y="619" font-size="13" text-anchor="middle" fill="#0f172a">creates everything</text>
+<path d="M260,550 L480,550 L480,740" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
+<rect x="410.2" y="649" width="139.6" height="20" fill="white" opacity="0.92"/>
+<text x="480" y="664" font-size="13" text-anchor="middle" fill="#0f172a">removes everything</text>
+<path d="M620,530 L620,740" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
+<rect x="568.2" y="584" width="103.60000000000001" height="20" fill="white" opacity="0.92"/>
+<text x="620" y="599" font-size="13" text-anchor="middle" fill="#0f172a">Avro messages</text>
+<path d="M850,530 L850,740" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#a16a34a)"/>
+<rect x="783.8" y="584" width="132.4" height="20" fill="white" opacity="0.92"/>
+<text x="850" y="599" font-size="13" text-anchor="middle" fill="#0f172a">registers schemas</text>
+<path d="M1320,530 L1320,780 L1200,780" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#a16a34a)"/>
+<rect x="1190.2" y="639" width="139.6" height="20" fill="white" opacity="0.92"/>
+<text x="1260" y="654" font-size="13" text-anchor="middle" fill="#0f172a">consumer group lag</text>
+<path d="M1380,530 L1380,1000" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#a16a34a)"/>
+<rect x="1321.0" y="749" width="118.0" height="20" fill="white" opacity="0.92"/>
+<text x="1380" y="764" font-size="13" text-anchor="middle" fill="#0f172a">connector state</text>
+<path d="M420,820 L420,1000" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#a2563eb)"/>
+<path d="M640,820 L640,900 L1000,900 L1000,1045 L1210,1045" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#a2563eb)"/>
+<path d="M880,820 L880,1040 L640,1040" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#a2563eb)"/>
+<rect x="831.8" y="964" width="96.4" height="20" fill="white" opacity="0.92"/>
+<text x="880" y="979" font-size="13" text-anchor="middle" fill="#0f172a">schema by id</text>
+<path d="M1100,820 L1100,960 L1300,960 L1300,1000" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#a2563eb)"/>
+<rect x="1151.8" y="949" width="96.4" height="20" fill="white" opacity="0.92"/>
+<text x="1200" y="964" font-size="13" text-anchor="middle" fill="#0f172a">schema by id</text>
+<path d="M1340,1090 L1340,1140" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#a2563eb)"/>
+<rect x="1273.8" y="1104" width="132.4" height="20" fill="white" opacity="0.92"/>
+<text x="1340" y="1119" font-size="13" text-anchor="middle" fill="#0f172a">upserts / deletes</text></svg>

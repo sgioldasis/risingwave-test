@@ -72,6 +72,26 @@ Names are for the `avro` sync. Every name is `reverse_etl_<label>_<role>`, so fo
 The two readers of the topic are independent: each keeps its own place in it, so one can fall behind or stop
 without the other noticing (the demo in section 7 uses this).
 
+The same picture as a drawn diagram, with the Dagster jobs and the health check added:
+
+![Reverse-ETL components](img/reverse_etl_components.png)
+
+(The drawing is `img/reverse_etl_components.svg`, a plain-text SVG you can edit; the PNG is the same drawing
+exported at 2x. It is drawn by hand, not generated, because Mermaid laid the arrows out poorly.)
+
+Debezium appears three times: the messages on the topic are Debezium change events (`before`, `after`, `op`), the
+Kafka Connect connector is the Debezium JDBC sink, and RisingWave reads the topic with `FORMAT DEBEZIUM ENCODE AVRO`.
+
+Arrow colours show where an arrow starts: orange from Databricks, green from Dagster, blue from the other
+components (Kafka, the registry, Kafka Connect). Solid arrows are data, dotted arrows are lookups and checks. The sync is the two yellow nodes, and you run
+either one, never both for the same change, because they share the watermark. Option A is the Dagster asset
+(you run it in Dagster). Option B is the Databricks job, which Dagster's `reverse_etl_notebook_sync_job` starts.
+Both do the same steps (read the changes, register the schemas, produce the messages, move the watermark), so
+each has its own arrows to the source, the watermark, the topic (the Avro messages, solid arrow) and the
+registry (the schemas, dotted arrow).
+The health check (`sink_healthy`) is in the Dagster box; its dotted arrows go to Kafka Connect (connector state) and to
+the Kaizen staging box (consumer group lag).
+
 ### Databricks (DEV workspace, `de_dev.sr_poc_external`)
 
 | Object | What it is |
