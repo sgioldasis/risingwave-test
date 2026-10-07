@@ -1,14 +1,16 @@
 # Reverse-ETL CDF POC: Debezium JDBC sink into Postgres
 
-Date: 2026-10-02 (updated 2026-10-05). Since the first version: a **single topic** read by both RisingWave and
+Date: 2026-10-02 (updated 2026-10-07). Since the first version: a **single topic** read by both RisingWave and
 the Debezium sink (sections 2, 3, 10.2), a surrogate **`rid` key** (4.6), real **timestamp** types (4.3), a
 **reset job** (14.3), a **Databricks notebook** version of the sync (10.3), tested behaviour for column
 drops and type changes (10.4), and, since 2026-10-04, a **reusable Dagster component** with uniform
 `reverse_etl_<label>_<role>` names, a **seed asset**, a **second sync** (10.5, 14.4), and a **label-driven
 notebook** with a **Dagster job** that triggers it (10.3, 10.6), and, since 2026-10-05, **microsecond
 timestamps** (4.3), the Databricks job definition in git (10.6), a per-sync `tasks.max` with a throughput test (13),
-an Avro spike and then an **Avro trial sync** (`avro` label, 14.1, 14.1.1), and a comparison with the drt
-reverse-ETL tool in [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). Names in sections that
+an Avro spike and then an **Avro trial sync** (`avro` label, 14.1, 14.1.1), a comparison with the drt
+reverse-ETL tool in [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md), and, since 2026-10-07, a
+fix for **partial reads of large Databricks results** (13), a **sink health check** (11) and a partial
+**Databricks cost measurement** (14.1.2). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Demo script: [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md).
@@ -863,7 +865,7 @@ Notes and limits:
 - **Which asset to run when.** After any change to the Databricks table, materialize **only**
   `reverse_etl_cdf_to_kafka`: it reads the change feed since its watermark, adds any new column to the
   RisingWave table, and produces the events; the connector and the RisingWave table pick them up within
-  seconds. Nothing is scheduled, so the sync only runs when triggered. The other assets in
+  seconds. Nothing is scheduled except the sink health check (below), so the sync only runs when triggered. The other assets in
   `reverse_etl_cdf_setup_job` are one-time setup (plus `reverse_etl_cdf_table_setup`, `reverse_etl_cdf_topic_setup`
   and the demo seed `reverse_etl_cdf_seed`, which do not move data either):
   - `reverse_etl_cdf_risingwave_target` creates the RisingWave table that reads the topic. Run it again only
@@ -928,7 +930,8 @@ Notes and limits:
 | Messages rejected: "schema" / not a Struct errors | The message was not produced in the schema-embedded format (for example someone produced to the topic by hand with plain JSON). Only `_build_connect_json_message()` output is valid. |
 | RisingWave table `reverse_etl_cdf_target` stops updating, or is missing new columns | It was created before the single-topic change and still reads the retired schemaless topic. Migrate it (section 10.2). |
 | Deletes not applied | `delete.enabled` must be `true` and `primary.key.mode` must be `record_key`, and the message must have `op = "d"` with the row in `before`. |
-| Connector shows `RUNNING` but rows stop arriving | Check the **task** state, not just the connector: `GET /connectors/reverse_etl_cdf_sink/status`. A `FAILED` task usually means a value the Postgres column cannot hold (for example a widened integer, section 10.4). Fix the column, then `POST /connectors/reverse_etl_cdf_sink/tasks/0/restart`. |
+| Connector shows `RUNNING` but rows stop arriving | Check the **task** state, not just the connector: `GET /connectors/reverse_etl_cdf_sink/status`. The `sink_healthy` asset check (section 11) does this every 5 minutes and shows the result on the sink asset's Checks tab. A `FAILED` task usually means a value the Postgres column cannot hold (for example a widened integer, section 10.4) or a transient network error (next row). Fix the cause, then `POST /connectors/reverse_etl_cdf_sink/tasks/0/restart`. |
+| Sink task `FAILED` with `Failed to construct kafka consumer` / `No resolvable bootstrap urls` | The Connect container could not resolve the staging Kafka host when its consumer was created (seen 2026-10-07 on all three syncs; cause not found, and the name resolved fine afterwards). Restart the task (`POST /connectors/<name>/tasks/0/restart`); it resumes from its committed offsets. Connect does not restart it by itself. |
 | Sync fails with `DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE` | A column was dropped or retyped and the change feed read starts before it. Section 10.4: it fails every run until the watermark is moved past the change; or use the reset job. |
 | Postgres table does not exist right after setup or reset | Expected: the sink creates it on the first message, so it appears after the first sync that has changes (section 10). |
 | `INSERT` into the source table fails after reset and setup | The table now has an identity column `rid`; list the columns explicitly (`INSERT INTO t (id, value, ...) VALUES (...)`). |
@@ -998,7 +1001,14 @@ Notes and limits:
   arrived in full in Postgres and RisingWave (counts 100,002, then back to 2), and mocked results covering the
   merge of three chunks, a count mismatch and the truncated flag. Not tested: the roughly 25 MiB inline cap
   (from memory), and anything beyond 100,000 rows per run; a few million rows a day should use the notebook.
-- **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step.
+- **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step. Only the sink health check is
+  scheduled (section 11).
+- **No alerts.** A failed `sink_healthy` check, a failed run or a failed Databricks job notifies nobody; they show
+  only in the Dagster and Databricks UIs. Slack, email or incident.io were discussed, none is built (an alert
+  destination and its credentials are needed).
+- **STG is not set up.** The STG workspace holds the notebook (re-uploaded 2026-10-07 with the Avro option,
+  identical to the repo) but has no `reverse_etl_notebook_sync` job, because no cluster there is known to reach the
+  Kafka brokers, and nothing has run on STG. The Dagster trigger only talks to the DEV workspace.
 - **The notebook job is tied to one person.** The Databricks job `reverse_etl_notebook_sync` was created by hand
   and runs as its owner on the owner's single-user cluster; the Dagster job only triggers it (section 10.6). Its
   definition is in `databricks/reverse_etl_notebook_sync.json`, but nothing creates the job automatically, and the

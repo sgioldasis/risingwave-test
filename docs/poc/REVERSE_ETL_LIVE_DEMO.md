@@ -140,10 +140,12 @@ A DB client may display `updated_at_ts` as `2026-10-05 10:09:16.675 +0300`. The 
 
 ## If something goes wrong
 
+- **Is the sink alive?** Each sink asset has a `sink_healthy` check (Checks tab of `reverse_etl_avro_jdbc_sink`),
+  run every 5 minutes; it fails if the connector or a task is not RUNNING. Good to show at the end of the demo.
 - **Sink connector FAILED:** `docker exec kafka-connect curl -s localhost:8083/connectors/reverse_etl_avro_sink/status`
-  shows the cause. The failure seen while building was a schema registered in the wrong string form
-  (`The given schema does not match any schema under the subject ...`); it is fixed in the code, and a reset plus
-  setup recovers from it.
+  shows the cause. Two failures were seen: a schema registered in the wrong string form (`The given schema does
+  not match any schema under the subject ...`), fixed in the code, where a reset plus setup recovers; and a
+  transient DNS error (`No resolvable bootstrap urls`), fixed by `POST /connectors/<name>/tasks/0/restart` on Connect.
 - **A Dagster run fails at the Databricks step:** check the VPN and the credentials in `.env`.
 - **A column did not arrive in RisingWave:** it only fills a column from messages read after the column exists;
   run the sync asset again after the column is added, and see section 10.1 of the sink doc.

@@ -468,7 +468,7 @@ Postgres, which would turn the points above from reasoning into numbers.
   columns were not repeated for `orders`.
 - A dropped source column or a changed type in drt (section 4.1 reasons about it, nothing was run).
 - drt's `on_error` options and its retry behaviour.
-- The notebook change on STG (uploaded, not run) and the drt demo against STG.
+- The notebook change on STG (uploaded, last re-uploaded 2026-10-07, never run; STG has no job) and the drt demo against STG.
 
 ## 6. Reproducing it
 
