@@ -25,6 +25,118 @@ Databricks Delta table (Change Data Feed)
    schemas: shared staging Apicurio registry (reverse_etl_avro_topic-key / -value)
 ```
 
+## The components
+
+Names are for the `avro` sync. Every name is `reverse_etl_<label>_<role>`, so for `cdf` or `orders` replace `avro`.
+
+### Diagram
+
+```
+ DATABRICKS (DEV workspace)
+ +-----------------------------------------------------------------+
+ | reverse_etl_avro_source  Delta table, Change Data Feed, key rid |
+ | reverse_etl_avro_state   watermark: last table version synced   |
+ +--------------------------------+--------------------------------+
+                                 | changes since the watermark
+                                 v
+ +-----------------------------------------------------------------+
+ | THE SYNC, run by either                                         |
+ |   - Dagster asset    reverse_etl_avro_to_kafka                  |
+ |   - Databricks job   reverse_etl_notebook_sync (a notebook)     |
+ | builds before/after/op events, produces Avro messages, then     |
+ | moves the watermark                                             |
+ +-------------+-----------------------------------+---------------+
+               | messages                          | registers schemas
+               v                                   v
+ +------------------------------+     +-------------------------------+
+ | STAGING KAFKA                |     | APICURIO REGISTRY (staging)   |
+ | topic reverse_etl_avro_topic |     | reverse_etl_avro_topic-key    |
+ | (15 partitions)              |     | reverse_etl_avro_topic-value  |
+ +---------+-------------+------+     +-------------------------------+
+           | reads       | reads         (both readers look up each
+           v             v                message's schema here, by id)
+ +-----------------+  +--------------------------------+
+ | KAFKA CONNECT   |  | RISINGWAVE (local)             |
+ | connector       |  | table reverse_etl_avro_target  |
+ | reverse_etl_    |  | FORMAT DEBEZIUM ENCODE AVRO    |
+ |   avro_sink     |  +--------------------------------+
+ +--------+--------+
+          | upserts / deletes
+          v
+ +--------------------------------+
+ | POSTGRES (host)                |
+ | table reverse_etl_avro_target  |
+ +--------------------------------+
+```
+
+The two readers of the topic are independent: each keeps its own place in it, so one can fall behind or stop
+without the other noticing (the demo in section 7 uses this).
+
+### Databricks (DEV workspace, `de_dev.sr_poc_external`)
+
+| Object | What it is |
+|---|---|
+| `reverse_etl_avro_source` | The Delta table you change in the demo. Change Data Feed is on, and `rid` is an identity column Databricks assigns on insert; it is the key everywhere downstream. |
+| `reverse_etl_avro_state` | The watermark table: one row per sync with the last table version already synced. The next run reads from the version after it. |
+| Notebook `reverse_etl_cdf_to_kafka` | The sync as a PySpark notebook, one notebook for every label (the `label` and `encoding` widgets choose the sync and the format). |
+| Databricks job `reverse_etl_notebook_sync` | Runs that notebook, with `label` and `encoding` as job parameters. It runs on the author's cluster and exists only in the DEV workspace. |
+
+### Dagster (http://localhost:3000)
+
+| Object | Kind | What it does |
+|---|---|---|
+| `reverse_etl_avro_table_setup` | asset | Creates the source and watermark tables if they do not exist. |
+| `reverse_etl_avro_topic_setup` | asset | Creates the Kafka topic if it does not exist. |
+| `reverse_etl_avro_to_kafka` | asset | **The sync.** Reads the change feed since the watermark, makes the Debezium-style events, registers the schemas, produces Avro messages, moves the watermark, and adds new columns to the RisingWave table first. Run this after every change. |
+| `reverse_etl_avro_risingwave_target` | asset | Creates the RisingWave table that reads the topic. |
+| `reverse_etl_avro_jdbc_sink` | asset | Registers the Kafka Connect connector and waits until it is RUNNING. |
+| `reverse_etl_avro_seed` | asset | Writes the three demo rows (insert, update, delete) to Databricks, as the last setup step. |
+| `sink_healthy` | asset check, on `reverse_etl_avro_jdbc_sink` | Reads the connector and task states from Connect and the sink's lag from Kafka (section 7). |
+| `reverse_etl_avro_setup_job` | job | Runs the assets above in order. Section 2. |
+| `reverse_etl_avro_reset_job` | job | Removes the connector, both target tables, the topic, the two registry subjects and the Databricks tables. Section 1 and 8. |
+| `reverse_etl_avro_sink_health_job` | job | Runs only the `sink_healthy` check. |
+| `reverse_etl_avro_sink_health_schedule` | schedule | Runs the health job every 5 minutes. |
+| `reverse_etl_notebook_sync_job` | job (shared by all syncs) | Adds any missing RisingWave columns, then triggers the Databricks job for the label in its run config. Section 6. |
+
+### Kafka, registry and Connect
+
+| Object | What it is |
+|---|---|
+| Topic `reverse_etl_avro_topic` | On Kaizen's staging Kafka cluster. Each message is one change: the key is `{rid}`, the value has `before`, `after`, `op` (`c`, `u` or `d`) and `source`, in Avro. |
+| Apicurio registry | The shared staging registry (anonymous read and write, used by other teams). Holds the schemas `reverse_etl_avro_topic-key` and `reverse_etl_avro_topic-value`, through its Confluent-compatible API (`/apis/ccompat/v7`), in the default group. Messages carry only a schema id; readers look the schema up. |
+| Container `kafka-connect` | Kafka Connect with the Debezium JDBC sink plugin and the Confluent Avro converter, running locally. Its own bookkeeping topics are on the local Redpanda. |
+| Connector `reverse_etl_avro_sink` | Reads the topic (consumer group `connect-reverse_etl_avro_sink`) and upserts or deletes rows in Postgres, one task. Created by the `reverse_etl_avro_jdbc_sink` asset. |
+
+### Targets (local)
+
+| Object | What it is |
+|---|---|
+| Postgres, table `reverse_etl_avro_target` | On the host Postgres (database `postgres`). Created by the sink on the first message; the sink also adds new columns. |
+| RisingWave, table `reverse_etl_avro_target` | Reads the topic itself, with `FORMAT DEBEZIUM ENCODE AVRO`. The timestamp arrives as text in `updated_at`, and a generated `updated_at_ts` column is the real `timestamptz`. New columns are added by the sync asset before the messages that carry them. |
+
+### Where the code is
+
+| Piece | File |
+|---|---|
+| The sync's definition (name, columns, seed, `encoding: avro`) | `orchestration/defs/reverse_etl_avro/defs.yaml` |
+| The sync asset, schema building, producer | `orchestration/assets/reverse_etl_cdf_setup.py` |
+| Connector registration | `orchestration/assets/reverse_etl_debezium_sink.py` |
+| RisingWave table and column handling | `orchestration/assets/reverse_etl_risingwave_setup.py` |
+| Reset job | `orchestration/assets/reverse_etl_reset.py` |
+| Health check, job and schedule | `orchestration/assets/reverse_etl_health.py` |
+| Notebook trigger job | `orchestration/assets/reverse_etl_notebook_job.py` |
+| The notebook | `notebooks/reverse_etl_cdf_to_kafka.py` |
+| Connect image (Debezium plugin, Avro converter) | `Dockerfile.debezium-connect` |
+
+### Which run does what
+
+| You want to | Run |
+|---|---|
+| Sync a change from Databricks | `reverse_etl_avro_to_kafka` (or the notebook through `reverse_etl_notebook_sync_job`; use one trigger per change, they share a watermark) |
+| Build everything from scratch | `reverse_etl_avro_setup_job` |
+| Throw everything away | `reverse_etl_avro_reset_job`, then the setup job to start again |
+| Check the sink is alive | `reverse_etl_avro_sink_health_job` (or wait for the schedule) |
+
 ## Before you start
 
 - The local stack is up (`./bin/1_up.sh`) and `kafka-connect` was built with the Avro converter
