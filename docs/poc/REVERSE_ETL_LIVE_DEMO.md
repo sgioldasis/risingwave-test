@@ -110,7 +110,70 @@ It triggers the DEV job `reverse_etl_notebook_sync` with `label=avro` and `encod
 targets. The registry stays at its current version, because the notebook builds the identical schema.
 (The job only exists in the DEV workspace; STG has the notebook but no job yet.)
 
-## 7. Clean up
+## 7. Show the sink health check (optional, about 5 minutes)
+
+Kafka Connect reports a connector as RUNNING even when its task has failed, and does not restart it, so a dead
+sink does not fail any Dagster run. Each sync has an asset check, `sink_healthy`, on its sink asset
+(`reverse_etl_avro_jdbc_sink`) that reads the connector and task states from Connect and the sink's lag from
+Kafka. A schedule runs it every 5 minutes through `reverse_etl_avro_sink_health_job`.
+
+**Where to see it in the Dagster UI** (http://localhost:3000):
+- **Asset page, Checks tab.** Left sidebar: **Catalog** (called **Assets** in some versions), search for
+  `jdbc_sink` and click `reverse_etl_avro_jdbc_sink`, then the **Checks** tab. It lists `sink_healthy` with the latest
+  result, severity and description; click it for the history.
+- **Lineage.** Left sidebar: **Lineage**, search `key:"reverse_etl_avro_jdbc_sink"`. The check is not a node of its
+  own: it shows as the **Asset checks** row on the sink asset's node (a status once the check has run, a dash if it
+  has not or the page is stale). Click the node for the side panel; **View in Asset Catalog** opens the asset page
+  with the Checks tab.
+- **Run page.** Open any run of `reverse_etl_avro_sink_health_job`: the result is an "asset check evaluation" entry
+  in the event log.
+- **A stale page shows a dash.** The page may have been loaded before the check existed: hard-refresh the browser tab,
+  or click **Reload definitions** (top right) and refresh.
+
+**Steps**
+1. **Show it healthy.** Launch `reverse_etl_avro_sink_health_job` (Jobs), or wait for the schedule, then open the Checks
+   tab: `sink_healthy` passed, "reverse_etl_avro_sink is healthy, lag 0".
+2. **Break the sink.** Pause the connector (a safe stand-in for a failed task):
+   ```
+   docker exec kafka-connect curl -s -X PUT localhost:8083/connectors/reverse_etl_avro_sink/pause
+   ```
+3. **Change data and sync, the key part of the demo.** Update a row of `reverse_etl_avro_source` in Databricks (as in
+   section 4) and run the sync asset `reverse_etl_avro_to_kafka`. **The run is green.** Compare the targets:
+   RisingWave has the change (it has its own consumer) and Postgres does not. The two disagree and nothing in the
+   sync run says so.
+4. **Let the check catch it.** Launch `reverse_etl_avro_sink_health_job` again, or wait up to 5 minutes. The check is
+   now red with an ERROR, "connector is PAUSED; task 0 is PAUSED". The job run itself still succeeds: a failed check
+   shows on the asset, it does not fail runs.
+5. **Make it healthy again.** Resume the connector:
+   ```
+   docker exec kafka-connect curl -s -X PUT localhost:8083/connectors/reverse_etl_avro_sink/resume
+   ```
+   Confirm both states are `RUNNING`:
+   ```
+   docker exec kafka-connect curl -s localhost:8083/connectors/reverse_etl_avro_sink/status
+   ```
+   The sink resumes from where it stopped, so Postgres applies what was produced while it was paused within a few
+   seconds (`select * from reverse_etl_avro_target order by rid`, compare with RisingWave). Then launch
+   `reverse_etl_avro_sink_health_job` again (or wait for the schedule): the check is green again.
+
+**If the task is `FAILED` rather than paused** (for example the one-off DNS error `No resolvable bootstrap urls`),
+restart the task instead of resuming the connector:
+```
+docker exec kafka-connect curl -s -X POST localhost:8083/connectors/reverse_etl_avro_sink/tasks/0/restart
+```
+Do not try to cause a real failure on the demo machine; pausing shows the same thing.
+
+**What to say**
+- This happened for real on 2026-10-07: a one-off DNS error left the `cdf` and `orders` sink tasks FAILED while
+  Connect still reported the connectors as RUNNING, and nobody noticed. The check found it on its first run.
+- The asset's own metadata is a snapshot of its last materialization: the setup run's `connector_state: RUNNING`
+  stays on the asset page even while the connector is paused. The check reads live from Connect, which is why it is needed.
+- The check only shows in the Dagster UI. Nobody is notified until an alert destination (Slack, email or incident.io)
+  is added, which is not built.
+- It also warns when the sink's lag is above 10,000 messages. That needs a large backlog, so it is not part of the
+  demo.
+
+## 8. Clean up
 
 Run **`reverse_etl_avro_reset_job`** again. It also removes the two registry subjects, so nothing is left in the
 shared staging registry.
@@ -141,7 +204,7 @@ A DB client may display `updated_at_ts` as `2026-10-05 10:09:16.675 +0300`. The 
 ## If something goes wrong
 
 - **Is the sink alive?** Each sink asset has a `sink_healthy` check (Checks tab of `reverse_etl_avro_jdbc_sink`),
-  run every 5 minutes; it fails if the connector or a task is not RUNNING. Good to show at the end of the demo.
+  run every 5 minutes; it fails if the connector or a task is not RUNNING (section 7 shows it and how to recover).
 - **Sink connector FAILED:** `docker exec kafka-connect curl -s localhost:8083/connectors/reverse_etl_avro_sink/status`
   shows the cause. Two failures were seen: a schema registered in the wrong string form (`The given schema does
   not match any schema under the subject ...`), fixed in the code, where a reset plus setup recovers; and a
