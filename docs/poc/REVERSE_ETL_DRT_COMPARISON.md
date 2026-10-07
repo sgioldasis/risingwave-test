@@ -292,8 +292,14 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 6. **Manual trigger and shared watermark.** No schedule or sensor, and the notebook, asset and
    Dagster job must not be mixed for one change. [tested]
 7. **The notebook job lives outside git** and depends on one person's access and cluster. [tested]
-8. **Delivery errors are not inspected**, and the watermark advances regardless. [source]
-9. **Heavier per-message cost** (schema repeated in every JSON message). [source]
+8. **Kafka delivery errors are not inspected**, and the watermark advances regardless (a partial read of the
+   Databricks result used to do the same and now fails the run, sink doc section 13). [source]
+9. **Heavier per-message cost** (schema repeated in every JSON message). Avro with a registry was about 12.6
+   times smaller for one four-column event, computed offline (sink doc section 14.1.1). [source]
+10. **A failed sink task is silent by default.** Kafka Connect shows the connector as RUNNING while its task is
+    FAILED and does not restart it; this happened on all three syncs on 2026-10-07 and went unnoticed until a
+    health check was added (sink doc section 11). The check only shows in the Dagster UI; nobody is notified.
+    drt is one process, so a failure is the run's own failure. [tested]
 
 ### 4.6 Which to choose
 
