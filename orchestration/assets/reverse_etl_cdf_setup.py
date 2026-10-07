@@ -87,7 +87,41 @@ def _run_sql(token: str, statement: str) -> dict:
             raise RuntimeError(f"Databricks Statement Execution API poll failed: {e}\nResponse body: {body}") from e
     if data.get("status", {}).get("state") != "SUCCEEDED":
         raise RuntimeError(f"Statement failed: {data.get('status', {})}")
-    return data
+    return _with_all_chunks(token, data)
+
+
+def _with_all_chunks(token: str, data: dict) -> dict:
+    """The API returns a large result in chunks and the first response holds only the first one; without
+    the others a change read is silently partial and the watermark moves past the rows that were never read
+    (found 2026-10-07: 49,152 of 80,300 delete events). Fetch every chunk into result.data_array and fail if
+    the rows collected differ from the manifest's total_row_count or the result is flagged truncated."""
+    result = data.get("result") or {}
+    manifest = data.get("manifest") or {}
+    if "data_array" not in result:
+        return data
+    rows = list(result["data_array"])
+    next_index = result.get("next_chunk_index")
+    while next_index is not None:
+        try:
+            resp = requests.get(
+                f"{DATABRICKS_HOST}/api/2.0/sql/statements/{data['statement_id']}/result/chunks/{next_index}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else "<no response body>"
+            raise RuntimeError(f"Fetching result chunk {next_index} failed: {e}\nResponse body: {body}") from e
+        chunk = resp.json()
+        rows.extend(chunk.get("data_array") or [])
+        next_index = chunk.get("next_chunk_index")
+    total = manifest.get("total_row_count")
+    if manifest.get("truncated") or (total is not None and len(rows) != total):
+        raise RuntimeError(
+            f"Incomplete result: read {len(rows)} row(s), manifest total_row_count={total}, "
+            f"truncated={manifest.get('truncated')}"
+        )
+    return {**data, "result": {**result, "data_array": rows, "next_chunk_index": None}}
 
 
 def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:

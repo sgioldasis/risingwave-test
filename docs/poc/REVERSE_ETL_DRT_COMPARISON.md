@@ -375,11 +375,15 @@ of a physical delete) or accepting stale rows; neither was tested.
 **How the Kafka / Debezium pipeline compares at that size.** It reads only the change feed, including
 deletes, so the billions of historical rows do not matter. The two ways of running it differ:
 - **The notebook** runs on Spark and is the one that should scale.
-- **The Dagster asset** reads through the Statement Execution API with inline results. From my
-  memory of that API, inline results are capped at roughly 25 MiB, so a few million changed rows
-  would very likely exceed it; I have not tested this. At that volume the notebook, or the API's
-  external-links mode in the asset, would be needed.
-- Neither path was run at that scale.
+- **The Dagster asset** reads through the Statement Execution API with inline results. A test on
+  2026-10-07 found that the API returns a large result in chunks and the asset read only the first one:
+  a delete commit of 80,300 rows produced 49,152 events and the run still succeeded (sink doc section
+  13). That is fixed: the asset now reads every chunk and fails if the rows read differ from the
+  manifest's `total_row_count`, and a 100,000-row insert and delete both arrived in full in Postgres and
+  RisingWave. The roughly 25 MiB inline cap I remembered earlier is still not verified; a few million
+  changed rows may well exceed it, in which case the notebook, or the API's external-links mode in the
+  asset, would be needed.
+- Neither path was run at the scale of a few million rows (the largest test was 100,000).
 
 **Conclusion.** For billions of rows with millions of daily changes, `mirror`/`tracked` is not
 viable, and drt only fits in `incremental` mode with a trusted cursor column and a separate answer
@@ -405,8 +409,9 @@ not drt.
 
 **What to change or check before using it at that size**
 1. **Run the notebook, not the Dagster asset.** The notebook runs on Spark. The asset reads through the
-   Statement Execution API with inline results, which I believe are capped at roughly 25 MiB (from
-   memory, not tested), so a few million changed rows would very likely break it.
+   Statement Execution API with inline results; it now reads all result chunks (fixed 2026-10-07, tested to
+   100,000 rows), but I believe inline results are also capped at roughly 25 MiB (from memory, not
+   tested), so a few million changed rows may still break it.
 2. **The sink throughput is not the limit at this volume; raise `tasks.max` for backfills.** Tested
    locally on 2026-10-05 (300,000 insert messages of about 1.7 KB each, 12 partitions, local Redpanda
    and Postgres): one task drained about 35,000 to 40,000 rows a second, four tasks about 92,000.

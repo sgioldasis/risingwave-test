@@ -969,6 +969,18 @@ Notes and limits:
   and no updates, millions of rows or concurrent load: differences under about 30% are noise. A live check:
   setting `sink_tasks_max: 2` on the `orders` component and rerunning `reverse_etl_orders_jdbc_sink` gave
   `tasks.max = 2` and two RUNNING tasks; reverting gave one again.
+- **The Dagster asset's reads had to be made complete (found and fixed 2026-10-07).** The Statement Execution
+  API returns a large result in chunks; `_run_sql()` used only the first, so a sync whose change feed was larger
+  than that silently lost the rest and still advanced the watermark. Found when the cleanup of a cost test
+  (80,300 rows deleted in Databricks) produced 49,152 delete events, leaving exactly 31,148 stale rows in
+  RisingWave; the API's own manifest for that query showed `total_row_count 80,300` in 2 chunks with
+  `next_chunk_index: 1` on the first response. Runs of 10,000 rows or fewer were unaffected, and the notebook
+  (Spark `collect()`) never was. `_with_all_chunks()` in `reverse_etl_cdf_setup.py` now fetches every chunk and
+  raises if the rows read differ from `total_row_count` or the manifest says `truncated`, so a partial read
+  can no longer move the watermark. Tested: 100,000 inserts and then 100,000 deletes through the `avro` sync
+  arrived in full in Postgres and RisingWave (counts 100,002, then back to 2), and mocked results covering the
+  merge of three chunks, a count mismatch and the truncated flag. Not tested: the roughly 25 MiB inline cap
+  (from memory), and anything beyond 100,000 rows per run; a few million rows a day should use the notebook.
 - **Manual trigger.** No schedule or sensor drives the Databricks -> Kafka step.
 - **The notebook job is tied to one person.** The Databricks job `reverse_etl_notebook_sync` was created by hand
   and runs as its owner on the owner's single-user cluster; the Dagster job only triggers it (section 10.6). Its
@@ -1116,6 +1128,25 @@ component; `cdf` and `orders` are unchanged.
   rejection from the Dagster path, behaviour when the registry is unreachable, the STG workspace, and a
   registry other than the shared staging Apicurio (which is anonymous and shared with other teams).
 - **Reset.** `reverse_etl_avro_reset_job` removes the sync's objects and its registry subjects.
+
+#### 14.1.2 Cost of a sync on Databricks (measured 2026-10-07, partial)
+
+Run on the `avro` sync in the DEV workspace to compare with the Auto CDC bridge pattern (Confluence "Auto CDC
+API PoC"), which gives SCD2 history inside Databricks while this pipeline gives current state downstream.
+- **Seven days of billing before the test** (system.billing.usage): the Dagster path's serverless SQL warehouse
+  used about 25 DBUs over 10-02 to 10-05 and the notebook's all-purpose cluster about 5, but both include
+  development, experiments and interactive use, so they bound the cost and do not give a per-sync figure.
+  Statement text in `system.query.history` is redacted, so our SQL cannot be filtered out by text.
+- **Test (03:03 to 03:18 UTC, 13 runs, all succeeded).** Dagster sync with 50 changed rows (5 runs) and 10,000
+  (5 runs): about 17 s each, 6 warehouse statements, about 6 to 7 s of statement time and about 1 s of compute
+  per run, the same at both sizes. Notebook with 10,000 rows (3 runs): 485 s for the first (the terminated
+  cluster starting) and 36 s and 35 s after. The cluster auto-stops after 30 minutes, so one isolated trigger is
+  billed roughly as start-up plus run plus up to 30 idle minutes (inferred from the setting, not billed data).
+- **Not available yet:** DBUs for the test window. Billing records had not appeared by 03:20 UTC; read
+  `system.billing.usage` for 2026-10-07 03:03 to about 03:50 UTC (warehouse `4d06eca1e71a9ccc`, cluster
+  `1003-042638-xe69ne7b`) once they do. The window includes the test's own insert statements.
+- **Not measured:** dollar cost (the DBU rate is not known here), the Auto CDC pipeline's cost, and the always-on
+  Kafka, Connect, RisingWave and Postgres side (local in this demo).
 
 ### 14.2 Kafka delete permissions
 
