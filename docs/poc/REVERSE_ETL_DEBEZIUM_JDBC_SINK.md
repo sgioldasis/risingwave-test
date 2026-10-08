@@ -1176,7 +1176,7 @@ component; `cdf` and `orders` are unchanged.
   registry other than the shared staging Apicurio (which is anonymous and shared with other teams).
 - **Reset.** `reverse_etl_avro_reset_job` removes the sync's objects and its registry subjects.
 
-#### 14.1.2 Cost of a sync on Databricks (measured 2026-10-07, partial)
+#### 14.1.2 Cost of a sync on Databricks (measured 2026-10-07, billing read 2026-10-08)
 
 Run on the `avro` sync in the DEV workspace to compare with the Auto CDC bridge pattern (Confluence "Auto CDC
 API PoC"), which gives SCD2 history inside Databricks while this pipeline gives current state downstream.
@@ -1189,10 +1189,28 @@ API PoC"), which gives SCD2 history inside Databricks while this pipeline gives 
   per run, the same at both sizes. Notebook with 10,000 rows (3 runs): 485 s for the first (the terminated
   cluster starting) and 36 s and 35 s after. The cluster auto-stops after 30 minutes, so one isolated trigger is
   billed roughly as start-up plus run plus up to 30 idle minutes (inferred from the setting, not billed data).
-- **Not available yet:** DBUs for the test window. Billing records had not appeared by 03:20 UTC; read
-  `system.billing.usage` for 2026-10-07 03:03 to about 03:50 UTC (warehouse `4d06eca1e71a9ccc`, cluster
-  `1003-042638-xe69ne7b`) once they do. The window includes the test's own insert statements.
-- **Not measured:** dollar cost (the DBU rate is not known here), the Auto CDC pipeline's cost, and the always-on
+- **Billed DBUs (read 2026-10-08 from `system.billing.usage`; the records were not there at 06:13 UTC on 10-07 and
+  were there at 11:16 UTC on 10-08, and the lag was irregular in between).** Serverless SQL warehouse `4d06eca1e71a9ccc`: 0.07 DBU in the
+  02:00 hour, 2.61 in the 03:00 hour, 0.42 in the 04:00 hour and 0.39 in the 06:00 hour. All-purpose cluster
+  `1003-042638-xe69ne7b`: 0.58 DBU in the 03:00 hour and nothing else. The warehouse figures also contain the
+  test's own set-up, clean-up and my billing queries, so they are an upper bound for the sync.
+- **What the warehouse figures mean (inferred from the numbers, not from a documented rate).** A lone burst of
+  one or two statements at 04:27 (about 14 s) was billed 0.42 DBU and a lone burst at 06:13 was billed 0.39, which
+  is about 6 minutes of a 4 DBU per hour warehouse: the busy minute plus an auto-stop tail of about 5 minutes.
+  So one isolated Dagster sync costs about 0.4 DBU however small it is, and syncs run close together share that
+  tail. The 10 Dagster runs (03:03 to 03:08) kept the warehouse up from about 02:58 to 03:13, which is about
+  0.9 DBU, or about 0.09 DBU per sync when batched. The rest of the 03:00 hour (about 1.7 DBU) is the harness:
+  the 03:16 to 03:35 statements (inserting and deleting the 10,000-row test data, creating tables, my checks)
+  plus their auto-stop tail until about 03:40.
+- **Notebook path.** The cluster billed 0.58 DBU for the whole lifecycle: start-up (485 s for the first run), three
+  runs of 35 to 485 s, and the 30-minute idle tail before auto-termination. Only about 2 minutes of that is
+  sync work, so one isolated notebook trigger costs about 0.6 DBU, and runs inside the idle window cost almost
+  nothing extra. A sync that runs every few minutes would keep the cluster up continuously.
+- **Conclusion for the comparison:** both paths are small: roughly 0.4 DBU (warehouse) and 0.6 DBU (cluster) per
+  isolated sync, and much less per sync when syncs are frequent, because the idle tail is shared. The cluster
+  becomes the cost at a steady schedule, and the warehouse's 5-minute tail makes tiny syncs cost about the same as
+  larger ones. The size of the change (50 or 10,000 rows) made no measurable difference.
+- **Not measured:** dollar cost (the DBU price is not known here), the Auto CDC pipeline's cost, and the always-on
   Kafka, Connect, RisingWave and Postgres side (local in this demo).
 
 ### 14.2 Kafka delete permissions
