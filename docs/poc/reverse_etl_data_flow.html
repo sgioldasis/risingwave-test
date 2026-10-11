@@ -69,7 +69,7 @@
 </head>
 <body>
 <h1>Reverse-ETL data flow</h1>
-<p class="sub">One change, from the Databricks Delta table to Postgres and RisingWave. Use the buttons, click a step, or press the left and right arrow keys.</p>
+<p class="sub">One change, from the Databricks (UniForm) table to Postgres and RisingWave. Use the buttons, click a step, or press the left and right arrow keys.</p>
 
 <div class="wrap">
   <div>
@@ -85,7 +85,7 @@
       <line id="e6" class="edge" x1="265" y1="268" x2="180" y2="268" marker-end="url(#arrow)"/>
       <line id="e7" class="edge" x1="575" y1="166" x2="575" y2="240" marker-end="url(#arrow)"/>
 
-      <g id="n-src" class="node coral"><rect x="30" y="30" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="105" y="51" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" x="105" y="70" text-anchor="middle" dominant-baseline="central">Databricks Delta</text></g>
+      <g id="n-src" class="node coral"><rect x="30" y="30" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="105" y="51" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" x="105" y="70" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
       <g id="n-state" class="node coral"><rect x="30" y="160" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="105" y="181" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" x="105" y="200" text-anchor="middle" dominant-baseline="central">Watermark</text></g>
       <g id="n-sync" class="node purple"><rect x="265" y="110" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="340" y="131" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="340" y="150" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
       <g id="n-reg" class="node teal"><rect x="500" y="30" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="575" y="51" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="575" y="70" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
@@ -119,7 +119,7 @@
   <div class="grid">
     <div>
       <ul>
-        <li><b>A Delta table with Change Data Feed on.</b> The sync reads changes with <code>table_changes()</code>, which only works when <code>delta.enableChangeDataFeed</code> is true. Changes made before it was switched on are not in the feed.</li>
+        <li><b>A Delta table (UniForm, readable as Iceberg) with Change Data Feed on.</b> The sync reads changes with <code>table_changes()</code>, which only works when <code>delta.enableChangeDataFeed</code> is true. Changes made before it was switched on are not in the feed.</li>
         <li><b>A key column that never repeats and never changes.</b> Here it is <code>rid</code>, an identity column Databricks fills in on insert. Every target is keyed on it. The business <code>id</code> is not used as the key: Unity Catalog primary keys are informational, so two rows can share an <code>id</code>, and deleting one removed the other downstream.</li>
         <li><b>The key must exist from creation.</b> An identity column cannot be added to an existing table, so adding it later means the reset job, then the setup job.</li>
         <li><b>UniForm (optional but on by default here).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation: turning them on later is a schema commit that breaks Change Data Feed reads spanning it. The Iceberg side is read-only.</li>
@@ -156,12 +156,12 @@ TBLPROPERTIES (
 
 <script>
 const S = [
-  { t: 'A row changes in Databricks', d: 'An update, insert or delete creates a new version of the Delta table. Change Data Feed records the before and after of each row.', n: ['src'], e: [] },
+  { t: 'A row changes in Databricks', d: 'An update, insert or delete creates a new version of the Databricks table. Change Data Feed records the before and after of each row.', n: ['src'], e: [] },
   { t: 'The sync reads the watermark', d: 'It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
-  { t: 'The sync reads the changes', d: 'It reads every change made after that version and turns each one into a before, after and op event.', n: ['src', 'sync'], e: ['e1'] },
+  { t: 'The sync reads the changes', d: 'It runs table_changes() from the version after the watermark. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op.', n: ['src', 'sync'], e: ['e1'] },
   { t: 'Schemas go to the registry', d: 'Both Avro schemas (key and value) are registered on every run. If they match what is already there, the registry returns the existing version and nothing changes. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
   { t: 'Events go to Kafka', d: 'The sync produces one Avro message per change. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
-  { t: 'Two readers take the topic', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. RisingWave applies the change to its table here.', n: ['kafka', 'connect', 'rw'], e: ['e5', 'e7'] },
+  { t: 'Two readers take the topic', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Each message carries only a schema id; both readers fetch that schema from the registry to decode it. RisingWave applies the change to its table here.', n: ['kafka', 'reg', 'connect', 'rw'], e: ['e5', 'e7'] },
   { t: 'Postgres applies the change', d: 'The Debezium JDBC sink upserts or deletes the row. Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] },
   { t: 'The watermark moves', d: 'Only after the messages are produced does the sync write the new version to the state table. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] }
 ];

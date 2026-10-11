@@ -3,7 +3,7 @@
 Date: 2026-10-05. Branch: `feature-sr`.
 
 A script for demonstrating the reverse-ETL pipeline live, in about 10 minutes, driven from the Dagster UI.
-Changes made to a Delta table in Databricks (inserts, updates, deletes, a new column) arrive in a Postgres table
+Changes made to a table in Databricks (inserts, updates, deletes, a new column) arrive in a Postgres table
 (through the Debezium JDBC sink) and in a RisingWave table, with the messages in Kafka in between.
 
 The steps use the **`avro` sync**, which sends Avro messages with the schemas in a registry. To demo the **JSON**
@@ -17,7 +17,7 @@ a dry run first.
 ## What the audience sees
 
 ```
-Databricks Delta table (Change Data Feed)
+Databricks table (Change Data Feed)
    -> Dagster asset or Databricks notebook: reads the changes since the last watermark
    -> Kafka topic reverse_etl_avro_topic (Debezium-style before/after/op messages, Avro)
         -> Debezium JDBC sink (Kafka Connect) -> Postgres table reverse_etl_avro_target
@@ -60,7 +60,7 @@ the Kaizen STG box (consumer group lag).
 
 | Object | What it is |
 |---|---|
-| `reverse_etl_avro_source` | The Delta table you change in the demo. Change Data Feed is on, and `rid` is an identity column Databricks assigns on insert; it is the key everywhere downstream. |
+| `reverse_etl_avro_source` | The Databricks table you change in the demo. It is also a UniForm table, so Iceberg readers can query it (see section 6). Change Data Feed is on, and `rid` is an identity column Databricks assigns on insert; it is the key everywhere downstream. |
 | `reverse_etl_avro_state` | The watermark table: one row per sync with the last table version already synced. The next run reads from the version after it. |
 | Notebook `reverse_etl_cdf_to_kafka` | The sync as a PySpark notebook, one notebook for every label (the `label` and `encoding` widgets choose the sync and the format). |
 | Databricks job `reverse_etl_notebook_sync` | Runs that notebook, with `label` and `encoding` as job parameters. It runs on the author's cluster and exists only in the DEV workspace. |
@@ -158,6 +158,11 @@ Show:
 
 Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
+How it reads the changes: one `table_changes()` query from the version after the watermark, ordered by commit version.
+Each changed row comes back with its change type (`insert`, `delete`, `update_preimage`, `update_postimage`) and its
+commit version. The sync joins an update's old and new rows into one event with `before`, `after` and `op`
+(`c`, `u`, `d`). On the first run there is no watermark, so it starts at version 0 and reads the whole history.
+
 Show:
 - `select * from reverse_etl_avro_target order by rid;` in `pg` and in `rw`: two rows, the updated one and the
   inserted one. The deleted row never appears.
@@ -205,6 +210,26 @@ ops:
 It triggers the DEV job `reverse_etl_notebook_sync` with `label=avro` and `encoding=avro`. The change lands in both
 targets. The registry stays at its current version, because the notebook builds the identical schema.
 (The job only exists in the DEV workspace; STG has the notebook but no job yet.)
+
+### Read the same table from outside Databricks (optional)
+
+The source tables of all three syncs (`avro`, `cdf`, `orders`) are created as UniForm tables: Delta with Iceberg
+metadata generated next to it. Another engine can read them through Unity Catalog's Iceberg REST API, with no copy
+and no pipeline. StarRocks already has that catalog (`databricks_uc`), so in a SQL client on StarRocks:
+
+```sql
+SELECT * FROM databricks_uc.sr_poc_external.reverse_etl_avro_source;
+```
+
+Change a row in Databricks, wait a few seconds, and run it again. Rules to know:
+- The Iceberg side is read-only, and its metadata is written asynchronously, so a new change can take seconds to a
+  minute to appear.
+- The table needs the UniForm properties from creation (column mapping `name`, deletion vectors off,
+  `delta.enableIcebergCompatV2`, `delta.universalFormat.enabledFormats = iceberg`). The setup job sets them; a table
+  created before this change has to go through reset and setup again, or Unity Catalog answers "not an Iceberg
+  compatible table".
+- The reader needs `EXTERNAL USE SCHEMA` on `sr_poc_external` (the `databricks_uc` catalog already has it).
+- Not tested yet: a long run of syncs on a UniForm table. A short run (inserts, an update, a delete) was verified.
 
 ## 7. Show the sink health check (optional, about 5 minutes)
 
@@ -280,6 +305,8 @@ shared staging registry.
   its own place in the topic.
 - **Deletes and updates are real:** the messages carry `op` (`c`, `u`, `d`) with `before` and `after`, so both
   targets apply upserts and deletes rather than appending history.
+- **One table, three readers:** the source is Delta for the sync (Change Data Feed), and Iceberg for any other
+  engine (StarRocks here), without a second copy.
 - **Size (Avro vs JSON):** for one four-column update event, JSON is 1,726 bytes and Avro is 137, about 12.6 times
   smaller. This is computed offline from one event, not measured on the topic; say so if asked.
 - **What Avro costs:** a registry dependency (the shared, anonymous staging Apicurio), harder debugging, and a

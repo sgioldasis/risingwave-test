@@ -8,7 +8,7 @@
 <text x="34" y="964" font-size="17" font-weight="700" fill="#0f172a">Local (docker + host)</text>
 <path d="M1120,80 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
 <text x="1260.0" y="106.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_avro_source</text>
-<text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">Delta + Change Data Feed, key rid</text>
+<text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">UniForm + Change Data Feed, key rid</text>
 <path d="M60,210 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="200.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_state</text>
 <text x="200.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">watermark: last version synced</text>
