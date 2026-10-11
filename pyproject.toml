@@ -26,7 +26,7 @@ dependencies = [
     "uvicorn>=0.34.0",
     "dagster>=1.13.3",
     "dagster-dbt>=0.29.3",
-    "dagster-dg-cli==1.13.19",
+    "dagster-dg-cli==1.13.26",
     "dagster-webserver>=1.13.3",
     "marimo>=0.10.0",
     # NOTE: Spark version is gated by Iceberg's Spark runtime jar.
