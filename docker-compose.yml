@@ -33,6 +33,12 @@ x-dagster-build: &dagster-build
     context: .
     dockerfile: Dockerfile.dagster
 
+x-superset-build: &superset-build
+  image: risingwave-test/superset:local
+  build:
+    context: .
+    dockerfile: Dockerfile.superset
+
 services:
   # RisingWave Services - Distributed Mode
   compactor-0:
@@ -807,7 +813,7 @@ services:
       - iceberg_net
 
   superset:
-    image: apache/superset:6.1.0
+    <<: *superset-build
     container_name: superset
     ports:
       - "3002:8088"
@@ -817,6 +823,7 @@ services:
           memory: 1.5G
     volumes:
       - "superset-home:/app/superset_home"
+      - "./superset/superset_config.py:/app/pythonpath/superset_config.py:ro"
     environment:
       - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
     depends_on:
@@ -835,10 +842,11 @@ services:
   # migration/move script like Metabase's entrypoint, which is what caused
   # that whole mess.
   superset-init:
-    image: apache/superset:6.1.0
+    <<: *superset-build
     container_name: superset-init
     volumes:
       - "superset-home:/app/superset_home"
+      - "./superset/superset_config.py:/app/pythonpath/superset_config.py:ro"
       # Git-tracked, human-diffable Superset asset bundle (databases,
       # datasets, charts, dashboards) exported via `superset/export_assets.sh`
       # -- re-imported here on every startup so the funnel/wallet/query-rewrite
