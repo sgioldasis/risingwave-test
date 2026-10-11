@@ -142,11 +142,17 @@ Run **`reverse_etl_avro_reset_job`**. It drops the connector, both target tables
 source and watermark tables, and the two registry subjects. It only touches objects named `reverse_etl_*` in the
 scratch schema `sr_poc_external`.
 
+Reset and setup are opposites. Reset only removes things, and refuses to run if a name it would drop does not match
+the allowed prefix and schema. Setup only builds: its table creation is skipped when a table already exists, so it
+never changes an existing table. That is why a change to the table definition (for example the UniForm properties)
+needs reset first, then setup. Columns added during a demo do not survive a reset.
+
 ## 2. Setup
 
 Run **`reverse_etl_avro_setup_job`**. It creates the Databricks source and watermark tables (Change Data Feed on,
-with an identity `rid` key), the topic, the RisingWave table and the Debezium sink, and last seeds three rows into
-Databricks (an insert, an update and a delete).
+UniForm Iceberg reads on, with an identity `rid` key), the topic, the RisingWave table and the Debezium sink, and last
+seeds three rows into Databricks (an insert, an update and a delete). Run it on its own if nothing exists yet; run
+reset first if the objects are already there.
 
 Show:
 - The registry has the schema: `curl -s http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7/subjects/reverse_etl_avro_topic-value/versions`
