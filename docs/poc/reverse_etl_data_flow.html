@@ -23,8 +23,13 @@
   body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
   h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
-  .wrap { display: grid; grid-template-columns: minmax(0, 680px) minmax(280px, 1fr); gap: 24px; align-items: start; max-width: 1200px; }
-  @media (max-width: 1000px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  .wrap { display: grid; grid-template-columns: minmax(0, 760px) 340px; gap: 24px; align-items: start; max-width: 1200px; }
+  @media (max-width: 1150px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  .side { position: sticky; top: 16px; }
+  @media (max-width: 1150px) { .side { position: static; } }
+  .caption { background: var(--card); border-radius: 12px; padding: 14px 16px; margin: 0 0 12px; min-height: 200px; }
+  .caption .ct { font-size: 18px; font-weight: 500; margin: 0 0 8px; }
+  .caption .cd { font-size: 15px; color: var(--muted); line-height: 1.65; margin: 0; }
   svg { width: 100%; height: auto; display: block; }
   svg text { font-family: inherit; fill: var(--text); }
   .th { font-size: 14px; font-weight: 500; }
@@ -35,12 +40,12 @@
   .node { transition: opacity .3s; }
   .edge { stroke: var(--line); stroke-width: 1.5; opacity: .35; transition: opacity .3s; }
   .edge.on { stroke: var(--active); stroke-width: 2.5; opacity: 1; }
-  .controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   button { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
   button:hover { background: var(--card); }
   button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
-  ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1200px; }
   li { display: grid; grid-template-columns: 28px 1fr; gap: 4px 10px; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
   li:hover { opacity: .9; }
   li.on { opacity: 1; background: var(--card); border-color: var(--active); border-width: 1.5px; }
@@ -95,6 +100,9 @@
       <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster</text></g>
       <g class="teal"><rect x="236" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="252" y="327" dominant-baseline="central">Kafka side and targets</text></g>
     </svg>
+  </div>
+  <div class="side">
+    <div class="caption"><p class="ct" id="cap-t"></p><p class="cd" id="cap-d"></p></div>
     <div class="controls">
       <button id="prev" aria-label="Previous step">&larr; Back</button>
       <button id="play">Pause</button>
@@ -102,8 +110,8 @@
       <span id="pos" class="pos"></span>
     </div>
   </div>
-  <ol id="steps"></ol>
 </div>
+<ol id="steps"></ol>
 
 <section class="notes">
   <h2>The Databricks source table</h2>
@@ -146,7 +154,7 @@ const S = [
   { t: 'A row changes in Databricks', d: 'An update, insert or delete creates a new version of the Delta table. Change Data Feed records the before and after of each row.', n: ['src'], e: [] },
   { t: 'The sync reads the watermark', d: 'It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
   { t: 'The sync reads the changes', d: 'It reads every change made after that version and turns each one into a before, after and op event.', n: ['src', 'sync'], e: ['e1'] },
-  { t: 'Schemas go to the registry', d: 'The key and value Avro schemas are registered. A new column adds a new schema version here before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
+  { t: 'Schemas go to the registry', d: 'Both Avro schemas (key and value) are registered on every run. If they match what is already there, the registry returns the existing version and nothing changes. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
   { t: 'Events go to Kafka', d: 'The sync produces one Avro message per change. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
   { t: 'Two readers take the topic', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. RisingWave applies the change to its table here.', n: ['kafka', 'connect', 'rw'], e: ['e5', 'e7'] },
   { t: 'Postgres applies the change', d: 'The Debezium JDBC sink upserts or deletes the row. Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] },
@@ -181,6 +189,8 @@ function show(k) {
     return { c, x1: +l.getAttribute('x1'), y1: +l.getAttribute('y1'), x2: +l.getAttribute('x2'), y2: +l.getAttribute('y2') };
   });
   [...list.children].forEach((li, n) => li.classList.toggle('on', n === i));
+  $('cap-t').textContent = (i + 1) + '. ' + s.t;
+  $('cap-d').textContent = s.d;
   $('pos').textContent = 'Step ' + (i + 1) + ' of ' + S.length;
 }
 function tick(now) {

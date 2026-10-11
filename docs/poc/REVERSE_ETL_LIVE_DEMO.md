@@ -87,7 +87,7 @@ the Kaizen STG box (consumer group lag).
 | Object | What it is |
 |---|---|
 | Topic `reverse_etl_avro_topic` | On Kaizen's staging Kafka cluster. Each message is one change: the key is `{rid}`, the value has `before`, `after`, `op` (`c`, `u` or `d`) and `source`, in Avro. |
-| Apicurio registry | The shared staging registry (anonymous read and write, used by other teams). Holds the schemas `reverse_etl_avro_topic-key` and `reverse_etl_avro_topic-value`, through its Confluent-compatible API (`/apis/ccompat/v7`), in the default group. Messages carry only a schema id; readers look the schema up. |
+| Apicurio registry | The shared staging registry (anonymous read and write, used by other teams). Holds the schemas `reverse_etl_avro_topic-key` and `reverse_etl_avro_topic-value`, through its Confluent-compatible API (`/apis/ccompat/v7`), in the default group. Messages carry only a schema id; readers look the schema up. Every sync run registers both schemas again; an identical schema returns the existing version, so a version is added only when the schema changes. |
 | Container `kafka-connect` | Kafka Connect with the Debezium JDBC sink plugin and the Confluent Avro converter, running locally. Its own bookkeeping topics are on the local Redpanda. |
 | Connector `reverse_etl_avro_sink` | Reads the topic (consumer group `connect-reverse_etl_avro_sink`) and upserts or deletes rows in Postgres, one task. Created by the `reverse_etl_avro_jdbc_sink` asset. |
 
