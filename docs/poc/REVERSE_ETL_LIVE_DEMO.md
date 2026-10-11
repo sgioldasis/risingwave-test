@@ -147,6 +147,10 @@ the allowed prefix and schema. Setup only builds: its table creation is skipped 
 never changes an existing table. That is why a change to the table definition (for example the UniForm properties)
 needs reset first, then setup. Columns added during a demo do not survive a reset.
 
+To reset and set up all three syncs (`avro`, `cdf`, `orders`) at once, run `./bin/3_rebuild_reverse_etl.sh`. The
+syncs run in parallel, about 70 seconds in total instead of about 4 minutes one after another. It needs the VPN
+(staging Kafka and registry). Pass a sync name (for example `avro`) to rebuild only that one.
+
 ## 2. Setup
 
 Run **`reverse_etl_avro_setup_job`**. It creates the Databricks source and watermark tables (Change Data Feed on,
