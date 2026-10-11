@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reverse-ETL data flow</title>
+<style>
+  :root {
+    --bg: #ffffff; --text: #1f1e1d; --muted: #5f5e5a; --line: #b4b2a9; --card: #f5f4ee; --card-border: #d3d1c7; --active: #ef9f27;
+    --coral-f: #faece7; --coral-s: #993c1d; --coral-t: #712b13; --coral-u: #993c1d;
+    --purple-f: #eeedfe; --purple-s: #534ab7; --purple-t: #3c3489; --purple-u: #534ab7;
+    --teal-f: #e1f5ee; --teal-s: #0f6e56; --teal-t: #085041; --teal-u: #0f6e56;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1e1d; --text: #f1efe8; --muted: #b4b2a9; --line: #5f5e5a; --card: #2c2c2a; --card-border: #444441;
+      --coral-f: #712b13; --coral-s: #f0997b; --coral-t: #faece7; --coral-u: #f5c4b3;
+      --purple-f: #3c3489; --purple-s: #afa9ec; --purple-t: #eeedfe; --purple-u: #cecbf6;
+      --teal-f: #085041; --teal-s: #5dcaa5; --teal-t: #e1f5ee; --teal-u: #9fe1cb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 680px) minmax(280px, 1fr); gap: 24px; align-items: start; max-width: 1200px; }
+  @media (max-width: 1000px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: inherit; fill: var(--text); }
+  .th { font-size: 14px; font-weight: 500; }
+  .ts { font-size: 12px; }
+  .coral rect { fill: var(--coral-f); stroke: var(--coral-s); } .coral .th { fill: var(--coral-t); } .coral .ts { fill: var(--coral-u); }
+  .purple rect { fill: var(--purple-f); stroke: var(--purple-s); } .purple .th { fill: var(--purple-t); } .purple .ts { fill: var(--purple-u); }
+  .teal rect { fill: var(--teal-f); stroke: var(--teal-s); } .teal .th { fill: var(--teal-t); } .teal .ts { fill: var(--teal-u); }
+  .node { transition: opacity .3s; }
+  .edge { stroke: var(--line); stroke-width: 1.5; opacity: .35; transition: opacity .3s; }
+  .edge.on { stroke: var(--active); stroke-width: 2.5; opacity: 1; }
+  .controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  button { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+  button:hover { background: var(--card); }
+  button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
+  ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  li { display: grid; grid-template-columns: 28px 1fr; gap: 4px 10px; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
+  li:hover { opacity: .9; }
+  li.on { opacity: 1; background: var(--card); border-color: var(--active); border-width: 1.5px; }
+  .num { grid-row: 1 / span 2; width: 24px; height: 24px; border-radius: 50%; border: 0.5px solid var(--line); font-size: 12px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  li.on .num { background: var(--active); border-color: var(--active); color: #412402; font-weight: 500; }
+  .t { font-size: 15px; font-weight: 500; }
+  .d { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+  .notes { max-width: 1200px; margin-top: 32px; padding-top: 20px; border-top: 0.5px solid var(--card-border); }
+  .notes h2 { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
+  .notes .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 1000px) { .notes .grid { grid-template-columns: minmax(0, 1fr); } }
+  .notes ul { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.6; color: var(--muted); }
+  .notes ul li { display: list-item; padding: 0; margin-bottom: 8px; border: 0; opacity: 1; cursor: auto; }
+  .notes b { color: var(--text); font-weight: 500; }
+  .notes p, .notes li { overflow-wrap: anywhere; }
+  .notes code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
+  .notes pre { margin: 0 0 16px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55; overflow-x: auto; }
+  .notes .label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
+  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } }
+</style>
+</head>
+<body>
+<h1>Reverse-ETL data flow</h1>
+<p class="sub">One change, from the Databricks Delta table to Postgres and RisingWave. Use the buttons, click a step, or press the left and right arrow keys.</p>
+
+<div class="wrap">
+  <div>
+    <svg viewBox="0 0 680 350" role="img" aria-label="Source table and state table feed a sync, which writes schemas to a registry and messages to Kafka; Kafka Connect writes Postgres and RisingWave reads the topic directly.">
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+      <line id="e1" class="edge" x1="180" y1="70" x2="265" y2="125" marker-end="url(#arrow)"/>
+      <line id="e2" class="edge" x1="180" y1="185" x2="265" y2="150" marker-end="url(#arrow)"/>
+      <line id="e8" class="edge" x1="265" y1="162" x2="180" y2="200" marker-end="url(#arrow)"/>
+      <line id="e3" class="edge" x1="415" y1="120" x2="500" y2="70" marker-end="url(#arrow)"/>
+      <line id="e4" class="edge" x1="415" y1="138" x2="500" y2="138" marker-end="url(#arrow)"/>
+      <line id="e5" class="edge" x1="530" y1="166" x2="400" y2="240" marker-end="url(#arrow)"/>
+      <line id="e6" class="edge" x1="265" y1="268" x2="180" y2="268" marker-end="url(#arrow)"/>
+      <line id="e7" class="edge" x1="575" y1="166" x2="575" y2="240" marker-end="url(#arrow)"/>
+
+      <g id="n-src" class="node coral"><rect x="30" y="30" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="105" y="51" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" x="105" y="70" text-anchor="middle" dominant-baseline="central">Databricks Delta</text></g>
+      <g id="n-state" class="node coral"><rect x="30" y="160" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="105" y="181" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" x="105" y="200" text-anchor="middle" dominant-baseline="central">Watermark</text></g>
+      <g id="n-sync" class="node purple"><rect x="265" y="110" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="340" y="131" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="340" y="150" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
+      <g id="n-reg" class="node teal"><rect x="500" y="30" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="575" y="51" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="575" y="70" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
+      <g id="n-kafka" class="node teal"><rect x="500" y="110" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="575" y="131" text-anchor="middle" dominant-baseline="central">Kafka topic</text><text class="ts" x="575" y="150" text-anchor="middle" dominant-baseline="central">Avro change events</text></g>
+      <g id="n-connect" class="node teal"><rect x="265" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="340" y="261" text-anchor="middle" dominant-baseline="central">Kafka Connect</text><text class="ts" x="340" y="280" text-anchor="middle" dominant-baseline="central">Debezium JDBC sink</text></g>
+      <g id="n-pg" class="node teal"><rect x="30" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="105" y="261" text-anchor="middle" dominant-baseline="central">Postgres</text><text class="ts" x="105" y="280" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+      <g id="n-rw" class="node teal"><rect x="500" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="575" y="261" text-anchor="middle" dominant-baseline="central">RisingWave</text><text class="ts" x="575" y="280" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+
+      <g id="dots"></g>
+
+      <g class="coral"><rect x="30" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="46" y="327" dominant-baseline="central">Databricks</text></g>
+      <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster</text></g>
+      <g class="teal"><rect x="236" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="252" y="327" dominant-baseline="central">Kafka side and targets</text></g>
+    </svg>
+    <div class="controls">
+      <button id="prev" aria-label="Previous step">&larr; Back</button>
+      <button id="play">Pause</button>
+      <button id="next" aria-label="Next step">Next &rarr;</button>
+      <span id="pos" class="pos"></span>
+    </div>
+  </div>
+  <ol id="steps"></ol>
+</div>
+
+<section class="notes">
+  <h2>The Databricks source table</h2>
+  <p class="sub">What the table behind step 1 needs, and how to define it. The setup job creates it for you from <code>orchestration/defs/reverse_etl_avro/defs.yaml</code>; this is the DDL it runs.</p>
+  <div class="grid">
+    <div>
+      <ul>
+        <li><b>A Delta table with Change Data Feed on.</b> The sync reads changes with <code>table_changes()</code>, which only works when <code>delta.enableChangeDataFeed</code> is true. Changes made before it was switched on are not in the feed.</li>
+        <li><b>A key column that never repeats and never changes.</b> Here it is <code>rid</code>, an identity column Databricks fills in on insert. Every target is keyed on it. The business <code>id</code> is not used as the key: Unity Catalog primary keys are informational, so two rows can share an <code>id</code>, and deleting one removed the other downstream.</li>
+        <li><b>The key must exist from creation.</b> An identity column cannot be added to an existing table, so adding it later means the reset job, then the setup job.</li>
+        <li><b>Your own columns</b> go in <code>source_columns</code> in the sync's YAML (here <code>id</code>, <code>value</code>, <code>updated_at</code>).</li>
+        <li><b>Inserts must list their columns</b>, as in <code>INSERT INTO t (id, value) VALUES (...)</code>. A column-less insert fails on a table with an identity column.</li>
+        <li><b>Schema changes:</b> adding a column is carried to the targets. Dropping a column or changing a type is not, and a drop needs column mapping turned on first.</li>
+      </ul>
+    </div>
+    <div>
+      <p class="label">Source table</p>
+<pre>CREATE TABLE IF NOT EXISTS
+  de_dev.sr_poc_external.reverse_etl_avro_source (
+  rid BIGINT GENERATED ALWAYS AS IDENTITY,
+  id BIGINT NOT NULL,
+  value STRING,
+  updated_at TIMESTAMP
+) USING DELTA
+TBLPROPERTIES (
+  'delta.enableChangeDataFeed' = 'true'
+);</pre>
+      <p class="label">State table (the watermark, step 2 and step 8)</p>
+<pre>CREATE TABLE IF NOT EXISTS
+  de_dev.sr_poc_external.reverse_etl_avro_state (
+  sync_name STRING,
+  last_commit_version BIGINT
+);</pre>
+    </div>
+  </div>
+</section>
+
+<script>
+const S = [
+  { t: 'A row changes in Databricks', d: 'An update, insert or delete creates a new version of the Delta table. Change Data Feed records the before and after of each row.', n: ['src'], e: [] },
+  { t: 'The sync reads the watermark', d: 'It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
+  { t: 'The sync reads the changes', d: 'It reads every change made after that version and turns each one into a before, after and op event.', n: ['src', 'sync'], e: ['e1'] },
+  { t: 'Schemas go to the registry', d: 'The key and value Avro schemas are registered. A new column adds a new schema version here before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
+  { t: 'Events go to Kafka', d: 'The sync produces one Avro message per change. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
+  { t: 'Two readers take the topic', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. RisingWave applies the change to its table here.', n: ['kafka', 'connect', 'rw'], e: ['e5', 'e7'] },
+  { t: 'Postgres applies the change', d: 'The Debezium JDBC sink upserts or deletes the row. Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] },
+  { t: 'The watermark moves', d: 'Only after the messages are produced does the sync write the new version to the state table. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] }
+];
+const NODES = ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'];
+const EDGES = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8'];
+const $ = id => document.getElementById(id);
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let i = 0, timer = null, live = [];
+
+const list = $('steps');
+S.forEach((s, k) => {
+  const li = document.createElement('li');
+  li.innerHTML = '<span class="num">' + (k + 1) + '</span><span class="t"></span><span class="d"></span>';
+  li.querySelector('.t').textContent = s.t;
+  li.querySelector('.d').textContent = s.d;
+  li.onclick = () => { stop(); show(k); };
+  list.appendChild(li);
+});
+
+function show(k) {
+  i = (k + S.length) % S.length;
+  const s = S[i];
+  NODES.forEach(n => { $('n-' + n).style.opacity = s.n.includes(n) ? 1 : 0.4; });
+  EDGES.forEach(e => $(e).classList.toggle('on', s.e.includes(e)));
+  $('dots').innerHTML = '';
+  live = s.e.map(e => {
+    const l = $(e), c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('r', 5); c.setAttribute('fill', '#ef9f27');
+    $('dots').appendChild(c);
+    return { c, x1: +l.getAttribute('x1'), y1: +l.getAttribute('y1'), x2: +l.getAttribute('x2'), y2: +l.getAttribute('y2') };
+  });
+  [...list.children].forEach((li, n) => li.classList.toggle('on', n === i));
+  $('pos').textContent = 'Step ' + (i + 1) + ' of ' + S.length;
+}
+function tick(now) {
+  const p = reduce ? 1 : (now % 1400) / 1400;
+  live.forEach(o => { o.c.setAttribute('cx', o.x1 + (o.x2 - o.x1) * p); o.c.setAttribute('cy', o.y1 + (o.y2 - o.y1) * p); });
+  requestAnimationFrame(tick);
+}
+function start() { stop(); timer = setInterval(() => show(i + 1), 4500); $('play').textContent = 'Pause'; }
+function stop() { if (timer) { clearInterval(timer); timer = null; } $('play').textContent = 'Play'; }
+
+$('prev').onclick = () => { stop(); show(i - 1); };
+$('next').onclick = () => { stop(); show(i + 1); };
+$('play').onclick = () => (timer ? stop() : start());
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') { stop(); show(i + 1); }
+  if (e.key === 'ArrowLeft') { stop(); show(i - 1); }
+});
+show(0); requestAnimationFrame(tick); start();
+</script>
+</body>
+</html>

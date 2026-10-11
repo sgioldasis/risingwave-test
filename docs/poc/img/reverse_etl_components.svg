@@ -2,13 +2,13 @@
 <text x="34" y="44" font-size="17" font-weight="700" fill="#0f172a">Databricks (DEV workspace)</text>
 <rect x="20" y="370" width="1460" height="260" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
 <text x="34" y="394" font-size="17" font-weight="700" fill="#0f172a">Dagster (localhost:3000)</text>
-<rect x="300" y="700" width="900" height="170" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
-<text x="314" y="724" font-size="17" font-weight="700" fill="#0f172a">Kaizen staging</text>
-<rect x="300" y="940" width="1180" height="300" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
-<text x="314" y="964" font-size="17" font-weight="700" fill="#0f172a">Local (docker + host)</text>
-<path d="M1120,80 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
-<text x="1260.0" y="106.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_source</text>
-<text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Delta + Change Data Feed, key rid</text>
+<rect x="20" y="700" width="1180" height="170" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+<text x="34" y="724" font-size="17" font-weight="700" fill="#0f172a">Kaizen STG</text>
+<rect x="20" y="940" width="1460" height="300" rx="8" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+<text x="34" y="964" font-size="17" font-weight="700" fill="#0f172a">Local (docker + host)</text>
+<path d="M1120,80 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
+<text x="1260.0" y="106.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_avro_source</text>
+<text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">Delta + Change Data Feed, key rid</text>
 <path d="M60,210 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="200.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_state</text>
 <text x="200.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">watermark: last version synced</text>
@@ -40,17 +40,17 @@
 <rect x="820" y="740" width="320" height="80" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="980.0" y="776.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Apicurio registry</text>
 <text x="980.0" y="794.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">topic-key, topic-value</text>
-<path d="M340,1010 v70 a150.0,10 0 0 0 300,0 v-70 a150.0,10 0 0 0 -300,0 a150.0,10 0 0 0 300,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
-<text x="490.0" y="1032.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">RisingWave</text>
-<text x="490.0" y="1050.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_target</text>
-<text x="490.0" y="1068.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">FORMAT DEBEZIUM ENCODE AVRO</text>
+<path d="M340,1010 v70 a150.0,10 0 0 0 300,0 v-70 a150.0,10 0 0 0 -300,0 a150.0,10 0 0 0 300,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
+<text x="490.0" y="1032.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">RisingWave</text>
+<text x="490.0" y="1050.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_avro_target</text>
+<text x="490.0" y="1068.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">FORMAT DEBEZIUM ENCODE AVRO</text>
 <rect x="1210" y="1000" width="260" height="90" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="1340.0" y="1032.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Kafka Connect</text>
 <text x="1340.0" y="1050.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Debezium JDBC sink connector</text>
 <text x="1340.0" y="1068.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_sink</text>
-<path d="M1240,1150 v60 a100.0,10 0 0 0 200,0 v-60 a100.0,10 0 0 0 -200,0 a100.0,10 0 0 0 200,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
-<text x="1340.0" y="1176.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Postgres</text>
-<text x="1340.0" y="1194.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_target</text>
+<path d="M1240,1150 v60 a100.0,10 0 0 0 200,0 v-60 a100.0,10 0 0 0 -200,0 a100.0,10 0 0 0 200,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
+<text x="1340.0" y="1176.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">Postgres</text>
+<text x="1340.0" y="1194.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_avro_target</text>
 <path d="M1180,150 L1180,230 L900,230" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
 <rect x="952.2" y="219" width="175.6" height="20" fill="white" opacity="0.92"/>
 <text x="1040" y="234" font-size="13" text-anchor="middle" fill="#0f172a">changes since watermark</text>

@@ -31,53 +31,17 @@ Names are for the `avro` sync. Every name is `reverse_etl_<label>_<role>`, so fo
 
 ### Diagram
 
-```
- DATABRICKS (DEV workspace)
- +-----------------------------------------------------------------+
- | reverse_etl_avro_source  Delta table, Change Data Feed, key rid |
- | reverse_etl_avro_state   watermark: last table version synced   |
- +--------------------------------+--------------------------------+
-                                 | changes since the watermark
-                                 v
- +-----------------------------------------------------------------+
- | THE SYNC, run by either                                         |
- |   - Dagster asset    reverse_etl_avro_to_kafka                  |
- |   - Databricks job   reverse_etl_notebook_sync (a notebook)     |
- | builds before/after/op events, produces Avro messages, then     |
- | moves the watermark                                             |
- +-------------+-----------------------------------+---------------+
-               | messages                          | registers schemas
-               v                                   v
- +------------------------------+     +-------------------------------+
- | STAGING KAFKA                |     | APICURIO REGISTRY (staging)   |
- | topic reverse_etl_avro_topic |     | reverse_etl_avro_topic-key    |
- | (15 partitions)              |     | reverse_etl_avro_topic-value  |
- +---------+-------------+------+     +-------------------------------+
-           | reads       | reads         (both readers look up each
-           v             v                message's schema here, by id)
- +-----------------+  +--------------------------------+
- | KAFKA CONNECT   |  | RISINGWAVE (local)             |
- | connector       |  | table reverse_etl_avro_target  |
- | reverse_etl_    |  | FORMAT DEBEZIUM ENCODE AVRO    |
- |   avro_sink     |  +--------------------------------+
- +--------+--------+
-          | upserts / deletes
-          v
- +--------------------------------+
- | POSTGRES (host)                |
- | table reverse_etl_avro_target  |
- +--------------------------------+
-```
+![Reverse-ETL components](img/reverse_etl_components.png)
 
 The two readers of the topic are independent: each keeps its own place in it, so one can fall behind or stop
 without the other noticing (the demo in section 7 uses this).
 
-The same picture as a drawn diagram, with the Dagster jobs and the health check added:
-
-![Reverse-ETL components](img/reverse_etl_components.png)
-
 (The drawing is `img/reverse_etl_components.svg`, a plain-text SVG you can edit; the PNG is the same drawing
 exported at 2x. It is drawn by hand, not generated, because Mermaid laid the arrows out poorly.)
+
+An animated walkthrough of one change, step by step with a description of each step, is in
+[`reverse_etl_data_flow.html`](reverse_etl_data_flow.html) (open it in a browser). It also describes what the
+Databricks source table needs and how to define it.
 
 Debezium appears three times: the messages on the topic are Debezium change events (`before`, `after`, `op`), the
 Kafka Connect connector is the Debezium JDBC sink, and RisingWave reads the topic with `FORMAT DEBEZIUM ENCODE AVRO`.
@@ -90,7 +54,7 @@ Both do the same steps (read the changes, register the schemas, produce the mess
 each has its own arrows to the source, the watermark, the topic (the Avro messages, solid arrow) and the
 registry (the schemas, dotted arrow).
 The health check (`sink_healthy`) is in the Dagster box; its dotted arrows go to Kafka Connect (connector state) and to
-the Kaizen staging box (consumer group lag).
+the Kaizen STG box (consumer group lag).
 
 ### Databricks (DEV workspace, `de_dev.sr_poc_external`)
 
