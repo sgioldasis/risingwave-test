@@ -733,10 +733,16 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         CREATE TABLE IF NOT EXISTS {cfg.source_fqn} (
             {columns}
         ) USING DELTA
-        TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        TBLPROPERTIES (
+            'delta.enableChangeDataFeed' = 'true',
+            'delta.columnMapping.mode' = 'name',
+            'delta.enableDeletionVectors' = 'false',
+            'delta.enableIcebergCompatV2' = 'true',
+            'delta.universalFormat.enabledFormats' = 'iceberg'
+        )
         """,
         )
-        context.log.info(f"{cfg.source_fqn} ready (CDF enabled)")
+        context.log.info(f"{cfg.source_fqn} ready (CDF + UniForm Iceberg enabled)")
 
         _run_sql(
             token,

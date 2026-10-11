@@ -122,6 +122,7 @@
         <li><b>A Delta table with Change Data Feed on.</b> The sync reads changes with <code>table_changes()</code>, which only works when <code>delta.enableChangeDataFeed</code> is true. Changes made before it was switched on are not in the feed.</li>
         <li><b>A key column that never repeats and never changes.</b> Here it is <code>rid</code>, an identity column Databricks fills in on insert. Every target is keyed on it. The business <code>id</code> is not used as the key: Unity Catalog primary keys are informational, so two rows can share an <code>id</code>, and deleting one removed the other downstream.</li>
         <li><b>The key must exist from creation.</b> An identity column cannot be added to an existing table, so adding it later means the reset job, then the setup job.</li>
+        <li><b>UniForm (optional but on by default here).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation: turning them on later is a schema commit that breaks Change Data Feed reads spanning it. The Iceberg side is read-only.</li>
         <li><b>Your own columns</b> go in <code>source_columns</code> in the sync's YAML (here <code>id</code>, <code>value</code>, <code>updated_at</code>).</li>
         <li><b>Inserts must list their columns</b>, as in <code>INSERT INTO t (id, value) VALUES (...)</code>. A column-less insert fails on a table with an identity column.</li>
         <li><b>Schema changes:</b> adding a column is carried to the targets. Dropping a column or changing a type is not, and a drop needs column mapping turned on first.</li>
@@ -137,7 +138,11 @@
   updated_at TIMESTAMP
 ) USING DELTA
 TBLPROPERTIES (
-  'delta.enableChangeDataFeed' = 'true'
+  'delta.enableChangeDataFeed' = 'true',
+  'delta.columnMapping.mode' = 'name',
+  'delta.enableDeletionVectors' = 'false',
+  'delta.enableIcebergCompatV2' = 'true',
+  'delta.universalFormat.enabledFormats' = 'iceberg'
 );</pre>
       <p class="label">State table (the watermark, step 2 and step 8)</p>
 <pre>CREATE TABLE IF NOT EXISTS
