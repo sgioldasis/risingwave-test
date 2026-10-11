@@ -749,6 +749,12 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             f"""
         CREATE TABLE IF NOT EXISTS {cfg.state_fqn} (
             sync_name STRING, last_commit_version BIGINT
+        ) USING DELTA
+        TBLPROPERTIES (
+            'delta.columnMapping.mode' = 'name',
+            'delta.enableDeletionVectors' = 'false',
+            'delta.enableIcebergCompatV2' = 'true',
+            'delta.universalFormat.enabledFormats' = 'iceberg'
         )
         """,
         )

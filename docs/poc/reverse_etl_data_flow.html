@@ -155,6 +155,12 @@ TBLPROPERTIES (
   de_dev.sr_poc_external.reverse_etl_avro_state (
   sync_name STRING,
   last_commit_version BIGINT
+) USING DELTA
+TBLPROPERTIES (
+  'delta.columnMapping.mode' = 'name',
+  'delta.enableDeletionVectors' = 'false',
+  'delta.enableIcebergCompatV2' = 'true',
+  'delta.universalFormat.enabledFormats' = 'iceberg'
 );</pre>
     </div>
   </div>

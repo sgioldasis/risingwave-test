@@ -219,7 +219,7 @@ targets. The registry stays at its current version, because the notebook builds 
 
 ### Read the same table from outside Databricks (optional)
 
-The source tables of all three syncs (`avro`, `cdf`, `orders`) are created as UniForm tables: Delta with Iceberg
+The source tables and the watermark (state) tables of all three syncs (`avro`, `cdf`, `orders`) are created as UniForm tables: Delta with Iceberg
 metadata generated next to it. Another engine can read them through Unity Catalog's Iceberg REST API, with no copy
 and no pipeline. StarRocks already has that catalog (`databricks_uc`), so in a SQL client on StarRocks:
 
