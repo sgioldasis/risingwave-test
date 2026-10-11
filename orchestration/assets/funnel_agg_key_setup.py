@@ -164,6 +164,9 @@ def funnel_daily_totals_agg(context: AssetExecutionContext) -> dict:
     )
 
     with engine.connect() as connection:
+        # The dbt StarRocks models create this database, but this asset does not depend on them,
+        # so on a fresh StarRocks it can run first.
+        connection.execute(text(f"CREATE DATABASE IF NOT EXISTS {SCHEMA}"))
         connection.execute(text(CREATE_TABLE_SQL))
         context.log.info("Table %s.%s ready", SCHEMA, TABLE)
 

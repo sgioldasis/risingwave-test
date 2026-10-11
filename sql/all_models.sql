@@ -106,28 +106,13 @@ SELECT
 FROM stats;
 
 -- ==========================================================
--- STEP 4: Create Iceberg Funnel Table
+-- STEP 4: Create Sink to Iceberg (Funnel Only)
 -- ==========================================================
-
--- ----- Model: rw_managed_funnel -----
-CREATE TABLE IF NOT EXISTS rw_managed_funnel (
-    window_start TIMESTAMP,
-    window_end TIMESTAMP,
-    viewers BIGINT,
-    carters BIGINT,
-    purchasers BIGINT,
-    view_to_cart_rate DOUBLE,
-    cart_to_buy_rate DOUBLE,
-    PRIMARY KEY (window_start)
-) ENGINE = iceberg;
-
--- ==========================================================
--- STEP 5: Create Sink to Iceberg (Funnel Only)
--- ==========================================================
+-- The sink creates the Iceberg table itself (create_table_if_not_exists). Do not create the table
+-- first and sink INTO it: RisingWave 3.1 rejects a connector on a sink into a table.
 
 -- ----- Model: sink_funnel_to_rw_iceberg -----
 CREATE SINK IF NOT EXISTS rw_managed_funnel_sink
-INTO rw_managed_funnel
 FROM funnel
 WITH (
     connector = 'iceberg',
