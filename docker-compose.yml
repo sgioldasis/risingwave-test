@@ -440,7 +440,8 @@ services:
   #     iceberg_net:
 
   minio-0:
-    image: "quay.io/minio/minio:latest"
+    # image: "quay.io/minio/minio:latest"
+    image: pgsty/silo:latest  # Updated drop-in replacement
     command:
       - server
       - "--address"
