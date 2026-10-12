@@ -43,6 +43,12 @@ An animated walkthrough of one change, step by step with a description of each s
 [`reverse_etl_data_flow.html`](reverse_etl_data_flow.html) (open it in a browser). It also describes what the
 Databricks source table needs and how to define it.
 
+To run the steps from the page, start `./bin/3_run_reverse_etl_demo.sh` and open `http://localhost:4002/?sync=avro`
+(`cdf` and `orders` work too). Step 1 makes an insert, update or delete in Databricks, steps 2 to 5 and 8 run the sync
+(one Dagster run, so they cannot be launched separately), and steps 6 and 7 only check Kafka Connect, RisingWave and
+Postgres. The Reset and set up button at the top runs the sync's reset job, then its setup job. The Postgres check needs a devbox
+shell (`POSTGRES_PASSWORD`). Opened as a plain file, the page is the animation only.
+
 Debezium appears three times: the messages on the topic are Debezium change events (`before`, `after`, `op`), the
 Kafka Connect connector is the Debezium JDBC sink, and RisingWave reads the topic with `FORMAT DEBEZIUM ENCODE AVRO`.
 

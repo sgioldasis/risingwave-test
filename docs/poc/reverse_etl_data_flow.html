@@ -25,8 +25,9 @@
   body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
   h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
-  .wrap { display: grid; grid-template-columns: minmax(0, 760px) 340px; gap: 24px; align-items: start; max-width: 1200px; }
-  @media (max-width: 1150px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  .wrap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 8px; align-items: start; max-width: 1200px; }
+  .wrap > :first-child { grid-column: span 2; }
+  @media (max-width: 1150px) { .wrap { grid-template-columns: minmax(0, 1fr); } .wrap > :first-child { grid-column: auto; } }
   .side { position: sticky; top: 16px; }
   @media (max-width: 1150px) { .side { position: static; } }
   .caption { background: var(--card); border-radius: 12px; padding: 14px 16px; margin: 0 0 12px; min-height: 200px; }
@@ -47,6 +48,17 @@
   button { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
   button:hover { background: var(--card); }
   button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .acts { margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .acts select { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+  .acts button, .bar button { border-color: var(--active); }
+  button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
+  .result { font-size: 13px; color: var(--muted); margin: 8px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+  .icon { display: inline-block; width: 1.1em; margin-right: 6px; text-align: center; font-weight: 700; }
+  .icon.ok { color: #2e9e4f; } .icon.fail { color: #d64545; }
+  .icon.run { width: 12px; height: 12px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--active); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .result a { color: var(--blue-t); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px; font-size: 13px; color: var(--muted); }
   .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
   ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1200px; }
   li { display: grid; grid-template-columns: 28px 1fr; gap: 4px 10px; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
@@ -67,12 +79,18 @@
   .notes code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
   .notes pre { margin: 0 0 16px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55; overflow-x: auto; }
   .notes .label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
-  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } .icon.run { animation-duration: 3s; } }
 </style>
 </head>
 <body>
 <h1>Reverse-ETL data flow</h1>
 <p class="sub">Syncs changes from the Databricks (UniForm) table to Postgres and RisingWave through Kafka. Use the buttons, click a step, or press the left and right arrow keys.</p>
+<p class="sub" id="bar-msg" style="margin-top: -14px; font-size: 13px">Buttons need the helper: run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/</p>
+
+<div class="bar" id="bar">
+  <button id="do-rebuild" disabled>Reset and set up</button>
+  <p class="result" id="bar-result" style="margin: 0"></p>
+</div>
 
 <div class="wrap">
   <div>
@@ -108,10 +126,10 @@
     </svg>
   </div>
   <div class="side">
-    <div class="caption"><p class="ct" id="cap-t"></p><p class="cd" id="cap-d"></p></div>
+    <div class="caption"><p class="ct" id="cap-t"></p><p class="cd" id="cap-d"></p><div class="acts" id="acts"></div><p class="result" id="result"></p></div>
     <div class="controls">
       <button id="prev" aria-label="Previous step">&larr; Back</button>
-      <button id="play">Pause</button>
+      <button id="play">Play</button>
       <button id="next" aria-label="Next step">Next &rarr;</button>
       <span id="pos" class="pos"></span>
     </div>
@@ -168,14 +186,14 @@ TBLPROPERTIES (
 
 <script>
 const S = [
-  { t: 'A row changes in Databricks', d: 'The table must have Change Data Feed (CDF) enabled: it records the before and after of each changed row. Changes made before CDF was enabled are not recorded. Each commit creates one new version of the Databricks table, however many rows it changes. Adding a column is a commit too.', n: ['src'], e: [] },
-  { t: 'The sync reads the watermark', d: 'The sync is always triggered from Dagster, but the processing can run in Dagster (as an asset) or in Databricks (as a notebook, started by a Dagster job). The steps are the same, and both share one watermark, so use only one per change. It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
-  { t: 'The sync reads the changes', d: 'table_changes() is a Databricks table function that reads the Delta transaction log, so it always executes on Databricks compute. The sync runs it from the version after the watermark. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op. It reads the current column list of the source table on every run, so a column added since the last run is included automatically.', n: ['src', 'sync'], e: ['e1'] },
-  { t: 'Schemas go to the registry', d: 'Both Avro schemas (key and value) are registered on every run. If they match what is already there, the registry returns the existing version and nothing changes. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
-  { t: 'Events go to Kafka', d: 'The sync produces one Avro message per change, in the Debezium format: before, after, op and source. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
-  { t: 'Two readers take the topic', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Each message carries only a schema id; both readers fetch that schema from the registry to decode it. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE AVRO), so it applies each change to its table here, with no connector. For a new column, the sync first adds it to the RisingWave table, after the new schema version is registered, because RisingWave only fills a column from messages read after the column exists.', n: ['kafka', 'reg', 'connect', 'rw'], e: ['e5', 'e7', 'e9', 'e10'] },
-  { t: 'Postgres applies the change', d: 'The Debezium JDBC sink (an open-source Kafka Connect connector, Apache 2.0, running in a local container) reads the topic and upserts or deletes the row in Postgres, keyed on rid. Postgres is only the target of this demo: the sink writes through JDBC, so the target can be SQL Server, which the connector supports, or another supported database. A new column is added to the Postgres table by the sink itself (schema evolution). Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] },
-  { t: 'The watermark moves', d: 'Only after the messages are produced does the sync write the new version to the state table. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] }
+  { t: 'A row changes in Databricks', a: 'change', d: 'The table must have Change Data Feed (CDF) enabled: it records the before and after of each changed row. Changes made before CDF was enabled are not recorded. Each commit creates one new version of the Databricks table, however many rows it changes. Adding a column is a commit too.', n: ['src'], e: [] },
+  { t: 'The sync reads the watermark', a: 'sync', d: 'The sync is always triggered from Dagster, but the processing can run in Dagster (as an asset) or in Databricks (as a notebook, started by a Dagster job). The steps are the same, and both share one watermark, so use only one per change. It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
+  { t: 'The sync reads the changes', a: 'sync', d: 'table_changes() is a Databricks table function that reads the Delta transaction log, so it always executes on Databricks compute. The sync runs it from the version after the watermark. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op. It reads the current column list of the source table on every run, so a column added since the last run is included automatically.', n: ['src', 'sync'], e: ['e1'] },
+  { t: 'Schemas go to the registry', a: 'sync', d: 'Both Avro schemas (key and value) are registered on every run. If they match what is already there, the registry returns the existing version and nothing changes. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
+  { t: 'Events go to Kafka', a: 'sync', d: 'The sync produces one Avro message per change, in the Debezium format: before, after, op and source. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
+  { t: 'Two readers take the topic', a: 'readers', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Each message carries only a schema id; both readers fetch that schema from the registry to decode it. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE AVRO), so it applies each change to its table here, with no connector. For a new column, the sync first adds it to the RisingWave table, after the new schema version is registered, because RisingWave only fills a column from messages read after the column exists.', n: ['kafka', 'reg', 'connect', 'rw'], e: ['e5', 'e7', 'e9', 'e10'] },
+  { t: 'Postgres applies the change', a: 'postgres', d: 'The Debezium JDBC sink (an open-source Kafka Connect connector, Apache 2.0, running in a local container) reads the topic and upserts or deletes the row in Postgres, keyed on rid. Postgres is only the target of this demo: the sink writes through JDBC, so the target can be SQL Server, which the connector supports, or another supported database. A new column is added to the Postgres table by the sink itself (schema evolution). Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] },
+  { t: 'The watermark moves', a: 'sync', d: 'Only after the messages are produced does the sync write the new version to the state table. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] }
 ];
 const NODES = ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'];
 const EDGES = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'e10'];
@@ -225,7 +243,94 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') { stop(); show(i + 1); }
   if (e.key === 'ArrowLeft') { stop(); show(i - 1); }
 });
-show(0); requestAnimationFrame(tick); start();
+
+// Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
+const SYNC = new URLSearchParams(location.search).get('sync') || 'avro';
+let helper = false, busy = false;
+const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
+const get = url => fetch(url).then(r => r.json());
+
+function say(text, url, state, r = $('result')) {
+  r.textContent = '';
+  if (state) {
+    const ic = document.createElement('span');
+    ic.className = 'icon ' + state;
+    ic.textContent = { ok: '\u2713', fail: '\u2717' }[state] || '';
+    r.append(ic);
+  }
+  r.append(text);
+  if (url) { r.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; r.append(a); }
+}
+function lock(on) { busy = on; document.querySelectorAll('.acts button, .acts select, .bar button').forEach(b => { b.disabled = on || !helper; }); }
+
+async function run(label, body, out) {
+  stop(); lock(true);
+  const started = await post(body);
+  if (started.error) { say(label + ' failed to start: ' + started.error, null, 'fail', out); lock(false); return false; }
+  for (;;) {
+    const s = await get('/api/run/' + started.runId);
+    const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
+    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out);
+    if (done) { lock(false); return s.status === 'SUCCESS'; }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+async function check(path, format) {
+  stop(); lock(true);
+  say('Checking...', null, 'run');
+  const d = await get('/api/check/' + SYNC + '/' + path);
+  say(format(d), null, JSON.stringify(d).includes('"error"') ? 'fail' : 'ok');
+  lock(false);
+}
+
+const ACTIONS = {
+  change: box => {
+    const sel = document.createElement('select');
+    [['insert', 'insert a row'], ['update', 'update a row'], ['delete', 'delete a row'], ['add_column', 'add a column']].forEach(([v, l]) => sel.add(new Option(l, v)));
+    const b = document.createElement('button');
+    b.textContent = 'Make change in Databricks';
+    b.onclick = () => run('Change (' + sel.selectedOptions[0].text + ')', { action: 'change', change: sel.value });
+    box.append(sel, b);
+  },
+  sync: box => {
+    const b = document.createElement('button');
+    b.textContent = 'Run sync (steps 2 to 5 and 8)';
+    b.onclick = () => run('Sync', { action: 'sync' });
+    box.append(b);
+  },
+  readers: box => {
+    const b = document.createElement('button');
+    b.textContent = 'Check readers';
+    b.onclick = () => check('readers', d => 'Kafka Connect: ' + (d.kafka_connect.error ? d.kafka_connect.error : d.kafka_connect.connector + ', tasks ' + d.kafka_connect.tasks.join(', ')) + '. RisingWave rows: ' + (d.risingwave_rows.error || d.risingwave_rows) + '.');
+    box.append(b);
+  },
+  postgres: box => {
+    const b = document.createElement('button');
+    b.textContent = 'Show Postgres rows';
+    b.onclick = () => check('postgres', d => d.error ? 'Postgres check failed: ' + d.error : d.rows + ' rows. Latest: ' + d.latest.map(r => r.join(' | ')).join(' ; '));
+    box.append(b);
+  }
+};
+
+function renderActions() {
+  const box = $('acts');
+  box.innerHTML = '';
+  say('');
+  if (ACTIONS[S[i].a]) ACTIONS[S[i].a](box);
+  lock(busy);
+}
+const baseShow = show;
+show = k => { baseShow(k); renderActions(); };
+
+$('do-rebuild').onclick = async () => {
+  if (!confirm('This drops the ' + SYNC + ' source and state tables, the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
+  const out = $('bar-result');
+  if (await run('Reset (1 of 2)', { action: 'reset' }, out)) await run('Set up (2 of 2)', { action: 'setup' }, out);
+};
+
+fetch('/api/ping').then(r => r.json()).then(() => { helper = true; $('bar-msg').textContent = 'Connected to the helper. Sync: ' + SYNC + '.'; lock(false); }).catch(() => {});
+show(0); requestAnimationFrame(tick);
 </script>
 </body>
 </html>
