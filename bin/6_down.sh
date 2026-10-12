@@ -46,6 +46,22 @@ fi
 
 echo ""
 
+echo "=== Stopping Reverse-ETL Demo ==="
+if pgrep -f "scripts/reverse_etl_demo_server.py" > /dev/null 2>&1; then
+    echo "Stopping reverse-ETL demo helper..."
+    pkill -f "scripts/reverse_etl_demo_server.py" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "scripts/reverse_etl_demo_server.py" > /dev/null 2>&1; then
+        pkill -9 -f "scripts/reverse_etl_demo_server.py" 2>/dev/null || true
+    fi
+    echo "✅ Reverse-ETL demo helper stopped"
+else
+    echo "No reverse-ETL demo helper found"
+fi
+
+echo ""
+
 echo "=== Stopping Modern Dashboard ==="
 echo ""
 
