@@ -53,6 +53,10 @@ def _get_risingwave_connection():
         database=os.environ.get("RISINGWAVE_DB",   "dev"),
         user=os.environ.get("RISINGWAVE_USER",     "root"),
         password=os.environ.get("RISINGWAVE_PASSWORD", ""),
+        # A stalled frontend (TCP accepted, handshake never completes) must fail
+        # the sync fast instead of hanging the run forever — seen live when the
+        # zero-DBU sync ran from outside the container network (2026-10-14).
+        connect_timeout=10,
     )
 
 

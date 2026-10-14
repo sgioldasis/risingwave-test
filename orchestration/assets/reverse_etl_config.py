@@ -82,11 +82,23 @@ class ReverseEtlSyncConfig:
     encoding: str = "json"
     schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
 
+    # --- extraction backend -----------------------------------------------------
+    # How the sync asset reads the change feed, watermark and schema:
+    # "databricks_sql": Statement Execution API against the SQL warehouse (the
+    #   original path; consumes DBUs).
+    # "oss_spark": OSS Delta on a local Spark session reading the tables' storage
+    #   directly — no Databricks compute, no DBUs (docs/poc/
+    #   REVERSE_ETL_DBU_COST_NOTES.md sections 4-5). Requires the ADLS_* service
+    #   principal in the environment and the state table as plain Delta (option A).
+    extraction: str = "databricks_sql"
+
     def __post_init__(self) -> None:
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
         if self.encoding not in ("json", "avro"):
             raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+        if self.extraction not in ("databricks_sql", "oss_spark"):
+            raise ValueError(f"extraction must be 'databricks_sql' or 'oss_spark', got {self.extraction!r}")
 
     @property
     def key_subject(self) -> str:

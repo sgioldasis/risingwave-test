@@ -57,6 +57,12 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     reset_schema: str | None = None
     # tasks.max of the Debezium JDBC sink (default 1, enough for a daily load); raise it for a backfill.
     sink_tasks_max: int | None = None
+    # "databricks_sql" (default) or "oss_spark": how the sync asset reads the change
+    # feed, watermark and schema. oss_spark reads the tables' storage with OSS Delta
+    # on a local Spark session — no Databricks compute, no DBUs; requires the ADLS_*
+    # service principal and a plain Delta state table (see
+    # docs/poc/REVERSE_ETL_DBU_COST_NOTES.md section 5).
+    extraction: str | None = None
     # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
     encoding: str | None = None
     schema_registry_url: str | None = None
@@ -91,6 +97,7 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
                 "reset_job",
                 "reset_schema",
                 "sink_tasks_max",
+                "extraction",
                 "encoding",
                 "schema_registry_url",
             )

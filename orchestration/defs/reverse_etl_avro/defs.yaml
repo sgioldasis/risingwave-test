@@ -6,6 +6,7 @@ type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 
 attributes:
   name: avro
+  extraction: oss_spark
   encoding: avro
   catalog: de_dev
   schema_name: sr_poc_external

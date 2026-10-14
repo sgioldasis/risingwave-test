@@ -28,6 +28,15 @@ Feed (CDF)**, read in **batch** mode (`table_changes()`, not Structured
 Streaming), is the right mechanism to sync new/changed/deleted rows without
 adopting a third-party tool.
 
+> **2026-10-14:** the built syncs default to `extraction: oss_spark` — the CDF
+> is read straight from Delta storage with OSS Delta on Spark (same batch
+> semantics and event grouping) and the watermark is MERGE'd back with OSS
+> Delta, so the sync itself costs zero Databricks DBUs. `table_changes()` via
+> the Statement Execution API remains available as the `databricks_sql`
+> backend. The rest of this document describes the SQL path as originally
+> designed; see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md` for the zero-DBU
+> backend, its verification, and the billing actuals.
+
 A first cut was scaffolded as a throwaway sandbox project
 (`~/Projects/dagster-test/dagster-poc/reverse-etl`) to prove the design:
 watermark-owned-by-the-caller, a safe first-run baseline (no full-table

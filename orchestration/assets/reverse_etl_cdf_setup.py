@@ -631,13 +631,34 @@ def _produce_to_kafka(
 ) -> None:
     producer = Producer(_kafka_producer_config())
     serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" else None
+    # produce() is async (it only enqueues); delivery failures surface later in
+    # librdkafka's background threads. Collect them per message via on_delivery
+    # and fail the run here -- BEFORE the watermark MERGE that follows this call
+    # -- so the next sync replays from the same version instead of silently
+    # skipping events that never reached the topic (broker blip, rotated SASL
+    # credentials, recreated topic). Duplicate replays are harmless: the targets
+    # upsert by key.
+    delivery_errors: list[str] = []
     for event in events:
         if serializers:
             key, value = _build_avro_message(cfg, event, key_columns, row_fields, serializers)
         else:
             key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
-        producer.produce(topic=cfg.kafka_topic, key=key, value=value)
-    producer.flush()
+        producer.produce(
+            topic=cfg.kafka_topic,
+            key=key,
+            value=value,
+            on_delivery=lambda err, msg: delivery_errors.append(str(err)) if err is not None else None,
+        )
+    # Bounded wait, mirroring _get_risingwave_connection's connect_timeout: a
+    # wedged broker must fail the run, not hang it. flush() returns the number
+    # of messages still undelivered (their delivery callbacks have not fired).
+    undelivered = producer.flush(timeout=120)
+    if undelivered or delivery_errors:
+        raise RuntimeError(
+            f"Kafka delivery to {cfg.kafka_topic} failed: "
+            f"{len(delivery_errors)} rejected ({delivery_errors[:3]}), {undelivered} undelivered after 120s"
+        )
 
 
 # Cap on how many produced messages are echoed back into the asset's run
@@ -744,21 +765,22 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         )
         context.log.info(f"{cfg.source_fqn} ready (CDF + UniForm Iceberg enabled)")
 
+        # Plain Delta on purpose: the watermark is internal bookkeeping that nothing
+        # reads through Iceberg (unlike the source table, which keeps UniForm for
+        # StarRocks). OSS Delta cannot commit to UniForm tables — the commit hook
+        # runs the Iceberg conversion with a shaded Databricks-only class
+        # ([DELTA_MISSING_ICEBERG_CLASS]) — and the zero-DBU sync writes this
+        # table's watermark from Spark. See docs/poc/REVERSE_ETL_DBU_COST_NOTES.md
+        # section 5.
         _run_sql(
             token,
             f"""
         CREATE TABLE IF NOT EXISTS {cfg.state_fqn} (
             sync_name STRING, last_commit_version BIGINT
         ) USING DELTA
-        TBLPROPERTIES (
-            'delta.columnMapping.mode' = 'name',
-            'delta.enableDeletionVectors' = 'false',
-            'delta.enableIcebergCompatV2' = 'true',
-            'delta.universalFormat.enabledFormats' = 'iceberg'
-        )
         """,
         )
-        context.log.info(f"{cfg.state_fqn} ready")
+        context.log.info(f"{cfg.state_fqn} ready (plain Delta, no UniForm)")
 
         context.add_output_metadata({
             "source_table": MetadataValue.text(cfg.source_fqn),
@@ -769,6 +791,20 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
 
 
 def build_sync_asset(cfg: ReverseEtlSyncConfig):
+    """The sync asset on the extraction backend cfg.extraction names.
+
+    Both backends emit the same asset name, watermark semantics, Kafka messages
+    and run metadata; they differ only in how they read Databricks state (and, for
+    the watermark, write it): "databricks_sql" goes through the Statement
+    Execution API (DBUs), "oss_spark" reads the tables' storage directly with OSS
+    Delta (no Databricks compute — see reverse_etl_spark_reader.py and
+    docs/poc/REVERSE_ETL_DBU_COST_NOTES.md sections 4-5)."""
+    if cfg.extraction == "oss_spark":
+        return _build_sync_asset_oss_spark(cfg)
+    return _build_sync_asset_databricks_sql(cfg)
+
+
+def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
     @asset(
         name=cfg.sync_asset,
         group_name=cfg.group_name,
@@ -871,7 +907,136 @@ def build_sync_asset(cfg: ReverseEtlSyncConfig):
             "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
             "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
+            "extraction": MetadataValue.text("databricks_sql"),
         })
+
+    return cdf_to_kafka
+
+
+def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=cfg.sync_asset,
+        group_name=cfg.group_name,
+        deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
+        description=(
+            f"Batch-read new/changed/deleted rows from {cfg.source_fqn}'s Change "
+            "Data Feed since the last watermark, and produce them as Debezium-style "
+            f"before/after/op events to the {cfg.kafka_topic} Kafka topic. Reads "
+            "the tables' storage directly with OSS Delta on a local Spark session "
+            "— no Databricks compute, no DBUs. See "
+            "docs/poc/REVERSE_ETL_DBU_COST_NOTES.md sections 4-5."
+        ),
+    )
+    def cdf_to_kafka(context: AssetExecutionContext):
+        from .reverse_etl_spark_reader import (
+            get_current_version,
+            get_earliest_available_version,
+            get_row_fields,
+            get_spark_session,
+            get_table_location,
+            read_changes,
+            read_last_version,
+            write_last_version,
+        )
+
+        # The token is control-plane only here: it resolves the tables' storage
+        # locations through the UC REST API. No SQL runs against a warehouse.
+        _require_databricks_env()
+        token = _get_token()
+
+        source_location = get_table_location(token, cfg, cfg.source_fqn)
+        state_location = get_table_location(token, cfg, cfg.state_fqn)
+        storage_account = source_location.split("@")[1].split(".")[0]
+
+        spark = get_spark_session(storage_account)
+        try:
+            last_version = read_last_version(spark, cfg, state_location)
+
+            if last_version is None:
+                backfill_from = _resolve_backfill_version()
+                if backfill_from is not None:
+                    context.log.info(
+                        f"First run for {cfg.sync_name} -- backfilling {cfg.source_table} "
+                        f"from explicit override version {backfill_from}"
+                    )
+                else:
+                    earliest_available = get_earliest_available_version(spark, source_location)
+                    if earliest_available == 0:
+                        backfill_from = 0
+                        context.log.info(
+                            f"First run for {cfg.sync_name} -- {cfg.source_table}'s full history "
+                            "is intact (earliest available version is 0), backfilling "
+                            "from the beginning"
+                        )
+                    else:
+                        context.log.info(
+                            f"First run for {cfg.sync_name} -- earliest available version "
+                            f"is {earliest_available} (history already partially aged "
+                            f"out of retention), baselining at {cfg.source_table}'s current "
+                            "version with no historical rows synced"
+                        )
+
+                rows = read_changes(spark, cfg, source_location, backfill_from) if backfill_from is not None else []
+            else:
+                # table_changes()/readChangeFeed's starting version is inclusive, and
+                # last_version was already fully processed -- +1 to resume from the
+                # first un-synced version.
+                next_version = last_version + 1
+                current_version = get_current_version(spark, source_location)
+                if next_version > current_version:
+                    # No commits since the last run -- the common case for a daily
+                    # batch once caught up. readChangeFeed errors past the latest
+                    # version just like table_changes() does, so this is checked
+                    # before reading.
+                    context.log.info(f"No new commits since version {last_version} for {cfg.sync_name}")
+                    rows = []
+                else:
+                    context.log.info(f"Reading CDF for {cfg.source_table} since version {next_version}")
+                    rows = read_changes(spark, cfg, source_location, next_version)
+
+            key_columns = [cfg.key_column]
+            events = _to_debezium_events(rows, key_columns) if rows else []
+
+            risingwave_columns_added: list[str] = []
+            row_fields: list[RowField] = []
+            if events:
+                row_fields = get_row_fields(spark, source_location)
+                # Before producing: RisingWave only fills a column from messages it
+                # reads after the column exists. Imported here because that module
+                # imports this one.
+                from .reverse_etl_risingwave_setup import add_missing_columns
+
+                risingwave_columns_added = add_missing_columns(cfg, row_fields)
+                if risingwave_columns_added:
+                    context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
+                _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields)
+
+            if last_version is None and not rows:
+                new_version = get_current_version(spark, source_location)
+            else:
+                new_version = _next_watermark(rows, last_version)
+
+            if new_version is not None:
+                write_last_version(spark, cfg, state_location, new_version)
+
+            op_counts = _summarize_ops(events)
+            context.log.info(f"Produced {len(events)} event(s) to {cfg.kafka_topic}: {op_counts}")
+
+            context.add_output_metadata({
+                "events_synced": MetadataValue.int(len(events)),
+                "op_counts": MetadataValue.json(op_counts),
+                "last_commit_version": (
+                    MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
+                ),
+                "kafka_topic": MetadataValue.text(cfg.kafka_topic),
+                "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
+                "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
+                "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
+                "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
+                "extraction": MetadataValue.text("oss_spark"),
+            })
+        finally:
+            spark.stop()
 
     return cdf_to_kafka
 

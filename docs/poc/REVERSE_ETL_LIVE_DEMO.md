@@ -174,8 +174,12 @@ Show:
 
 Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
-How it reads the changes: one `table_changes()` query from the version after the watermark, ordered by commit version.
-Each changed row comes back with its change type (`insert`, `delete`, `update_preimage`, `update_postimage`) and its
+How it reads the changes: by default straight from Delta storage with OSS Delta on Spark — `extraction: oss_spark`
+in all three syncs' `defs.yaml`, zero Databricks compute (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`). The change
+feed is read from the version after the watermark, ordered by commit version, and the watermark is MERGE'd back the
+same way. The `databricks_sql` backend — one `table_changes()` query via the Statement Execution API — is still
+available per sync by flipping `extraction` in the sync's `defs.yaml`. Each changed row comes back with its change
+type (`insert`, `delete`, `update_preimage`, `update_postimage`) and its
 commit version. The sync joins an update's old and new rows into one event with `before`, `after` and `op`
 (`c`, `u`, `d`). On the first run there is no watermark, so it starts at version 0 and reads the whole history.
 

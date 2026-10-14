@@ -53,7 +53,9 @@ Postgres and a local Redpanda topic, covering insert, update and delete.
         |
         |  Dagster asset reverse_etl_cdf_to_kafka  OR  the Databricks notebook of the same name
         |  (BATCH, manual / on demand; section 10.3)
-        |  reads table_changes() since the stored watermark,
+        |  reads the change feed since the stored watermark -- OSS Delta on Spark, straight from
+        |  storage by default (zero Databricks compute; extraction: oss_spark), or table_changes()
+        |  via the SQL warehouse (extraction: databricks_sql) -- see docs/poc/REVERSE_ETL_DBU_COST_NOTES.md
         |  groups CDF rows into Debezium before/after/op events
         v
  External Kafka cluster (SASL_SSL)    <-- KAFKA_OUTPUT_BOOTSTRAP
@@ -1206,10 +1208,23 @@ API PoC"), which gives SCD2 history inside Databricks while this pipeline gives 
   runs of 35 to 485 s, and the 30-minute idle tail before auto-termination. Only about 2 minutes of that is
   sync work, so one isolated notebook trigger costs about 0.6 DBU, and runs inside the idle window cost almost
   nothing extra. A sync that runs every few minutes would keep the cluster up continuously.
+larger ones. The size of the change (50 or 10,000 rows) made no measurable difference.
 - **Conclusion for the comparison:** both paths are small: roughly 0.4 DBU (warehouse) and 0.6 DBU (cluster) per
   isolated sync, and much less per sync when syncs are frequent, because the idle tail is shared. The cluster
   becomes the cost at a steady schedule, and the warehouse's 5-minute tail makes tiny syncs cost about the same as
   larger ones. The size of the change (50 or 10,000 rows) made no measurable difference.
+- **2026-10-14: the notebook path verified live.** `reverse_etl_notebook_sync_job` (label cdf) triggered the
+  Databricks job and the run finished SUCCESS in 8m38s wall (mostly auto-start of the terminated all-purpose
+  cluster); the event landed in both targets and the notebook advanced the shared watermark 3 → 4 — confirming the
+  workspace notebook also works against the plain-Delta state table. Two operational notes: the workspace copy of
+  `notebooks/reverse_etl_cdf_to_kafka.py` lives under the user's folder (the SP cannot read it to check staleness —
+  keep it in sync with the repo file manually), and from a laptop neutral-CWD run the job's step does not see the
+  definitions `.env` parser's variables, so source `.env` explicitly (inside the container the dagster CLI injects
+  it and no workaround is needed).
+- **2026-10-14: this comparison is superseded for the Dagster side.** The sync now reads the change feed and writes
+  the watermark straight from Delta storage with OSS Delta on Spark (`extraction: oss_spark`) — zero Databricks
+  compute per sync. The make-change SQL and the one-time setup/seed DDL are the only remaining cost. See
+  docs/poc/REVERSE_ETL_DBU_COST_NOTES.md (sections 5 and 6, with billing-system actuals and the recurring-job audit).
 - **Not measured:** dollar cost (the DBU price is not known here), the Auto CDC pipeline's cost, and the always-on
   Kafka, Connect, RisingWave and Postgres side (local in this demo).
 
