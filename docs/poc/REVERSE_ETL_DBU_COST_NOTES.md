@@ -306,6 +306,17 @@ StarRocks can read it through UC federation for free, section 1), and OSS Delta
 cannot commit to UniForm tables (proven live — section 5's state-table blocker).
 Dropping UniForm from the source would trade a fractions-of-a-DBU write for
 breaking the free-read premise. So: make-change stays on the warehouse.
+Measured 2026-10-15: the source table's property overhead (UniForm Iceberg
+conversion + CDF + column mapping) costs about 0.7s per warm tiny write (3.6s vs
+2.9s on the plain-Delta state table) — thousandths of a DBU. And the source must
+stay UniForm anyway: the `databricks_uc` StarRocks catalog is UC's Iceberg REST
+endpoint, which only serves UniForm tables; a plain Delta source would vanish
+from the free read path. StarRocks does have a native `deltalake` external
+catalog (reads the Delta log from ADLS2 with service-principal auth — supported
+in the stack's 4.1.4, zero Databricks compute), but it requires a Hive metastore
+or AWS Glue to map table names to locations — UC is neither — so for UC-managed
+tables it would mean operating an HMS mirror. UniForm + Iceberg REST is exactly
+the metastore-free alternative, which is why the demo pays the 0.7s.
 
 Recurring-job audit (2026-10-14): the sink-health schedules (every 5 min per
 sync) were checked for hidden Databricks usage — they read only Kafka Connect's
