@@ -97,6 +97,7 @@ def run_status(run_id: str) -> dict:
     # (orchestration/assets/databricks_cost_meter.py). The oss_spark sync
     # reports 0.0 structurally: it touches no Databricks compute.
     warehouse, cluster, compute = 0.0, 0.0, []
+    change = None
     for mat in info.get("assetMaterializations") or []:
         for entry in mat.get("metadataEntries") or []:
             if entry["label"] == "databricks_warehouse_seconds" and entry.get("floatValue") is not None:
@@ -105,11 +106,17 @@ def run_status(run_id: str) -> dict:
                 cluster += entry["floatValue"]
             elif entry["label"] == "databricks_compute" and entry.get("text"):
                 compute.append(entry["text"])
+            elif entry["label"] == "databricks_change_sql" and entry.get("jsonString"):
+                try:
+                    change = json.loads(entry["jsonString"])
+                except ValueError:
+                    pass
     out["cost"] = {
         "warehouse_seconds": round(warehouse, 2),
         "cluster_seconds": round(cluster, 2),
         "compute": compute,
     }
+    out["change"] = change
     return out
 
 

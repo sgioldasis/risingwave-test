@@ -298,7 +298,8 @@ All factories take the config and return Dagster objects; all names come from it
   demo change: `insert`/`update`/`delete` target the row with max `id`; `add_column`
   `DESCRIBE`s first and only adds columns that don't exist, so re-clicking it is a
   no-op. This is an *asset* (not an op) so its run metadata — including its
-  measured warehouse seconds — is queryable.
+  measured warehouse seconds and the exact SQL it ran (`databricks_change_sql`,
+  which the demo page shows under the result) — is queryable.
 - **`build_risingwave_table_asset`** — creates the RisingWave target
   (`CREATE ... INCLUDE timestamp AS rw_event_timestamp` style upsert/delete table,
   `FORMAT DEBEZIUM ENCODE AVRO/JSON` per encoding). `add_missing_columns()` is the

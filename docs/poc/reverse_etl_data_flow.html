@@ -260,7 +260,7 @@ let helper = false, busy = false;
 const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
 const get = url => fetch(url).then(r => r.json());
 
-function say(text, url, state, r = $('result'), sub = null) {
+function say(text, url, state, r = $('result'), subs = null) {
   r.textContent = '';
   if (state) {
     const ic = document.createElement('span');
@@ -270,7 +270,13 @@ function say(text, url, state, r = $('result'), sub = null) {
   }
   r.append(text);
   if (url) { r.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; r.append(a); }
-  if (sub) { const d = document.createElement('div'); d.style.marginTop = '4px'; d.textContent = sub; r.append(d); }
+  if (subs) for (const s of subs) {
+    const d = document.createElement('div');
+    d.style.marginTop = '4px';
+    if (s.mono) { d.style.fontFamily = 'ui-monospace, Menlo, monospace'; d.style.fontSize = '12.5px'; d.style.color = 'var(--muted)'; }
+    d.textContent = s.text;
+    r.append(d);
+  }
 }
 function lock(on) { busy = on; document.querySelectorAll('.acts button, .acts select, .bar button').forEach(b => { b.disabled = on || !helper; }); }
 
@@ -302,8 +308,19 @@ async function run(label, body, out) {
   for (;;) {
     const s = await get('/api/run/' + started.runId);
     const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
-    const sub = done ? costText(s.cost) : null;
-    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, sub);
+    const subs = [];
+    if (done) {
+      const cost = costText(s.cost);
+      if (cost) subs.push({ text: cost });
+      if (s.change) {
+        if (s.change.sql && s.change.sql.length) {
+          for (const stmt of s.change.sql) subs.push({ text: stmt, mono: true });
+        } else {
+          subs.push({ text: 'No statement ran — nothing to change' });
+        }
+      }
+    }
+    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : null);
     if (done) { lock(false); return s.status === 'SUCCESS'; }
     await new Promise(r => setTimeout(r, 2000));
   }

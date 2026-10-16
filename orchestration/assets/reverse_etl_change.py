@@ -80,13 +80,18 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
         existing = set()
         if config.change == "add_column":
             existing = {r["col_name"] for r in _rows_as_dicts(_run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}
-        for statement in change_statements(cfg, config.change, existing):
+        statements = list(change_statements(cfg, config.change, existing))
+        for statement in statements:
             _run_sql(token, statement)
             context.log.info(f"{config.change} on {cfg.source_fqn}: {statement}")
         usage = meter_snapshot()
         context.add_output_metadata({
             "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
             "databricks_statements": MetadataValue.int(usage["statements"]),
+            # The exact SQL the demo page shows under the run result.
+            "databricks_change_sql": MetadataValue.json({
+                "change": config.change, "table": cfg.source_fqn, "sql": statements,
+            }),
         })
 
     return make_change
