@@ -32,6 +32,7 @@ the live run" in the design doc.
 
 import json
 import os
+import time
 from itertools import zip_longest
 from typing import Any
 
@@ -42,6 +43,7 @@ from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from .databricks_cost_meter import record as meter_record, reset as meter_reset, snapshot as meter_snapshot
 from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
 from .reverse_etl_config import ReverseEtlSyncConfig
 
@@ -70,6 +72,15 @@ def _resolve_backfill_version() -> int | None:
 
 
 def _run_sql(token: str, statement: str) -> dict:
+    """Run one warehouse statement and meter its wall time (databricks_cost_meter)."""
+    started = time.monotonic()
+    try:
+        return _run_sql_unmetered(token, statement)
+    finally:
+        meter_record(time.monotonic() - started)
+
+
+def _run_sql_unmetered(token: str, statement: str) -> dict:
     try:
         data = _submit(token, statement)
     except requests.exceptions.HTTPError as e:
@@ -88,6 +99,18 @@ def _run_sql(token: str, statement: str) -> dict:
     if data.get("status", {}).get("state") != "SUCCEEDED":
         raise RuntimeError(f"Statement failed: {data.get('status', {})}")
     return _with_all_chunks(token, data)
+
+
+def _cost_metadata() -> dict:
+    """Databricks compute usage since the last meter reset, as run metadata.
+
+    The demo helper (scripts/reverse_etl_demo_server.py) reads these entries
+    through the GraphQL API and renders cost chips on the demo page."""
+    usage = meter_snapshot()
+    return {
+        "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
+        "databricks_statements": MetadataValue.int(usage["statements"]),
+    }
 
 
 def _with_all_chunks(token: str, data: dict) -> dict:
@@ -744,6 +767,7 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
     def table_setup(context: AssetExecutionContext):
         _require_databricks_env()
         token = _get_token()
+        meter_reset()
 
         columns = ",\n            ".join(
             [f"{cfg.key_column} BIGINT GENERATED ALWAYS AS IDENTITY", *cfg.source_columns]
@@ -785,6 +809,7 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         context.add_output_metadata({
             "source_table": MetadataValue.text(cfg.source_fqn),
             "state_table": MetadataValue.text(cfg.state_fqn),
+            **_cost_metadata(),
         })
 
     return table_setup
@@ -819,6 +844,7 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
     def cdf_to_kafka(context: AssetExecutionContext):
         _require_databricks_env()
         token = _get_token()
+        meter_reset()
 
         last_version = _read_last_version(token, cfg)
 
@@ -908,6 +934,8 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
             "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
             "extraction": MetadataValue.text("databricks_sql"),
+            "databricks_compute": MetadataValue.text("SQL warehouse (Statement Execution API)"),
+            **_cost_metadata(),
         })
 
     return cdf_to_kafka
@@ -928,6 +956,7 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
         ),
     )
     def cdf_to_kafka(context: AssetExecutionContext):
+        meter_reset()
         from .reverse_etl_spark_reader import (
             get_current_version,
             get_earliest_available_version,
@@ -1034,6 +1063,8 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
                 "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
                 "extraction": MetadataValue.text("oss_spark"),
+                "databricks_compute": MetadataValue.text("none — OSS Delta reads storage directly (control-plane API only)"),
+                **_cost_metadata(),
             })
         finally:
             spark.stop()
@@ -1061,9 +1092,13 @@ def build_seed_asset(cfg: ReverseEtlSyncConfig):
     def seed(context: AssetExecutionContext):
         _require_databricks_env()
         token = _get_token()
+        meter_reset()
         for statement in cfg.seed_statements:
             _run_sql(token, statement.replace("{source_table}", cfg.source_fqn))
         context.log.info(f"Ran {len(cfg.seed_statements)} seed statement(s) against {cfg.source_fqn}")
-        context.add_output_metadata({"statements": MetadataValue.int(len(cfg.seed_statements))})
+        context.add_output_metadata({
+            "statements": MetadataValue.int(len(cfg.seed_statements)),
+            **_cost_metadata(),
+        })
 
     return seed

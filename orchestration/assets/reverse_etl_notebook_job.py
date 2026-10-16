@@ -128,12 +128,20 @@ def trigger_notebook_sync(context: OpExecutionContext, config: TriggerNotebookSy
     result_state = state.get("result_state", "UNKNOWN")
     context.log.info(f"Run {run_id} finished: {state.get('life_cycle_state')} / {result_state}")
 
+    cluster_seconds = None
+    if result.get("start_time") and result.get("end_time"):
+        cluster_seconds = round((result["end_time"] - result["start_time"]) / 1000, 1)
+
     context.add_output_metadata({
         "label": MetadataValue.text(label),
         "risingwave_columns_added": MetadataValue.json(columns_added),
         "run_id": MetadataValue.int(run_id),
         "result": MetadataValue.text(result_state),
         "run_page_url": MetadataValue.url(result.get("run_page_url", "")),
+        "databricks_compute": MetadataValue.text("notebook on the job's all-purpose cluster"),
+        "databricks_cluster_seconds": (
+            MetadataValue.float(cluster_seconds) if cluster_seconds is not None else MetadataValue.text("unknown")
+        ),
     })
     if result_state != "SUCCESS":
         raise RuntimeError(f"Notebook run for {label} failed ({result_state}): {state.get('state_message', '')}")

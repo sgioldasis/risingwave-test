@@ -15,6 +15,8 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,7 +38,19 @@ def gql(query: str, variables: dict | None = None) -> dict:
         json.dumps({"query": query, "variables": variables or {}}).encode(),
         {"content-type": "application/json"},
     )
-    return json.load(urllib.request.urlopen(req, timeout=60))["data"]
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=60))["data"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        # The definitions code server kills itself when heartbeats stop, which
+        # happens whenever the Mac sleeps with the stack up; launches then fail
+        # until the services are restarted. Say so instead of a bare 500.
+        if "user code server" in body or "UserCodeUnreachable" in body:
+            raise RuntimeError(
+                "Dagster's code server is unreachable (this happens after the Mac sleeps with the stack up)."
+                " Fix: docker compose restart dagster-webserver dagster-daemon"
+            ) from e
+        raise RuntimeError(f"Dagster GraphQL {e.code}: {body[:300]}") from e
 
 
 def launch(sync: str, action: str, change: str | None) -> dict:
@@ -69,9 +83,34 @@ def launch(sync: str, action: str, change: str | None) -> dict:
 def run_status(run_id: str) -> dict:
     if not re.fullmatch(r"[0-9a-f-]{36}", run_id):
         raise ValueError("bad run id")
-    info = gql("query($i:ID!){runOrError(runId:$i){... on Run{status startTime endTime}}}", {"i": run_id})["runOrError"]
+    info = gql(
+        "query($i:ID!){runOrError(runId:$i){... on Run{status startTime endTime "
+        "assetMaterializations{metadataEntries{label "
+        "... on TextMetadataEntry{text} ... on FloatMetadataEntry{floatValue} ... on IntMetadataEntry{intValue} "
+        "... on JsonMetadataEntry{jsonString}}}}}}",
+        {"i": run_id},
+    )["runOrError"]
     end = info["endTime"] or time.time()
-    return {"status": info["status"], "seconds": round(end - (info["startTime"] or end))}
+    out = {"status": info["status"], "seconds": round(end - (info["startTime"] or end))}
+
+    # Databricks cost, from the meter metadata the assets emit
+    # (orchestration/assets/databricks_cost_meter.py). The oss_spark sync
+    # reports 0.0 structurally: it touches no Databricks compute.
+    warehouse, cluster, compute = 0.0, 0.0, []
+    for mat in info.get("assetMaterializations") or []:
+        for entry in mat.get("metadataEntries") or []:
+            if entry["label"] == "databricks_warehouse_seconds" and entry.get("floatValue") is not None:
+                warehouse += entry["floatValue"]
+            elif entry["label"] == "databricks_cluster_seconds" and entry.get("floatValue") is not None:
+                cluster += entry["floatValue"]
+            elif entry["label"] == "databricks_compute" and entry.get("text"):
+                compute.append(entry["text"])
+    out["cost"] = {
+        "warehouse_seconds": round(warehouse, 2),
+        "cluster_seconds": round(cluster, 2),
+        "compute": compute,
+    }
+    return out
 
 
 def _rows(conn, sql: str) -> list[list[str]]:
@@ -127,6 +166,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path.split("?")[0] in ("/", "/reverse_etl_data_flow.html"):
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            if self.path.startswith("/img/"):
+                name = urllib.parse.unquote(self.path[len("/img/"):])
+                if not name or "/" in name or ".." in name or name.startswith("."):
+                    raise ValueError("bad path")
+                f = PAGE.parent / "img" / name
+                ctype = {"png": "image/png", "svg": "image/svg+xml"}.get(f.suffix.lstrip("."))
+                if not ctype or not f.is_file():
+                    raise ValueError("not found")
+                return self._send(200, f.read_bytes(), ctype)
             if self.path == "/api/ping":
                 return self._json(200, {"ok": True})
             if m := re.fullmatch(r"/api/run/([^/]+)", self.path):

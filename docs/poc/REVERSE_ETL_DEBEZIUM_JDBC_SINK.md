@@ -10,7 +10,9 @@ timestamps** (4.3), the Databricks job definition in git (10.6), a per-sync `tas
 an Avro spike and then an **Avro trial sync** (`avro` label, 14.1, 14.1.1), a comparison with the drt
 reverse-ETL tool in [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md), and, since 2026-10-07, a
 fix for **partial reads of large Databricks results** (13), a **sink health check** (11) and a partial
-**Databricks cost measurement** (14.1.2). Names in sections that
+**Databricks cost measurement** (14.1.2). Since 2026-10-14 the sync itself runs on OSS Delta (zero Databricks
+compute) and the APR-233 tool evaluation is closed in
+[`REVERSE_ETL_TOOL_EVALUATION.md`](REVERSE_ETL_TOOL_EVALUATION.md). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Demo script: [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md).

@@ -22,7 +22,7 @@ from .reverse_etl_cdf_setup import build_seed_asset, build_sync_asset, build_tab
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
-from .reverse_etl_change import build_change_job
+from .reverse_etl_change import build_change_asset, build_change_job
 from .reverse_etl_reset import build_reset_job
 from .reverse_etl_risingwave_setup import build_risingwave_table_asset
 
@@ -58,6 +58,8 @@ def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         assets.append(_build_topic_asset(cfg))
     if cfg.seed_statements:
         assets.append(build_seed_asset(cfg))
+    change_asset = build_change_asset(cfg)
+    assets.append(change_asset)
 
     # AssetKey selection (not asset objects) so the shared topic asset, which this
     # function does not build, is still part of the job.
@@ -86,6 +88,6 @@ def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     return Definitions(
         assets=assets,
         asset_checks=[health_check],
-        jobs=[setup_job, build_reset_job(cfg), build_change_job(cfg), health_job],
+        jobs=[setup_job, build_reset_job(cfg), build_change_job(cfg, change_asset), health_job],
         schedules=[health_schedule],
     )

@@ -18,6 +18,7 @@ from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, o
 from .databricks_optimize import _get_token
 from .kafka_topics_setup import _admin_client
 from .postgres_sink_setup import get_postgres_connection
+from .databricks_cost_meter import reset as meter_reset
 from .reverse_etl_cdf_setup import _require_databricks_env, _run_sql
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import CONNECT_URL
@@ -135,6 +136,7 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
     def drop_databricks_tables(context: OpExecutionContext) -> None:
         _require_databricks_env()
         token = _get_token()
+        meter_reset()
         for table in (cfg.source_fqn, cfg.state_fqn):
             _run_sql(token, f"DROP TABLE IF EXISTS {table}")
             context.log.info(f"Dropped {table} (if it existed)")

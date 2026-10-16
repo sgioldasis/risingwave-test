@@ -17,6 +17,13 @@
 > **Update 2026-10-05:** drt was later tried in a demo against the same source table, and compared with this
 > pipeline: [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md). The statement below that drt has no
 > Kafka destination still holds (checked in drt 1.0.0). Timestamps now keep microseconds (sink document, section 4.3).
+>
+> **Update 2026-10-15:** the APR-233 tool evaluation is closed with the remaining candidates assessed:
+> [`REVERSE_ETL_TOOL_EVALUATION.md`](REVERSE_ETL_TOOL_EVALUATION.md) (drt, dlt, commercial SaaS) — the custom
+> component stands.
+>
+> **Update 2026-10-16:** a code walkthrough of the Dagster implementation (config → assets → sync
+> backends → Kafka → targets) is in [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md).
 
 ## Context
 

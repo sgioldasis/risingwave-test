@@ -9,8 +9,9 @@ timestamp columns now. Nothing here is synced until the sync asset runs.
 import random
 import time
 
-from dagster import Config, OpExecutionContext, in_process_executor, job, op
+from dagster import AssetExecutionContext, AssetKey, AssetSelection, Config, asset, define_asset_job, in_process_executor, MetadataValue
 
+from .databricks_cost_meter import reset as meter_reset, snapshot as meter_snapshot
 from .databricks_optimize import _get_token
 from .reverse_etl_cdf_setup import _require_databricks_env, _rows_as_dicts, _run_sql
 from .reverse_etl_config import ReverseEtlSyncConfig
@@ -67,24 +68,33 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
     raise ValueError(f"change must be insert, update, delete or add_column, got {change!r}")
 
 
-def build_change_job(cfg: ReverseEtlSyncConfig):
-    @op(name=f"{cfg.sync_name}_make_change")
-    def make_change(context: OpExecutionContext, config: ChangeConfig):
+def build_change_asset(cfg: ReverseEtlSyncConfig):
+    @asset(
+        name=f"{cfg.sync_name}_make_change",
+        description=f"Insert, update or delete one row of {cfg.source_fqn}. Not synced until {cfg.sync_asset} runs.",
+    )
+    def make_change(context: AssetExecutionContext, config: ChangeConfig):
         _require_databricks_env()
         token = _get_token()
+        meter_reset()
         existing = set()
         if config.change == "add_column":
             existing = {r["col_name"] for r in _rows_as_dicts(_run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}
         for statement in change_statements(cfg, config.change, existing):
             _run_sql(token, statement)
             context.log.info(f"{config.change} on {cfg.source_fqn}: {statement}")
+        usage = meter_snapshot()
+        context.add_output_metadata({
+            "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
+            "databricks_statements": MetadataValue.int(usage["statements"]),
+        })
 
-    @job(
+    return make_change
+
+
+def build_change_job(cfg: ReverseEtlSyncConfig, make_change_asset):
+    return define_asset_job(
         name=f"{cfg.sync_name}_make_change_job",
-        description=f"Insert, update or delete one row of {cfg.source_fqn}. Not synced until {cfg.sync_asset} runs.",
+        selection=AssetSelection.assets(AssetKey(f"{cfg.sync_name}_make_change")),
         executor_def=in_process_executor,
     )
-    def make_change_job():
-        make_change()
-
-    return make_change_job

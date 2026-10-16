@@ -25,7 +25,7 @@
 <rect x="560" y="430" width="320" height="100" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
 <text x="720.0" y="467.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION A: asset</text>
 <text x="720.0" y="485.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_to_kafka</text>
-<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(run A OR B, never both: shared watermark)</text>
+<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(run A OR B, never both: shared watermark)</text><text x="720.0" y="522.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">extraction: OSS Delta — zero Databricks compute</text>
 <rect x="1000" y="430" width="280" height="70" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="1140.0" y="461.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync_job</text>
 <text x="1140.0" y="479.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(starts option B)</text>
@@ -81,6 +81,9 @@
 <path d="M260,550 L480,550 L480,740" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
 <rect x="410.2" y="649" width="139.6" height="20" fill="white" opacity="0.92"/>
 <text x="480" y="664" font-size="13" text-anchor="middle" fill="#0f172a">removes everything</text>
+<text x="60" y="592" font-size="12" font-style="italic" fill="#475569">Every run meters its Databricks compute</text>
+<text x="60" y="608" font-size="12" font-style="italic" fill="#475569">as run metadata: sync 0 (OSS Delta),</text>
+<text x="60" y="624" font-size="12" font-style="italic" fill="#475569">other steps: measured serverless SQL seconds.</text>
 <path d="M620,530 L620,740" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
 <rect x="568.2" y="584" width="103.60000000000001" height="20" fill="white" opacity="0.92"/>
 <text x="620" y="599" font-size="13" text-anchor="middle" fill="#0f172a">Avro messages</text>

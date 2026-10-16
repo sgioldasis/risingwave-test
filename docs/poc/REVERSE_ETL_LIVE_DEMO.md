@@ -37,13 +37,20 @@ The two readers of the topic are independent: each keeps its own place in it, so
 without the other noticing (the demo in section 7 uses this).
 
 (The drawing is `img/reverse_etl_components.svg`, a plain-text SVG you can edit; the PNG is the same drawing
-exported at 2x. It is drawn by hand, not generated, because Mermaid laid the arrows out poorly.)
+exported at 2x with headless Chrome: `chrome --headless=new --force-device-scale-factor=2 --window-size=1500,1260
+--screenshot=img/reverse_etl_components.png file://…/reverse_etl_components.svg`. It is drawn by hand, not
+generated, because Mermaid laid the arrows out poorly. Updated 2026-10-16: Option A notes the sync's OSS Delta
+extraction (zero Databricks compute) and the Dagster panel notes the per-run compute meter.)
 
 An animated walkthrough of one change, step by step with a description of each step, is in
 [`reverse_etl_data_flow.html`](reverse_etl_data_flow.html) (open it in a browser). It also describes what the
-Databricks source table needs and how to define it.
+Databricks source table needs and how to define it. For the code behind it — config, assets, both sync
+backends, Kafka production, targets — see [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md).
 
 To run the steps from the page, start `./bin/3_run_reverse_etl_demo.sh` and open `http://localhost:4002/?sync=avro`
+If buttons fail with "Dagster's code server is unreachable" (typical after the Mac slept with the stack up —
+the code server kills itself when heartbeats stop), run `docker compose restart dagster-webserver dagster-daemon`
+and click again.
 (`cdf` and `orders` work too). Step 1 makes an insert, update or delete in Databricks, steps 2 to 5 and 8 run the sync
 (one Dagster run, so they cannot be launched separately), and steps 6 and 7 only check Kafka Connect, RisingWave and
 Postgres. The Reset and set up button at the top runs the sync's reset job, then its setup job. The Postgres check needs a devbox

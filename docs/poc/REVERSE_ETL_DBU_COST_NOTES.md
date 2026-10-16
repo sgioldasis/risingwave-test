@@ -324,6 +324,18 @@ status endpoint and the sink's consumer-group lag from Kafka. Every recurring
 touchpoint of the demo is therefore either Databricks-free (sync, health
 checks, StarRocks reads) or at the write floor (make-change, setup/seed DDL).
 
+The demo page shows these costs live (2026-10-15): every instrumented
+asset/op emits its metered usage as run metadata
+(`orchestration/assets/databricks_cost_meter.py` — `_run_sql` records each
+warehouse statement's wall time; the oss_spark sync emits 0.0 structurally),
+and the demo helper reads it back through the GraphQL API, rendering cost
+chips per run plus a session total. Verified live: make-change reported
+4.1s of SQL warehouse, the sync reported 0.0 with "no Databricks compute".
+The meter is self-updating: flipping a sync back to `extraction:
+databricks_sql` would change its chip from 0 to measured serverless SQL
+warehouse seconds automatically (the warehouse bills on the serverless SKU —
+see section 6).
+
 ### Status: wiring built (2026-10-14, later the same day)
 
 The swap described above is built and enabled for **all three syncs**:
