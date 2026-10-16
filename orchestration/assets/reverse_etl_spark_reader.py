@@ -21,6 +21,7 @@ installed.
 """
 
 import os
+import re
 
 import requests
 
@@ -90,7 +91,12 @@ def get_spark_session(storage_account: str):
 
     builder = (
         SparkSession.builder.appName("reverse-etl-oss-spark-extraction")
-        .master("local[1]")
+        # 4 threads: the ABFS/Delta log reads run small multi-task stages (a
+        # 50-task listing stage took ~10s sequential on local[1]); 4 cuts it to
+        # ~a quarter. The CDF replay itself is a chain of single-task stages --
+        # cores don't help there. Heap stays at 512m: the data is KBs, and the
+        # webserver container (1.5 GB total) hosts the JVM alongside Dagster.
+        .master("local[4]")
         # 512m is Spark's own floor; the webserver container also hosts the server.
         .config("spark.driver.memory", "512m")
         # macOS: otherwise the driver fails to bind to the machine hostname.
@@ -119,6 +125,16 @@ def get_spark_session(storage_account: str):
     spark = configure_spark_with_delta_pip(
         builder, extra_packages=["org.apache.hadoop:hadoop-azure:3.4.2"]
     ).getOrCreate()
+    # Copy the fs.* ABFS settings into the session's global Hadoop conf: Spark only
+    # auto-propagates spark.hadoop.* there, while driver-side filesystem access
+    # (e.g. _delta_log_versions) reads exactly this conf.
+    hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+    all_conf = spark.conf.getAll
+    if callable(all_conf):
+        all_conf = all_conf()
+    for key, value in all_conf.items():
+        if key.startswith("fs."):
+            hadoop_conf.set(key, value)
     # Timestamps render per this timezone in date_format; the collect path would
     # otherwise show them in the machine's zone (REVERSE_ETL_DRT_COMPARISON.md 3.4).
     spark.conf.set("spark.sql.session.timeZone", "UTC")
@@ -173,20 +189,34 @@ def write_last_version(spark, cfg: ReverseEtlSyncConfig, state_location: str, ve
     )
 
 
+def _delta_log_versions(spark, location: str) -> list[int]:
+    """The commit versions still present in the table's _delta_log, read driver-side
+    through Hadoop's FS API -- no Spark job, no stage. Delta's own discovery rule:
+    a commit is exactly a 20-digit .json file; checkpoints, _last_checkpoint and
+    .crc sidecars don't count. Replaces history() reads, which ran a 50-task stage
+    over the whole log (~5-10s of ABFS latency) just to find min/max."""
+    jvm = spark._jvm
+    log_path = jvm.org.apache.hadoop.fs.Path(location.rstrip("/") + "/_delta_log")
+    fs = log_path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
+    versions = [
+        int(name[:20])
+        for name in (status.getPath().getName() for status in fs.listStatus(log_path))
+        if re.fullmatch(r"\d{20}\.json", name)
+    ]
+    if not versions:
+        raise RuntimeError(f"No Delta commit files found under {log_path} -- is {location} a Delta table?")
+    return versions
+
+
 def get_current_version(spark, location: str) -> int:
     """The table's latest committed version (DESCRIBE HISTORY LIMIT 1 equivalent)."""
-    from delta.tables import DeltaTable
-
-    return int(DeltaTable.forPath(spark, location).history(1).first()["version"])
+    return max(_delta_log_versions(spark, location))
 
 
 def get_earliest_available_version(spark, location: str) -> int:
     """Earliest version still in the transaction log (full DESCRIBE HISTORY
     equivalent) — drives the first-run backfill-vs-baseline decision."""
-    from delta.tables import DeltaTable
-
-    versions = [int(r["version"]) for r in DeltaTable.forPath(spark, location).history().collect()]
-    return min(versions)
+    return min(_delta_log_versions(spark, location))
 
 
 def read_changes(spark, cfg: ReverseEtlSyncConfig, location: str, since_version: int) -> list[dict]:

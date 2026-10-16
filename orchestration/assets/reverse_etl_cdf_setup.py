@@ -38,7 +38,7 @@ from typing import Any
 
 import requests
 from confluent_kafka import Producer
-from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
+from confluent_kafka.schema_registry import Schema, SchemaRegistryClient, SchemaRegistryError
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
@@ -588,22 +588,53 @@ def _avro_payloads(
 
 
 def _avro_serializers(
-    cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]
+    cfg: ReverseEtlSyncConfig,
+    key_columns: list[str],
+    row_fields: list[RowField],
+    client: SchemaRegistryClient | None = None,
 ) -> tuple[AvroSerializer, AvroSerializer]:
-    """Serializers that register the schemas under <topic>-key / <topic>-value (a new version only if the
-    schema changed) and write the Confluent wire format."""
-    client = SchemaRegistryClient({"url": cfg.schema_registry_url})
+    """Serializers that write the Confluent wire format. When both schemas are already in the registry (checked
+    here, one GET per subject) they point at the latest registered version instead of re-registering on the first
+    message -- two fewer round-trips per unchanged sync. When they are not (first run), the serializers register
+    them as before."""
+    client = client or SchemaRegistryClient({"url": cfg.schema_registry_url})
     key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
-    return AvroSerializer(client, _avro_schema_string(key_schema)), AvroSerializer(client, _avro_schema_string(value_schema))
+    known = all(
+        _schema_already_registered(client, subject, schema)
+        for subject, schema in ((cfg.key_subject, key_schema), (cfg.value_subject, value_schema))
+    )
+    conf = {"auto.register.schemas": False, "use.latest.version": True} if known else None
+    return (
+        AvroSerializer(client, _avro_schema_string(key_schema), conf=conf),
+        AvroSerializer(client, _avro_schema_string(value_schema), conf=conf),
+    )
+
+
+def _schema_already_registered(client: SchemaRegistryClient, subject: str, schema: dict[str, Any]) -> bool:
+    """True when the registry's latest version for subject is identical to schema.
+
+    Both sides are parsed before comparing, so key-order/whitespace differences
+    between what we build and what the registry stores cannot false-negative.
+    Any registry error -- a missing subject above all -- counts as "not
+    registered": the caller then registers anyway, exactly as before this check
+    existed, so a registry blip can never skip a needed registration."""
+    try:
+        latest = client.get_latest_version(subject)
+        registered = latest.schema.schema_str if hasattr(latest.schema, "schema_str") else latest.schema
+        return json.loads(registered) == json.loads(_avro_schema_string(schema))
+    except SchemaRegistryError:
+        return False
 
 
 def _register_avro_schemas(cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]) -> None:
-    """Register both schemas now (a no-op when unchanged): RisingWave reads the value schema when its table is
-    created, which can be before the first message exists."""
+    """Register both schemas when the registry does not already hold them: RisingWave reads the value schema when
+    its table is created, which can be before the first message exists. Unchanged schemas are not re-registered --
+    the latest-version check saves two registry round-trips per unchanged sync."""
     client = SchemaRegistryClient({"url": cfg.schema_registry_url})
     key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
-    client.register_schema(cfg.key_subject, Schema(_avro_schema_string(key_schema), "AVRO"))
-    client.register_schema(cfg.value_subject, Schema(_avro_schema_string(value_schema), "AVRO"))
+    for subject, schema in ((cfg.key_subject, key_schema), (cfg.value_subject, value_schema)):
+        if not _schema_already_registered(client, subject, schema):
+            client.register_schema(subject, Schema(_avro_schema_string(schema), "AVRO"))
 
 
 def _build_avro_message(
@@ -649,11 +680,24 @@ def _kafka_producer_config() -> dict[str, str]:
     return conf
 
 
-def _produce_to_kafka(
-    cfg: ReverseEtlSyncConfig, events: list[dict[str, Any]], key_columns: list[str], row_fields: list[RowField]
-) -> None:
+def _kafka_producer() -> Producer:
+    """A producer whose TLS/SASL handshake starts now, in librdkafka's background
+    threads. The brokers are reached over VPN and connecting takes ~9s; creating
+    the producer before the Spark reads lets that happen off the critical path
+    (a fresh process per run means there is nothing to reuse it from)."""
     producer = Producer(_kafka_producer_config())
-    serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" else None
+    producer.poll(0)
+    return producer
+
+
+def _produce_to_kafka(
+    cfg: ReverseEtlSyncConfig,
+    events: list[dict[str, Any]],
+    key_columns: list[str],
+    row_fields: list[RowField],
+    producer: Producer | None = None,
+) -> None:
+    producer = producer or _kafka_producer()
     # produce() is async (it only enqueues); delivery failures surface later in
     # librdkafka's background threads. Collect them per message via on_delivery
     # and fail the run here -- BEFORE the watermark MERGE that follows this call
@@ -661,6 +705,7 @@ def _produce_to_kafka(
     # skipping events that never reached the topic (broker blip, rotated SASL
     # credentials, recreated topic). Duplicate replays are harmless: the targets
     # upsert by key.
+    serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" else None
     delivery_errors: list[str] = []
     for event in events:
         if serializers:
@@ -845,6 +890,9 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
         _require_databricks_env()
         token = _get_token()
         meter_reset()
+        # The Kafka TLS/SASL handshake starts in the background while the
+        # warehouse statements run.
+        producer = _kafka_producer()
 
         last_version = _read_last_version(token, cfg)
 
@@ -909,14 +957,16 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
             risingwave_columns_added = add_missing_columns(cfg, row_fields)
             if risingwave_columns_added:
                 context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
-            _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields)
+            _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields, producer=producer)
 
         if last_version is None and not rows:
             new_version = _get_current_version(token, cfg)
         else:
             new_version = _next_watermark(rows, last_version)
 
-        if new_version is not None:
+        # Skip the MERGE when the version is unchanged (no-op syncs): writing the
+        # same version costs a full snapshot + commit for nothing.
+        if new_version is not None and new_version != last_version:
             _write_last_version(token, cfg, new_version)
 
         op_counts = _summarize_ops(events)
@@ -972,6 +1022,7 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
         # locations through the UC REST API. No SQL runs against a warehouse.
         _require_databricks_env()
         token = _get_token()
+        producer: Producer | None = None
 
         source_location = get_table_location(token, cfg, cfg.source_fqn)
         state_location = get_table_location(token, cfg, cfg.state_fqn)
@@ -1005,6 +1056,10 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                             "version with no historical rows synced"
                         )
 
+                if backfill_from is not None:
+                    # The Kafka TLS/SASL handshake runs in librdkafka's background
+                    # threads while the CDF read and event building continue.
+                    producer = _kafka_producer()
                 rows = read_changes(spark, cfg, source_location, backfill_from) if backfill_from is not None else []
             else:
                 # table_changes()/readChangeFeed's starting version is inclusive, and
@@ -1021,6 +1076,9 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                     rows = []
                 else:
                     context.log.info(f"Reading CDF for {cfg.source_table} since version {next_version}")
+                    # The Kafka TLS/SASL handshake runs in librdkafka's background
+                    # threads while the CDF read continues.
+                    producer = _kafka_producer()
                     rows = read_changes(spark, cfg, source_location, next_version)
 
             key_columns = [cfg.key_column]
@@ -1038,14 +1096,16 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 risingwave_columns_added = add_missing_columns(cfg, row_fields)
                 if risingwave_columns_added:
                     context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
-                _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields)
+                _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields, producer=producer)
 
             if last_version is None and not rows:
                 new_version = get_current_version(spark, source_location)
             else:
                 new_version = _next_watermark(rows, last_version)
 
-            if new_version is not None:
+            # Skip the MERGE when the version is unchanged (no-op syncs): writing
+            # the same version costs a full snapshot + commit for nothing.
+            if new_version is not None and new_version != last_version:
                 write_last_version(spark, cfg, state_location, new_version)
 
             op_counts = _summarize_ops(events)

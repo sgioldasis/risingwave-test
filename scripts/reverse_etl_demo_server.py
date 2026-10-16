@@ -30,6 +30,9 @@ PORT = int(os.environ.get("PORT", "4002"))
 PAGE = Path(__file__).resolve().parent.parent / "docs" / "poc" / "reverse_etl_data_flow.html"
 SYNCS = ("avro", "cdf", "orders")
 CHANGES = ("insert", "update", "delete", "add_column")
+SCHEMA_REGISTRY = os.environ.get(
+    "SCHEMA_REGISTRY_URL", "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+)
 
 
 def gql(query: str, variables: dict | None = None) -> dict:
@@ -78,6 +81,52 @@ def launch(sync: str, action: str, change: str | None) -> dict:
     if result["__typename"] != "LaunchRunSuccess":
         raise RuntimeError(result.get("message") or json.dumps(result))
     return {"runId": result["run"]["runId"], "url": f"{DAGSTER_URL}/runs/{result['run']['runId']}"}
+
+
+def _avro_field_type(field_type) -> str:
+    """Human-readable type for one Avro field: unwrap null-unions, map Debezium's
+    logical timestamp marker to 'timestamp'."""
+    if isinstance(field_type, list):
+        field_type = next(t for t in field_type if t != "null")
+    if isinstance(field_type, dict):
+        logical = field_type.get("connect.name", "")
+        if "ZonedTimestamp" in logical:
+            return "timestamp"
+        return str(field_type.get("type", "record"))
+    return str(field_type)
+
+
+def _envelope_row_columns(value_schema: dict) -> dict[str, str]:
+    """The row columns the envelope's before/after carry (the named Value record)."""
+    for field in value_schema.get("fields", []):
+        if field.get("name") == "before":
+            row = next((t for t in field["type"] if isinstance(t, dict)), None)
+            if row:
+                return {f["name"]: _avro_field_type(f["type"]) for f in row.get("fields", [])}
+    return {}
+
+
+def schema_info(sync: str) -> dict:
+    """The latest registered Avro schemas for the sync's topic, reduced to what a
+    demo audience needs: column names and types (+ the envelope field list)."""
+    subject_base = f"reverse_etl_{sync}_topic"
+    out = {}
+    for role in ("key", "value"):
+        resp = requests.get(f"{SCHEMA_REGISTRY}/subjects/{subject_base}-{role}/versions/latest", timeout=10)
+        if resp.status_code == 404:
+            out[role] = None
+            continue
+        resp.raise_for_status()
+        info = resp.json()
+        schema = json.loads(info["schema"])
+        entry = {"version": info["version"], "id": info["id"]}
+        if role == "key":
+            entry["columns"] = {f["name"]: _avro_field_type(f["type"]) for f in schema.get("fields", [])}
+        else:
+            entry["columns"] = _envelope_row_columns(schema)
+            entry["envelope"] = [f["name"] for f in schema.get("fields", [])]
+        out[role] = entry
+    return out
 
 
 def run_status(run_id: str) -> dict:
@@ -190,6 +239,10 @@ class Handler(BaseHTTPRequestHandler):
                 if m.group(1) not in SYNCS:
                     raise ValueError("unknown sync")
                 return self._json(200, (check_readers if m.group(2) == "readers" else check_postgres)(m.group(1)))
+            if m := re.fullmatch(r"/api/schema/(\w+)", self.path):
+                if m.group(1) not in SYNCS:
+                    raise ValueError("unknown sync")
+                return self._json(200, schema_info(m.group(1)))
             self._json(404, {"error": "not found"})
         except Exception as e:
             self._json(400, {"error": str(e)})

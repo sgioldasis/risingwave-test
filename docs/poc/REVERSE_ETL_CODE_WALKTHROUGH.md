@@ -165,7 +165,8 @@ in *how they read Databricks*. The skeleton both share:
    and `add_missing_columns()` on RisingWave *before* producing — RisingWave only
    fills a column from messages read after the column exists.
 6. **Produce to Kafka** (`_produce_to_kafka`, §5).
-7. **Write the watermark** — only after produce returned success.
+7. **Write the watermark** — only after produce returned success, and only when
+   the version actually moved (no-op syncs skip the MERGE).
 8. Emit run metadata (events synced, op counts, commit version, message previews,
    extraction, and the cost entries from the meter, §9).
 
@@ -224,10 +225,18 @@ event metadata there, not in row content.
 
 ## 5. Producing to Kafka — `_produce_to_kafka`
 
-One producer per run. Encoding is config: `avro` (Confluent wire format, schemas
-registered under `<topic>-key` / `<topic>-value` on the staging Apicurio's
-`/apis/ccompat/v7`, via `_avro_serializers` + `_register_avro_schemas`) or `json`
-(Kafka Connect JSON with the schema embedded per message).
+One producer per run — created **early** (before the CDF read, only when there is
+something to read) so its TLS/SASL handshake to the staging brokers (~9 s over
+VPN) overlaps the Spark work instead of stalling the first produce. Encoding is
+config: `avro` (Confluent wire format, schemas under `<topic>-key` /
+`<topic>-value` on the staging Apicurio's `/apis/ccompat/v7`) or `json` (Kafka
+Connect JSON with the schema embedded per message).
+
+Schemas are **not re-registered when unchanged**: `_schema_already_registered`
+compares the registry's latest version against the built schema (parsed, so key
+order cannot false-negative), and when both subjects already hold identical
+schemas the serializers run with `use.latest.version` instead of auto-registering.
+On any registry error the check fails open — register anyway, exactly as before.
 
 The delivery guard is the load-bearing detail:
 
@@ -270,8 +279,13 @@ drop-in equivalents:
   (option A in `REVERSE_ETL_DBU_COST_NOTES.md` §5): OSS Delta cannot commit to a
   UniForm table (`DELTA_MISSING_ICEBERG_CLASS`), while the source stays UniForm so
   StarRocks/Databricks Iceberg readers keep working.
-- `get_current_version` / `get_earliest_available_version` — `DESCRIBE HISTORY`
-  equivalents from `DeltaTable.forPath(...).history()`.
+- `get_current_version` / `get_earliest_available_version` — the commit versions
+  still in `_delta_log`, read **driver-side** through Hadoop's FS API (no Spark
+  job, no stage): a commit is exactly a 20-digit `.json` file, so latest/earliest
+  is a max/min over one listing (~0.1s). This replaced `history()` reads, which
+  ran a 50-task stage over the whole log. `get_spark_session` seeds the session's
+  global Hadoop conf with the `fs.*` ABFS settings so driver-side filesystem
+  access authenticates (Spark only auto-propagates `spark.hadoop.*` there).
 
 ## 7. The SQL-warehouse plumbing — `databricks_optimize.py` + `_run_sql`
 
