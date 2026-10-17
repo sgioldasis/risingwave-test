@@ -6,6 +6,7 @@ the highest id for an update or delete), text columns get a timestamped value, n
 timestamp columns now. Nothing here is synced until the sync asset runs.
 """
 
+import os
 import random
 import re
 import time
@@ -116,6 +117,35 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
                 "(the sync's configured columns are not dropped by this demo op)"
             )
         return [f"ALTER TABLE {table} DROP COLUMN {demo_column[0]}"]
+    if change == "bulk_1m":
+        # The delta sync's 1M-row load generator: ten commits of 100k rows — the
+        # shape the chunked sync reads fastest (those commits need
+        # REVERSE_ETL_CDF_CHUNK_VERSIONS=1, set in .env; the default 10 would
+        # collect 1M rows in one chunk and the sync would be OOM-killed). Each
+        # commit chains off the previous one's max(id) via a scalar subquery, so
+        # no pre-read is needed and repeated loads append after the last bulk
+        # row (the reset flow clears the table when the demo is done).
+        if cfg.sync_name != "reverse_etl_delta":
+            raise ValueError(
+                "bulk_1m is the delta sync's 1M-row load generator (id/description/updated_at); "
+                f"{cfg.sync_name} has a different schema — use the row-level ops"
+            )
+        names = ", ".join([KEY] + [name for name, _ in columns])
+        statements = []
+        for _ in range(10):
+            values = ", ".join(
+                ["base + 1 + j"]
+                + [
+                    "'bulk-' || CAST(base + 1 + j AS STRING)" if sql_type == "STRING" else _value(sql_type)
+                    for _, sql_type in columns
+                ]
+            )
+            statements.append(
+                f"INSERT INTO {table} ({names}) SELECT {values} "
+                f"FROM (SELECT coalesce(max({KEY}), 0) AS base FROM {table}) m "
+                f"CROSS JOIN (SELECT explode(sequence(0, 99999)) AS j) s"
+            )
+        return statements
     if change == "insert":
         names = ", ".join([KEY] + [name for name, _ in columns])
         values = ", ".join([f"coalesce(max({KEY}), 0) + 1"] + [_value(t) for _, t in columns])
@@ -126,13 +156,13 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
         return [f"UPDATE {table} SET {assignments} WHERE {latest}"]
     if change == "delete":
         return [f"DELETE FROM {table} WHERE {latest}"]
-    raise ValueError(f"change must be insert, update, delete, add_column, rename_column or drop_column, got {change!r}")
+    raise ValueError(f"change must be insert, update, delete, add_column, rename_column, drop_column or bulk_1m, got {change!r}")
 
 
 def build_change_asset(cfg: ReverseEtlSyncConfig):
     @asset(
         name=f"{cfg.sync_name}_make_change",
-        description=f"Insert, update or delete one row of {cfg.source_fqn}. Not synced until {cfg.sync_asset} runs.",
+        description=f"Change {cfg.source_fqn}: insert/update/delete a row, add/rename/drop a column, or bulk-load 1,000,000 rows (delta sync). Not synced until {cfg.sync_asset} runs.",
     )
     def make_change(context: AssetExecutionContext, config: ChangeConfig):
         _require_databricks_env()
@@ -171,10 +201,19 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
                     ) from error
                 raise
             context.log.info(f"{config.change} on {cfg.source_fqn}: {statement}")
+        if config.change == "bulk_1m":
+            chunk = os.environ.get("REVERSE_ETL_CDF_CHUNK_VERSIONS", "10")
+            if chunk != "1":
+                context.log.warning(
+                    f"This load needs REVERSE_ETL_CDF_CHUNK_VERSIONS=1 for the next sync (currently "
+                    f"{chunk!r}, set in .env + docker-compose.yml): 100k-row commits with the default "
+                    "10 would put 1M rows in one read chunk and the sync would be OOM-killed."
+                )
         usage = meter_snapshot()
         context.add_output_metadata({
             "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
             "databricks_statements": MetadataValue.int(usage["statements"]),
+            "rows_inserted": MetadataValue.int(1_000_000 if config.change == "bulk_1m" else len(statements)),
             # The exact SQL the demo page shows under the run result.
             "databricks_change_sql": MetadataValue.json({
                 "change": config.change, "table": cfg.source_fqn, "sql": statements,

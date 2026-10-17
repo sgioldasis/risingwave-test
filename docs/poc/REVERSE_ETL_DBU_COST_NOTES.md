@@ -231,9 +231,9 @@ section 4).
 | read the change feed | `table_changes()` on the warehouse | Spark `readChangeFeed` | yes (section 4) |
 | read live columns for the schema | `information_schema` SQL | the Delta schema Spark already read | yes (section 4) |
 | resolve the table's storage location | `DESCRIBE DETAIL` (one-time) | UC REST `GET /tables/{fqn}` — control plane, free | yes, returns the same abfss location |
-| read the watermark | SQL SELECT | Spark read of the state table | yes |
+| read the watermark | SQL SELECT | spark-free: delta-rs pre-check reads it (+ `last_schema`), the sync reuses the values | yes (2026-10-17) |
 | `DESCRIBE HISTORY` guards (first run, no-new-commits) | SQL | `DeltaTable.history()` | yes |
-| **write the watermark** | SQL MERGE | Spark MERGE — **blocked, see below** | no |
+| **write the watermark** | SQL MERGE | Spark **append** (append-only state, freshest row wins) — needs the plain state table (see below) | yes (2026-10-17) |
 | seed asset / make-change job | SQL INSERT/UPDATE/DELETE | stays on Databricks SQL (it is the demo's "change data in Databricks" step) | — |
 | topic / RisingWave / sink / health assets | already Databricks-free | unchanged | — |
 
@@ -271,6 +271,27 @@ empty — consistent with a pre-demo state, the next sync replays and upserts
 converge). Alternative without touching the state table: keep only the one
 watermark MERGE on the Statement Execution API — near-zero (about one second of
 warehouse per sync run).
+
+Addendum (2026-10-17): the watermark write is now an **append, not a MERGE** —
+one auditable row per sync, the *freshest* row wins on read (append-only made
+the write a cheap single-commit insert, ~2s cheaper per sync, and killed the
+duplicate-row ambiguity for good). The read side also moved spark-free: the
+no-op pre-check reads the watermark + `last_schema` with delta-rs and the sync
+reuses those values instead of re-reading them through Spark. Two further
+findings from that change, both verified live against this workspace:
+
+- **A Spark-written table cannot be delta-rs-written on this runtime.** Every
+  table Spark touches carries the v7 protocol with a writer-feature list
+  (rowTracking, domainMetadata — even as `'supported'`), and delta-rs 1.6
+  refuses to commit to it (`CommitFailedError: Unsupported table features
+  required`). The state table therefore has a *single writer* (Spark) while
+  delta-rs does all the reads. This also rules out delta-rs's native CDF reader
+  (`DeltaTable.load_cdf`) for the source tables: it rejects column-mapped
+  tables outright ("not supported for CHANGE DATA FEED scans yet") — and column
+  mapping is what makes DROP/RENAME COLUMN work.
+- **Never re-create a state table via `CREATE OR REPLACE`**: the RTAS inherits
+  the source selection's bumped protocol and lands exactly on the unwritable
+  shape. Drop + re-create with the plain DDL instead (the setup asset does).
 
 ### Wiring plan
 

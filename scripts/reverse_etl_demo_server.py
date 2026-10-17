@@ -29,7 +29,7 @@ CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL_HOST", "http://localhost:8083")
 PORT = int(os.environ.get("PORT", "4002"))
 PAGE = Path(__file__).resolve().parent.parent / "docs" / "poc" / "reverse_etl_data_flow.html"
 SYNCS = ("avro", "cdf", "orders", "delta")
-CHANGES = ("insert", "update", "delete", "add_column", "rename_column", "drop_column")
+CHANGES = ("insert", "update", "delete", "add_column", "rename_column", "drop_column", "bulk_1m")
 SCHEMA_REGISTRY = os.environ.get(
     "SCHEMA_REGISTRY_URL", "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
 )
@@ -70,6 +70,8 @@ def launch(sync: str, action: str, change: str | None) -> dict:
     elif action == "change":
         if change not in CHANGES:
             raise ValueError(f"change must be one of {CHANGES}")
+        if change == "bulk_1m" and sync != "delta":
+            raise ValueError("bulk_1m is only available for the delta sync (its 1M-row load generator)")
         params["runConfigData"] = {"ops": {f"reverse_etl_{sync}_make_change": {"config": {"change": change}}}}
     elif action not in ("reset", "setup"):
         raise ValueError(f"unknown action {action!r}")

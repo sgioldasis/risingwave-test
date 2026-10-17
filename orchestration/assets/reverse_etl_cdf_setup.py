@@ -32,6 +32,7 @@ the live run" in the design doc.
 
 import json
 import os
+import threading
 import time
 from itertools import zip_longest
 from typing import Any
@@ -43,6 +44,12 @@ from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+# delta-rs reads the tables' ABFS log/state without a JVM for the sync's
+# spark-free no-op pre-check. The imports sit at module level because they cost
+# ~1.5s and the pre-check runs inside the run's measured window.
+from deltalake import DeltaTable
+import pyarrow.compute as pc
+
 from .databricks_cost_meter import record as meter_record, reset as meter_reset, snapshot as meter_snapshot
 from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
 from .reverse_etl_config import ReverseEtlSyncConfig
@@ -51,6 +58,167 @@ from .reverse_etl_config import ReverseEtlSyncConfig
 
 # CDF's own metadata columns -- see Databricks' Change Data Feed docs.
 CHANGE_TYPE_COLUMN = "_change_type"
+
+
+def get_table_location(token: str, cfg: ReverseEtlSyncConfig, fqn: str) -> str:
+    """The table's abfss storage location, from the Unity Catalog REST API.
+
+    Control-plane call — no compute, no DBUs. Replaces the DESCRIBE DETAIL the
+    prototypes ran once on the warehouse. Lives here (not in
+    reverse_etl_spark_reader) so the spark-free no-op pre-check can use it
+    without importing pyspark."""
+    resp = requests.get(
+        f"{DATABRICKS_HOST}/api/2.1/unity-catalog/tables/{fqn}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"UC REST lookup for {fqn} failed ({resp.status_code}): {resp.text[:300]}")
+    location = resp.json().get("storage_location", "")
+    if not location:
+        raise RuntimeError(f"UC REST returned no storage_location for {fqn}")
+    return location
+
+
+def _azure_storage_options(location: str) -> dict[str, str]:
+    """delta-rs storage options for the tables' ABFS location: the same service
+    principal the sync already authenticates with, under the *bare* key names
+    object_store's Azure builder accepts. The azure_-prefixed variants silently
+    miss the tenant and secret, fall back to the IMDS managed-identity probe
+    (169.254.169.254 — unreachable outside Azure) and hang until the retries
+    exhaust (verified live)."""
+    return {
+        "account_name": location.split("@")[1].split(".")[0],
+        "client_id": os.environ["DATABRICKS_AZURE_CLIENT_ID"],
+        "tenant_id": os.environ["DATABRICKS_AZURE_TENANT_ID"],
+        "client_secret": os.environ["DATABRICKS_AZURE_CLIENT_SECRET"],
+    }
+
+
+def precheck_versions(cfg: ReverseEtlSyncConfig, source_location: str, state_location: str) -> tuple[int | None, int, str | None]:
+    """(watermark, source's current version, the state row's last_schema) without
+    starting Spark, via delta-rs.
+
+    Powers the sync's spark-free no-op pre-check: when the source's version equals
+    the watermark there is nothing to sync — a schema change is always a commit,
+    so an unchanged version cannot hide one. Only the log is read for the source;
+    the state read is a full-snapshot scan of a one-row table, which is why the
+    state tables must be created *plain* — delta-rs rejects tables with the
+    deletionVectors or columnMapping reader features (verified live). The
+    last_schema rides along so the Spark path can reuse all three values instead
+    of re-reading them (read_state + get_current_version cost a planning cycle
+    each). Raises on any problem; the caller fails open to the full sync. The
+    deltalake and pyarrow imports are module-level (see the imports above):
+    importing them here would add ~1.5s to every run's measured window."""
+    options = _azure_storage_options(source_location)
+    current_version = DeltaTable(source_location, storage_options=options).version()
+    state = DeltaTable(state_location, storage_options=_azure_storage_options(state_location)).to_pyarrow_table()
+    rows = state.filter(pc.equal(state.column("sync_name"), cfg.sync_name)).to_pylist()
+    if not rows:
+        return None, current_version, None
+    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
+    return int(freshest["last_commit_version"]), current_version, freshest.get("last_schema")
+
+
+# The control-plane lookups (the AAD token, the UC storage locations) are stable
+# for hours and cost ~1.3s per sync when fetched fresh. They are cached on disk
+# with TTLs: the token retires well before its ~1h validity, the locations
+# because a drop+recreate (the reset job) can move a managed table. The location
+# TTL is short on purpose — a stale location after a drop+recreate points at the
+# OLD table's storage, which is worse than a fresh fetch. A missing or
+# corrupted cache just means a fresh fetch; the write is best-effort.
+_CONTROL_PLANE_CACHE_PATH = os.path.join(
+    os.environ.get("DAGSTER_HOME", "/workspace"), "dagster_storage", "reverse_etl_control_plane_cache.json"
+)
+_TOKEN_CACHE_TTL = 45 * 60
+_LOCATION_CACHE_TTL = 10 * 60
+
+
+def _control_plane_cache_read() -> dict[str, Any]:
+    try:
+        with open(_CONTROL_PLANE_CACHE_PATH) as handle:
+            parsed = json.load(handle)
+        return parsed if isinstance(parsed, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _control_plane_cache_write(cache: dict[str, Any]) -> None:
+    try:
+        os.makedirs(os.path.dirname(_CONTROL_PLANE_CACHE_PATH), exist_ok=True)
+        temporary = _CONTROL_PLANE_CACHE_PATH + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump(cache, handle)
+        os.replace(temporary, _CONTROL_PLANE_CACHE_PATH)
+    except OSError:
+        pass  # best-effort: a fresh fetch is always the fallback
+
+
+def _get_token_cached() -> str:
+    """_get_token() with a 45-minute disk cache (the AAD token lives ~1h). The
+    sync's spark-free pre-check needs the token for the UC location lookups on
+    every run; a fresh client-credentials request costs ~0.4s of each one."""
+    cache = _control_plane_cache_read()
+    entry = cache.get("token") or {}
+    if entry.get("expires", 0) > time.time() and entry.get("value"):
+        return str(entry["value"])
+    token = _get_token()
+    cache["token"] = {"value": token, "expires": time.time() + _TOKEN_CACHE_TTL}
+    _control_plane_cache_write(cache)
+    return token
+
+
+def get_column_ids(location: str) -> dict[str, int]:
+    """{column name: delta.columnMapping.id}, read spark-free via delta-rs.
+
+    The mapping id is stable across RENAME COLUMN while the name changes, which is
+    how the sync tells a rename from a drop. The ids live in the schema's per-field
+    metadata: pyspark's DataFrame schema strips it (verified live — the plain load
+    and the change-feed read both return empty field metadata), but delta-rs
+    preserves it, so this is a ~0.2s local read replacing the multi-second Spark
+    JVM log-scan it replaced. Returns {} when the table has no column mapping;
+    callers then treat renames as drop + add."""
+    fields = DeltaTable(location, storage_options=_azure_storage_options(location)).schema().fields
+    return {
+        field.name: int(field.metadata["delta.columnMapping.id"])
+        for field in fields
+        if field.metadata and "delta.columnMapping.id" in field.metadata
+    }
+
+
+def clear_control_plane_cache() -> None:
+    """Delete the on-disk token/location cache (best-effort). Called by the reset
+    job after it drops the tables: a drop+recreate moves the managed tables to
+    new storage locations, and a cached location would point at the dead tables —
+    the sync would pre-check 'no new commits' against them and silently no-op
+    until the TTL expired (bit us live: reset → insert → sync produced nothing
+    for ten minutes)."""
+    try:
+        os.remove(_CONTROL_PLANE_CACHE_PATH)
+    except OSError:
+        pass  # nothing cached (or already gone) — a fresh fetch is the fallback
+
+
+def get_table_location_cached(token: str, cfg: ReverseEtlSyncConfig, fqn: str) -> str:
+    """get_table_location() with a 10-minute disk cache. Managed tables' storage
+    locations only move when the table is dropped and recreated — the reset job
+    does exactly that and clears this cache when it does (see
+    clear_control_plane_cache), so a stale entry can only come from a manual
+    drop+recreate; the TTL bounds that and deleting the cache file clears it
+    immediately. If a fetch fails (e.g. a rotated secret invalidated a cached
+    token), the whole cache is discarded so the next run starts fresh."""
+    cache = _control_plane_cache_read()
+    entry = (cache.get("locations") or {}).get(fqn) or {}
+    if entry.get("expires", 0) > time.time() and entry.get("value"):
+        return str(entry["value"])
+    try:
+        location = get_table_location(token, cfg, fqn)
+    except RuntimeError:
+        _control_plane_cache_write({})
+        raise
+    cache.setdefault("locations", {})[fqn] = {"value": location, "expires": time.time() + _LOCATION_CACHE_TTL}
+    _control_plane_cache_write(cache)
+    return location
 COMMIT_VERSION_COLUMN = "_commit_version"
 COMMIT_TIMESTAMP_COLUMN = "_commit_timestamp"
 CDF_METADATA_COLUMNS = (CHANGE_TYPE_COLUMN, COMMIT_VERSION_COLUMN, COMMIT_TIMESTAMP_COLUMN)
@@ -173,20 +341,13 @@ def _read_state(token: str, cfg: ReverseEtlSyncConfig) -> tuple[int | None, str 
 
 
 def _write_state(token: str, cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
-    # MERGE keeps this idempotent across retries of the same run.
+    # Append-only, matching the spark write_state: read_state takes the freshest
+    # row for the sync_name, so history accumulates harmlessly and the write is a
+    # cheap single-statement insert.
     escaped_schema = last_schema.replace("'", "''")
     _run_sql(
         token,
-        f"""
-        MERGE INTO {cfg.state_fqn} AS target
-        USING (SELECT '{cfg.sync_name}' AS sync_name, {version} AS last_commit_version,
-               '{escaped_schema}' AS last_schema) AS source
-        ON target.sync_name = source.sync_name
-        WHEN MATCHED THEN UPDATE SET target.last_commit_version = source.last_commit_version,
-                                     target.last_schema = source.last_schema
-        WHEN NOT MATCHED THEN INSERT (sync_name, last_commit_version, last_schema)
-            VALUES (source.sync_name, source.last_commit_version, source.last_schema)
-        """,
+        f"INSERT INTO {cfg.state_fqn} VALUES ('{cfg.sync_name}', {version}, '{escaped_schema}')",
     )
 
 
@@ -197,7 +358,7 @@ def _get_column_ids(token: str, cfg: ReverseEtlSyncConfig) -> dict[str, int]:
     """{} — rename propagation needs each column's delta.columnMapping id, and
     Databricks' information_schema.columns exposes no column_metadata here, so
     the warehouse path cannot detect renames: they propagate as drop + add.
-    The oss_spark path reads the ids from the delta log (get_column_ids)."""
+    The oss_spark path reads the ids via delta-rs (get_column_ids)."""
     return {}
 
 
@@ -270,6 +431,18 @@ def _get_earliest_available_version(token: str, cfg: ReverseEtlSyncConfig) -> in
 #
 # Ported unchanged from dagster-poc/reverse-etl/src/reverse_etl/defs/cdf_to_kafka.py
 # -- no Databricks/Kafka client dependency.
+
+
+def _version_chunks(start: int, end: int, size: int) -> list[tuple[int, int]]:
+    """Inclusive version sub-ranges covering [start, end], `size` versions each.
+
+    The sync reads and produces one chunk at a time so a backlog of many commits
+    streams through the driver instead of collecting every row up front. A single
+    huge commit still arrives as one chunk — that is the memory ceiling, and it
+    is comfortable to ~100k rows on the 512m driver."""
+    if end < start:
+        return []
+    return [(version, min(version + size - 1, end)) for version in range(start, end + 1, size)]
 
 
 def _next_watermark(rows: list[dict[str, Any]], current_version: int | None) -> int | None:
@@ -798,6 +971,18 @@ def _kafka_producer_config() -> dict[str, str]:
                 "sasl.password": os.environ.get("KAFKA_OUTPUT_SASL_PASSWORD", ""),
             }
         )
+    # Volume headroom (100k+ event syncs): compress on the wire, let librdkafka
+    # batch briefly (the produce loop's final flush absorbs the linger), and
+    # raise the queue ceilings so a large backlog never blocks the enqueuer.
+    conf.update(
+        {
+            "compression.type": "lz4",
+            "linger.ms": "50",
+            "batch.size": str(1024 * 1024),
+            "queue.buffering.max.messages": str(500000),
+            "batch.num.messages": str(20000),
+        }
+    )
     return conf
 
 
@@ -817,11 +1002,15 @@ def _produce_to_kafka(
     key_columns: list[str],
     row_fields: list[RowField],
     producer: Producer | None = None,
-) -> None:
+    flush: bool = True,
+) -> list[str]:
+    """Serialize + enqueue the events. Returns the delivery-error strings collected
+    while enqueueing (the callbacks fire during flush()). With flush=False the
+    caller owns the final wait — see _flush_producer."""
     producer = producer or _kafka_producer()
     # produce() is async (it only enqueues); delivery failures surface later in
     # librdkafka's background threads. Collect them per message via on_delivery
-    # and fail the run here -- BEFORE the watermark MERGE that follows this call
+    # and fail the run on the flush -- BEFORE the watermark append that follows
     # -- so the next sync replays from the same version instead of silently
     # skipping events that never reached the topic (broker blip, rotated SASL
     # credentials, recreated topic). Duplicate replays are harmless: the targets
@@ -833,15 +1022,41 @@ def _produce_to_kafka(
             key, value = _build_avro_message(cfg, event, key_columns, row_fields, serializers)
         else:
             key, value = _build_connect_json_message(cfg, event, key_columns, row_fields)
-        producer.produce(
-            topic=cfg.kafka_topic,
-            key=key,
-            value=value,
-            on_delivery=lambda err, msg: delivery_errors.append(str(err)) if err is not None else None,
-        )
+        # Enqueuing outruns the wire: once librdkafka's queue ceiling is reached
+        # (queue.buffering.max.messages = 500k -- above any 100k-row sync but
+        # below a 1M-row one) produce() raises BufferError. Serve the delivery
+        # callbacks with poll() to free queue space and retry, so a volume sync
+        # backpressures on the broker instead of dying at the ceiling. Bounded
+        # like the flush below: a wedged broker must fail the run, not hang it.
+        queue_full_deadline = time.monotonic() + 120
+        while True:
+            try:
+                producer.produce(
+                    topic=cfg.kafka_topic,
+                    key=key,
+                    value=value,
+                    on_delivery=lambda err, msg: delivery_errors.append(str(err)) if err is not None else None,
+                )
+                break
+            except BufferError:
+                if time.monotonic() > queue_full_deadline:
+                    raise RuntimeError(
+                        f"Kafka producer queue stayed full for 120s (topic {cfg.kafka_topic})"
+                    )
+                producer.poll(0.1)
     # Bounded wait, mirroring _get_risingwave_connection's connect_timeout: a
     # wedged broker must fail the run, not hang it. flush() returns the number
     # of messages still undelivered (their delivery callbacks have not fired).
+    if flush:
+        _flush_producer(cfg, producer, delivery_errors)
+    return delivery_errors
+
+
+def _flush_producer(cfg: ReverseEtlSyncConfig, producer: Producer, delivery_errors: list[str]) -> None:
+    """Wait for everything enqueued so far to reach the broker, then fail the run
+    if any delivery was rejected. Called once per produce site — the chunked read
+    loop flushes only after the LAST chunk, so the broker transfers while the next
+    chunk's Spark read runs instead of every chunk paying its own round-trip."""
     undelivered = producer.flush(timeout=120)
     if undelivered or delivery_errors:
         raise RuntimeError(
@@ -854,6 +1069,14 @@ def _produce_to_kafka(
 # metadata -- a full backfill can emit far more events than are useful to
 # render in the Dagster UI.
 MESSAGE_PREVIEW_LIMIT = 50
+# The CDF read runs one version chunk at a time (see _version_chunks): a backlog
+# of many commits streams through the driver instead of collecting every row.
+# The size is env-tunable because the bound that matters is ROWS per chunk
+# (chunk_versions x rows_per_commit ≈ ≤100k — the empirically proven driver
+# ceiling: a 1M-row collect OOMs the run worker, SIGKILLed by the VM). The
+# default 10 fits the demo's small commits; bulk loads of big commits (10 x
+# 100k rows) set REVERSE_ETL_CDF_CHUNK_VERSIONS=1.
+_CDF_CHUNK_VERSIONS = int(os.environ.get("REVERSE_ETL_CDF_CHUNK_VERSIONS", "10"))
 
 
 def _message_previews(
@@ -956,10 +1179,16 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             # UniForm feature, and without it Delta refuses DROP COLUMN (and
             # renames) outright, which the drop-propagation demo needs. Note:
             # such a table still will NOT appear in StarRocks' databricks_uc
-            # catalog (that needs UniForm's Iceberg metadata).
+            # catalog (that needs UniForm's Iceberg metadata). Deletion vectors
+            # are OFF on purpose too: with DVs enabled, a 1-row DELETE makes the
+            # Change Data Feed emit the whole touched file (verified live: two
+            # single-row deletes on 100k-row files produced 200000 delete +
+            # 100000 insert CDF rows, and the targets lost 100000 legitimate
+            # rows) — the sync would relay that verbatim.
             properties = (
                 "'delta.enableChangeDataFeed' = 'true',\n"
-                "            'delta.columnMapping.mode' = 'name'"
+                "            'delta.columnMapping.mode' = 'name',\n"
+                "            'delta.enableDeletionVectors' = 'false'"
             )
             ready = f"{cfg.source_fqn} ready (plain Delta: CDF + column mapping, no UniForm)"
         _run_sql(
@@ -984,13 +1213,23 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         # section 5. Column mapping is on for consistency with the source tables
         # (every demo table takes DROP COLUMN); the state table has no Change Data
         # Feed — nothing reads its change feed, reads are full snapshots + MERGE.
+        # The state table is deliberately PLAIN Delta: no column mapping (it never
+        # takes DROP COLUMN) and deletion vectors off — delta-rs rejects tables
+        # with those reader features, and the sync's spark-free no-op pre-check
+        # reads the watermark from here (see reverse_etl_spark_reader
+        # .precheck_versions). Keep it plain and Spark-written: this runtime
+        # rejects 'disabled' feature statuses outright ([DELTA_UNSUPPORTED_
+        # FEATURE_STATUS]), and any Spark-written table carries a v7 protocol
+        # whose writer-feature list delta-rs cannot commit to — so the state
+        # table has a single writer (Spark). Never re-create it via CREATE OR
+        # REPLACE: that inherits the source's bumped protocol.
         _run_sql(
             token,
             f"""
         CREATE TABLE IF NOT EXISTS {cfg.state_fqn} (
             sync_name STRING, last_commit_version BIGINT, last_schema STRING
         ) USING DELTA
-        TBLPROPERTIES ('delta.columnMapping.mode' = 'name')
+        TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')
         """,
         )
         context.log.info(
@@ -1180,31 +1419,89 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
     )
     def cdf_to_kafka(context: AssetExecutionContext):
         meter_reset()
+        # The token is control-plane only here: it resolves the tables' storage
+        # locations through the UC REST API. No SQL runs against a warehouse.
+        # Both come from the disk cache when warm (see _get_token_cached).
+        _require_databricks_env()
+        token = _get_token_cached()
+        producer: Producer | None = None
+
+        source_location = get_table_location_cached(token, cfg, cfg.source_fqn)
+        state_location = get_table_location_cached(token, cfg, cfg.state_fqn)
+        storage_account = source_location.split("@")[1].split(".")[0]
+
+        # Spark-free no-op pre-check: read the source's current version and the
+        # state table's watermark with delta-rs (no JVM) and end the run when
+        # nothing moved — a schema change is always a commit, so an unchanged
+        # version cannot hide one. This is the whole run for a no-op (~3s instead
+        # of ~17s: the Spark session start dominated small syncs). Bounded by a 5s
+        # watchdog, because a hung pre-check must not make a no-op slower than the
+        # sync it would have saved, and fail-open on any error: the pre-check is
+        # an optimization, never a gate.
+        precheck: dict[str, Any] = {}
+
+        def _precheck() -> None:
+            try:
+                precheck["result"] = precheck_versions(cfg, source_location, state_location)
+            except Exception as error:  # noqa: BLE001 — fail-open is the design
+                precheck["error"] = error
+
+        thread = threading.Thread(target=_precheck, daemon=True)
+        thread.start()
+        thread.join(5)
+        if "error" in precheck:
+            context.log.info(
+                f"Spark-free pre-check unavailable ({type(precheck['error']).__name__}: {str(precheck['error'])[:120]}) — starting the full sync"
+            )
+        elif "result" not in precheck:
+            context.log.info("Spark-free pre-check did not return in 5s — starting the full sync")
+        else:
+            last_version_pre, current_version_pre, _ = precheck["result"]
+            if last_version_pre is not None and current_version_pre == last_version_pre:
+                context.log.info(
+                    f"No new commits since version {last_version_pre} for {cfg.sync_name} (spark-free check)"
+                )
+                context.add_output_metadata({
+                    "events_synced": MetadataValue.int(0),
+                    "op_counts": MetadataValue.json({}),
+                    "last_commit_version": MetadataValue.int(last_version_pre),
+                    "kafka_topic": MetadataValue.text(cfg.kafka_topic),
+                    "risingwave_columns_added": MetadataValue.json([]),
+                    "columns_dropped": MetadataValue.json({"risingwave": [], "postgres": []}),
+                    "columns_renamed": MetadataValue.json([]),
+                    "kafka_messages": MetadataValue.json([]),
+                    "kafka_messages_truncated": MetadataValue.bool(False),
+                    "kafka_messages_raw": MetadataValue.json([]),
+                    "extraction": MetadataValue.text("oss_spark"),
+                    "databricks_compute": MetadataValue.text("none — OSS Delta reads storage directly (control-plane API only)"),
+                    **_cost_metadata(),
+                })
+                return
+
+        # Only now the heavy imports: reverse_etl_spark_reader pulls pyspark, and
+        # the import alone costs seconds that a no-op sync must not pay.
         from .reverse_etl_spark_reader import (
-            get_column_ids,
             get_current_version,
             get_earliest_available_version,
             get_row_fields,
             get_spark_session,
-            get_table_location,
             read_changes,
             read_state,
             write_state,
         )
 
-        # The token is control-plane only here: it resolves the tables' storage
-        # locations through the UC REST API. No SQL runs against a warehouse.
-        _require_databricks_env()
-        token = _get_token()
-        producer: Producer | None = None
-
-        source_location = get_table_location(token, cfg, cfg.source_fqn)
-        state_location = get_table_location(token, cfg, cfg.state_fqn)
-        storage_account = source_location.split("@")[1].split(".")[0]
-
         spark = get_spark_session(storage_account)
         try:
-            last_version, last_schema = read_state(spark, cfg, state_location)
+            precheck_result = precheck.get("result")
+            if precheck_result is not None:
+                # The pre-check read the state row and the source version spark-free
+                # seconds ago — re-reading both through Spark costs two planning
+                # cycles for the same answer.
+                last_version, current_version, last_schema = precheck_result
+            else:
+                last_version, last_schema = read_state(spark, cfg, state_location)
+                current_version = None
+            chunk_start: int | None = None
 
             if last_version is None:
                 backfill_from = _resolve_backfill_version()
@@ -1234,50 +1531,102 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                     # The Kafka TLS/SASL handshake runs in librdkafka's background
                     # threads while the CDF read and event building continue.
                     producer = _kafka_producer()
-                rows = read_changes(spark, cfg, source_location, backfill_from) if backfill_from is not None else []
+                    chunk_start = backfill_from
+                    if current_version is None:
+                        current_version = get_current_version(spark, source_location)
             else:
                 # table_changes()/readChangeFeed's starting version is inclusive, and
                 # last_version was already fully processed -- +1 to resume from the
                 # first un-synced version.
                 next_version = last_version + 1
-                current_version = get_current_version(spark, source_location)
+                if current_version is None:
+                    current_version = get_current_version(spark, source_location)
                 if next_version > current_version:
                     # No commits since the last run -- the common case for a daily
                     # batch once caught up. readChangeFeed errors past the latest
                     # version just like table_changes() does, so this is checked
                     # before reading.
                     context.log.info(f"No new commits since version {last_version} for {cfg.sync_name}")
-                    rows = []
                 else:
                     context.log.info(f"Reading CDF for {cfg.source_table} since version {next_version}")
                     # The Kafka TLS/SASL handshake runs in librdkafka's background
                     # threads while the CDF read continues. The read is pinned to
                     # current_version so its range matches the watermark exactly.
                     producer = _kafka_producer()
-                    rows = read_changes(spark, cfg, source_location, next_version, current_version)
+                    chunk_start = next_version
 
             key_columns = [cfg.key_column]
-            events = _to_debezium_events(rows, key_columns) if rows else []
-
+            events_synced = 0
+            op_counts: dict[str, int] = {}
+            preview_events: list[dict[str, Any]] = []
+            delivery_errors: list[str] = []
             risingwave_columns_added: list[str] = []
             row_fields: list[RowField] = []
-            if events:
-                row_fields = get_row_fields(spark, source_location)
-                # Before producing: RisingWave only fills a column from messages it
-                # reads after the column exists. Imported here because that module
-                # imports this one.
+            new_version: int | None = None
+            rows_seen = False
+
+            if chunk_start is not None:
                 from .reverse_etl_risingwave_setup import add_missing_columns
 
-                risingwave_columns_added = add_missing_columns(cfg, row_fields)
-                if risingwave_columns_added:
-                    context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
-                _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields, producer=producer)
+                # Read and produce one version chunk at a time so a backlog of many
+                # commits streams through the driver instead of collecting every row
+                # up front (_version_chunks). A single huge commit still arrives as
+                # one chunk -- that is the memory ceiling. No prefetch thread: it
+                # measured 187s vs 126s on the 1M sync -- the reader thread's
+                # collect->dict conversion and the main thread's events/serialization
+                # are both GIL-bound, so they contend instead of overlapping. The
+                # overlap that DOES pay is flush=False's: the broker transfers while
+                # the next chunk's Spark read runs (GIL-free there).
+                chunks = _version_chunks(chunk_start, current_version, _CDF_CHUNK_VERSIONS)
+                for index, (chunk_from, chunk_to) in enumerate(chunks):
+                    rows = read_changes(spark, cfg, source_location, chunk_from, chunk_to)
+                    if not rows:
+                        continue
+                    rows_seen = True
+                    events = _to_debezium_events(rows, key_columns)
+                    if events and not row_fields:
+                        # The first chunk with events: resolve the schema and make
+                        # RisingWave ready before any message is produced — it only
+                        # fills a column from messages read after the column exists.
+                        # Imported here because that module imports this one.
+                        row_fields = get_row_fields(source_location)
+                        risingwave_columns_added = add_missing_columns(cfg, row_fields)
+                        if risingwave_columns_added:
+                            context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
+                    if events:
+                        # flush=False: the broker transfers while the NEXT chunk's
+                        # Spark read runs; one bounded flush after the last chunk
+                        # (below) is the single delivery checkpoint.
+                        delivery_errors.extend(
+                            _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields, producer=producer, flush=False)
+                        )
+                        events_synced += len(events)
+                        for op, count in _summarize_ops(events).items():
+                            op_counts[op] = op_counts.get(op, 0) + count
+                        if len(preview_events) < MESSAGE_PREVIEW_LIMIT:
+                            preview_events += events[: MESSAGE_PREVIEW_LIMIT - len(preview_events)]
+                    chunk_watermark = _next_watermark(rows, current_version)
+                    new_version = chunk_watermark if new_version is None else max(new_version, chunk_watermark)
+                    # Per-chunk heartbeat: the pipeline is bursty by design (read
+                    # 100k -> build -> enqueue -> repeat), and without this line a
+                    # demo audience just sees the targets plateau every chunk.
+                    context.log.info(
+                        f"Chunk {index + 1}/{len(chunks)}: versions {chunk_from}-{chunk_to}, "
+                        f"{len(rows)} rows, {len(events)} events (total {events_synced})"
+                    )
+                if events_synced:
+                    context.log.info(f"Produced {events_synced} event(s) to {cfg.kafka_topic}: {op_counts}")
+                if events_synced:
+                    # The single delivery checkpoint for the whole backlog: fail
+                    # here -- BEFORE the watermark append below -- and the next
+                    # sync replays the same versions (targets upsert by key).
+                    _flush_producer(cfg, producer, delivery_errors)
 
-            if last_version is None and not rows:
-                new_version = get_current_version(spark, source_location)
-            elif rows:
-                new_version = _next_watermark(rows, last_version)
-            else:
+            if last_version is None and not rows_seen:
+                if current_version is None:
+                    current_version = get_current_version(spark, source_location)
+                new_version = current_version
+            elif not rows_seen:
                 # No rows but the version advanced: schema-only commits (see the
                 # databricks_sql branch for why the watermark must still move).
                 new_version = current_version
@@ -1292,8 +1641,8 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 # A schema-only commit (e.g. DROP COLUMN) emits no CDF events, so
                 # the current fields may not have been read yet.
                 if not row_fields:
-                    row_fields = get_row_fields(spark, source_location)
-                column_ids = get_column_ids(spark, source_location)
+                    row_fields = get_row_fields(source_location)
+                column_ids = get_column_ids(source_location)
                 schema_changes = _propagate_column_drops(cfg, row_fields, last_schema, context.log, column_ids)
                 columns_dropped = schema_changes["dropped"]
                 columns_renamed = schema_changes["renamed"]
@@ -1303,11 +1652,8 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 if columns_dropped:
                     context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
 
-            op_counts = _summarize_ops(events)
-            context.log.info(f"Produced {len(events)} event(s) to {cfg.kafka_topic}: {op_counts}")
-
             context.add_output_metadata({
-                "events_synced": MetadataValue.int(len(events)),
+                "events_synced": MetadataValue.int(events_synced),
                 "op_counts": MetadataValue.json(op_counts),
                 "last_commit_version": (
                     MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
@@ -1316,9 +1662,9 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
                 "columns_dropped": MetadataValue.json(columns_dropped),
                 "columns_renamed": MetadataValue.json(columns_renamed),
-                "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
-                "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
-                "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
+                "kafka_messages": MetadataValue.json(_message_previews(cfg, preview_events, key_columns, row_fields)),
+                "kafka_messages_truncated": MetadataValue.bool(events_synced > MESSAGE_PREVIEW_LIMIT),
+                "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, preview_events, key_columns, row_fields)),
                 "extraction": MetadataValue.text("oss_spark"),
                 "databricks_compute": MetadataValue.text("none — OSS Delta reads storage directly (control-plane API only)"),
                 **_cost_metadata(),

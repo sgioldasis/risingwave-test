@@ -19,7 +19,7 @@ from .databricks_optimize import _get_token
 from .kafka_topics_setup import _admin_client
 from .postgres_sink_setup import get_postgres_connection
 from .databricks_cost_meter import reset as meter_reset
-from .reverse_etl_cdf_setup import _require_databricks_env, _run_sql
+from .reverse_etl_cdf_setup import _require_databricks_env, _run_sql, clear_control_plane_cache
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import CONNECT_URL
 from .reverse_etl_risingwave_setup import _get_risingwave_connection
@@ -140,6 +140,13 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         for table in (cfg.source_fqn, cfg.state_fqn):
             _run_sql(token, f"DROP TABLE IF EXISTS {table}")
             context.log.info(f"Dropped {table} (if it existed)")
+        # Dropping + recreating moves the managed tables to new storage locations,
+        # so any cached location now points at the DEAD tables — a sync right
+        # after this reset would pre-check "no new commits" against them (a green
+        # no-op that silently skips everything until the cache expires). The
+        # cache file lives in dagster_storage, shared with the sync's run workers.
+        clear_control_plane_cache()
+        context.log.info("Cleared the sync's location cache (the tables moved)")
 
     @job(
         name=cfg.reset_job,

@@ -59,7 +59,11 @@ and click again.
 URL, so `?sync=` is only needed for the first load). Step 1 makes an insert, update, delete, column add or
 column drop in Databricks, steps 2 to 5 and 8 run the sync
 (one Dagster run, so they cannot be launched separately), and steps 6 and 7 only check Kafka Connect, RisingWave and
-Postgres. The Reset and set up button at the top runs the sync's reset job, then its setup job. The Postgres check needs a devbox
+Postgres. The Reset and set up button at the top chains **three** runs: the reset job, the setup job (create
+tables and topic → a baseline sync → RisingWave → sink → seed rows — the setup's own sync intentionally runs
+*before* the seeds are inserted, baselining the watermark on the fresh table), and a **first data sync** whose
+job is to land those seeded rows in RisingWave and Postgres. After it, you are at a fully synced steady state.
+The Postgres check needs a devbox
 shell (`POSTGRES_PASSWORD`). Opened as a plain file, the page is the animation only.
 
 Debezium appears three times: the messages on the topic are Debezium change events (`before`, `after`, `op`), the
@@ -188,9 +192,22 @@ Show:
 Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
 How it reads the changes: by default straight from Delta storage with OSS Delta on Spark — `extraction: oss_spark`
-in all four syncs' `defs.yaml`, zero Databricks compute (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`). The change
-feed is read from the version after the watermark, ordered by commit version, and the watermark is MERGE'd back the
-same way. The `databricks_sql` backend — one `table_changes()` query via the Statement Execution API — is still
+in all four syncs' `defs.yaml`, zero Databricks compute (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`). Before
+touching Spark, the sync does a spark-free no-op check: the source's current version and the state table's
+watermark read with delta-rs (service-principal auth, no JVM) — when they are equal the run ends there (~8s
+instead of ~17s, whose floor was the Spark session start; the check's token and storage locations come from a
+small disk cache, and the heavy imports sit at module level so they never land in the run's measured seconds).
+The state tables are plain Delta on purpose (no
+column mapping, deletion vectors off), because delta-rs rejects tables carrying those reader features. The change
+feed is read from the version after the watermark — one chunk at a time (10
+commits by default, tunable via `REVERSE_ETL_CDF_CHUNK_VERSIONS` in `.env`), so a
+backlog streams read → produce through the driver and memory stays bounded by
+what a chunk can hold — `chunk_versions × rows_per_commit` must stay ≤ ~100k (a
+1M-row *single commit* OOMs the
+driver; spread over commits, 1M syncs fine) — and the watermark row is appended
+back to the append-only state table (the
+freshest row wins on the next read; one auditable row per sync). The `databricks_sql` backend — one
+`table_changes()` query via the Statement Execution API — is still
 available per sync by flipping `extraction` in the sync's `defs.yaml`. Each changed row comes back with its change
 type (`insert`, `delete`, `update_preimage`, `update_postimage`) and its
 commit version. The sync joins an update's old and new rows into one event with `before`, `after` and `op`
@@ -213,7 +230,10 @@ SET value = 'changed', updated_at = current_timestamp() WHERE id = 1;
 ```
 
 Run the sync asset again and query both targets: the update is applied in both. A delete works the same way
-(`DELETE FROM ... WHERE id = 1`): the row disappears from both.
+(`DELETE FROM ... WHERE id = 1`): the row disappears from both. (The delta source keeps **deletion vectors
+off** on purpose: with DVs on, a 1-row DELETE makes Delta's Change Data Feed emit the whole touched file —
+100,000 spurious delete events per delete on a bulk-loaded table — and the sync relays that verbatim; see the
+deletion-vectors gotcha in `REVERSE_ETL_CODE_WALKTHROUGH.md` §11.)
 
 ## 5. Add a column
 
@@ -286,6 +306,19 @@ state rows written before this feature recorded names only, so the *first* renam
 land as drop + add — run one sync first so the state picks up the ids. Renaming a *configured* column (e.g.
 `RENAME COLUMN value TO description`) also needs the sync's `source_columns`/seed in its `defs.yaml` renamed
 with it, since the change ops build their SQL from it.
+
+## 5d. Bulk-load 1,000,000 rows (delta sync)
+
+The page's change dropdown has "insert 1,000,000 rows (delta)" — one click runs the make_change job, which
+executes **ten INSERT statements of 100,000 rows each** (~25–37s of warehouse time; each commit chains off the
+previous one's `max(id)` via a scalar subquery, so repeated loads append after the last bulk row and the op
+works on a fresh table too). This is the load behind the stress numbers: a sync afterwards processes 1,000,000
+events in ~2 minutes (10 read chunks of 100k rows, single Kafka flush, both targets converging).
+
+Two requirements are already wired: the commits need `REVERSE_ETL_CDF_CHUNK_VERSIONS=1` (set in `.env` — the
+default 10 would collect 1M rows in one read chunk and the sync would be OOM-killed; the op logs a warning if
+the setting is not 1), and the op is **delta-only** — the helper rejects it for the other syncs, whose schemas
+differ. Repeated loads grow the dataset; the reset flow clears everything when the demo is done.
 
 ## 6. Run the sync from Databricks (optional)
 

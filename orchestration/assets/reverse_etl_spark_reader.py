@@ -26,10 +26,15 @@ import re
 import time
 
 import requests
+# delta-rs for the spark-free reads (get_row_fields): the module-level import is
+# cheap here because cdf_setup already imports deltalake for the pre-check, so
+# sys.modules has it either way. (Writes stay on Spark — see write_state.)
+from deltalake import DeltaTable
 
 from .reverse_etl_cdf_setup import (
     COMMIT_VERSION_COLUMN,
     _MICROSECOND_TIMESTAMP_FORMAT,
+    _azure_storage_options,
     ZONED_TIMESTAMP,
     RowField,
 )
@@ -169,22 +174,25 @@ def get_spark_session(storage_account: str):
     return spark
 
 
-def get_row_fields(spark, location: str) -> list[RowField]:
-    """The source table's current columns from its Delta schema (no scan, no SQL).
+def get_row_fields(location: str) -> list[RowField]:
+    """The source table's current columns via delta-rs — spark-free, no scan, no
+    JVM job (this replaced a Spark schema-read planning cycle with a ~0.1s local
+    read).
 
-    Same shape and ordering as _get_row_fields()'s information_schema read, so the
-    schema-evolution flow (message schema, Postgres types, RisingWave columns) is
-    unchanged."""
-    from pyspark.sql.types import StructType
-
-    df = spark.read.format("delta").load(location)
-    fields: list[RowField] = []
-    for field in df.schema.fields:
-        type_name = field.dataType.typeName() if not isinstance(field.dataType, StructType) else "string"
-        fields.append((field.name, _CONNECT_TYPE_BY_SPARK_TYPE.get(type_name, "string"), field.nullable))
-    if not fields:
+    Same (name, connect type, nullable) contract as _get_row_fields()'s
+    information_schema read, so the schema-evolution flow (message schema, Postgres
+    types, RisingWave columns) is unchanged. Delta's type names match Spark's
+    typeName() for the common primitives ('long', 'string', 'timestamp', ...), so
+    _CONNECT_TYPE_BY_SPARK_TYPE applies unchanged; anything compound travels as a
+    plain string, exactly as the Spark variant mapped StructType."""
+    fields = DeltaTable(location, storage_options=_azure_storage_options(location)).schema().fields
+    row_fields: list[RowField] = []
+    for field in fields:
+        type_name = getattr(field.type, "type", None)  # PrimitiveType carries the Delta name; compound types don't
+        row_fields.append((field.name, _CONNECT_TYPE_BY_SPARK_TYPE.get(type_name, "string"), field.nullable))
+    if not row_fields:
         raise RuntimeError(f"No columns found in the Delta schema at {location}")
-    return fields
+    return row_fields
 
 
 def read_state(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[int | None, str | None]:
@@ -213,31 +221,23 @@ def read_state(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[i
 
 
 def write_state(spark, cfg: ReverseEtlSyncConfig, state_location: str, version: int, last_schema: str) -> None:
-    """Same MERGE as _write_state(), through OSS Delta — idempotent across
-    retries, and the notebook keeps reading/writing the same row. last_schema
-    rides along so the next sync can evidence column drops."""
-    from delta.tables import DeltaTable
+    """Append the watermark row to the state table (Spark, not delta-rs: this
+    runtime creates tables with a v7 protocol whose writer feature list —
+    appendOnly, invariants, rowTracking, domainMetadata as 'supported' — delta-rs
+    1.6 refuses to commit to, and ANY Spark write enforces that protocol, so the
+    state table has a single writer. delta-rs keeps the READS: the pre-check and
+    get_row_fields read tables like this fine).
 
-    dt = DeltaTable.forPath(spark, state_location)
-    source = spark.createDataFrame(
+    The state table is append-only by design: read_state (and the spark-free
+    pre-check) take the *freshest* row for the sync_name, so history accumulates
+    harmlessly — one auditable row per sync — while the write stays a cheap
+    single-commit append. This replaced a read-modify-write MERGE that cost ~2s
+    per real sync and whose partial-failure states were the original source of
+    the duplicate-row confusion."""
+    spark.createDataFrame(
         [(cfg.sync_name, version, last_schema)],
         "sync_name string, last_commit_version bigint, last_schema string",
-    )
-    (
-        dt.alias("t")
-        .merge(source.alias("s"), "t.sync_name = s.sync_name")
-        .whenMatchedUpdate(
-            set={"last_commit_version": "s.last_commit_version", "last_schema": "s.last_schema"}
-        )
-        .whenNotMatchedInsert(
-            values={
-                "sync_name": "s.sync_name",
-                "last_commit_version": "s.last_commit_version",
-                "last_schema": "s.last_schema",
-            }
-        )
-        .execute()
-    )
+    ).write.format("delta").mode("append").save(state_location)
 
 
 def _delta_log_versions(spark, location: str) -> list[int]:
@@ -274,49 +274,6 @@ _CDF_SCHEMA_CHANGE_ERRORS = (
     "DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE",
     "DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_DATA_SCHEMA",
 )
-
-
-def get_column_ids(spark, location: str) -> dict[str, int]:
-    """{column name: delta.columnMapping.id}, read from the newest metaData action
-    in the _delta_log.
-
-    The mapping id is stable across RENAME COLUMN while the name changes, which is
-    how the sync tells a rename from a drop. pyspark's DataFrame schema strips
-    field metadata (verified live: the plain load and the change-feed read both
-    return empty field metadata even though Delta's own error diagnostics carry
-    the ids), so this reads the commit JSON instead: scan versions newest-first,
-    take the first commit carrying a metaData action — every schema change writes
-    the complete current schema — and pull each field's delta.columnMapping.id
-    from it. Returns {} when the newest metaData action has no ids (the table has
-    no column mapping) or none is found (commits aged out); callers then treat
-    renames as drop + add."""
-    from pyspark.sql import functions as F
-
-    log_dir = location.rstrip("/") + "/_delta_log"
-    jvm = spark._jvm
-    fs = jvm.org.apache.hadoop.fs.Path(log_dir).getFileSystem(
-        spark.sparkContext._jsc.hadoopConfiguration()
-    )
-    for version in sorted(_delta_log_versions(spark, location), reverse=True):
-        commit = jvm.org.apache.hadoop.fs.Path(log_dir + f"/{version:020d}.json")
-        if not fs.exists(commit):
-            continue
-        lines = (
-            spark.read.text(str(commit))
-            .where(F.col("value").contains('"metaData"'))
-            .collect()
-        )
-        if not lines:
-            continue
-        action = json.loads(lines[0]["value"]).get("metaData") or {}
-        schema = json.loads(action.get("schemaString") or "{}")
-        ids: dict[str, int] = {}
-        for field in schema.get("fields", []):
-            column_id = (field.get("metadata") or {}).get("delta.columnMapping.id")
-            if column_id is not None:
-                ids[field["name"]] = int(column_id)
-        return ids
-    return {}
 
 
 def read_changes(spark, cfg: ReverseEtlSyncConfig, location: str, since_version: int, until_version: int | None = None) -> list[dict]:
