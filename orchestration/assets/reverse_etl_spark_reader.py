@@ -22,6 +22,7 @@ installed.
 
 import os
 import re
+import time
 
 import requests
 
@@ -53,6 +54,31 @@ def _require_storage_env() -> None:
     missing = [k for k in ("ADLS_CLIENT_ID", "ADLS_TENANT_ID", "ADLS_CLIENT_SECRET") if not os.environ.get(k)]
     if missing:
         raise ValueError(f"Missing required env vars for direct storage access: {missing}")
+
+
+_UC_PROPAGATION_RETRIES = 3
+_UC_PROPAGATION_DELAY = 5.0
+
+
+def _with_uc_propagation_retry(read, log=None):
+    """Retry a storage read on 403: a Unity Catalog managed table created moments
+    ago can reject direct storage access until UC's path authorization propagates
+    (observed on the first sync right after Reset and set up). Bounded, and only
+    for authorization failures — every other error propagates immediately."""
+    for attempt in range(_UC_PROPAGATION_RETRIES):
+        try:
+            return read()
+        except Exception as e:  # noqa: BLE001 - Py4JJavaError wrapping the ABFS 403
+            message = str(e)
+            transient = "403" in message or "not authorized" in message.lower()
+            if attempt == _UC_PROPAGATION_RETRIES - 1 or not transient:
+                raise
+            if log:
+                log.info(
+                    f"Storage access not authorized yet (direct reads on a freshly created table can take a moment"
+                    f" to propagate) — retrying in {_UC_PROPAGATION_DELAY:.0f}s"
+                )
+            time.sleep(_UC_PROPAGATION_DELAY)
 
 
 def get_table_location(token: str, cfg: ReverseEtlSyncConfig, fqn: str) -> str:
@@ -161,13 +187,15 @@ def get_row_fields(spark, location: str) -> list[RowField]:
 
 
 def read_last_version(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> int | None:
-    rows = [
-        r.asDict()
-        for r in spark.read.format("delta")
-        .load(state_location)
-        .where(f"sync_name = '{cfg.sync_name}'")
-        .collect()
-    ]
+    rows = _with_uc_propagation_retry(
+        lambda: [
+            r.asDict()
+            for r in spark.read.format("delta")
+            .load(state_location)
+            .where(f"sync_name = '{cfg.sync_name}'")
+            .collect()
+        ]
+    )
     return int(rows[0]["last_commit_version"]) if rows else None
 
 
@@ -242,5 +270,7 @@ def read_changes(spark, cfg: ReverseEtlSyncConfig, location: str, since_version:
         if isinstance(field.dataType, TimestampType):
             col = F.date_format(col, _MICROSECOND_TIMESTAMP_FORMAT)
         exprs.append(col.alias(field.name))
-    rows = [r.asDict() for r in df.select(*exprs).orderBy(COMMIT_VERSION_COLUMN).collect()]
+    rows = _with_uc_propagation_retry(
+        lambda: [r.asDict() for r in df.select(*exprs).orderBy(COMMIT_VERSION_COLUMN).collect()]
+    )
     return rows

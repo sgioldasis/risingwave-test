@@ -817,6 +817,25 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         columns = ",\n            ".join(
             [f"{cfg.key_column} BIGINT GENERATED ALWAYS AS IDENTITY", *cfg.source_columns]
         )
+        if cfg.uniform:
+            # UniForm (Iceberg compat) so other engines — StarRocks via UC's Iceberg
+            # REST catalog — can read this table. Column mapping is an Iceberg-compat
+            # requirement; deletion vectors must stay off for the same reason.
+            properties = (
+                "'delta.enableChangeDataFeed' = 'true',\n"
+                "            'delta.columnMapping.mode' = 'name',\n"
+                "            'delta.enableDeletionVectors' = 'false',\n"
+                "            'delta.enableIcebergCompatV2' = 'true',\n"
+                "            'delta.universalFormat.enabledFormats' = 'iceberg'"
+            )
+            ready = f"{cfg.source_fqn} ready (CDF + UniForm Iceberg enabled)"
+        else:
+            # Plain Delta on purpose: this sync shows the pipeline is
+            # UniForm-agnostic. Only Change Data Feed is required. Note: such a
+            # table will NOT appear in StarRocks' databricks_uc catalog (that
+            # needs UniForm's Iceberg metadata).
+            properties = "'delta.enableChangeDataFeed' = 'true'"
+            ready = f"{cfg.source_fqn} ready (plain Delta, CDF only — no UniForm)"
         _run_sql(
             token,
             f"""
@@ -824,15 +843,11 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             {columns}
         ) USING DELTA
         TBLPROPERTIES (
-            'delta.enableChangeDataFeed' = 'true',
-            'delta.columnMapping.mode' = 'name',
-            'delta.enableDeletionVectors' = 'false',
-            'delta.enableIcebergCompatV2' = 'true',
-            'delta.universalFormat.enabledFormats' = 'iceberg'
+            {properties}
         )
         """,
         )
-        context.log.info(f"{cfg.source_fqn} ready (CDF + UniForm Iceberg enabled)")
+        context.log.info(ready)
 
         # Plain Delta on purpose: the watermark is internal bookkeeping that nothing
         # reads through Iceberg (unlike the source table, which keeps UniForm for

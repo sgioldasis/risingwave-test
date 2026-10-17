@@ -92,6 +92,14 @@ class ReverseEtlSyncConfig:
     #   principal in the environment and the state table as plain Delta (option A).
     extraction: str = "databricks_sql"
 
+    # --- source table format ----------------------------------------------------
+    # True (default): the setup asset creates the source with UniForm (Iceberg
+    # compat) so other engines — StarRocks via UC's Iceberg REST catalog — can read
+    # it. False: plain Delta with only Change Data Feed, for showing the sync is
+    # UniForm-agnostic (the delta sync). Only affects a table the setup asset
+    # creates; an existing source table is never touched.
+    uniform: bool = True
+
     def __post_init__(self) -> None:
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
@@ -137,6 +145,7 @@ class ReverseEtlSyncConfig:
         source_columns: tuple[str, ...],
         key_column: str = "rid",
         seed_statements: tuple[str, ...] = (),
+        uniform: bool = True,
     ) -> "ReverseEtlSyncConfig":
         """A config for a sync labelled `name` (for example "cdf" or "orders"): every
         name is reverse_etl_<name>_<role>, so syncs never collide and the label shows
@@ -167,5 +176,6 @@ class ReverseEtlSyncConfig:
             reset_schema=schema,
             seed_asset=f"{base}_seed",
             seed_statements=seed_statements,
+            uniform=uniform,
         )
 

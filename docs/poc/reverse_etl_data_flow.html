@@ -49,7 +49,7 @@
   button:hover { background: var(--card); }
   button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   .acts { margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .acts select { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+  .acts select, .bar select { font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 4px 8px; }
   .acts button, .bar button { border-color: var(--active); }
   button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   .result { font-size: 13px; color: var(--muted); margin: 8px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
@@ -89,6 +89,7 @@
 <p class="sub" id="cost-total" style="margin-top: -14px; font-size: 13px; color: #2e9e4f; display: none"></p>
 
 <div class="bar" id="bar">
+  <select id="sync-select" aria-label="Choose the sync's source table"></select>
   <button id="do-rebuild" disabled>Reset and set up</button>
   <p class="result" id="bar-result" style="margin: 0"></p>
 </div>
@@ -255,7 +256,7 @@ document.addEventListener('keydown', e => {
 });
 
 // Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
-const SYNC = new URLSearchParams(location.search).get('sync') || 'avro';
+let SYNC = new URLSearchParams(location.search).get('sync') || 'avro';
 let helper = false, busy = false;
 const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
 const get = url => fetch(url).then(r => r.json());
@@ -433,6 +434,32 @@ $('do-rebuild').onclick = async () => {
   if (!confirm('This drops the ' + SYNC + ' source and state tables, the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
   const out = $('bar-result');
   if (await run('Reset (1 of 2)', { action: 'reset' }, out)) await run('Set up (2 of 2)', { action: 'setup' }, out);
+};
+
+// Table selector: switch the sync (and its source table) without leaving the page.
+const SYNC_LABELS = {
+  avro: 'avro (UniForm · Avro)',
+  cdf: 'cdf (UniForm · JSON)',
+  orders: 'orders (UniForm · JSON)',
+  delta: 'delta (plain Delta · Avro)',
+};
+const syncSelect = $('sync-select');
+for (const [name, label] of Object.entries(SYNC_LABELS)) {
+  const opt = document.createElement('option');
+  opt.value = name;
+  opt.textContent = label;
+  if (name === SYNC) opt.selected = true;
+  syncSelect.append(opt);
+}
+syncSelect.onchange = () => {
+  SYNC = syncSelect.value;
+  history.replaceState(null, '', '?sync=' + SYNC);
+  $('bar-msg').textContent = helper ? 'Connected to the helper. Sync: ' + SYNC + '.' : $('bar-msg').textContent;
+  $('result').textContent = '';
+  $('bar-result').textContent = '';
+  costSession.warehouse = 0;
+  costSession.cluster = 0;
+  $('cost-total').style.display = 'none';
 };
 
 fetch('/api/ping').then(r => r.json()).then(() => { helper = true; $('bar-msg').textContent = 'Connected to the helper. Sync: ' + SYNC + '.'; lock(false); }).catch(() => {});

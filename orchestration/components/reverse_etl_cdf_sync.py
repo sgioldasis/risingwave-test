@@ -63,6 +63,9 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     # service principal and a plain Delta state table (see
     # docs/poc/REVERSE_ETL_DBU_COST_NOTES.md section 5).
     extraction: str | None = None
+    # False creates the source table as plain Delta (Change Data Feed only, no
+    # UniForm/Iceberg) — see the delta sync's defs.yaml.
+    uniform: bool | None = None
     # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
     encoding: str | None = None
     schema_registry_url: str | None = None
@@ -98,6 +101,7 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
                 "reset_schema",
                 "sink_tasks_max",
                 "extraction",
+                "uniform",
                 "encoding",
                 "schema_registry_url",
             )

@@ -28,6 +28,10 @@ Databricks table (Change Data Feed)
 ## The components
 
 Names are for the `avro` sync. Every name is `reverse_etl_<label>_<role>`, so for `cdf` or `orders` replace `avro`.
+The demo also has a `delta` sync whose source table is created as **plain Delta** (`uniform: false` in its
+`defs.yaml` — Change Data Feed only, no UniForm/Iceberg/column-mapping properties): it shows the pipeline is
+UniForm-agnostic end to end. The trade-off is visible in StarRocks, whose `databricks_uc` catalog reads tables
+through UniForm's Iceberg metadata — `reverse_etl_delta_source` does not appear there.
 
 ### Diagram
 
