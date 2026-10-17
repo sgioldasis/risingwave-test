@@ -3,6 +3,8 @@ type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 attributes:
   name: orders
   extraction: oss_spark
+  # Same drop propagation as avro (see that defs.yaml).
+  propagate_drops: true
   catalog: de_dev
   schema_name: sr_poc_external
   source_columns:

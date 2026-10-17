@@ -781,6 +781,18 @@ inserted. The Dagster sync reported success, but:
   with the reset job and then setup, which also restores the original schema and removes the column-mapping
   and type-widening upgrades from the demo table.
 
+**Update (2026-10-17): the zero-DBU sync now self-heals.** The `oss_spark` reader pins its read to the
+watermark's end version and, on `DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE` (or the `_DATA_SCHEMA`
+variant), **bisects the range and concatenates the segments** — a single-version range always starts at its own
+schema, so the recursion terminates. Verified live on the delta source (after a reset, an add *and* a drop both
+committed before one sync): the read split `[1,6]` → `[1,3]` + `[4,6]`; `[4,6]` failed too — **a drop at the
+range's end boundary counts, so even the split the error message itself suggests needs one more level** — and
+the reader split it again into `[4,5]` + `[6,6]`, produced the seed events plus the add-cycle's update, and
+advanced the watermark correctly. The warehouse path (`table_changes()`, the notebook) does *not* bisect and
+still needs the safe order above. The watermark note's "fails on every run" also no longer applies to
+`oss_spark`: a no-data commit behind the read range is passed on the next sync, which reads it as an empty
+range and moves the watermark to the table's current version.
+
 **Why the targets keep a dropped column.** This is the Debezium JDBC sink's design, not a bug. Its only schema
 operation is `ALTER TABLE ... ADD COLUMN` (`schema.evolution=basic`; the only other value, `none`, does nothing),
 because dropping or retyping destroys data. It also could not tell that a drop happened: it receives records, not
@@ -1273,9 +1285,10 @@ group and both target tables were all absent, as expected.
   RisingWave columns, run before the notebook, on a schedule, or from a sensor watching the source table's history
   for `ADD COLUMNS`. Rows that arrive before the column exists still end up `NULL` until the table is rebuilt.
 - **A one-click rebuild job** doing the two-step RisingWave rebuild above.
-- **Enabling column mapping and type widening in `reverse_etl_cdf_table_setup`.** Not done on purpose: today
-  Databricks refuses a drop or retype, which protects the pipeline from changes the targets cannot follow. They are
-  also one-way table upgrades. If wanted for a deliberate schema-change demo, make it an optional switch.
+- **Enabling type widening in `reverse_etl_cdf_table_setup`.** Still not done on purpose: a retype is a change
+  the targets cannot follow (Postgres can widen in place, RisingWave cannot change a column type), and it is a
+  one-way table upgrade. Column mapping *is* now included on every table the setup creates (2026-10-17): it is
+  what lets Delta take `DROP COLUMN`, which the pipeline follows since drop propagation landed.
 - **Typed `DATE` / `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3).
 - **A Dagster component for the whole pipeline** (built; all three syncs run through it). `ReverseEtlCdfSync`
   (`orchestration/components/reverse_etl_cdf_sync.py`) is a regular `Component`, not state-backed, because the

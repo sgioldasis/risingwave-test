@@ -224,7 +224,30 @@ SET country = 'GR', updated_at = current_timestamp() WHERE id = 2;
 Run the sync asset. The registry versions become `[1,2]`, and `country` appears in Postgres and in RisingWave
 with its value. Worth saying: the sink adds the column by itself; RisingWave only accepts a new column once the
 registry schema has it, so the order is registry, then RisingWave, then messages, and the asset does that for you.
-Dropping a column or changing a type is not propagated (see section 10.4 of the sink doc).
+Dropping a column is propagated too on `avro`/`cdf`/`orders` (`propagate_drops: true`) — see section 5b. A *type
+change* is still not propagated.
+
+## 5b. Drop a column (propagated)
+
+The demo op for this is in the page's change dropdown ("drop a column"); by hand it is:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source DROP COLUMN country;
+```
+
+Run the sync asset. The drop commit emits **no Change Data Feed rows**, so nothing is produced — but the sync
+diffs the source schema against the `last_schema` the state table recorded at the previous sync, sees the
+column vanished, and drops it from RisingWave (with its `<col>_ts` generated companion) and Postgres. The run
+metadata shows `columns_dropped`. Guards worth saying out loud: propagation only fires on a version change and
+only on evidence from the recorded schema (a partial schema read can never cascade into drops); it is on for
+every sync, and every source table is created with `delta.columnMapping.mode = 'name'` — column mapping is not
+a UniForm feature, it is simply what lets Delta accept `DROP COLUMN` (the plain-Delta `delta` source included).
+One caveat for hand-testing: the Postgres sink caches the table schema in
+memory, so if you drop a column in Postgres *manually* while the source still sends it, the task fails
+unrecoverably and needs `POST /connectors/<sink>/tasks/0/restart` — the automated path avoids this because
+events stop carrying the field before the sync drops the column. Add and drop in the *same* unsynced window is
+fine on the page's syncs too — the zero-DBU reader splits the change-feed read at schema changes automatically
+(the optional Databricks notebook path does not; sync between changes there).
 
 ## 6. Run the sync from Databricks (optional)
 

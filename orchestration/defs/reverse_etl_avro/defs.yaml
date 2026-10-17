@@ -8,6 +8,10 @@ attributes:
   name: avro
   extraction: oss_spark
   encoding: avro
+  # Drop propagation: a column dropped from the source (the change dropdown's
+  # "drop a column", or manually in Databricks) is dropped from RisingWave and
+  # Postgres at the next sync. Evidence-gated via the state table's last_schema.
+  propagate_drops: true
   catalog: de_dev
   schema_name: sr_poc_external
   source_columns:

@@ -66,6 +66,9 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     # False creates the source table as plain Delta (Change Data Feed only, no
     # UniForm/Iceberg) — see the delta sync's defs.yaml.
     uniform: bool | None = None
+    # True propagates source column drops to RisingWave and Postgres at the next
+    # sync (evidence-gated via the state table's last_schema).
+    propagate_drops: bool | None = None
     # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
     encoding: str | None = None
     schema_registry_url: str | None = None
@@ -102,6 +105,7 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
                 "sink_tasks_max",
                 "extraction",
                 "uniform",
+                "propagate_drops",
                 "encoding",
                 "schema_registry_url",
             )

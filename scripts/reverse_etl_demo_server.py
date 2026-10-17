@@ -29,7 +29,7 @@ CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL_HOST", "http://localhost:8083")
 PORT = int(os.environ.get("PORT", "4002"))
 PAGE = Path(__file__).resolve().parent.parent / "docs" / "poc" / "reverse_etl_data_flow.html"
 SYNCS = ("avro", "cdf", "orders", "delta")
-CHANGES = ("insert", "update", "delete", "add_column")
+CHANGES = ("insert", "update", "delete", "add_column", "drop_column")
 SCHEMA_REGISTRY = os.environ.get(
     "SCHEMA_REGISTRY_URL", "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
 )

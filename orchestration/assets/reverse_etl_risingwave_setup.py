@@ -155,6 +155,39 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
         conn.close()
 
 
+def drop_columns_from_risingwave(cfg: ReverseEtlSyncConfig, dropped_fields: list[str]) -> list[str]:
+    """Drop `dropped_fields` — and their <name>_ts generated companions — from the
+    RisingWave table; returns the names actually dropped. A no-op (returns [])
+    if the table doesn't exist.
+
+    The caller passes only fields recorded in the state table's last_schema and
+    absent from the current source read (see _propagate_column_drops), so this
+    can never touch a column the source didn't genuinely drop. The companion
+    goes first: RisingWave refuses to drop a column a generated column still
+    depends on."""
+    conn = _get_risingwave_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s",
+                (cfg.risingwave_table,),
+            )
+            existing = {row[0] for row in cur.fetchall()}
+            if not existing:
+                return []
+            removed: list[str] = []
+            for name in dropped_fields:
+                for column in (f"{name}_ts", name):
+                    if column in existing and column != cfg.key_column:
+                        cur.execute(f"ALTER TABLE {cfg.risingwave_table} DROP COLUMN {_quote(column)}")
+                        removed.append(column)
+        conn.commit()
+        return removed
+    finally:
+        conn.close()
+
+
 def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
     @asset(
         name=cfg.risingwave_asset,

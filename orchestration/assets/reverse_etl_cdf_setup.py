@@ -153,26 +153,36 @@ def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in data_array]
 
 
-def _read_last_version(token: str, cfg: ReverseEtlSyncConfig) -> int | None:
+def _read_state(token: str, cfg: ReverseEtlSyncConfig) -> tuple[int | None, str | None]:
+    """(watermark, last_schema) for this sync's state row. last_schema is the JSON
+    list of source column names recorded at the previous sync — the evidence the
+    drop-propagation pass needs (a column in last_schema but absent from the
+    current read is a drop, not a partial read)."""
     response = _run_sql(
         token,
-        f"SELECT last_commit_version FROM {cfg.state_fqn} WHERE sync_name = '{cfg.sync_name}'",
+        f"SELECT last_commit_version, last_schema FROM {cfg.state_fqn} WHERE sync_name = '{cfg.sync_name}'",
     )
     rows = _rows_as_dicts(response)
-    return int(rows[0]["last_commit_version"]) if rows else None
+    if not rows:
+        return None, None
+    version = int(rows[0]["last_commit_version"]) if rows[0]["last_commit_version"] is not None else None
+    return version, rows[0].get("last_schema")
 
 
-def _write_last_version(token: str, cfg: ReverseEtlSyncConfig, version: int) -> None:
+def _write_state(token: str, cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
     # MERGE keeps this idempotent across retries of the same run.
+    escaped_schema = last_schema.replace("'", "''")
     _run_sql(
         token,
         f"""
         MERGE INTO {cfg.state_fqn} AS target
-        USING (SELECT '{cfg.sync_name}' AS sync_name, {version} AS last_commit_version) AS source
+        USING (SELECT '{cfg.sync_name}' AS sync_name, {version} AS last_commit_version,
+               '{escaped_schema}' AS last_schema) AS source
         ON target.sync_name = source.sync_name
-        WHEN MATCHED THEN UPDATE SET target.last_commit_version = source.last_commit_version
-        WHEN NOT MATCHED THEN INSERT (sync_name, last_commit_version)
-            VALUES (source.sync_name, source.last_commit_version)
+        WHEN MATCHED THEN UPDATE SET target.last_commit_version = source.last_commit_version,
+                                     target.last_schema = source.last_schema
+        WHEN NOT MATCHED THEN INSERT (sync_name, last_commit_version, last_schema)
+            VALUES (source.sync_name, source.last_commit_version, source.last_schema)
         """,
     )
 
@@ -408,6 +418,50 @@ def _get_row_fields(token: str, cfg: ReverseEtlSyncConfig) -> list[RowField]:
     if not fields:
         raise RuntimeError(f"No columns found for {cfg.source_fqn} in information_schema")
     return fields
+
+
+def _propagate_column_drops(
+    cfg: ReverseEtlSyncConfig,
+    row_fields: list[RowField],
+    last_schema: str | None,
+    log: Any,
+) -> dict[str, list[str]]:
+    """Drop target columns the source no longer mirrors, when cfg.propagate_drops
+    is on. Returns {"risingwave": [...], "postgres": [...]} (empty when nothing
+    qualified).
+
+    Runs only when the source version advanced since the last sync, and only on
+    positive evidence: the column must be in the state table's last_schema
+    (recorded at the previous sync) and absent from the current read. A partial
+    or failed schema read can therefore never cascade into drops — and the
+    evidence gate also protects target columns the source never had (e.g.
+    RisingWave's generated <col>_ts companions are dropped only as companions of
+    a genuinely dropped field). Postgres uses the broader rule (any column not
+    mirrored by the current source schema): the sink creates that table purely
+    from message fields, so there are no designed extras, and the broader rule
+    additionally self-heals a sink replay re-adding a dropped column from an old
+    message."""
+    if not (cfg.propagate_drops and last_schema and row_fields):
+        return {}
+    try:
+        previous = set(json.loads(last_schema))
+    except ValueError:
+        log.info(f"last_schema {last_schema!r} is not valid JSON — skipping drop propagation")
+        return {}
+    current = {field[0] for field in row_fields}
+    if not current:
+        log.info("Current source schema read came back empty — skipping drop propagation")
+        return {}
+    dropped_fields = sorted(previous - current)
+    if not dropped_fields:
+        return {}
+    log.info(f"Source dropped column(s) {dropped_fields} — propagating to the targets")
+    from .reverse_etl_postgres_setup import drop_absent_columns as drop_from_postgres
+    from .reverse_etl_risingwave_setup import drop_columns_from_risingwave
+
+    risingwave = drop_columns_from_risingwave(cfg, dropped_fields)
+    postgres = drop_from_postgres(cfg, current)
+    return {"risingwave": risingwave, "postgres": postgres}
 
 
 def _coerce(value: Any, connect_type: str) -> Any:
@@ -831,11 +885,16 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             ready = f"{cfg.source_fqn} ready (CDF + UniForm Iceberg enabled)"
         else:
             # Plain Delta on purpose: this sync shows the pipeline is
-            # UniForm-agnostic. Only Change Data Feed is required. Note: such a
-            # table will NOT appear in StarRocks' databricks_uc catalog (that
-            # needs UniForm's Iceberg metadata).
-            properties = "'delta.enableChangeDataFeed' = 'true'"
-            ready = f"{cfg.source_fqn} ready (plain Delta, CDF only — no UniForm)"
+            # UniForm-agnostic. Column mapping is on anyway — it is NOT a
+            # UniForm feature, and without it Delta refuses DROP COLUMN (and
+            # renames) outright, which the drop-propagation demo needs. Note:
+            # such a table still will NOT appear in StarRocks' databricks_uc
+            # catalog (that needs UniForm's Iceberg metadata).
+            properties = (
+                "'delta.enableChangeDataFeed' = 'true',\n"
+                "            'delta.columnMapping.mode' = 'name'"
+            )
+            ready = f"{cfg.source_fqn} ready (plain Delta: CDF + column mapping, no UniForm)"
         _run_sql(
             token,
             f"""
@@ -855,16 +914,22 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         # runs the Iceberg conversion with a shaded Databricks-only class
         # ([DELTA_MISSING_ICEBERG_CLASS]) — and the zero-DBU sync writes this
         # table's watermark from Spark. See docs/poc/REVERSE_ETL_DBU_COST_NOTES.md
-        # section 5.
+        # section 5. Column mapping is on for consistency with the source tables
+        # (every demo table takes DROP COLUMN); the state table has no Change Data
+        # Feed — nothing reads its change feed, reads are full snapshots + MERGE.
         _run_sql(
             token,
             f"""
         CREATE TABLE IF NOT EXISTS {cfg.state_fqn} (
-            sync_name STRING, last_commit_version BIGINT
+            sync_name STRING, last_commit_version BIGINT, last_schema STRING
         ) USING DELTA
+        TBLPROPERTIES ('delta.columnMapping.mode' = 'name')
         """,
         )
-        context.log.info(f"{cfg.state_fqn} ready (plain Delta, no UniForm)")
+        context.log.info(
+            f"{cfg.state_fqn} ready (plain Delta, no UniForm; last_schema records the source's "
+            "columns for drop propagation)"
+        )
 
         context.add_output_metadata({
             "source_table": MetadataValue.text(cfg.source_fqn),
@@ -909,7 +974,7 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
         # warehouse statements run.
         producer = _kafka_producer()
 
-        last_version = _read_last_version(token, cfg)
+        last_version, last_schema = _read_state(token, cfg)
 
         if last_version is None:
             backfill_from = _resolve_backfill_version()
@@ -976,13 +1041,29 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
 
         if last_version is None and not rows:
             new_version = _get_current_version(token, cfg)
-        else:
+        elif rows:
             new_version = _next_watermark(rows, last_version)
+        else:
+            # No rows but the version advanced: the commits since the watermark
+            # were schema-only (Change Data Feed emits no rows for a DROP/ADD
+            # COLUMN). The watermark still moves to the source's current version
+            # -- otherwise the schema commit is re-read by every sync forever,
+            # and drop propagation never fires.
+            new_version = current_version
 
-        # Skip the MERGE when the version is unchanged (no-op syncs): writing the
-        # same version costs a full snapshot + commit for nothing.
+        # Skip the state write when the version is unchanged (no-op syncs): writing
+        # the same version costs a full snapshot + commit for nothing. A schema
+        # change is always a commit, so an unchanged version cannot hide one.
+        columns_dropped: dict[str, list[str]] = {}
         if new_version is not None and new_version != last_version:
-            _write_last_version(token, cfg, new_version)
+            # A schema-only commit (e.g. DROP COLUMN) emits no CDF events, so the
+            # current fields may not have been read yet.
+            if not row_fields:
+                row_fields = _get_row_fields(token, cfg)
+            columns_dropped = _propagate_column_drops(cfg, row_fields, last_schema, context.log)
+            _write_state(token, cfg, new_version, json.dumps([field[0] for field in row_fields]))
+            if columns_dropped:
+                context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
 
         op_counts = _summarize_ops(events)
         context.log.info(f"Produced {len(events)} event(s) to {cfg.kafka_topic}: {op_counts}")
@@ -995,6 +1076,7 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
             ),
             "kafka_topic": MetadataValue.text(cfg.kafka_topic),
             "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
+            "columns_dropped": MetadataValue.json(columns_dropped),
             "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
             "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
@@ -1029,8 +1111,8 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
             get_spark_session,
             get_table_location,
             read_changes,
-            read_last_version,
-            write_last_version,
+            read_state,
+            write_state,
         )
 
         # The token is control-plane only here: it resolves the tables' storage
@@ -1045,7 +1127,7 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
 
         spark = get_spark_session(storage_account)
         try:
-            last_version = read_last_version(spark, cfg, state_location)
+            last_version, last_schema = read_state(spark, cfg, state_location)
 
             if last_version is None:
                 backfill_from = _resolve_backfill_version()
@@ -1092,9 +1174,10 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 else:
                     context.log.info(f"Reading CDF for {cfg.source_table} since version {next_version}")
                     # The Kafka TLS/SASL handshake runs in librdkafka's background
-                    # threads while the CDF read continues.
+                    # threads while the CDF read continues. The read is pinned to
+                    # current_version so its range matches the watermark exactly.
                     producer = _kafka_producer()
-                    rows = read_changes(spark, cfg, source_location, next_version)
+                    rows = read_changes(spark, cfg, source_location, next_version, current_version)
 
             key_columns = [cfg.key_column]
             events = _to_debezium_events(rows, key_columns) if rows else []
@@ -1115,13 +1198,27 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
 
             if last_version is None and not rows:
                 new_version = get_current_version(spark, source_location)
-            else:
+            elif rows:
                 new_version = _next_watermark(rows, last_version)
+            else:
+                # No rows but the version advanced: schema-only commits (see the
+                # databricks_sql branch for why the watermark must still move).
+                new_version = current_version
 
-            # Skip the MERGE when the version is unchanged (no-op syncs): writing
-            # the same version costs a full snapshot + commit for nothing.
+            # Skip the state write when the version is unchanged (no-op syncs):
+            # writing the same version costs a full snapshot + commit for nothing.
+            # A schema change is always a commit, so an unchanged version cannot
+            # hide one.
+            columns_dropped: dict[str, list[str]] = {}
             if new_version is not None and new_version != last_version:
-                write_last_version(spark, cfg, state_location, new_version)
+                # A schema-only commit (e.g. DROP COLUMN) emits no CDF events, so
+                # the current fields may not have been read yet.
+                if not row_fields:
+                    row_fields = get_row_fields(spark, source_location)
+                columns_dropped = _propagate_column_drops(cfg, row_fields, last_schema, context.log)
+                write_state(spark, cfg, state_location, new_version, json.dumps([field[0] for field in row_fields]))
+                if columns_dropped:
+                    context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
 
             op_counts = _summarize_ops(events)
             context.log.info(f"Produced {len(events)} event(s) to {cfg.kafka_topic}: {op_counts}")
@@ -1134,6 +1231,7 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 ),
                 "kafka_topic": MetadataValue.text(cfg.kafka_topic),
                 "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
+                "columns_dropped": MetadataValue.json(columns_dropped),
                 "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
                 "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
                 "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),

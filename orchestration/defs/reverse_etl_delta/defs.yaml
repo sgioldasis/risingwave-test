@@ -1,10 +1,11 @@
 # The plain-Delta trial: the same pipeline and data as the avro sync, but the source
-# table is created WITHOUT UniForm (no Iceberg compat, no column mapping) — only
-# Change Data Feed. It shows the sync is UniForm-agnostic end to end. The trade-off
-# is visible in StarRocks: `reverse_etl_delta_source` does NOT appear in the
-# databricks_uc catalog there, because that reads tables through UniForm's Iceberg
-# metadata. See docs/poc/REVERSE_ETL_CODE_WALKTHROUGH.md and
-# docs/poc/REVERSE_ETL_DBU_COST_NOTES.md.
+# table is created WITHOUT UniForm (no Iceberg compat) — Change Data Feed plus
+# column mapping only (column mapping is not a UniForm feature; it is what lets
+# Delta take DROP COLUMN, so the drop-propagation demo works here too). It shows
+# the sync is UniForm-agnostic end to end. The trade-off is visible in StarRocks:
+# `reverse_etl_delta_source` does NOT appear in the databricks_uc catalog there,
+# because that reads tables through UniForm's Iceberg metadata. See
+# docs/poc/REVERSE_ETL_CODE_WALKTHROUGH.md and docs/poc/REVERSE_ETL_DBU_COST_NOTES.md.
 type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 
 attributes:
@@ -12,6 +13,9 @@ attributes:
   uniform: false
   extraction: oss_spark
   encoding: avro
+  # Same drop propagation as the other syncs (column mapping is on, so Delta
+  # accepts DROP COLUMN on this source).
+  propagate_drops: true
   catalog: de_dev
   schema_name: sr_poc_external
   source_columns:

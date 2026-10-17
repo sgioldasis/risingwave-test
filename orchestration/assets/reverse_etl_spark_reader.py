@@ -186,7 +186,10 @@ def get_row_fields(spark, location: str) -> list[RowField]:
     return fields
 
 
-def read_last_version(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> int | None:
+def read_state(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[int | None, str | None]:
+    """(watermark, last_schema) for this sync's state row — one table read for
+    both. last_schema is the JSON list of source column names recorded at the
+    previous sync; see _propagate_column_drops() for how it evidences drops."""
     rows = _with_uc_propagation_retry(
         lambda: [
             r.asDict()
@@ -196,23 +199,36 @@ def read_last_version(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> 
             .collect()
         ]
     )
-    return int(rows[0]["last_commit_version"]) if rows else None
+    if not rows:
+        return None, None
+    version = int(rows[0]["last_commit_version"]) if rows[0]["last_commit_version"] is not None else None
+    return version, rows[0].get("last_schema")
 
 
-def write_last_version(spark, cfg: ReverseEtlSyncConfig, state_location: str, version: int) -> None:
-    """Same MERGE as _write_last_version(), through OSS Delta — idempotent across
-    retries, and the notebook keeps reading/writing the same row."""
+def write_state(spark, cfg: ReverseEtlSyncConfig, state_location: str, version: int, last_schema: str) -> None:
+    """Same MERGE as _write_state(), through OSS Delta — idempotent across
+    retries, and the notebook keeps reading/writing the same row. last_schema
+    rides along so the next sync can evidence column drops."""
     from delta.tables import DeltaTable
 
     dt = DeltaTable.forPath(spark, state_location)
     source = spark.createDataFrame(
-        [(cfg.sync_name, version)], "sync_name string, last_commit_version bigint"
+        [(cfg.sync_name, version, last_schema)],
+        "sync_name string, last_commit_version bigint, last_schema string",
     )
     (
         dt.alias("t")
         .merge(source.alias("s"), "t.sync_name = s.sync_name")
-        .whenMatchedUpdate(set={"last_commit_version": "s.last_commit_version"})
-        .whenNotMatchedInsertAll()
+        .whenMatchedUpdate(
+            set={"last_commit_version": "s.last_commit_version", "last_schema": "s.last_schema"}
+        )
+        .whenNotMatchedInsert(
+            values={
+                "sync_name": "s.sync_name",
+                "last_commit_version": "s.last_commit_version",
+                "last_schema": "s.last_schema",
+            }
+        )
         .execute()
     )
 
@@ -247,30 +263,70 @@ def get_earliest_available_version(spark, location: str) -> int:
     return min(_delta_log_versions(spark, location))
 
 
-def read_changes(spark, cfg: ReverseEtlSyncConfig, location: str, since_version: int) -> list[dict]:
+_CDF_SCHEMA_CHANGE_ERRORS = (
+    "DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE",
+    "DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_DATA_SCHEMA",
+)
+
+
+def read_changes(spark, cfg: ReverseEtlSyncConfig, location: str, since_version: int, until_version: int | None = None) -> list[dict]:
     """Batch-read CDF rows via readChangeFeed, ordered by commit version.
 
     Same output contract as _read_changes(): one dict per CDF row, key columns and
     payload columns typed, every TIMESTAMP column and _commit_timestamp rendered as
     a microsecond UTC string via date_format (the collect path must not carry
     TimestampType — see the module docstring of
-    scripts/spark_cdf_zero_dbu_prototype.py)."""
+    scripts/spark_cdf_zero_dbu_prototype.py).
+
+    The read is pinned to `until_version` (the source's current version, fetched
+    by the caller right before this call) so the read range matches exactly what
+    the watermark will advance to; when omitted, the reader resolves the current
+    version itself."""
+    end = until_version if until_version is not None else get_current_version(spark, location)
+    return _read_changes_segment(spark, cfg, location, since_version, end)
+
+
+def _read_changes_segment(spark, cfg: ReverseEtlSyncConfig, location: str, start: int, end: int) -> list[dict]:
+    """CDF rows for the inclusive range [start, end], bisecting on Delta's
+    schema-change refusal.
+
+    readChangeFeed errors with DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE
+    when the range spans an incompatible schema change -- e.g. ADD and DROP COLUMN
+    both committed between two syncs. Delta's own error message gives the remedy:
+    query the ranges on either side of the change separately. A single-version
+    range always starts (and ends) at its own schema and cannot span anything, so
+    the recursion terminates; each segment's rows carry that segment's schema, and
+    the caller's message building reads only the columns the source has *now*, so
+    a column added and dropped inside one unsynced window simply contributes no
+    values."""
     from pyspark.sql import functions as F
     from pyspark.sql.types import TimestampType
 
-    df = (
-        spark.read.format("delta")
-        .option("readChangeFeed", "true")
-        .option("startingVersion", since_version)
-        .load(location)
-    )
-    exprs = []
-    for field in df.schema.fields:
-        col = F.col(f"`{field.name}`")
-        if isinstance(field.dataType, TimestampType):
-            col = F.date_format(col, _MICROSECOND_TIMESTAMP_FORMAT)
-        exprs.append(col.alias(field.name))
-    rows = _with_uc_propagation_retry(
-        lambda: [r.asDict() for r in df.select(*exprs).orderBy(COMMIT_VERSION_COLUMN).collect()]
-    )
-    return rows
+    def collect(start: int, end: int) -> list[dict]:
+        df = (
+            spark.read.format("delta")
+            .option("readChangeFeed", "true")
+            .option("startingVersion", start)
+            .option("endingVersion", end)
+            .load(location)
+        )
+        exprs = []
+        for field in df.schema.fields:
+            col = F.col(f"`{field.name}`")
+            if isinstance(field.dataType, TimestampType):
+                col = F.date_format(col, _MICROSECOND_TIMESTAMP_FORMAT)
+            exprs.append(col.alias(field.name))
+        return _with_uc_propagation_retry(
+            lambda: [r.asDict() for r in df.select(*exprs).orderBy(COMMIT_VERSION_COLUMN).collect()]
+        )
+
+    try:
+        return collect(start, end)
+    except Exception as e:  # noqa: BLE001 - re-raised unless it is the spanned-schema-change case
+        message = str(e)
+        if end <= start or not any(code in message for code in _CDF_SCHEMA_CHANGE_ERRORS):
+            raise
+        mid = (start + end) // 2
+        return _read_changes_segment(spark, cfg, location, start, mid) + _read_changes_segment(
+            spark, cfg, location, mid + 1, end
+        )

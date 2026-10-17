@@ -1,4 +1,4 @@
-"""One demo change (insert, update, delete or add a column) against a reverse-ETL sync's source table.
+"""One demo change (insert, update, delete, add or drop a column) against a reverse-ETL sync's source table.
 
 The live-demo animation (docs/poc/reverse_etl_data_flow.html) launches this from step 1. The change is built
 from the sync's source_columns, so it works for any sync: the key is `id` (max + 1 for an insert, the row with
@@ -7,6 +7,7 @@ timestamp columns now. Nothing here is synced until the sync asset runs.
 """
 
 import random
+import re
 import time
 
 from dagster import AssetExecutionContext, AssetKey, AssetSelection, Config, asset, define_asset_job, in_process_executor, MetadataValue
@@ -20,7 +21,7 @@ KEY = "id"
 
 
 class ChangeConfig(Config):
-    change: str = "update"  # insert, update, delete or add_column
+    change: str = "update"  # insert, update, delete, add_column or drop_column
 
 
 def _columns(cfg: ReverseEtlSyncConfig) -> list[tuple[str, str]]:
@@ -46,7 +47,9 @@ def _new_column(existing: set[str]) -> str:
 
 def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: set[str] = frozenset()) -> list[str]:
     """add_column adds the next free new_col_<n> STRING column, then updates the latest row so the
-    change carries it (a new column alone makes no change event)."""
+    change carries it (a new column alone makes no change event). drop_column is its inverse: it
+    drops the highest-numbered new_col_<n>. A drop alone also makes no change event -- the sync
+    detects it by diffing schemas (state table's last_schema vs the current read)."""
     table = cfg.source_fqn
     columns = _columns(cfg)
     if change == "add_column":
@@ -55,6 +58,18 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
             f"ALTER TABLE {table} ADD COLUMN {column} STRING",
             f"UPDATE {table} SET {column} = 'added {time.strftime('%H:%M:%S')}' WHERE {KEY} = (SELECT max({KEY}) FROM {table})",
         ]
+    if change == "drop_column":
+        numbers = [
+            int(match.group(1))
+            for name in existing_columns
+            if (match := re.fullmatch(r"new_col_(\d+)", name))
+        ]
+        if not numbers:
+            raise ValueError(
+                f"no new_col_<n> column to drop on {table} -- run add_column first "
+                "(the sync's configured columns are not dropped by this demo op)"
+            )
+        return [f"ALTER TABLE {table} DROP COLUMN new_col_{max(numbers)}"]
     if change == "insert":
         names = ", ".join([KEY] + [name for name, _ in columns])
         values = ", ".join([f"coalesce(max({KEY}), 0) + 1"] + [_value(t) for _, t in columns])
@@ -65,7 +80,7 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
         return [f"UPDATE {table} SET {assignments} WHERE {latest}"]
     if change == "delete":
         return [f"DELETE FROM {table} WHERE {latest}"]
-    raise ValueError(f"change must be insert, update, delete or add_column, got {change!r}")
+    raise ValueError(f"change must be insert, update, delete, add_column or drop_column, got {change!r}")
 
 
 def build_change_asset(cfg: ReverseEtlSyncConfig):
@@ -78,7 +93,7 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
         token = _get_token()
         meter_reset()
         existing = set()
-        if config.change == "add_column":
+        if config.change in ("add_column", "drop_column"):
             existing = {r["col_name"] for r in _rows_as_dicts(_run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}
         statements = list(change_statements(cfg, config.change, existing))
         for statement in statements:

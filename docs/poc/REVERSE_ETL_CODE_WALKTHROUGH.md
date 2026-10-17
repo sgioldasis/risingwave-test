@@ -161,21 +161,37 @@ in *how they read Databricks*. The skeleton both share:
    `table_changes()` and `readChangeFeed` error past the table's latest version
    (`DELTA_CDC_START_VERSION_AFTER_LATEST`) rather than returning empty.
 4. **Group CDF rows into Debezium envelopes** (`_to_debezium_events`, §4).
-5. **Schema evolution**: if there are events, read the source's current columns
+5. **Schema evolution (adds)**: if there are events, read the source's current columns
    and `add_missing_columns()` on RisingWave *before* producing — RisingWave only
    fills a column from messages read after the column exists.
 6. **Produce to Kafka** (`_produce_to_kafka`, §5).
-7. **Write the watermark** — only after produce returned success, and only when
-   the version actually moved (no-op syncs skip the MERGE).
-8. Emit run metadata (events synced, op counts, commit version, message previews,
-   extraction, and the cost entries from the meter, §9).
+7. **Drop propagation** (`_propagate_column_drops`, before the state write): when
+   `propagate_drops` is on, diff the current source columns against `last_schema`
+   — the JSON column list the state row has recorded since the previous sync. A
+   column present there but absent from the current read is positive evidence of
+   a drop (a partial or failed schema read can never trigger one); the column is
+   then dropped from RisingWave (`drop_columns_from_risingwave`, which takes the
+   generated `<col>_ts` companions down first) and from Postgres
+   (`drop_absent_columns`, the broader "not mirrored any more" rule, which also
+   re-drops a column a sink replay might resurrect — the sink creates that table
+   purely from message fields, so it has no designed extras).
+8. **Write the watermark and `last_schema`** — only after produce returned
+   success, and only when the version actually moved (no-op syncs skip the
+   write).
+9. Emit run metadata (events synced, op counts, commit version, columns dropped,
+   message previews, extraction, and the cost entries from the meter, §9).
 
 **Watermark semantics** — the subtle part, commented in both branches:
 `startingVersion` of `table_changes()`/`readChangeFeed` is **inclusive**, and
 `last_version` was already fully processed by the previous run, so the next read
 starts at `last_version + 1`. Resuming from `last_version` itself would re-deliver
 that version's rows. On a first-run baseline with no rows, the watermark is set to
-the table's *current* version so the run is still a real checkpoint.
+the table's *current* version so the run is still a real checkpoint. And when the
+read comes back **empty but the version advanced**, the commits were schema-only —
+Change Data Feed emits no rows for an `ADD`/`DROP COLUMN` — so the watermark still
+moves to the current version. (Letting it strand on the old watermark was a live
+bug: the schema commit was re-read by every sync forever, and drop propagation
+never saw it.)
 
 ### The `oss_spark` branch (the default, zero DBUs)
 
@@ -270,15 +286,27 @@ drop-in equivalents:
   directly. `configure_spark_with_delta_pip` wires the Delta jars (pip-installed
   `delta-spark`, pinned); `hadoop-azure` always comes from Maven because pyspark
   does not bundle it.
-- `read_changes` — `readChangeFeed` from `startingVersion`, ordered by
-  `_commit_version`; every `TIMESTAMP` column rendered through `date_format` into
-  a microsecond UTC string, because a collected `TimestampType` would render in
-  the machine's timezone and drift from the SQL path's output.
-- `read_last_version` / `write_last_version` — the state table read and the same
-  idempotent `MERGE` as the SQL path. The state table must be **plain Delta**
-  (option A in `REVERSE_ETL_DBU_COST_NOTES.md` §5): OSS Delta cannot commit to a
+- `read_changes` — `readChangeFeed` from `startingVersion` **pinned to an
+  `endingVersion`** (the source's current version the caller just fetched, so the
+  read range matches the watermark exactly), ordered by `_commit_version`; every
+  `TIMESTAMP` column rendered through `date_format` into a microsecond UTC
+  string, because a collected `TimestampType` would render in the machine's
+  timezone and drift from the SQL path's output. On
+  `DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE` — an `ADD`/`DROP COLUMN`
+  committed inside the read range, which Delta refuses even when the error
+  message's own suggested split still ends at a drop — the reader **bisects the
+  range and concatenates the segments** (a single-version range always starts at
+  its own schema, so the recursion terminates). The warehouse path does not do
+  this: sync between schema changes there, or the read fails until the watermark
+  is moved (sink doc, section on column mapping).
+- `read_state` / `write_state` — the state table read (watermark + `last_schema`)
+  and the same idempotent `MERGE` as the SQL path, extended with the recorded
+  schema. The state table must be **plain Delta** (option A in
+  `REVERSE_ETL_DBU_COST_NOTES.md` §5): OSS Delta cannot commit to a
   UniForm table (`DELTA_MISSING_ICEBERG_CLASS`), while the source stays UniForm so
-  StarRocks/Databricks Iceberg readers keep working.
+  StarRocks/Databricks Iceberg readers keep working. Column mapping is on (not a
+  UniForm feature — it is what makes `DROP COLUMN` legal), and OSS Delta
+  reads/writes column-mapped tables fine.
 - `get_current_version` / `get_earliest_available_version` — the commit versions
   still in `_delta_log`, read **driver-side** through Hadoop's FS API (no Spark
   job, no stage): a commit is exactly a 20-digit `.json` file, so latest/earliest
@@ -304,7 +332,8 @@ All factories take the config and return Dagster objects; all names come from it
 - **`build_table_setup_asset`** — creates the source table if absent, with the
   properties the whole design rests on: `delta.enableChangeDataFeed`, column
   mapping, deletion vectors off, UniForm/iceberg compat — plus the identity key —
-  and the state table (plain Delta). Idempotent (`IF NOT EXISTS`).
+  and the state table (plain Delta with column mapping; every demo table takes
+  `DROP COLUMN`). Idempotent (`IF NOT EXISTS`).
 - **`build_seed_asset`** — optional demo rows (the YAML's `seed_statements`,
   `{source_table}` substituted), run as the *last* step of the setup job so the
   rows wait in Databricks until the first sync.
