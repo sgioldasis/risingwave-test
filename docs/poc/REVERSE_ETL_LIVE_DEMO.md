@@ -55,7 +55,9 @@ To run the steps from the page, start `./bin/3_run_reverse_etl_demo.sh` and open
 If buttons fail with "Dagster's code server is unreachable" (typical after the Mac slept with the stack up —
 the code server kills itself when heartbeats stop), run `docker compose restart dagster-webserver dagster-daemon`
 and click again.
-(`cdf` and `orders` work too). Step 1 makes an insert, update or delete in Databricks, steps 2 to 5 and 8 run the sync
+(`cdf`, `orders` and `delta` work too — the page's top-bar table selector switches sync live and updates the
+URL, so `?sync=` is only needed for the first load). Step 1 makes an insert, update, delete, column add or
+column drop in Databricks, steps 2 to 5 and 8 run the sync
 (one Dagster run, so they cannot be launched separately), and steps 6 and 7 only check Kafka Connect, RisingWave and
 Postgres. The Reset and set up button at the top runs the sync's reset job, then its setup job. The Postgres check needs a devbox
 shell (`POSTGRES_PASSWORD`). Opened as a plain file, the page is the animation only.
@@ -164,7 +166,7 @@ the allowed prefix and schema. Setup only builds: its table creation is skipped 
 never changes an existing table. That is why a change to the table definition (for example the UniForm properties)
 needs reset first, then setup. Columns added during a demo do not survive a reset.
 
-To reset and set up all three syncs (`avro`, `cdf`, `orders`) at once, run `./bin/3_rebuild_reverse_etl.sh`. The
+To reset and set up all four syncs (`avro`, `cdf`, `orders`, `delta`) at once, run `./bin/3_rebuild_reverse_etl.sh`. The
 syncs run in parallel, about 70 seconds in total instead of about 4 minutes one after another. It needs the VPN
 (staging Kafka and registry). Pass a sync name (for example `avro`) to rebuild only that one.
 
@@ -186,7 +188,7 @@ Show:
 Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
 How it reads the changes: by default straight from Delta storage with OSS Delta on Spark — `extraction: oss_spark`
-in all three syncs' `defs.yaml`, zero Databricks compute (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`). The change
+in all four syncs' `defs.yaml`, zero Databricks compute (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`). The change
 feed is read from the version after the watermark, ordered by commit version, and the watermark is MERGE'd back the
 same way. The `databricks_sql` backend — one `table_changes()` query via the Statement Execution API — is still
 available per sync by flipping `extraction` in the sync's `defs.yaml`. Each changed row comes back with its change
@@ -267,8 +269,12 @@ targets. The registry stays at its current version, because the notebook builds 
 
 ### Read the same table from outside Databricks (optional)
 
-The source tables and the watermark (state) tables of all three syncs (`avro`, `cdf`, `orders`) are created as UniForm tables: Delta with Iceberg
-metadata generated next to it. Another engine can read them through Unity Catalog's Iceberg REST API, with no copy
+The source tables of `avro`, `cdf` and `orders` are created as UniForm tables: Delta with Iceberg
+metadata generated next to it. The `delta` sync's source is deliberately plain Delta — Change Data Feed plus
+column mapping, no UniForm — as the counterexample: the sync reads it exactly the same way, but it does not
+appear in `databricks_uc` below. The watermark (state) tables are plain Delta too, since OSS Delta writes their
+watermarks (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md` §5). The UniForm tables can be read by another engine
+through Unity Catalog's Iceberg REST API, with no copy
 and no pipeline. StarRocks already has that catalog (`databricks_uc`), so in a SQL client on StarRocks:
 
 ```sql

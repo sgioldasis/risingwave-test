@@ -258,7 +258,7 @@ table, recreated with the new DDL (`scripts/option_a_plain_state_verification.py
   failed on the UniForm table.
 - Databricks SQL read the OSS-written commit (watermark unchanged, 3).
 - Databricks SQL MERGE wrote onto the OSS-touched table (`num_updated_rows: 1`) —
-  the exact statement `_write_last_version()` builds, so the notebook's MERGE is
+  the exact statement `_write_state()` builds, so the notebook's MERGE is
   the same shape.
 - OSS Delta read the Databricks commit back (Delta version 2, op MERGE).
 
@@ -338,7 +338,7 @@ see section 6).
 
 ### Status: wiring built (2026-10-14, later the same day)
 
-The swap described above is built and enabled for **all three syncs**:
+The swap described above is built and enabled for **all four syncs** (`avro`, `cdf`, `orders`, `delta`):
 `ReverseEtlSyncConfig.extraction` (`databricks_sql` | `oss_spark`), the component
 field, a `build_sync_asset()` dispatcher and
 `orchestration/assets/reverse_etl_spark_reader.py` (UC REST location lookup,

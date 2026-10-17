@@ -1001,6 +1001,8 @@ Notes and limits:
   (section 14.1.1) ran side by side on the single Kafka Connect worker. A column add on `orders` through the notebook
   trigger (section 10.6) and reset plus setup of `avro` were run live. Not exercised: more than three syncs on the
   one worker, and the notebook and the asset running for the same sync at once (they share a watermark).
+  *Update 2026-10-17:* a fourth sync (`delta`, section on the plain-Delta trial) has run alongside the other
+  three — four connectors on the one worker, all healthy; the notebook-plus-asset concurrency is still unexercised.
 - **`rid` must exist from table creation.** An identity column cannot be added to an existing table, so this
   needs the reset job, then the setup job. Inserts into the source table must list their columns
   (`INSERT INTO t (id, value, ...)`); a column-less `INSERT ... VALUES` does not work, and Databricks restricts
@@ -1290,7 +1292,7 @@ group and both target tables were all absent, as expected.
   one-way table upgrade. Column mapping *is* now included on every table the setup creates (2026-10-17): it is
   what lets Delta take `DROP COLUMN`, which the pipeline follows since drop propagation landed.
 - **Typed `DATE` / `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3).
-- **A Dagster component for the whole pipeline** (built; all three syncs run through it). `ReverseEtlCdfSync`
+- **A Dagster component for the whole pipeline** (built; all four syncs run through it). `ReverseEtlCdfSync`
   (`orchestration/components/reverse_etl_cdf_sync.py`) is a regular `Component`, not state-backed, because the
   columns are read at run time. One instance per sync under `orchestration/defs/<folder>/defs.yaml`:
 

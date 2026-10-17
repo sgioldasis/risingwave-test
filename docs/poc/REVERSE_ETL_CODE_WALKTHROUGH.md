@@ -385,12 +385,12 @@ isolation for free, and the in-process setup job resets at every asset entry.
 | Step | Where |
 |---|---|
 | Demo change (e.g. `UPDATE`) commits → new source version | `reverse_etl_change.py` `make_change` |
-| Sync materializes: watermark read (`last_version`) | `reverse_etl_cdf_setup.py` `cdf_to_kafka` → `read_last_version` (or `_read_last_version`) |
+| Sync materializes: watermark + `last_schema` read | `reverse_etl_cdf_setup.py` `cdf_to_kafka` → `read_state` (or `_read_state`) |
 | CDF rows read since `last_version + 1` | `reverse_etl_spark_reader.read_changes` (or `_read_changes`) |
 | Rows → Debezium envelopes | `_to_debezium_events` |
 | Source schema read; RisingWave columns added | `get_row_fields` → `reverse_etl_risingwave_setup.add_missing_columns` |
 | Avro schemas registered; events produced, delivery verified | `_register_avro_schemas` → `_produce_to_kafka` |
-| Watermark `MERGE`d to the state table | `write_last_version` (or `_write_last_version`) |
+| Watermark + `last_schema` written to the state table | `write_state` (or `_write_state`) |
 | RisingWave applies the change (native Debezium + Avro) | RisingWave `reverse_etl_avro_target` |
 | Postgres upserts/deletes via the JDBC sink | `reverse_etl_debezium_sink` (created) → connector |
 | Health checked every 5 min | `reverse_etl_health.sink_healthy` |

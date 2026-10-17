@@ -174,7 +174,7 @@ New asset `reverse_etl_cdf_to_kafka` in `reverse_etl_cdf_setup.py`,
 - **Watermark logic**: the pure, client-agnostic function from
   `dagster-poc/reverse-etl/src/reverse_etl/defs/cdf_to_kafka.py`
   (`_next_watermark`) ported unchanged — no Databricks/Kafka client
-  dependency. `_read_last_version` / `_write_last_version` / `_read_changes` /
+  dependency. `_read_state` / `_write_state` / `_read_changes` /
   `_get_current_version` are rewritten against `_run_sql`'s REST response
   shape instead of a DB-API cursor. The original `_build_kafka_message` and
   raw-CDF `_summarize_change_types` were superseded by the Debezium-envelope

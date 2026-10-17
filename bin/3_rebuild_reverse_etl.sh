@@ -4,7 +4,7 @@
 # Each sync's objects are separate, so this takes about 2 minutes instead of about 4.
 #
 # Usage:
-#   ./bin/3_rebuild_reverse_etl.sh                # avro cdf orders
+#   ./bin/3_rebuild_reverse_etl.sh                # avro cdf orders delta
 #   ./bin/3_rebuild_reverse_etl.sh avro           # one sync
 #   DAGSTER_URL=http://localhost:3000 ./bin/3_rebuild_reverse_etl.sh
 #
@@ -16,7 +16,7 @@ set -e
 
 SYNCS=("$@")
 if [ ${#SYNCS[@]} -eq 0 ]; then
-    SYNCS=(avro cdf orders)
+    SYNCS=(avro cdf orders delta)
 fi
 
 echo "=== Rebuilding reverse-ETL syncs in parallel: ${SYNCS[*]} ==="
