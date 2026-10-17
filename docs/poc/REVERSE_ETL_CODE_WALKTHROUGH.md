@@ -159,7 +159,10 @@ in *how they read Databricks*. The skeleton both share:
    `_get_token_cached`/`get_table_location_cached`), which is also why the state
    tables are created *plain* Delta (no column
    mapping, deletion vectors off): delta-rs rejects tables carrying those
-   reader features. The check is bounded by a 5s
+   reader features. The reset job **clears this cache** after dropping the
+   tables — a drop+recreate moves them to new storage locations, and a cached
+   location would point at the dead tables (a green no-op that silently skips
+   everything; bit us live). The check is bounded by a 5s
    watchdog and fails open — any problem with it simply runs the full sync.
 1. **Read the watermark** from the state table (`last_commit_version` for this
    `sync_name`). `None` means first run. The state table is **append-only**: every

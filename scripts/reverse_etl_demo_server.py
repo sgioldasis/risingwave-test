@@ -2,7 +2,7 @@
 buttons launch the Dagster runs behind each step, plus two read-only checks (Kafka Connect and RisingWave,
 Postgres). Standard library plus psycopg2. Binds to localhost only.
 
-  POST /api/launch          {"sync": "avro", "action": "change|sync|reset|setup", "change": "insert|update|delete|add_column|rename_column|drop_column"}
+  POST /api/launch          {"sync": "avro", "action": "change|sync|reset|setup", "change": "insert|update|delete|add_column|rename_column|drop_column|bulk_1m"}
   GET  /api/run/<run_id>    status and duration of a launched run
   GET  /api/check/<sync>/readers | postgres
 
