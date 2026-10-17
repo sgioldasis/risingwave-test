@@ -102,12 +102,15 @@ class ReverseEtlSyncConfig:
 
     # --- target schema reconciliation --------------------------------------------
     # False (default): targets only ever gain columns (add_missing_columns, and
-    # the Debezium JDBC sink does the same on Postgres). True: a column the
-    # source dropped — recorded in the state table's last_schema and absent from
-    # the current schema read — is dropped from RisingWave and Postgres at the
-    # next sync too. Opt-in because it destroys target data automatically; the
-    # evidence rule is what keeps a partial schema read from ever cascading into
-    # drops (docs/poc/REVERSE_ETL_LIVE_DEMO.md, drop-propagation section).
+    # the Debezium JDBC sink does the same on Postgres). True: a schema change
+    # the source made — recorded in the state table's last_schema and absent
+    # from the current schema read — is followed at the next sync: a dropped
+    # column is dropped from RisingWave and Postgres, and a renamed column (its
+    # delta.columnMapping.id survives the rename) is renamed on both with the
+    # target data preserved. Opt-in because drops destroy target data
+    # automatically; the evidence rule is what keeps a partial schema read from
+    # ever cascading into changes (docs/poc/REVERSE_ETL_LIVE_DEMO.md,
+    # drop-propagation section).
     propagate_drops: bool = False
 
     def __post_init__(self) -> None:

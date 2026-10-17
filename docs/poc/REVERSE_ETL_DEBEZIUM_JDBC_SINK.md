@@ -791,7 +791,27 @@ the reader split it again into `[4,5]` + `[6,6]`, produced the seed events plus 
 advanced the watermark correctly. The warehouse path (`table_changes()`, the notebook) does *not* bisect and
 still needs the safe order above. The watermark note's "fails on every run" also no longer applies to
 `oss_spark`: a no-data commit behind the read range is passed on the next sync, which reads it as an empty
-range and moves the watermark to the table's current version.
+range and moves the watermark to the table's current version. **Renames** (also live, 2026-10-17, now
+data-preserving): `RENAME COLUMN description TO title` on the delta source committed fine (column mapping) and
+emitted no change-feed rows — but the sync now tells a rename from a drop by each column's
+`delta.columnMapping.id`, which survives the rename while the name changes (the ids come from the delta log's
+newest `metaData` action; the state table's `last_schema` records them alongside the names). RisingWave, which
+has no `RENAME COLUMN` in v3.1, gets an `ADD COLUMN` + `UPDATE` copy from the old column + a drop of the old
+name. Postgres gets a native `RENAME COLUMN` — or, when the sink's own schema evolution already created the new
+column (empty) while the rename was pending, a copy of the data across and a drop of the old column, mirroring
+the RisingWave dance and likewise leaving the new column last (the evolution appends) — and the sync **restarts
+the sink connector's task** immediately after either path: the
+sink's in-memory schema cache still held the old name, and the next message would fail the task exactly like
+the manual-drop incident above; restarted from its committed offsets, the task rebuilds the cache from the real
+table and keeps writing (verified: an update right after the rename landed on both targets, task RUNNING
+throughout). One registry subtlety bit twice before it was fixed: RisingWave rebinds the **whole table**
+against the registry's latest schema on every `ADD COLUMN` and rejects the statement while *any* table column
+is missing from it — so every registration (the rename's and the add path's) now keeps the columns the targets
+still have. Registering only the new name failed with `Column "title" is defined in SQL but not found in the
+source`, and — when a rename was pending while an add was produced — with the failure on the *old* name,
+`Column "description" is defined in SQL but not found in the source` (verified live, both). A rename's target
+data therefore survives; the `source_columns`/seed must still be renamed with it in the sync's `defs.yaml`, or
+the change ops reference a dead column.
 
 **Why the targets keep a dropped column.** This is the Debezium JDBC sink's design, not a bug. Its only schema
 operation is `ALTER TABLE ... ADD COLUMN` (`schema.evolution=basic`; the only other value, `none`, does nothing),

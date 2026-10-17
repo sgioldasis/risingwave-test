@@ -20,6 +20,7 @@ pyspark/delta are imported lazily so definitions keep loading where they are not
 installed.
 """
 
+import json
 import os
 import re
 import time
@@ -189,7 +190,12 @@ def get_row_fields(spark, location: str) -> list[RowField]:
 def read_state(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[int | None, str | None]:
     """(watermark, last_schema) for this sync's state row — one table read for
     both. last_schema is the JSON list of source column names recorded at the
-    previous sync; see _propagate_column_drops() for how it evidences drops."""
+    previous sync; see _propagate_column_drops() for how it evidences drops.
+
+    The table has historically grown duplicate rows for one sync_name (verified
+    live: two identical rows for the delta sync), and they can diverge when a
+    write lands between reads — so the freshest row wins, not an arbitrary
+    collect order."""
     rows = _with_uc_propagation_retry(
         lambda: [
             r.asDict()
@@ -201,8 +207,9 @@ def read_state(spark, cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[i
     )
     if not rows:
         return None, None
-    version = int(rows[0]["last_commit_version"]) if rows[0]["last_commit_version"] is not None else None
-    return version, rows[0].get("last_schema")
+    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
+    version = int(freshest["last_commit_version"]) if freshest["last_commit_version"] is not None else None
+    return version, freshest.get("last_schema")
 
 
 def write_state(spark, cfg: ReverseEtlSyncConfig, state_location: str, version: int, last_schema: str) -> None:
@@ -267,6 +274,49 @@ _CDF_SCHEMA_CHANGE_ERRORS = (
     "DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE",
     "DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_DATA_SCHEMA",
 )
+
+
+def get_column_ids(spark, location: str) -> dict[str, int]:
+    """{column name: delta.columnMapping.id}, read from the newest metaData action
+    in the _delta_log.
+
+    The mapping id is stable across RENAME COLUMN while the name changes, which is
+    how the sync tells a rename from a drop. pyspark's DataFrame schema strips
+    field metadata (verified live: the plain load and the change-feed read both
+    return empty field metadata even though Delta's own error diagnostics carry
+    the ids), so this reads the commit JSON instead: scan versions newest-first,
+    take the first commit carrying a metaData action — every schema change writes
+    the complete current schema — and pull each field's delta.columnMapping.id
+    from it. Returns {} when the newest metaData action has no ids (the table has
+    no column mapping) or none is found (commits aged out); callers then treat
+    renames as drop + add."""
+    from pyspark.sql import functions as F
+
+    log_dir = location.rstrip("/") + "/_delta_log"
+    jvm = spark._jvm
+    fs = jvm.org.apache.hadoop.fs.Path(log_dir).getFileSystem(
+        spark.sparkContext._jsc.hadoopConfiguration()
+    )
+    for version in sorted(_delta_log_versions(spark, location), reverse=True):
+        commit = jvm.org.apache.hadoop.fs.Path(log_dir + f"/{version:020d}.json")
+        if not fs.exists(commit):
+            continue
+        lines = (
+            spark.read.text(str(commit))
+            .where(F.col("value").contains('"metaData"'))
+            .collect()
+        )
+        if not lines:
+            continue
+        action = json.loads(lines[0]["value"]).get("metaData") or {}
+        schema = json.loads(action.get("schemaString") or "{}")
+        ids: dict[str, int] = {}
+        for field in schema.get("fields", []):
+            column_id = (field.get("metadata") or {}).get("delta.columnMapping.id")
+            if column_id is not None:
+                ids[field["name"]] = int(column_id)
+        return ids
+    return {}
 
 
 def read_changes(spark, cfg: ReverseEtlSyncConfig, location: str, since_version: int, until_version: int | None = None) -> list[dict]:

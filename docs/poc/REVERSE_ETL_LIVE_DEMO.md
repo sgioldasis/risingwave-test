@@ -251,6 +251,42 @@ events stop carrying the field before the sync drops the column. Add and drop in
 fine on the page's syncs too — the zero-DBU reader splits the change-feed read at schema changes automatically
 (the optional Databricks notebook path does not; sync between changes there).
 
+## 5c. Rename a column (propagated, data-preserving)
+
+The demo op for this is in the page's change dropdown ("rename a column"). Demo columns only — the op flips the
+highest `new_col_<n>` to `renamed_col_<n>`, and clicking it again renames that back — so the natural cycle is
+*add a column* → sync → *rename a column* → sync → (optionally *rename a column* again) → *drop a column* →
+sync; the drop takes either form. Sync *between* the add and the rename: both in one unsynced window works (the
+sync handles it), but the produced message then carries the new name with a null, so the demo column's value
+does not survive — sequenced syncs keep it. Clicking *rename* or *drop* with no demo column on the table is a
+green no-op — the run result says "Skipped — …" with the reason, not a failure. By hand, a configured column can
+be renamed too:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source RENAME COLUMN country TO destination;
+```
+
+**Renames propagate as renames,** with the target data preserved. Delta's `delta.columnMapping.id` survives a
+rename while the name changes, so the sync can tell the two apart: the state table's `last_schema` now records
+each column's id alongside its name, and the zero-DBU reader pulls the current ids from the delta log's newest
+`metaData` action (pyspark's DataFrame schema strips field metadata, so the commit JSON is read instead). A
+recorded column whose id reappears under a new name is a rename: RisingWave gets an `ADD COLUMN` + `UPDATE` copy
++ drop of the old name — v3.1 has no `RENAME COLUMN`, so this is how the data survives; the column moves to the
+end of the table. Postgres gets a native `RENAME COLUMN` — or, if the sink's schema evolution already created
+the new column (empty) while the rename was pending, a copy of the data across and a drop of the old column,
+which leaves the new column where the evolution put it (last) — and the sync restarts the sink connector's task
+right after either path: the JDBC sink caches the table schema
+in memory, and a rename performed behind its back would fail the next message exactly like a manual column
+drop. Both registrations keep every column the targets still have (a pending rename's old name included),
+because RisingWave rebinds the whole table against the registry's latest schema on every `ADD COLUMN` and
+rejects the statement while a table column is missing from it. The run metadata shows `columns_renamed`.
+Two caveats worth saying out loud: the warehouse/notebook path cannot read the ids (Databricks'
+`information_schema.columns` exposes no column metadata), so renames still propagate as drop + add there; and
+state rows written before this feature recorded names only, so the *first* rename after the upgrade can still
+land as drop + add — run one sync first so the state picks up the ids. Renaming a *configured* column (e.g.
+`RENAME COLUMN value TO description`) also needs the sync's `source_columns`/seed in its `defs.yaml` renamed
+with it, since the change ops build their SQL from it.
+
 ## 6. Run the sync from Databricks (optional)
 
 The same sync as a Databricks notebook, triggered from Dagster. Make one more change in the source table, then run

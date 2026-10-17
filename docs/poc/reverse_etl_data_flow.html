@@ -151,7 +151,7 @@
         <li><b>UniForm (optional but on by default here).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation: turning them on later is a schema commit that breaks Change Data Feed reads spanning it. The Iceberg side is read-only.</li>
         <li><b>Your own columns</b> go in <code>source_columns</code> in the sync's YAML (here <code>id</code>, <code>value</code>, <code>updated_at</code>).</li>
         <li><b>Inserts must list their columns</b>, as in <code>INSERT INTO t (id, value) VALUES (...)</code>. A column-less insert fails on a table with an identity column.</li>
-        <li><b>Schema changes:</b> adding a column is carried to the targets, and so is dropping one (drop propagation is on for every sync): the sync diffs the source schema against the state table's recorded <code>last_schema</code> and drops the vanished column from RisingWave and Postgres too — RisingWave fills <code>&lt;col&gt;_ts</code> companions in first, Postgres follows the broader rule and also re-drops anything a sink replay re-added. Every source table is created with column mapping, so Delta accepts <code>DROP COLUMN</code> everywhere; type changes are still refused by Delta and stay out of scope.</li>
+        <li><b>Schema changes:</b> adding a column is carried to the targets, and so is dropping one (drop propagation is on for every sync): the sync diffs the source schema against the state table's recorded <code>last_schema</code> and drops the vanished column from RisingWave and Postgres too — RisingWave fills <code>&lt;col&gt;_ts</code> companions in first, Postgres follows the broader rule and also re-drops anything a sink replay re-added. Renames propagate as renames now: the state records each column's <code>delta.columnMapping.id</code> (stable across a rename), so the sync can tell the two apart — RisingWave gets add + update-copy + drop (no <code>RENAME COLUMN</code> there, but the data survives), Postgres a native rename plus an automatic sink task restart, because the JDBC sink's in-memory schema cache would fail the next message otherwise. Every source table is created with column mapping, so Delta accepts <code>DROP COLUMN</code> and <code>RENAME COLUMN</code> everywhere; type changes are still refused by Delta and stay out of scope.</li>
       </ul>
     </div>
     <div>
@@ -318,7 +318,9 @@ async function run(label, body, out) {
       const cost = costText(s.cost);
       if (cost) subs.push({ text: cost });
       if (s.change) {
-        if (s.change.sql && s.change.sql.length) {
+        if (s.change.skipped) {
+          subs.push({ text: 'Skipped — ' + s.change.skipped });
+        } else if (s.change.sql && s.change.sql.length) {
           for (const stmt of s.change.sql) subs.push({ text: stmt, mono: true });
         } else {
           subs.push({ text: 'No statement ran — nothing to change' });
@@ -342,7 +344,7 @@ async function check(path, format) {
 const ACTIONS = {
   change: box => {
     const sel = document.createElement('select');
-    [['insert', 'insert a row'], ['update', 'update a row'], ['delete', 'delete a row'], ['add_column', 'add a column'], ['drop_column', 'drop a column']].forEach(([v, l]) => sel.add(new Option(l, v)));
+    [['insert', 'insert a row'], ['update', 'update a row'], ['delete', 'delete a row'], ['add_column', 'add a column'], ['rename_column', 'rename a column'], ['drop_column', 'drop a column']].forEach(([v, l]) => sel.add(new Option(l, v)));
     const b = document.createElement('button');
     b.textContent = 'Make change in Databricks';
     b.onclick = () => run('Change (' + sel.selectedOptions[0].text + ')', { action: 'change', change: sel.value });

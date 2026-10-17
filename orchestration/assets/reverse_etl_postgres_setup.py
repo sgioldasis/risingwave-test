@@ -10,6 +10,7 @@ batch, guarded by cfg.propagate_drops and the evidence rule documented there.
 import os
 
 import psycopg2
+import requests
 
 from .reverse_etl_config import ReverseEtlSyncConfig
 
@@ -27,6 +28,63 @@ def _get_postgres_connection():
         password=os.environ.get("POSTGRES_PASSWORD", ""),
         connect_timeout=10,
     )
+
+
+def rename_columns_in_postgres(cfg: ReverseEtlSyncConfig, renames: list[tuple[str, str]]) -> list[str]:
+    """Rename columns on the Postgres target with native ALTER TABLE ... RENAME
+    COLUMN, preserving their data; returns the renames ensured, as "old -> new".
+
+    After renaming it restarts the sink connector's task: the JDBC sink caches
+    the table schema in memory, and its stale cache makes the next message —
+    which carries the new name — fail the task unrecoverably (the same failure
+    mode as a manual column drop, documented in the sink doc). Restarted from
+    its committed offsets, the task rebuilds the cache from the real table.
+    Idempotent: a rename already applied is detected and not re-attempted, but
+    the restart still runs so a retried run cannot leave the stale cache
+    behind. When BOTH columns exist — the new one created empty by the sink's
+    schema evolution while the rename was pending — the data is copied across
+    and the old column dropped, mirroring the RisingWave dance."""
+    conn = _get_postgres_connection()
+    ensured: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s",
+                (cfg.postgres_table,),
+            )
+            existing = {row[0] for row in cur.fetchall()}
+            if not existing:
+                return []
+            for old, new in renames:
+                if old in existing and new in existing:
+                    cur.execute(f'UPDATE {cfg.postgres_table} SET "{new}" = "{old}"')
+                    cur.execute(f'ALTER TABLE {cfg.postgres_table} DROP COLUMN "{old}"')
+                    ensured.append(f"{old} -> {new}")
+                elif old in existing and new not in existing:
+                    cur.execute(f'ALTER TABLE {cfg.postgres_table} RENAME COLUMN "{old}" TO "{new}"')
+                    ensured.append(f"{old} -> {new}")
+                elif old not in existing and new in existing:
+                    ensured.append(f"{old} -> {new}")
+        conn.commit()
+    finally:
+        conn.close()
+    if ensured:
+        restart_sink_task(cfg)
+    return ensured
+
+
+def restart_sink_task(cfg: ReverseEtlSyncConfig) -> None:
+    """POST /connectors/<name>/tasks/0/restart — the recovery the sink doc
+    prescribes after manual Postgres schema surgery; here it is part of the
+    rename itself, because the sink's in-memory schema cache outlives the
+    DDL it did not perform."""
+    url = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
+    response = requests.post(f"{url}/connectors/{cfg.connector_name}/tasks/0/restart", timeout=15)
+    if response.status_code not in (200, 201, 202, 204):
+        raise RuntimeError(
+            f"Sink task restart failed: HTTP {response.status_code} — {response.text[:200]}"
+        )
 
 
 def drop_absent_columns(cfg: ReverseEtlSyncConfig, source_names: set[str]) -> list[str]:

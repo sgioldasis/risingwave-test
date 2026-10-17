@@ -165,8 +165,11 @@ def _read_state(token: str, cfg: ReverseEtlSyncConfig) -> tuple[int | None, str 
     rows = _rows_as_dicts(response)
     if not rows:
         return None, None
-    version = int(rows[0]["last_commit_version"]) if rows[0]["last_commit_version"] is not None else None
-    return version, rows[0].get("last_schema")
+    # The state table can carry duplicate rows for one sync_name, and they can
+    # diverge — the freshest row wins, not an arbitrary result order.
+    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
+    version = int(freshest["last_commit_version"]) if freshest["last_commit_version"] is not None else None
+    return version, freshest.get("last_schema")
 
 
 def _write_state(token: str, cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
@@ -188,6 +191,14 @@ def _write_state(token: str, cfg: ReverseEtlSyncConfig, version: int, last_schem
 
 
 _MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+
+
+def _get_column_ids(token: str, cfg: ReverseEtlSyncConfig) -> dict[str, int]:
+    """{} — rename propagation needs each column's delta.columnMapping id, and
+    Databricks' information_schema.columns exposes no column_metadata here, so
+    the warehouse path cannot detect renames: they propagate as drop + add.
+    The oss_spark path reads the ids from the delta log (get_column_ids)."""
+    return {}
 
 
 def _read_changes(token: str, cfg: ReverseEtlSyncConfig, since_version: int) -> list[dict[str, Any]]:
@@ -420,48 +431,104 @@ def _get_row_fields(token: str, cfg: ReverseEtlSyncConfig) -> list[RowField]:
     return fields
 
 
+def _parse_last_schema(last_schema: str | None) -> list[tuple[str, int | None]]:
+    """(column name, delta.columnMapping id | None) per recorded column, from the
+    state row's last_schema JSON. Tolerates the original format — a plain list of
+    names, written before rename propagation — as (name, None): those entries
+    cannot be told apart from drops, so they follow the drop path."""
+    if not last_schema:
+        return []
+    try:
+        parsed = json.loads(last_schema)
+    except ValueError:
+        return []
+    entries: list[tuple[str, int | None]] = []
+    for item in parsed if isinstance(parsed, list) else []:
+        if isinstance(item, dict) and item.get("name"):
+            entries.append((str(item["name"]), item.get("id")))
+        elif isinstance(item, str):
+            entries.append((item, None))
+    return entries
+
+
+def _last_schema_json(row_fields: list[RowField], column_ids: dict[str, int]) -> str:
+    """The state row's last_schema: the source's current columns with their
+    delta.columnMapping ids (None when unknown — the warehouse path cannot read
+    them), so the next sync can tell a rename from a drop."""
+    return json.dumps([{"name": field[0], "id": column_ids.get(field[0])} for field in row_fields])
+
+
 def _propagate_column_drops(
     cfg: ReverseEtlSyncConfig,
     row_fields: list[RowField],
     last_schema: str | None,
     log: Any,
-) -> dict[str, list[str]]:
-    """Drop target columns the source no longer mirrors, when cfg.propagate_drops
-    is on. Returns {"risingwave": [...], "postgres": [...]} (empty when nothing
+    column_ids: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Follow the source's schema changes onto the targets, when
+    cfg.propagate_drops is on. Returns {"renamed": ["old -> new", ...],
+    "dropped": {"risingwave": [...], "postgres": [...]}} (all empty when nothing
     qualified).
 
     Runs only when the source version advanced since the last sync, and only on
-    positive evidence: the column must be in the state table's last_schema
-    (recorded at the previous sync) and absent from the current read. A partial
-    or failed schema read can therefore never cascade into drops — and the
-    evidence gate also protects target columns the source never had (e.g.
-    RisingWave's generated <col>_ts companions are dropped only as companions of
-    a genuinely dropped field). Postgres uses the broader rule (any column not
-    mirrored by the current source schema): the sink creates that table purely
+    positive evidence from the state table's last_schema (recorded at the
+    previous sync): a partial or failed schema read can never cascade into
+    changes — and the evidence gate also protects target columns the source
+    never had (e.g. RisingWave's generated <col>_ts companions are only touched
+    as companions of a genuinely renamed or dropped field).
+
+    A recorded column absent from the current read is a RENAME when its
+    delta.columnMapping id reappears under a new name (ids survive renames;
+    `column_ids` comes from the source's newest metaData action) — the targets
+    rename too, preserving data. Without an id match it is a drop: RisingWave
+    drops it (`drop_columns_from_risingwave`, taking the generated <col>_ts
+    companions down first) and Postgres follows the broader rule (any column not
+    mirrored by the current source schema — the sink creates that table purely
     from message fields, so there are no designed extras, and the broader rule
     additionally self-heals a sink replay re-adding a dropped column from an old
-    message."""
+    message)."""
     if not (cfg.propagate_drops and last_schema and row_fields):
-        return {}
-    try:
-        previous = set(json.loads(last_schema))
-    except ValueError:
-        log.info(f"last_schema {last_schema!r} is not valid JSON — skipping drop propagation")
-        return {}
+        return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+    previous = _parse_last_schema(last_schema)
     current = {field[0] for field in row_fields}
     if not current:
         log.info("Current source schema read came back empty — skipping drop propagation")
-        return {}
-    dropped_fields = sorted(previous - current)
-    if not dropped_fields:
-        return {}
-    log.info(f"Source dropped column(s) {dropped_fields} — propagating to the targets")
-    from .reverse_etl_postgres_setup import drop_absent_columns as drop_from_postgres
-    from .reverse_etl_risingwave_setup import drop_columns_from_risingwave
+        return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+    ids = column_ids or {}
+    renames: list[tuple[str, str]] = []
+    dropped_fields: list[str] = []
+    for name, column_id in previous:
+        if name in current:
+            continue
+        new_name = None
+        if column_id is not None:
+            new_name = next(
+                (candidate for candidate, candidate_id in ids.items() if candidate_id == column_id and candidate in current),
+                None,
+            )
+        if new_name:
+            renames.append((name, new_name))
+        else:
+            dropped_fields.append(name)
+    if not renames and not dropped_fields:
+        return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+    result: dict[str, Any] = {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+    if renames:
+        log.info(f"Source renamed column(s) {[f'{old} -> {new}' for old, new in renames]} — propagating to the targets")
+        from .reverse_etl_postgres_setup import rename_columns_in_postgres
+        from .reverse_etl_risingwave_setup import rename_columns_in_risingwave
 
-    risingwave = drop_columns_from_risingwave(cfg, dropped_fields)
-    postgres = drop_from_postgres(cfg, current)
-    return {"risingwave": risingwave, "postgres": postgres}
+        result["renamed"] = [f"{old} -> {new}" for old, new in renames]
+        result["dropped"]["risingwave"] += rename_columns_in_risingwave(cfg, renames, row_fields)
+        result["dropped"]["postgres"] += rename_columns_in_postgres(cfg, renames)
+    if dropped_fields:
+        log.info(f"Source dropped column(s) {dropped_fields} — propagating to the targets")
+        from .reverse_etl_postgres_setup import drop_absent_columns as drop_from_postgres
+        from .reverse_etl_risingwave_setup import drop_columns_from_risingwave
+
+        result["dropped"]["risingwave"] += drop_columns_from_risingwave(cfg, dropped_fields)
+        result["dropped"]["postgres"] += drop_from_postgres(cfg, current)
+    return result
 
 
 def _coerce(value: Any, connect_type: str) -> Any:
@@ -1055,13 +1122,21 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
         # the same version costs a full snapshot + commit for nothing. A schema
         # change is always a commit, so an unchanged version cannot hide one.
         columns_dropped: dict[str, list[str]] = {}
+        columns_renamed: list[str] = []
         if new_version is not None and new_version != last_version:
             # A schema-only commit (e.g. DROP COLUMN) emits no CDF events, so the
             # current fields may not have been read yet.
             if not row_fields:
                 row_fields = _get_row_fields(token, cfg)
-            columns_dropped = _propagate_column_drops(cfg, row_fields, last_schema, context.log)
-            _write_state(token, cfg, new_version, json.dumps([field[0] for field in row_fields]))
+            # The warehouse path cannot read delta.columnMapping ids (no
+            # column_metadata in information_schema), so renames propagate as
+            # drop + add here; oss_spark detects them.
+            schema_changes = _propagate_column_drops(cfg, row_fields, last_schema, context.log, _get_column_ids(token, cfg))
+            columns_dropped = schema_changes["dropped"]
+            columns_renamed = schema_changes["renamed"]
+            _write_state(token, cfg, new_version, _last_schema_json(row_fields, {}))
+            if columns_renamed:
+                context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
             if columns_dropped:
                 context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
 
@@ -1077,6 +1152,7 @@ def _build_sync_asset_databricks_sql(cfg: ReverseEtlSyncConfig):
             "kafka_topic": MetadataValue.text(cfg.kafka_topic),
             "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
             "columns_dropped": MetadataValue.json(columns_dropped),
+            "columns_renamed": MetadataValue.json(columns_renamed),
             "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
             "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),
@@ -1105,6 +1181,7 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
     def cdf_to_kafka(context: AssetExecutionContext):
         meter_reset()
         from .reverse_etl_spark_reader import (
+            get_column_ids,
             get_current_version,
             get_earliest_available_version,
             get_row_fields,
@@ -1210,13 +1287,19 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
             # A schema change is always a commit, so an unchanged version cannot
             # hide one.
             columns_dropped: dict[str, list[str]] = {}
+            columns_renamed: list[str] = []
             if new_version is not None and new_version != last_version:
                 # A schema-only commit (e.g. DROP COLUMN) emits no CDF events, so
                 # the current fields may not have been read yet.
                 if not row_fields:
                     row_fields = get_row_fields(spark, source_location)
-                columns_dropped = _propagate_column_drops(cfg, row_fields, last_schema, context.log)
-                write_state(spark, cfg, state_location, new_version, json.dumps([field[0] for field in row_fields]))
+                column_ids = get_column_ids(spark, source_location)
+                schema_changes = _propagate_column_drops(cfg, row_fields, last_schema, context.log, column_ids)
+                columns_dropped = schema_changes["dropped"]
+                columns_renamed = schema_changes["renamed"]
+                write_state(spark, cfg, state_location, new_version, _last_schema_json(row_fields, column_ids))
+                if columns_renamed:
+                    context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
                 if columns_dropped:
                     context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
 
@@ -1232,6 +1315,7 @@ def _build_sync_asset_oss_spark(cfg: ReverseEtlSyncConfig):
                 "kafka_topic": MetadataValue.text(cfg.kafka_topic),
                 "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
                 "columns_dropped": MetadataValue.json(columns_dropped),
+                "columns_renamed": MetadataValue.json(columns_renamed),
                 "kafka_messages": MetadataValue.json(_message_previews(cfg, events, key_columns, row_fields)),
                 "kafka_messages_truncated": MetadataValue.bool(len(events) > MESSAGE_PREVIEW_LIMIT),
                 "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, events, key_columns, row_fields)),

@@ -150,7 +150,11 @@ deps, the same Kafka messages and the same watermark semantics — they differ o
 in *how they read Databricks*. The skeleton both share:
 
 1. **Read the watermark** from the state table (`last_commit_version` for this
-   `sync_name`). `None` means first run.
+   `sync_name`). `None` means first run. The read takes the *freshest* row for
+   the sync, not an arbitrary one: the state table has historically grown
+   duplicate rows for one `sync_name`, and they can diverge when a write lands
+   between reads (verified live — a stale row once made a sync silently skip a
+   pending rename).
 2. **First-run policy**: if `REVERSE_ETL_BACKFILL_VERSION` is set, backfill from
    that explicit version (`_resolve_backfill_version`); else if the table's
    earliest available version is 0 (full history intact) backfill from the
@@ -165,21 +169,50 @@ in *how they read Databricks*. The skeleton both share:
    and `add_missing_columns()` on RisingWave *before* producing — RisingWave only
    fills a column from messages read after the column exists.
 6. **Produce to Kafka** (`_produce_to_kafka`, §5).
-7. **Drop propagation** (`_propagate_column_drops`, before the state write): when
+7. **Drop & rename propagation** (`_propagate_column_drops`, before the state write): when
    `propagate_drops` is on, diff the current source columns against `last_schema`
    — the JSON column list the state row has recorded since the previous sync. A
    column present there but absent from the current read is positive evidence of
-   a drop (a partial or failed schema read can never trigger one); the column is
-   then dropped from RisingWave (`drop_columns_from_risingwave`, which takes the
-   generated `<col>_ts` companions down first) and from Postgres
+   a change (a partial or failed schema read can never trigger one). Since the
+   ids landed in `last_schema`, the diff is rename-aware: the state records each
+   column's `delta.columnMapping.id` (`{"name": ..., "id": ...}`; the reader
+   tolerates the original name-only format), and the zero-DBU reader fetches the
+   current ids from the delta log's newest `metaData` action
+   (`get_column_ids` — pyspark's DataFrame schema strips field metadata, so the
+   commit JSON is read driver-side instead; the id is what survives a
+   `RENAME COLUMN`). A recorded column whose id reappears under a new name is a
+   **rename**: RisingWave gets `rename_columns_in_risingwave` — `ADD COLUMN` the
+   new name, `UPDATE` it from the old (data survives; the column moves to the
+   end), then drop the old `<col>_ts` companion and the old column. Postgres
+   gets `rename_columns_in_postgres` — a native `RENAME COLUMN`, or a copy of
+   the data plus a drop of the old column when the sink's schema evolution
+   already created the new one (empty) while the rename was pending — followed
+   by a sink connector task restart: the JDBC sink caches the table schema in
+   memory, and a rename behind its back fails the next message exactly like a
+   manual column drop. In the copy-and-drop case the new column stays where the
+   evolution put it — last — so on both targets a raced rename ends with the
+   column at the end; positions are cosmetic, everything maps by name. Both
+   registrations go through `_registration_fields`,
+   which keeps every column the targets still have: RisingWave rebinds the
+   whole table against the registry's latest schema on every `ADD COLUMN` and
+   rejects the statement while a table column is missing from it, so a schema
+   built from the source's new names alone would shed a pending rename's old
+   name and fail the add path in the same sync (verified live). A recorded
+   column with no surviving id is a
+   **drop**: dropped from RisingWave (`drop_columns_from_risingwave`, which
+   takes the generated `<col>_ts` companions down first) and from Postgres
    (`drop_absent_columns`, the broader "not mirrored any more" rule, which also
    re-drops a column a sink replay might resurrect — the sink creates that table
-   purely from message fields, so it has no designed extras).
+   purely from message fields, so it has no designed extras). The
+   warehouse/notebook path cannot read the ids (no column metadata in
+   `information_schema.columns`), so renames stay drop + add there.
 8. **Write the watermark and `last_schema`** — only after produce returned
    success, and only when the version actually moved (no-op syncs skip the
-   write).
-9. Emit run metadata (events synced, op counts, commit version, columns dropped,
-   message previews, extraction, and the cost entries from the meter, §9).
+   write). The written `last_schema` carries the ids, so the next sync can tell
+   a rename from a drop.
+9. Emit run metadata (events synced, op counts, commit version, columns dropped
+   and renamed, message previews, extraction, and the cost entries from the
+   meter, §9).
 
 **Watermark semantics** — the subtle part, commented in both branches:
 `startingVersion` of `table_changes()`/`readChangeFeed` is **inclusive**, and
@@ -340,15 +373,22 @@ All factories take the config and return Dagster objects; all names come from it
 - **`build_change_asset`** — one asset (in its own `define_asset_job`) applying a
   demo change: `insert`/`update`/`delete` target the row with max `id`; `add_column`
   `DESCRIBE`s first and only adds columns that don't exist, so re-clicking it is a
-  no-op. This is an *asset* (not an op) so its run metadata — including its
-  measured warehouse seconds and the exact SQL it ran (`databricks_change_sql`,
-  which the demo page shows under the result) — is queryable.
+  no-op; `rename_column` flips the highest `new_col_<n>` to `renamed_col_<n>` (and
+  clicking it again renames that back) so the demo cycle add → rename → drop composes;
+  `drop_column` drops the highest-numbered `new_col_<n>` or `renamed_col_<n>`. The
+  configured columns are never touched by the rename/drop ops. This is an *asset*
+  (not an op) so its run metadata — including its measured warehouse seconds and the
+  exact SQL it ran (`databricks_change_sql`, which the demo page shows under the
+  result) — is queryable.
 - **`build_risingwave_table_asset`** — creates the RisingWave target
   (`CREATE ... INCLUDE timestamp AS rw_event_timestamp` style upsert/delete table,
   `FORMAT DEBEZIUM ENCODE AVRO/JSON` per encoding). `add_missing_columns()` is the
   schema-evolution helper the sync calls before producing; with Avro it registers
   the new schema version *before* altering the table, because RisingWave validates
-  new columns against the registry schema.
+  new columns against the registry schema — and the registration keeps every column
+  the table still has (`_registration_fields`), since RisingWave rebinds the whole
+  table against the registry's latest on every `ADD COLUMN` (a pending rename's old
+  name or a pending drop must not be shed mid-flight).
 - **`build_debezium_sink_asset`** — PUTs the connector config to Kafka Connect
   (`reverse_etl_avro_sink`, Debezium JDBC sink, `tasks.max` from config), waits for
   Connect, then for the connector to reach `RUNNING`. Postgres-side schema

@@ -40,6 +40,43 @@ _RISINGWAVE_TYPE_BY_CONNECT_TYPE = {
     ZONED_TIMESTAMP: "TIMESTAMPTZ",
 }
 
+# information_schema.data_type (lowercased) back to the Avro connect type, for columns whose type the
+# sync did not read from the source this run -- a renamed or dropped column still on the table while a
+# registration has to keep it (see _registration_fields).
+_CONNECT_TYPE_BY_RW_DATA_TYPE = {
+    "character varying": "string",
+    "varchar": "string",
+    "bigint": "int64",
+    "integer": "int32",
+    "int": "int32",
+    "smallint": "int16",
+    "double precision": "double",
+    "double": "double",
+    "real": "float",
+    "boolean": "boolean",
+}
+
+
+def _registration_fields(cfg: ReverseEtlSyncConfig, row_fields: list[RowField], existing: dict[str, str]) -> list[RowField]:
+    """row_fields plus every live table column the registration would otherwise shed, as RowFields.
+
+    RisingWave rebinds the whole table against the registry's latest schema on every ADD COLUMN and
+    rejects the statement while any non-generated table column is missing from that schema. When a
+    rename or drop is still pending -- the source already carries the new name / no longer has the
+    column, but the targets do -- a registration built from row_fields alone sheds the old name from
+    the registry and fails every ADD in the same sync (verified live: 'Column "description" is defined
+    in SQL but not found in the source'). The extra columns ride along with their RisingWave type
+    mapped back to the Avro connect type; the registration after the rename or drop has landed sheds
+    them again. Generated <col>_ts companions are exempt: RisingWave never required them in the
+    registry schema."""
+    known = {field[0] for field in row_fields}
+    extras: list[RowField] = []
+    for name, data_type in existing.items():
+        if name in known or name.endswith("_ts"):
+            continue
+        extras.append((name, _CONNECT_TYPE_BY_RW_DATA_TYPE.get(data_type.lower(), "string"), True))
+    return list(row_fields) + extras
+
 
 def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
@@ -135,17 +172,19 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT column_name FROM information_schema.columns "
+                "SELECT column_name, data_type FROM information_schema.columns "
                 "WHERE table_schema = 'public' AND table_name = %s",
                 (cfg.risingwave_table,),
             )
-            existing = {row[0] for row in cur.fetchall()}
+            existing = {row[0]: row[1] for row in cur.fetchall()}
             if not existing:
                 return []
             missing = [field for field in row_fields if field[0] not in existing]
             if missing and cfg.encoding == "avro":
-                # RisingWave checks a new column against the registry schema, so the new version comes first.
-                _register_avro_schemas(cfg, [cfg.key_column], row_fields)
+                # RisingWave checks a new column against the registry schema, so the new version comes
+                # first -- and it must keep every column the table still has (a pending rename's old
+                # name, a pending drop), see _registration_fields.
+                _register_avro_schemas(cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing))
             for field in missing:
                 for column_def in _column_defs(cfg, field):
                     cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {column_def}")
@@ -184,6 +223,72 @@ def drop_columns_from_risingwave(cfg: ReverseEtlSyncConfig, dropped_fields: list
                         removed.append(column)
         conn.commit()
         return removed
+    finally:
+        conn.close()
+
+
+def rename_columns_in_risingwave(cfg: ReverseEtlSyncConfig, renames: list[tuple[str, str]], row_fields: list[RowField]) -> list[str]:
+    """Rename columns on the RisingWave target, preserving their data; returns the
+    renames applied, as "old -> new".
+
+    RisingWave has no RENAME COLUMN (v3.1 rejects it: 'Feature is not yet
+    implemented', verified live), so a rename is: ADD the new column (the
+    matching type, plus the <new>_ts generated companion for Avro timestamps),
+    UPDATE it from the old column — UPDATE works on connector-ingesting tables,
+    verified live — then drop the old companion and the old column. The data
+    survives; the column moves to the end of the table.
+
+    Each DDL commits before the next statement runs, keeping a partially failed
+    run resumable. Idempotent: a rename already applied (new exists, old gone)
+    is skipped, so a retried run cannot re-add a half-built column; and when the
+    add path has already created the new column empty (a rename pending while
+    events were produced), the UPDATE copy still runs and fills it before the
+    old column goes away."""
+    conn = _get_risingwave_connection()
+    fields_by_name = {field[0]: field for field in row_fields}
+    applied: list[str] = []
+
+    def table_columns(cur) -> dict[str, str]:
+        cur.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = %s",
+            (cfg.risingwave_table,),
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+    try:
+        with conn.cursor() as cur:
+            existing = table_columns(cur)
+            if not existing:
+                return []
+            if any(old in existing for old, _ in renames) and cfg.encoding == "avro":
+                # RisingWave rebinds the whole table against the registry's latest schema on ADD, so
+                # the registration keeps every column the table still has -- the old names included
+                # (see _registration_fields).
+                _register_avro_schemas(cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing))
+            for old, new in renames:
+                if old not in existing and new in existing:
+                    applied.append(f"{old} -> {new}")
+                    continue
+                if old not in existing:
+                    continue
+                field = fields_by_name.get(new)
+                if field is None:
+                    continue
+                for column_def in _column_defs(cfg, field):
+                    if column_def.split()[0].strip('"') not in existing:
+                        cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {column_def}")
+                        conn.commit()
+                        existing = table_columns(cur)
+                cur.execute(f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = {_quote(old)}")
+                conn.commit()
+                for gone in (f"{old}_ts", old):
+                    if gone in existing and gone != cfg.key_column:
+                        cur.execute(f"ALTER TABLE {cfg.risingwave_table} DROP COLUMN {_quote(gone)}")
+                        conn.commit()
+                        existing = table_columns(cur)
+                applied.append(f"{old} -> {new}")
+        return applied
     finally:
         conn.close()
 

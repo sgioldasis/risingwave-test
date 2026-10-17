@@ -10,7 +10,10 @@ attributes:
   encoding: avro
   # Drop propagation: a column dropped from the source (the change dropdown's
   # "drop a column", or manually in Databricks) is dropped from RisingWave and
-  # Postgres at the next sync. Evidence-gated via the state table's last_schema.
+  # Postgres at the next sync; a renamed column is renamed on both with its
+  # target data preserved (RisingWave via add + update-copy + drop, Postgres via
+  # a native rename plus a sink task restart). Evidence-gated via the state
+  # table's last_schema, which records each column's delta.columnMapping.id.
   propagate_drops: true
   catalog: de_dev
   schema_name: sr_poc_external
