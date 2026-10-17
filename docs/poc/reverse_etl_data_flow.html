@@ -285,19 +285,23 @@ function lock(on) { busy = on; document.querySelectorAll('.acts button, .acts se
 // (orchestration/assets/databricks_cost_meter.py), the helper returns it from
 // /api/run, and the page shows a per-run chip plus a session total.
 const costSession = { warehouse: 0, cluster: 0 };
+// Float sums like 21.509999999999998 must never reach the page: round at display.
+const fmtSeconds = s => (Math.round(s * 100) / 100) + 's';
 function costText(cost) {
   if (!cost) return '';
   costSession.warehouse += cost.warehouse_seconds || 0;
   costSession.cluster += cost.cluster_seconds || 0;
   const bits = [];
-  if (cost.warehouse_seconds) bits.push(cost.warehouse_seconds + 's (Serverless SQL Warehouse)');
-  if (cost.cluster_seconds) bits.push(cost.cluster_seconds + 's (All-purpose cluster)');
+  if (cost.warehouse_seconds) bits.push(fmtSeconds(cost.warehouse_seconds) + ' (Serverless SQL Warehouse)');
+  if (cost.cluster_seconds) bits.push(fmtSeconds(cost.cluster_seconds) + ' (All-purpose cluster)');
   const session = [];
-  if (costSession.warehouse) session.push(costSession.warehouse + 's (Serverless SQL Warehouse)');
-  if (costSession.cluster) session.push(costSession.cluster + 's (All-purpose cluster)');
+  if (costSession.warehouse) session.push(fmtSeconds(costSession.warehouse) + ' (Serverless SQL Warehouse)');
+  if (costSession.cluster) session.push(fmtSeconds(costSession.cluster) + ' (All-purpose cluster)');
   const el = $('cost-total');
-  el.textContent = (bits.length ? 'This run: ' + bits.join(' + ') + '. ' : 'This run: no Databricks compute. ')
-                 + 'Session: ' + (session.length ? session.join(' + ') : 'nothing yet');
+  // The per-run cost already shows under each run entry ("Databricks cost: …");
+  // this header line only tracks the page-session total, so it says nothing
+  // about the current run — mixing the two read like a contradiction.
+  el.textContent = 'Session cost so far: ' + (session.length ? session.join(' + ') : 'nothing yet');
   el.style.display = 'block';
   return bits.length ? 'Databricks cost: ' + bits.join(' + ') : 'Databricks cost: none (no Databricks compute)';
 }
