@@ -37,9 +37,14 @@ import time
 from itertools import zip_longest
 from typing import Any
 
+import pyarrow.compute as pc
 import requests
 from confluent_kafka import Producer
-from confluent_kafka.schema_registry import Schema, SchemaRegistryClient, SchemaRegistryError
+from confluent_kafka.schema_registry import (
+    Schema,
+    SchemaRegistryClient,
+    SchemaRegistryError,
+)
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
@@ -48,10 +53,19 @@ from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 # spark-free no-op pre-check. The imports sit at module level because they cost
 # ~1.5s and the pre-check runs inside the run's measured window.
 from deltalake import DeltaTable
-import pyarrow.compute as pc
 
-from .databricks_cost_meter import record as meter_record, reset as meter_reset, snapshot as meter_snapshot
-from .databricks_optimize import CLIENT_ID, CLIENT_SECRET, DATABRICKS_HOST, TENANT_ID, _get_token, _poll, _submit
+from .databricks_cost_meter import record as meter_record
+from .databricks_cost_meter import reset as meter_reset
+from .databricks_cost_meter import snapshot as meter_snapshot
+from .databricks_optimize import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    DATABRICKS_HOST,
+    TENANT_ID,
+    _get_token,
+    _poll,
+    _submit,
+)
 from .reverse_etl_config import ReverseEtlSyncConfig
 
 # Every function below takes the sync's ReverseEtlSyncConfig; the names live in reverse_etl_config.
@@ -696,7 +710,9 @@ def _propagate_column_drops(
         result["dropped"]["postgres"] += rename_columns_in_postgres(cfg, renames)
     if dropped_fields:
         log.info(f"Source dropped column(s) {dropped_fields} — propagating to the targets")
-        from .reverse_etl_postgres_setup import drop_absent_columns as drop_from_postgres
+        from .reverse_etl_postgres_setup import (
+            drop_absent_columns as drop_from_postgres,
+        )
         from .reverse_etl_risingwave_setup import drop_columns_from_risingwave
 
         result["dropped"]["risingwave"] += drop_columns_from_risingwave(cfg, dropped_fields)

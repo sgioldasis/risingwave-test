@@ -11,9 +11,19 @@ import random
 import re
 import time
 
-from dagster import AssetExecutionContext, AssetKey, AssetSelection, Config, asset, define_asset_job, in_process_executor, MetadataValue
+from dagster import (
+    AssetExecutionContext,
+    AssetKey,
+    AssetSelection,
+    Config,
+    MetadataValue,
+    asset,
+    define_asset_job,
+    in_process_executor,
+)
 
-from .databricks_cost_meter import reset as meter_reset, snapshot as meter_snapshot
+from .databricks_cost_meter import reset as meter_reset
+from .databricks_cost_meter import snapshot as meter_snapshot
 from .databricks_optimize import _get_token
 from .reverse_etl_cdf_setup import _require_databricks_env, _rows_as_dicts, _run_sql
 from .reverse_etl_config import ReverseEtlSyncConfig

@@ -15,11 +15,15 @@ import time
 import requests
 from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, op
 
+from .databricks_cost_meter import reset as meter_reset
 from .databricks_optimize import _get_token
 from .kafka_topics_setup import _admin_client
 from .postgres_sink_setup import get_postgres_connection
-from .databricks_cost_meter import reset as meter_reset
-from .reverse_etl_cdf_setup import _require_databricks_env, _run_sql, clear_control_plane_cache
+from .reverse_etl_cdf_setup import (
+    _require_databricks_env,
+    _run_sql,
+    clear_control_plane_cache,
+)
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import CONNECT_URL
 from .reverse_etl_risingwave_setup import _get_risingwave_connection
@@ -97,7 +101,7 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
                 admin.delete_consumer_groups([group])[group].result()
                 context.log.info(f"Deleted consumer group {group}")
                 break
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 text = str(e)
                 if "GROUP_ID_NOT_FOUND" in text:
                     context.log.info(f"Consumer group {group} did not exist")

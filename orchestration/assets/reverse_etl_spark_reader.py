@@ -20,23 +20,23 @@ pyspark/delta are imported lazily so definitions keep loading where they are not
 installed.
 """
 
-import json
 import os
 import re
 import time
 
 import requests
+
 # delta-rs for the spark-free reads (get_row_fields): the module-level import is
 # cheap here because cdf_setup already imports deltalake for the pre-check, so
 # sys.modules has it either way. (Writes stay on Spark — see write_state.)
 from deltalake import DeltaTable
 
 from .reverse_etl_cdf_setup import (
-    COMMIT_VERSION_COLUMN,
     _MICROSECOND_TIMESTAMP_FORMAT,
-    _azure_storage_options,
+    COMMIT_VERSION_COLUMN,
     ZONED_TIMESTAMP,
     RowField,
+    _azure_storage_options,
 )
 from .reverse_etl_config import ReverseEtlSyncConfig
 
@@ -74,7 +74,7 @@ def _with_uc_propagation_retry(read, log=None):
     for attempt in range(_UC_PROPAGATION_RETRIES):
         try:
             return read()
-        except Exception as e:  # noqa: BLE001 - Py4JJavaError wrapping the ABFS 403
+        except Exception as e:
             message = str(e)
             transient = "403" in message or "not authorized" in message.lower()
             if attempt == _UC_PROPAGATION_RETRIES - 1 or not transient:
@@ -329,7 +329,7 @@ def _read_changes_segment(spark, cfg: ReverseEtlSyncConfig, location: str, start
 
     try:
         return collect(start, end)
-    except Exception as e:  # noqa: BLE001 - re-raised unless it is the spanned-schema-change case
+    except Exception as e:
         message = str(e)
         if end <= start or not any(code in message for code in _CDF_SCHEMA_CHANGE_ERRORS):
             raise
