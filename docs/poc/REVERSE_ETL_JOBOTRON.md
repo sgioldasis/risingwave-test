@@ -149,6 +149,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 7. **Dagster code ownership** — the RFC's open comment; this plan assumes Big Data owns the producer, A&P owns the worker and the message-contract approval (§8.4).
 8. **Prod Kafka TLS** — the demo stack is plaintext; prod needs SSL config in the producer's Kafka settings (RFC's GDPR in-transit answer).
 9. **Run metadata vs RFC run concept** — is Dagster's run metadata sufficient for Big Data's visibility, or does A&P want a producer-side heartbeat (e.g., a control message per run) their WebAPI could surface? Ask; default: Dagster metadata only.
+10. **Customer identity across operators** — the demo assigns globally-unique ids (one sequence); real per-operator customer bases can collide on ids. Per-operator topics/tables/workers tolerate collisions (uniqueness within a market is all the worker's dedup needs), but the Kafka record key carries `customer_id` alone — if anything ever converges markets downstream (a shared dedup store across worker deployments, merged audit storage), the key must become composite `(operator, customer_id)` or ids must be globally assigned. Confirm how customer ids are assigned with A&P.
 
 ## 9. Phased plan
 
@@ -193,15 +194,15 @@ The producer exists as one Dagster component and is driven by an animation page,
 | Page | `docs/poc/jobotron_data_flow.html` at <http://localhost:4002/jobotron> (same helper server; `bin/3_run_reverse_etl_demo.sh` sources `.env` for the topics check) |
 | Demo tables | `de_dev.sr_poc_external.reverse_etl_jobotron_customers` + `reverse_etl_jobotron_kyc_cases` — plain Delta, no CDF, no state table |
 | Topics / subjects | `jobotron_demo_gr` / `jobotron_demo_br`; Apicurio subjects `<topic>-key` / `<topic>-value` (identical schemas share ids across topics) |
-| Reset chain | page's "Reset and set up" runs reset → setup → first publish, the 3-step pattern of the CDF page |
+| Reset chain | page's "Reset and set up" runs reset → setup → first publish → first consume (4 steps): after it, topics AND the per-operator Postgres tables hold exactly the fresh segment |
 
-What one publish run does (verified 2026-10-18): UC location lookups (cached, control plane only), column-pruned delta-rs scans of both tables, the join in DuckDB, Avro key/value schemas derived from the result shape and ensured in Apicurio, one message per selected customer routed by `operator`, bounded flush — **~5s end to end, `0.0` warehouse seconds**, segment 3 = gr 1 + br 2. A change op (add/verify/deactivate) followed by a publish moves the segment with no tombstones — the customer simply stops (or starts) appearing, which is the full-snapshot semantics of §8.1 in action.
+What one publish run does (verified 2026-10-18): UC location lookups (cached, control plane only), column-pruned delta-rs scans of both tables, the join in DuckDB, Avro key/value schemas derived from the result shape and ensured in Apicurio, one message per selected customer routed by `operator`, bounded flush — **~5s end to end, `0.0` warehouse seconds**, segment 4 = gr 2 (1001, 1002) + br 2 (1004, 1005). A change op (add/verify/deactivate) followed by a publish moves the segment with no tombstones — the customer simply stops (or starts) appearing, which is the full-snapshot semantics of §8.1 in action.
 
 The **demo consumer** (`reverse_etl_jobotron_consume`, the page's step 4) closes the loop observably: it re-reads each operator topic from the beginning and rebuilds `jobotron_demo_<operator>` in the demo Postgres (the same database the Debezium sink writes) from **the messages of the latest publish run only** — topics append, so grouping by the last message's `run_id` is what makes the table the *current* segment; a customer that left it disappears at the next consume. The RFC's real worker would instead act per message and keep its own item state.
 
 ## 13. Live-demo script
 
-**Pre-flight:** VPN + stack up + helper running; open `http://localhost:4002/jobotron`; click **Reset and set up** and wait for the three green runs (known state: 6 customers, segment 3 = gr 1001 + br 1004/1005, topics holding one publish).
+**Pre-flight:** VPN + stack up + helper running; open `http://localhost:4002/jobotron`; click **Reset and set up** and wait for the four green runs (known state: 6 customers, segment 4 = gr 1001+1002 + br 1004+1005 — one excluded customer per operator: 1003 inactive, 1006 verified; topics and Postgres tables hold exactly that).
 
 **Narrative:** (1) Frame — the RFC's upstream producer on Dagster, no Spark/JVM/DBUs, vs the RFC's ~$10/month/task con. (2) Step 1 — the two plain-Delta tables, no CDF, no state table; the CDF punchline (snapshots are why it is Spark-free today). (3) Step 2.1 — **Run producer**, narrate scan → DuckDB join (the SQL in the notes) → Avro/Apicurio → per-operator routing; on green, point at the **"Databricks cost: none"** chip; optionally 2.3 (schemas) and 3 (topics). (4) Step 4 — **Run demo consumer**, then **Show Postgres tables**: the segment mirrored per operator. (5) The money moment, twice: **add an unverified customer** → publish → consume → it appears in its operator's table only; **verify a customer** → publish → consume → it disappears, no tombstone. (6) Optional: open a run in Dagster (metadata + `0.0` warehouse seconds), close on §8's open questions.
 

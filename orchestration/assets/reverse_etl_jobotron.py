@@ -283,7 +283,7 @@ def build_setup_asset(cfg: JobotronConfig):
         MERGE INTO {cfg.kyc_fqn} AS target
         USING (
             SELECT 1001 AS customer_id, 'PENDING' AS status, current_timestamp() AS updated_at
-            UNION ALL SELECT 1002, 'VERIFIED', current_timestamp()
+            UNION ALL SELECT 1002, 'PENDING', current_timestamp()
             UNION ALL SELECT 1003, 'PENDING', current_timestamp()
             UNION ALL SELECT 1004, 'PENDING', current_timestamp()
             UNION ALL SELECT 1005, 'PENDING', current_timestamp()
@@ -294,7 +294,7 @@ def build_setup_asset(cfg: JobotronConfig):
             VALUES (source.customer_id, source.status, source.updated_at)
         """,
         )
-        context.log.info(f"Seeded {cfg.customers_fqn} and {cfg.kyc_fqn}")
+        context.log.info(f"Seeded {cfg.customers_fqn} and {cfg.kyc_fqn} (segment: 1001+1002/gr, 1004+1005/br)")
 
         context.add_output_metadata(
             {
@@ -702,19 +702,38 @@ def build_reset_job(cfg: JobotronConfig):
         clear_control_plane_cache()
         context.log.info("Cleared the location cache (the tables moved)")
 
+    @op(name=f"{BASE}_drop_postgres_tables", ins={"start": In(Nothing)})
+    def drop_postgres_tables(context: OpExecutionContext) -> None:
+        _assert_reset_allowed(cfg)
+        conn = get_postgres_connection()
+        try:
+            with conn.cursor() as cur:
+                # The demo consumer's per-operator tables carry the same names as
+                # the topics (same guard covers them). Dropping them here means a
+                # reset leaves NO stale rows behind even before the first consume
+                # rebuilds them (CREATE IF NOT EXISTS + TRUNCATE).
+                for topic in cfg.topics.values():
+                    cur.execute(f"DROP TABLE IF EXISTS {topic}")
+                    context.log.info(f"Dropped Postgres table {topic} (if it existed)")
+            conn.commit()
+        finally:
+            conn.close()
+
     @job(
         name=cfg.reset_job,
         description=(
             f"Tear down the Jobotron demo: the per-operator Kafka topics ({', '.join(cfg.topics.values())}), "
-            f"their Apicurio subjects, and the Databricks tables {cfg.customers_fqn} / {cfg.kyc_fqn}. "
-            f"Then run {cfg.setup_job} and the first publish for a fresh demo."
+            f"their Apicurio subjects, the Databricks tables {cfg.customers_fqn} / {cfg.kyc_fqn}, and the "
+            f"consumer's Postgres tables. Then run {cfg.setup_job}, the first publish and the first consume "
+            "for a fresh demo."
         ),
         executor_def=in_process_executor,
     )
     def reset_job():
         gone = delete_topics()
         deleted = delete_registry_subjects(gone)
-        drop_tables(deleted)
+        dropped = drop_tables(deleted)
+        drop_postgres_tables(dropped)
 
     return reset_job
 

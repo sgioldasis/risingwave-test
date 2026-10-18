@@ -3,170 +3,290 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jobotron producer — data flow</title>
+<title>Jobotron producer</title>
 <style>
   :root {
-    --bg: #ffffff; --text: #1f1e1d; --muted: #5f5e5a; --line: #b4b2a9; --card: #f5f4ee; --card-border: #d3d1c7; --active: #ef9f27;
-    --coral-f: #faece7; --coral-s: #993c1d; --coral-t: #712b13; --coral-u: #993c1d;
-    --purple-f: #eeedfe; --purple-s: #534ab7; --purple-t: #3c3489; --purple-u: #534ab7;
-    --teal-f: #e1f5ee; --teal-s: #0f6e56; --teal-t: #085041; --teal-u: #0f6e56;
-    --blue-f: #f1f7fd; --blue-s: #8fbbe6; --blue-t: #2a65a0; --blue-u: #4a84bb;
+    --bg: #0b0e14; --surface: #12161f; --surface2: #171c27; --border: #232a38; --border-strong: #313a4d;
+    --text: #e9edf5; --muted: #93a0b4; --faint: #5c6779;
+    --accent: #7c8cff; --accent-soft: rgba(124, 140, 255, .14); --accent-text: #a5b0ff;
+    --ok: #34d399; --fail: #f87171; --warn: #fbbf24;
+    --coral: #fb7185; --violet: #a78bfa; --teal: #2dd4bf; --blue: #60a5fa;
+    --stage-ink: #0d1120; --flow: #fb923c; --radius: 14px; --shadow: 0 8px 30px rgba(0,0,0,.35);
   }
-  @media (prefers-color-scheme: dark) {
+  @media (prefers-color-scheme: light) {
     :root {
-      --bg: #1f1e1d; --text: #f1efe8; --muted: #b4b2a9; --line: #5f5e5a; --card: #2c2c2a; --card-border: #444441;
-      --coral-f: #712b13; --coral-s: #f0997b; --coral-t: #faece7; --coral-u: #f5c4b3;
-      --purple-f: #3c3489; --purple-s: #afa9ec; --purple-t: #eeedfe; --purple-u: #cecbf6;
-      --teal-f: #085041; --teal-s: #5dcaa5; --teal-t: #e1f5ee; --teal-u: #9fe1cb;
-      --blue-f: #0c447c; --blue-s: #85b7eb; --blue-t: #e6f1fb; --blue-u: #b5d4f4;
+      --bg: #f6f7fb; --surface: #ffffff; --surface2: #eef1f7; --border: #e3e7ef; --border-strong: #cdd4e2;
+      --text: #171c28; --muted: #5f6a80; --faint: #98a1b3;
+      --accent: #5566ff; --accent-soft: rgba(85, 102, 255, .10); --accent-text: #4453e8;
+      --ok: #0e9f6e; --fail: #e02424; --warn: #c77700;
+      --coral: #e5484d; --violet: #7c66dc; --teal: #0d9488; --blue: #2f6fed;
+      --stage-ink: #ffffff; --flow: #ea580c; --shadow: 0 8px 30px rgba(23, 28, 40, .08);
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
-  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
-  .wrap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 8px; align-items: start; max-width: 1200px; }
-  .wrap > :first-child { grid-column: span 2; }
-  @media (max-width: 1150px) { .wrap { grid-template-columns: minmax(0, 1fr); } .wrap > :first-child { grid-column: auto; } }
-  .side { position: sticky; top: 16px; }
-  @media (max-width: 1150px) { .side { position: static; } }
-  .caption { background: var(--card); border-radius: 12px; padding: 14px 16px; margin: 0 0 12px; min-height: 200px; }
-  .caption .ct { font-size: 18px; font-weight: 500; margin: 0 0 8px; }
-  .caption .cd { font-size: 15px; color: var(--muted); line-height: 1.65; margin: 0; }
-  svg { width: 100%; height: auto; display: block; }
-  svg text { font-family: inherit; fill: var(--text); }
-  .th { font-size: 14px; font-weight: 500; }
-  .ts { font-size: 12px; }
-  .coral rect { fill: var(--coral-f); stroke: var(--coral-s); } .coral .th { fill: var(--coral-t); } .coral .ts { fill: var(--coral-u); }
-  .purple rect { fill: var(--purple-f); stroke: var(--purple-s); } .purple .th { fill: var(--purple-t); } .purple .ts { fill: var(--purple-u); }
-  .teal rect { fill: var(--teal-f); stroke: var(--teal-s); } .teal .th { fill: var(--teal-t); } .teal .ts { fill: var(--teal-u); }
-  .blue rect { fill: var(--blue-f); stroke: var(--blue-s); } .blue .th { fill: var(--blue-t); } .blue .ts { fill: var(--blue-u); }
-  .node { transition: opacity .3s; }
-  .edge { stroke: var(--line); stroke-width: 1.5; opacity: .35; transition: opacity .3s; }
-  .edge.dashed { stroke-dasharray: 5 4; }
-  .edge.on { stroke: var(--active); stroke-width: 2.5; opacity: 1; }
-  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  button { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
-  button:hover { background: var(--card); }
-  button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
-  .acts { margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .acts select, .bar select { font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 4px 8px; }
-  .acts button, .bar button { border-color: var(--active); }
-  button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
-  .result { font-size: 13px; color: var(--muted); margin: 8px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
-  .icon { display: inline-block; width: 1.1em; margin-right: 6px; text-align: center; font-weight: 700; }
-  .icon.ok { color: #2e9e4f; } .icon.fail { color: #d64545; }
-  .icon.run { width: 12px; height: 12px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--active); border-radius: 50%; animation: spin .8s linear infinite; }
+  body { margin: 0; padding: 20px 24px 48px; background: var(--bg); color: var(--text);
+    font-family: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; }
+  h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+  a { color: var(--accent-text); text-decoration: none; } a:hover { text-decoration: underline; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--surface2); padding: 1px 6px; border-radius: 6px; }
+  pre { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.6; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; overflow-x: auto; }
+
+  button { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 9px; padding: 7px 14px; cursor: pointer; transition: border-color .15s, background .15s, transform .05s; }
+  button:hover { border-color: var(--border-strong); background: var(--surface2); }
+  button:active { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 550; }
+  button.primary:hover { background: var(--accent-text); border-color: var(--accent-text); }
+  button.danger { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 40%, var(--border)); }
+  button.danger:hover { background: color-mix(in srgb, var(--fail) 10%, var(--surface)); border-color: var(--fail); }
+  select, input[type=number] { font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 9px; padding: 7px 10px; }
+  select:disabled, input:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ── top bar ─────────────────────────────────────────────── */
+  .topbar { max-width: 1280px; margin: 0 auto 18px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+  .brand .mark { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--violet));
+    display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; font-size: 15px; box-shadow: var(--shadow); }
+  .brand .sub { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .pill.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .pill.ok { color: var(--text); }
+  .pill.fail .dot { background: var(--fail); }
+
+  /* ── layout: action rail + main ──────────────────────────── */
+  .layout { max-width: 1280px; margin: 0 auto; display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .rail { position: sticky; top: 16px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 14px; }
+  .sgroup { display: flex; flex-direction: column; gap: 6px; }
+  .sgroup + .sgroup { border-top: 1px solid var(--border); padding-top: 14px; }
+  .slabel { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-bottom: 2px; }
+  .rail button { width: 100%; text-align: left; padding: 7px 11px; font-size: 12.5px; }
+  .rail button.primary { text-align: center; }
+  .rail .hint { font-size: 11px; color: var(--faint); line-height: 1.45; margin: 2px 0 0; }
+  @media (max-width: 1020px) {
+    .layout { grid-template-columns: 1fr; }
+    .rail { position: static; flex-direction: row; flex-wrap: wrap; }
+    .sgroup { flex: 1 1 180px; }
+    .sgroup + .sgroup { border-top: 0; padding-top: 0; }
+  }
+
+  /* ── pipeline canvas ─────────────────────────────────────── */
+  .canvas { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 26px 22px 14px; box-shadow: var(--shadow);
+    background-image: radial-gradient(color-mix(in srgb, var(--border-strong) 45%, transparent) 1px, transparent 1px);
+    background-size: 22px 22px; background-position: 11px 11px; }
+  .flow { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; }
+  .group { display: flex; flex-direction: column; gap: 10px; }
+  .stage { --fill: var(--coral); --ink: var(--stage-ink); position: relative; width: 148px; background: var(--fill); color: var(--ink);
+    border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 12px;
+    padding: 11px 13px; opacity: .42; transition: opacity .3s, border-color .3s, box-shadow .3s; }
+  .stage.g-violet { --fill: var(--violet); }
+  .stage.g-teal { --fill: var(--teal); }
+  .stage.g-blue { --fill: var(--blue); }
+  .stage.on { opacity: 1; border-color: color-mix(in srgb, var(--ink) 32%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--fill) 32%, transparent); }
+  .stage .name { font-size: 13.5px; font-weight: 650; margin: 7px 0 2px; }
+  .stage .desc { font-size: 11.5px; color: color-mix(in srgb, var(--ink) 78%, transparent); line-height: 1.35; }
+  .stage .tag { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 650; letter-spacing: .06em;
+    text-transform: uppercase; color: color-mix(in srgb, var(--ink) 72%, transparent); }
+  .stage .tag::before { content: ""; width: 7px; height: 7px; border-radius: 3px; background: var(--ink); }
+  .stage.producer { width: 196px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .chip { font-size: 10.5px; color: var(--ink); background: color-mix(in srgb, var(--ink) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ink) 26%, transparent); border-radius: 999px; padding: 2px 8px; transition: all .25s; }
+  .chip.on { background: var(--ink); border-color: var(--ink); color: var(--fill); font-weight: 600; }
+  .stage .runstate { position: absolute; top: 8px; right: 8px; width: 16px; height: 16px; display: none;
+    align-items: center; justify-content: center; border-radius: 50%; font-size: 11px; font-weight: 800; line-height: 1; }
+  .stage .runstate.running { display: flex; }
+  .stage .runstate.running::before { content: ""; width: 10px; height: 10px; border: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+    border-top-color: var(--ink); border-radius: 50%; animation: spin .8s linear infinite; }
+  /* The result lands in a white chip so the green/red always reads, on any fill. */
+  .stage .runstate.done, .stage .runstate.fail { display: flex; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.3); }
+  .stage .runstate.done { color: #0e9f6e; }
+  .stage .runstate.fail { color: #e02424; }
+  .link { position: relative; flex: 0 0 30px; height: 2px; background: var(--muted); margin: 0 2px; }
+  .link::after { content: ""; position: absolute; right: -1px; top: -3.5px; width: 7px; height: 7px;
+    border-top: 2px solid var(--muted); border-right: 2px solid var(--muted); transform: rotate(45deg); }
+  .link.on { background: color-mix(in srgb, var(--flow) 25%, var(--muted)); }
+  .link.on::after { border-top-color: color-mix(in srgb, var(--flow) 45%, var(--muted));
+    border-right-color: color-mix(in srgb, var(--flow) 45%, var(--muted)); }
+  .link.on::before { content: ""; position: absolute; top: -1px; left: 0; width: 14px; height: 4px; border-radius: 999px;
+    background: linear-gradient(90deg, transparent, var(--flow) 45%, color-mix(in srgb, var(--flow) 35%, #fff) 82%, #fff 100%);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--flow) 70%, transparent), 0 0 16px color-mix(in srgb, var(--flow) 35%, transparent);
+    animation: comet 1.4s linear infinite; }
+  @keyframes comet { 0% { transform: translateX(-16px); opacity: 0; } 12% { opacity: 1; } 82% { opacity: 1; }
+    100% { transform: translateX(32px); opacity: 0; } }
+  .links-col { display: flex; flex-direction: column; justify-content: space-around; align-self: stretch; }
+  .links-col.converge { justify-content: space-evenly; }
+  .links-col .link { flex: 0 0 auto; width: 30px; height: 2px; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; margin-top: 20px; font-size: 11px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 9px; height: 9px; border-radius: 3px; }
+  @media (max-width: 1020px) {
+    .flow { flex-direction: column; gap: 14px; }
+    .link { flex: 0 0 26px; width: 2px; height: 26px; margin: 0 auto; }
+    .links-col { flex-direction: row; justify-content: center; gap: 14px; }
+    .links-col .link { width: 2px; height: 26px; }
+    .link::after { right: -4.5px; top: auto; bottom: -1px; left: -3.5px; transform: rotate(135deg); }
+    .stage, .stage.producer { width: min(360px, 100%); }
+    .link.on::before { width: 4px; height: 14px; top: 0; left: -1px;
+      background: linear-gradient(180deg, transparent, var(--flow) 45%, color-mix(in srgb, var(--flow) 35%, #fff) 82%, #fff 100%);
+      animation-name: cometV; }
+    @keyframes cometV { 0% { transform: translateY(-16px); opacity: 0; } 12% { opacity: 1; } 82% { opacity: 1; }
+      100% { transform: translateY(32px); opacity: 0; } }
+  }
+
+  /* ── step card ───────────────────────────────────────────── */
+  .stepper { margin-top: 16px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow); }
+  .stephead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .stepnum { font-size: 12px; font-weight: 650; color: var(--accent-text); background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; padding: 2px 11px; }
+  .steptitle { font-size: 16.5px; font-weight: 650; letter-spacing: -.01em; }
+  .stepdesc { color: var(--muted); font-size: 13.5px; line-height: 1.65; margin: 10px 0 0; max-width: 900px; }
+  .result { margin-top: 14px; font-size: 13px; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; min-height: 8px; }
+  .result .mono, .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--faint); }
+  .result .strong { color: var(--text); font-weight: 600; }
+  .costline { color: var(--ok); }
+  .icon { display: inline-block; width: 1.1em; margin-right: 7px; text-align: center; font-weight: 700; }
+  .icon.ok { color: var(--ok); } .icon.fail { color: var(--fail); }
+  .icon.run { width: 13px; height: 13px; vertical-align: -2px; border: 2px solid var(--border-strong);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .result a { color: var(--blue-t); }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px; font-size: 13px; color: var(--muted); }
-  .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
-  ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1200px; }
-  li { display: grid; grid-template-columns: 28px 1fr; gap: 10px 10px; align-content: start; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
-  li:hover { opacity: .9; }
-  li.on { opacity: 1; background: var(--card); border-color: var(--active); border-width: 1.5px; }
-  .num { grid-row: 1 / span 2; width: 24px; height: 24px; border-radius: 50%; border: 0.5px solid var(--line); font-size: 12px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
-  li.on .num { background: var(--active); border-color: var(--active); color: #412402; font-weight: 500; }
-  .t { font-size: 15px; font-weight: 500; }
-  .d { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
-  .notes { max-width: 1200px; margin-top: 32px; padding-top: 20px; border-top: 0.5px solid var(--card-border); }
-  .notes h2 { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
-  .notes .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
-  @media (max-width: 1000px) { .notes .grid { grid-template-columns: minmax(0, 1fr); } }
-  .notes ul { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.6; color: var(--muted); }
-  .notes ul li { display: list-item; padding: 0; margin-bottom: 8px; border: 0; opacity: 1; cursor: auto; }
-  .notes b { color: var(--text); font-weight: 500; }
-  .notes p, .notes li { overflow-wrap: anywhere; }
-  .notes code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
-  .notes pre { margin: 0 0 16px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55; overflow-x: auto; }
-  .notes .label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
-  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } .icon.run { animation-duration: 3s; } }
+  .nav { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+  .pos { margin-left: auto; font-size: 12px; color: var(--faint); }
+
+  /* ── step grid ───────────────────────────────────────────── */
+  .steps { margin: 16px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+  .stepcard { display: grid; grid-template-columns: 30px 1fr; gap: 4px 10px; align-content: start; text-align: left;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+    cursor: pointer; opacity: .55; transition: opacity .25s, border-color .25s, background .25s; }
+  .stepcard:hover { opacity: .85; }
+  .stepcard.on { opacity: 1; background: var(--surface2); border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    box-shadow: 0 0 0 3px var(--accent-soft); }
+  .stepcard .num { grid-row: 1 / span 2; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border-strong);
+    font-size: 11.5px; display: flex; align-items: center; justify-content: center; color: var(--muted); margin-top: 1px; }
+  .stepcard.on .num { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .stepcard .t { font-size: 13.5px; font-weight: 600; }
+  .stepcard .d { font-size: 12px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden; }
+
+  /* ── notes ───────────────────────────────────────────────── */
+  .notes { margin: 16px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+  .note { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+  .note h2 { font-size: 15px; font-weight: 650; margin: 0 0 4px; }
+  .note .sub { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; line-height: 1.55; }
+  .note ul { margin: 0; padding-left: 17px; font-size: 13px; color: var(--muted); line-height: 1.65; }
+  .note li { margin-bottom: 7px; overflow-wrap: anywhere; }
+  .note b { color: var(--text); font-weight: 600; }
+  .note .label { font-size: 12px; font-weight: 650; color: var(--text); margin: 12px 0 6px; }
+  details summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--accent-text); }
+  @media (prefers-reduced-motion: reduce) { .link.on::before { display: none; } .icon.run, .stage .runstate.running::before { animation-duration: 3s; }
+    .stage, .stepcard, .chip { transition: none; } }
 </style>
 </head>
 <body>
-<h1>Jobotron producer — data flow</h1>
-<p class="sub">Runs the candidate-selection query from <code>jobotron.yaml</code> against the demo tables in Databricks and publishes one Avro message per selected customer to its operator topic — no Spark, no JVM, no Databricks compute. A demo consumer then mirrors each topic into a Postgres table per operator; the RFC's real worker (dedup, eligibility re-validation, actions) remains Accounts &amp; Payments scope. Use the buttons, click a step, or press the left and right arrow keys.</p>
-<p class="sub" id="bar-msg" style="margin-top: -14px; font-size: 13px">Buttons need the helper: run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/jobotron</p>
-<p class="sub" id="cost-total" style="margin-top: -14px; font-size: 13px; color: #2e9e4f; display: none"></p>
-
-<div class="bar" id="bar">
-  <button id="do-rebuild" disabled>Reset and set up</button>
-  <p class="result" id="bar-result" style="margin: 0"></p>
-</div>
-
-<div class="wrap">
-  <div>
-    <svg viewBox="0 0 770 350" role="img" aria-label="Two Delta tables feed the Jobotron producer, which registers Avro schemas in Apicurio and publishes one message per customer to per-operator Kafka topics; a demo consumer mirrors each topic into a Postgres table per operator.">
-      <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
-
-      <line id="e1" class="edge" x1="85" y1="76" x2="85" y2="130" marker-end="url(#arrow)"/>
-      <line id="e2" class="edge" x1="65" y1="240" x2="65" y2="186" marker-end="url(#arrow)"/>
-      <line id="e3" class="edge" x1="180" y1="142" x2="410" y2="48" marker-end="url(#arrow)"/>
-      <line id="e4" class="edge" x1="180" y1="198" x2="410" y2="268" marker-end="url(#arrow)"/>
-      <line id="e7" class="edge" x1="580" y1="268" x2="655" y2="186" marker-end="url(#arrow)"/>
-      <line id="e8" class="edge" x1="580" y1="48" x2="655" y2="130" marker-end="url(#arrow)"/>
-
-      <g id="n-customers" class="node coral"><rect x="10" y="20" width="170" height="56" rx="4" stroke-width="0.5"/><text class="th" x="95" y="41" text-anchor="middle" dominant-baseline="central">Customers table</text><text class="ts" x="95" y="60" text-anchor="middle" dominant-baseline="central">Delta · scanned, not changed</text></g>
-      <g id="n-kyc" class="node coral"><rect x="10" y="240" width="170" height="56" rx="4" stroke-width="0.5"/><text class="th" x="95" y="261" text-anchor="middle" dominant-baseline="central">KYC cases table</text><text class="ts" x="95" y="280" text-anchor="middle" dominant-baseline="central">Delta · joined in</text></g>
-      <g id="n-producer" class="node purple"><rect x="10" y="130" width="170" height="56" rx="4" stroke-width="0.5"/><text class="th" x="95" y="151" text-anchor="middle" dominant-baseline="central">Jobotron producer</text><text class="ts" x="95" y="170" text-anchor="middle" dominant-baseline="central">Dagster · delta-rs + DuckDB</text></g>
-      <g id="n-reg" class="node teal"><rect x="410" y="20" width="170" height="56" rx="4" stroke-width="0.5"/><text class="th" x="495" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="495" y="60" text-anchor="middle" dominant-baseline="central">Apicurio subjects</text></g>
-      <g id="n-topics" class="node teal"><rect x="410" y="240" width="170" height="56" rx="4" stroke-width="0.5"/><text class="th" x="495" y="261" text-anchor="middle" dominant-baseline="central">Operator topics</text><text class="ts" x="495" y="280" text-anchor="middle" dominant-baseline="central">jobotron_demo_gr / _br</text></g>
-      <g id="n-worker" class="node blue"><rect x="610" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="685" y="151" text-anchor="middle" dominant-baseline="central">Demo consumer</text><text class="ts" x="685" y="170" text-anchor="middle" dominant-baseline="central">Postgres per operator</text></g>
-
-      <g id="dots"></g>
-
-      <g class="coral"><rect x="30" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="46" y="327" dominant-baseline="central">Databricks</text></g>
-      <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster (zero-DBU)</text></g>
-      <g class="teal"><rect x="290" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="306" y="327" dominant-baseline="central">Kafka side</text></g>
-      <g class="blue"><rect x="410" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="426" y="327" dominant-baseline="central">Consumer (demo)</text></g>
-    </svg>
-  </div>
-  <div class="side">
-    <div class="caption"><p class="ct" id="cap-t"></p><p class="cd" id="cap-d"></p><div class="acts" id="acts"></div><p class="result" id="result"></p></div>
-    <div class="controls">
-      <button id="prev" aria-label="Previous step">&larr; Back</button>
-      <button id="play">Play</button>
-      <button id="next" aria-label="Next step">Next &rarr;</button>
-      <span id="pos" class="pos"></span>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark">J</div>
+    <div class="titles">
+      <h1>Jobotron producer</h1>
+      <div class="sub">Candidate selection from the lake → one Avro message per customer → per-operator topics → Postgres. No Spark, no JVM, no Databricks compute.</div>
     </div>
   </div>
-</div>
-<ol id="steps"></ol>
+  <div class="pill" id="helper-pill"><span class="dot"></span><span id="helper-text">checking helper…</span></div>
+</header>
 
-<section class="notes">
-  <h2>The demo tables</h2>
-  <p class="sub">Created by the setup job from <code>orchestration/defs/reverse_etl_jobotron/defs.yaml</code>. Both are <b>plain Delta with no Change Data Feed</b> — the producer reads each table's current snapshot with delta-rs, so the CDF machinery (and the delta-rs CDF gap that pins the CDF syncs to Spark) never applies. There is no state table: the full eligible set is published every run and the worker deduplicates, so the producer stays stateless.</p>
-  <div class="grid">
-    <div>
-      <ul>
-        <li><b>Customers</b> carries the routing column: <code>operator</code> picks the topic, and an unknown value fails the run — nothing ever publishes cross-market.</li>
-        <li><b>KYC cases</b> holds one row per customer with its current case status. The demo query is the RFC's example job: <i>send PM to customers that remain unverified</i> — active customers joined to their PENDING case.</li>
-        <li><b>Deletion vectors are off</b> to keep the read path uniform with the other demo tables; column mapping is off because this demo has no drop/rename ops.</li>
-        <li><b>The segment changes without tombstones:</b> verify or deactivate a customer and it simply stops appearing at the next publish — full-snapshot semantics. The worker's own dedup (Redis markers) and eligibility re-validation make republishing safe (RFC: "Safe Execution").</li>
-        <li><b>GDPR:</b> the payload is exactly the query's columns (payload minimization by construction) plus <code>run_id</code> and <code>job_type</code>; the real topics would run TLS in transit (the RFC's stated mitigation) and 10-day retention.</li>
-        <li><b>The demo consumer</b> (step 4) is a Dagster asset that re-reads each topic from the beginning, keeps the last message per <code>customer_id</code>, and rebuilds <code>jobotron_demo_&lt;operator&gt;</code> in the demo Postgres (the same database the Debezium sink writes). Rebuild-per-consume mirrors state; a real worker would act per message and keep its own state instead.</li>
-      </ul>
+<div class="layout">
+  <aside class="rail" id="rail" aria-label="Demo actions">
+    <div class="sgroup">
+      <div class="slabel">Changes · Databricks</div>
+      <button id="act-add">Add unverified customer</button>
+      <button id="act-verify">Verify a customer</button>
+      <button id="act-deactivate">Deactivate a customer</button>
     </div>
-    <div>
-      <p class="label">Tables (the setup asset's DDL)</p>
-<pre>CREATE TABLE IF NOT EXISTS
-  de_dev.sr_poc_external.reverse_etl_jobotron_customers (
-  customer_id BIGINT NOT NULL,
-  email STRING,
-  locale STRING,
-  operator STRING,
-  is_active BOOLEAN
-) USING DELTA
-TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');
+    <div class="sgroup">
+      <div class="slabel">Pipeline</div>
+      <button id="act-publish" class="primary">Run producer</button>
+      <button id="act-consume">Run demo consumer</button>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Inspect</div>
+      <button id="act-topics">Read operator topics</button>
+      <button id="act-schemas">Schemas in Apicurio</button>
+      <button id="act-postgres">Postgres tables</button>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Demo</div>
+      <button id="do-rebuild" class="danger">Reset and set up</button>
+      <p class="hint">Drops the tables, topics and subjects, reseeds, and runs the first publish.</p>
+    </div>
+  </aside>
 
-CREATE TABLE IF NOT EXISTS
-  de_dev.sr_poc_external.reverse_etl_jobotron_kyc_cases (
-  customer_id BIGINT NOT NULL,
-  status STRING,
-  updated_at TIMESTAMP
-) USING DELTA
-TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');</pre>
-      <p class="label">The job's YAML (orchestration/defs/reverse_etl_jobotron/defs.yaml)</p>
+  <main>
+    <section class="canvas" aria-label="Pipeline: the demo tables feed the producer, which registers Avro schemas in Apicurio and publishes per-operator topics; the demo consumer mirrors them into Postgres">
+      <div class="flow">
+        <div class="group">
+          <div id="st-customers" class="stage g-coral"><span class="tag">Databricks</span><div class="name">Customers</div><div class="desc">Delta · scanned, not changed</div><span class="runstate"></span></div>
+          <div id="st-kyc" class="stage g-coral"><span class="tag">Databricks</span><div class="name">KYC cases</div><div class="desc">Delta · joined in</div><span class="runstate"></span></div>
+        </div>
+        <div class="links-col"><div id="e-L1a" class="link"></div><div id="e-L1b" class="link"></div></div>
+        <div id="st-producer" class="stage g-violet producer"><span class="tag">Dagster · zero-DBU</span><div class="name">Jobotron producer</div><div class="desc">delta-rs scan → DuckDB join</div><span class="runstate"></span>
+          <div class="chips"><span id="chip-scan" class="chip">scan</span><span id="chip-query" class="chip">query</span><span id="chip-schema" class="chip">schema</span><span id="chip-route" class="chip">route</span></div>
+        </div>
+        <div class="links-col"><div id="e-L2a" class="link"></div><div id="e-L2b" class="link"></div></div>
+        <div class="group">
+          <div id="st-reg" class="stage g-teal"><span class="tag">Apicurio</span><div class="name">Registry</div><div class="desc">key + value subjects</div><span class="runstate"></span></div>
+          <div id="st-topics" class="stage g-teal"><span class="tag">Kafka</span><div class="name">Operator topics</div><div class="desc">jobotron_demo_gr / _br</div><span class="runstate"></span></div>
+        </div>
+        <div class="links-col converge"><div id="e-L4a" class="link"></div><div id="e-L4b" class="link"></div></div>
+        <div id="st-consumer" class="stage g-blue"><span class="tag">Consumer</span><div class="name">Mirror</div><div class="desc">latest publish run only</div><span class="runstate"></span></div>
+        <div id="e-L5" class="link"></div>
+        <div id="st-postgres" class="stage g-blue"><span class="tag">Postgres</span><div class="name">Postgres tables</div><div class="desc">jobotron_demo_gr / _br</div><span class="runstate"></span></div>
+      </div>
+      <div class="legend">
+        <span><i style="background: var(--coral)"></i> Databricks lake</span>
+        <span><i style="background: var(--violet)"></i> Dagster producer (0.0 warehouse seconds)</span>
+        <span><i style="background: var(--teal)"></i> Kafka side</span>
+        <span><i style="background: var(--blue)"></i> Demo consumer</span>
+      </div>
+    </section>
+
+    <section class="stepper">
+      <div class="stephead"><span class="stepnum" id="cap-num"></span><span class="steptitle" id="cap-t"></span></div>
+      <p class="stepdesc" id="cap-d"></p>
+      <div class="result" id="result"></div>
+      <div class="nav">
+        <button id="prev">&larr; Back</button>
+        <button id="play">Play</button>
+        <button id="next">Next &rarr;</button>
+        <span id="pos" class="pos"></span>
+      </div>
+    </section>
+
+    <div class="steps" id="steps"></div>
+
+    <div class="notes">
+      <div class="note">
+        <h2>The demo tables</h2>
+        <p class="sub">Created by the setup job. Both are <b>plain Delta with no Change Data Feed</b> — the producer reads each table's current snapshot with delta-rs, so the CDF machinery (and the delta-rs CDF gap that pins the CDF syncs to Spark) never applies. No state table: the full eligible set is published every run and the worker deduplicates.</p>
+        <ul>
+          <li><b>Customers</b> carries the routing column: <code>operator</code> picks the topic; an unknown value fails the run — nothing publishes cross-market.</li>
+          <li><b>KYC cases</b> holds one row per customer. The query is the RFC's example job: <i>send PM to customers that remain unverified</i>.</li>
+          <li><b>The segment changes without tombstones:</b> verify or deactivate a customer and it stops appearing at the next publish. The worker's dedup and re-validation make republishing safe (RFC: "Safe Execution").</li>
+          <li><b>GDPR:</b> the payload is exactly the query's columns plus <code>run_id</code> and <code>job_type</code>; real topics would run TLS in transit and 10-day retention.</li>
+          <li><b>The demo consumer</b> rebuilds <code>jobotron_demo_&lt;operator&gt;</code> from the messages of the <b>latest publish run only</b> — topics append, so grouping by the last message's run_id is what keeps the table the current segment.</li>
+        </ul>
+      </div>
+      <div class="note">
+        <h2>The job's YAML</h2>
+        <p class="sub">From <code>orchestration/defs/reverse_etl_jobotron/defs.yaml</code> — the query, routing, and identifiers are data, not code.</p>
 <pre>type: orchestration.components.reverse_etl_jobotron.JobotronProducer
 attributes:
   job_type: kyc.unverified_pm
@@ -177,75 +297,88 @@ attributes:
     FROM customers AS c
     JOIN kyc_cases AS k ON k.customer_id = c.customer_id
     WHERE k.status = 'PENDING' AND c.is_active</pre>
+        <p class="label">Tables (the setup asset's DDL)</p>
+<pre>CREATE TABLE IF NOT EXISTS
+  de_dev.sr_poc_external.reverse_etl_jobotron_customers (
+  customer_id BIGINT NOT NULL, email STRING,
+  locale STRING, operator STRING, is_active BOOLEAN
+) USING DELTA
+TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');
+-- + reverse_etl_jobotron_kyc_cases (customer_id, status, updated_at)</pre>
+      </div>
+      <div class="note">
+        <h2>Components and jobs</h2>
+        <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>): the setup job creates tables, topics and seed; the publish asset runs the whole query-to-Kafka path in one run — delta-rs + DuckDB, <code>0.0</code> warehouse seconds; the change ops edit the demo data; the reset job tears it all down; the consume asset mirrors the topics into Postgres. Design and RFC context: <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
+        <details>
+          <summary>Show the publish asset's pipeline</summary>
+<pre style="margin-top: 10px">resolve locations (UC REST, cached) — control plane only
+delta-rs to_pyarrow_table(columns=…) — column-pruned scans
+DuckDB .register(alias).execute(yaml query) — the join
+derive Avro key/value schemas from the RESULT shape
+ensure subjects jobotron_demo_&lt;op&gt;-key / -value
+route rows by operator; unknown operator fails the run
+produce one message per customer (key = customer_id)
+metadata: rows per operator, previews, warehouse_seconds 0.0</pre>
+        </details>
+      </div>
     </div>
-  </div>
-</section>
-
-<section class="notes">
-  <h2>Components and jobs</h2>
-  <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>): the setup job creates the tables, topics and seed; the publish asset runs the whole query-to-Kafka path in one Dagster run — delta-rs scans and DuckDB, no JVM, <code>0.0</code> warehouse seconds; the change ops edit the demo data; the reset job tears the topics, subjects and tables down. Design and RFC context: <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
-  <details style="margin-top: 12px">
-    <summary style="cursor: pointer; font-size: 15px; font-weight: 500">Show the publish asset's pipeline</summary>
-    <pre style="margin-top: 12px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55">resolve locations (UC REST, cached)  — control plane only, no compute
-delta-rs to_pyarrow_table(columns=…) — column-pruned scans, service principal
-DuckDB .register(alias).execute(yaml query).arrow()  — the join, in-process
-derive Avro key/value schemas from the RESULT shape (+ run_id, job_type)
-ensure subjects jobotron_demo_&lt;op&gt;-key / -value in Apicurio (skip if unchanged)
-route rows by operator → topic; unknown operator fails the run
-produce one message per customer (key = customer_id), lz4, bounded flush
-metadata: rows per operator, query, previews, warehouse_seconds = 0.0</pre>
-  </details>
-</section>
+  </main>
+</div>
 
 <script>
 const S = [
-  { num: '1', t: "A customer's KYC state changes in Databricks", a: 'change', d: 'Three demo ops edit the two tables: adding a customer with a PENDING case makes it join the segment; verifying or deactivating one makes it leave. Both are plain warehouse SQL on the demo tables, metered as usual. Nothing is published until the producer runs.', n: ['customers', 'kyc'], e: [] },
-  { num: '2.1', t: 'The producer scans the lake tables', a: 'run', d: 'The Dagster asset resolves each table location through the Unity Catalog REST API (control plane, no compute) and scans it with delta-rs — column-pruned to what the query selects, straight from ADLS storage with the service principal. No Spark session, no JVM, no Databricks compute anywhere in the run.', n: ['customers', 'kyc', 'producer'], e: ['e1', 'e2'] },
-  { num: '2.2', t: 'DuckDB runs the candidate query', a: 'run', d: 'The snapshots are registered in DuckDB through the zero-copy Arrow interface and the query from jobotron.yaml runs in-process — a real SQL join, the thing the RFC moves off VOperDB onto the data platform. Every row of the result is one customer in the segment; an empty result still carries the schema, so the next steps hold.', n: ['customers', 'kyc', 'producer'], e: ['e1', 'e2'] },
-  { num: '2.3', t: 'Schemas go to the registry', a: 'schema', d: 'The Avro schemas are derived from the query result shape: key = customer_id, value = run_id + job_type + the selected columns (payload minimization by construction). They are ensured per operator subject — jobotron_demo_<op>-key and -value — and only registered when new or changed.', n: ['producer', 'reg'], e: ['e3'] },
-  { num: '2.4', t: 'One message per customer, routed by operator', a: 'run', d: 'Each result row becomes one message: key = customer_id (the identity the worker deduplicates on), value = run_id + job_type + payload. The operator column picks the topic — jobotron_demo_gr or jobotron_demo_br — and an unknown operator fails the run rather than publishing cross-market. run_id groups the messages into one job run, the unit the RFC counts (about 57 runs a day across its job set).', n: ['producer', 'topics'], e: ['e4'] },
-  { num: '3', t: 'The topics hold the current segment', a: 'topics', d: 'The topics are this demo\'s endpoint: every publish rewrites the whole eligible set, so a topic always reflects the last run. A customer that left the segment simply stops appearing — no tombstone. The worker\'s dedup and eligibility re-validation make republishing safe; volumes are tiny (the RFC sizes all operators at about 20,000 messages a day).', n: ['producer', 'reg', 'topics'], e: ['e4'] },
-  { num: '4', t: 'The demo consumer mirrors the segment into Postgres', a: 'worker', d: 'A demo consumer reads each operator topic from the beginning, decodes the Avro messages, and rebuilds one Postgres table per operator (jobotron_demo_gr / jobotron_demo_br). Topics append, so the consumer takes the messages of the LATEST publish run (the run_id of the topic\'s last message) — the current segment, nothing stale: a customer that left it disappears from its table at the next consume, no tombstone. It stands in for the RFC\'s worker, which would act per message (dedup in Redis, eligibility re-validation through CustomerService, actions through Iris and VOperDB, item state); the mirror keeps the demo observable end to end.', n: ['reg', 'topics', 'worker'], e: ['e7', 'e8'] }
+  { num: '1', t: "A customer's KYC state changes in Databricks", d: 'Three demo ops edit the two tables: adding a customer with a PENDING case makes it join the segment; verifying or deactivating one makes it leave. Both are plain warehouse SQL on the demo tables, metered as usual. Nothing is published until the producer runs.', n: ['customers', 'kyc'] },
+  { num: '2.1', t: 'The producer scans the lake tables', chip: 'scan', d: 'The Dagster asset resolves each table location through the Unity Catalog REST API (control plane, no compute) and scans it with delta-rs — column-pruned to what the query selects, straight from ADLS storage with the service principal. No Spark session, no JVM, no Databricks compute anywhere in the run.', n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
+  { num: '2.2', t: 'DuckDB runs the candidate query', chip: 'query', d: 'The snapshots are registered in DuckDB through the zero-copy Arrow interface and the query from jobotron.yaml runs in-process — a real SQL join, the thing the RFC moves off VOperDB onto the data platform. Every row of the result is one customer in the segment; an empty result still carries the schema, so the next steps hold.', n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
+  { num: '2.3', t: 'Schemas go to the registry', chip: 'schema', d: 'The Avro schemas are derived from the query result shape: key = customer_id, value = run_id + job_type + the selected columns (payload minimization by construction). They are ensured per operator subject — jobotron_demo_<op>-key and -value — and only registered when new or changed.', n: ['producer', 'reg'], e: ['L2a'] },
+  { num: '2.4', t: 'One message per customer, routed by operator', chip: 'route', d: 'Each result row becomes one message: key = customer_id (the identity the worker deduplicates on), value = run_id + job_type + payload. The operator column picks the topic — jobotron_demo_gr or jobotron_demo_br — and an unknown operator fails the run rather than publishing cross-market. run_id groups the messages into one job run, the unit the RFC counts (about 57 runs a day across its job set).', n: ['producer', 'topics'], e: ['L2b'] },
+  { num: '3', t: 'The topics hold the current segment', d: "The topics are this demo's endpoint: every publish rewrites the whole eligible set, so a topic always reflects the last run. A customer that left the segment simply stops appearing — no tombstone. The worker's dedup and eligibility re-validation make republishing safe; volumes are tiny (the RFC sizes all operators at about 20,000 messages a day).", n: ['producer', 'reg', 'topics'], e: ['L2a', 'L2b'] },
+  { num: '4', t: 'The demo consumer mirrors the segment into Postgres', d: "A demo consumer reads each operator topic from the beginning, decodes the Avro messages, and rebuilds one Postgres table per operator (jobotron_demo_gr / jobotron_demo_br). Topics append, so the consumer takes the messages of the LATEST publish run (the run_id of the topic's last message) — the current segment, nothing stale: a customer that left it disappears from its table at the next consume, no tombstone. It stands in for the RFC's worker, which would act per message (dedup in Redis, eligibility re-validation through CustomerService, actions through Iris and VOperDB, item state).", n: ['reg', 'topics', 'consumer', 'postgres'], e: ['L4a', 'L4b', 'L5'] }
 ];
-const NODES = ['customers', 'kyc', 'producer', 'reg', 'topics', 'worker'];
-const EDGES = ['e1', 'e2', 'e3', 'e4', 'e7', 'e8'];
+const NODES = ['customers', 'kyc', 'producer', 'reg', 'topics', 'consumer', 'postgres'];
+const EDGES = ['L1a', 'L1b', 'L2a', 'L2b', 'L4a', 'L4b', 'L5'];
 const $ = id => document.getElementById(id);
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let i = 0, timer = null, live = [];
+let i = 0, timer = null;
 
 const list = $('steps');
 S.forEach((s, k) => {
-  const li = document.createElement('li');
-  li.innerHTML = '<span class="num">' + s.num + '</span><span class="t"></span><span class="d"></span>';
-  li.querySelector('.t').textContent = s.t;
-  li.querySelector('.d').textContent = s.d;
-  li.onclick = () => { stop(); show(k); };
-  list.appendChild(li);
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = 'stepcard';
+  card.innerHTML = '<span class="num"></span><span class="t"></span><span class="d"></span>';
+  card.querySelector('.num').textContent = s.num;
+  card.querySelector('.t').textContent = s.t;
+  card.querySelector('.d').textContent = s.d;
+  card.onclick = () => { stop(); show(k); };
+  list.appendChild(card);
 });
 
 function show(k) {
   i = (k + S.length) % S.length;
   const s = S[i];
-  NODES.forEach(n => { $('n-' + n).style.opacity = s.n.includes(n) ? 1 : 0.4; });
-  EDGES.forEach(e => $(e).classList.toggle('on', s.e.includes(e)));
-  $('dots').innerHTML = '';
-  live = s.e.map(e => {
-    const l = $(e), c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    c.setAttribute('r', 5); c.setAttribute('fill', '#ef9f27');
-    $('dots').appendChild(c);
-    return { c, x1: +l.getAttribute('x1'), y1: +l.getAttribute('y1'), x2: +l.getAttribute('x2'), y2: +l.getAttribute('y2') };
-  });
+  NODES.forEach(n => $('st-' + n).classList.toggle('on', s.n.includes(n)));
+  document.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', s.chip === c.id.replace('chip-', '')));
   [...list.children].forEach((li, n) => li.classList.toggle('on', n === i));
-  $('cap-t').textContent = s.num + '. ' + s.t;
+  $('cap-num').textContent = 'Step ' + s.num;
+  $('cap-t').textContent = s.t;
   $('cap-d').textContent = s.d;
   $('pos').textContent = 'Step ' + s.num + ' of ' + S.length;
 }
-function tick(now) {
-  const p = reduce ? 1 : (now % 1400) / 1400;
-  live.forEach(o => { o.c.setAttribute('cx', o.x1 + (o.x2 - o.x1) * p); o.c.setAttribute('cy', o.y1 + (o.y2 - o.y1) * p); });
-  requestAnimationFrame(tick);
+// Arrows are static plumbing; the gradient sweep is run activity. While an
+// action runs, dots ride that step's arrows and vanish when the run ends —
+// browsing steps never lights them.
+function edgesOn(edges) { const list = Array.isArray(edges) ? edges : (S[edges].e || []); EDGES.forEach(e => $('e-' + e).classList.toggle('on', list.includes(e))); }
+function edgesOff() { EDGES.forEach(e => $('e-' + e).classList.remove('on')); }
+// Box badges: spinner while the step's run is in flight, ✓ on success / ✗ on
+// failure when it ends, fading after a few seconds.
+let runstateTimer = null;
+function stagesClear() { NODES.forEach(n => { const b = $('st-' + n).querySelector('.runstate'); if (b) { b.className = 'runstate'; b.textContent = ''; } }); }
+function stagesRun(nodes, state) {
+  const list = Array.isArray(nodes) ? nodes : (S[nodes].n || []);
+  const mark = { running: '', done: '\u2713', fail: '\u2717' }[state];
+  list.forEach(n => { const b = $('st-' + n).querySelector('.runstate'); if (b) { b.className = 'runstate ' + state; b.textContent = mark; } });
 }
-function start() { stop(); timer = setInterval(() => show(i + 1), 4500); $('play').textContent = 'Pause'; }
+function start() { stop(); timer = setInterval(() => show(i + 1), 5000); $('play').textContent = 'Pause'; }
 function stop() { if (timer) { clearInterval(timer); timer = null; } $('play').textContent = 'Play'; }
 
 $('prev').onclick = () => { stop(); show(i - 1); };
@@ -256,7 +389,6 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') { stop(); show(i - 1); }
 });
 
-// Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
 const SYNC = 'jobotron';
 let helper = false, busy = false;
 const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
@@ -274,20 +406,18 @@ function say(text, url, state, r = $('result'), subs = null) {
   if (url) { r.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; r.append(a); }
   if (subs) for (const s of subs) {
     const d = document.createElement('div');
-    d.style.marginTop = '4px';
-    if (s.mono) { d.style.fontFamily = 'ui-monospace, Menlo, monospace'; d.style.fontSize = '12.5px'; d.style.color = 'var(--muted)'; }
+    d.style.marginTop = '5px';
+    d.className = s.cls || (s.mono ? 'mono' : '');
     d.textContent = s.text;
     r.append(d);
   }
 }
-function lock(on) { busy = on; document.querySelectorAll('.acts button, .acts select, .bar button').forEach(b => { b.disabled = on || !helper; }); }
+function lock(on) { busy = on; document.querySelectorAll('#rail button').forEach(b => { b.disabled = on || !helper; }); }
 
-// Databricks cost meter: setup and change runs meter their warehouse SQL; a publish
-// run touches no Databricks compute and reports 0.0 — the point of the design.
 const costSession = { warehouse: 0, cluster: 0 };
 const fmtSeconds = s => (Math.round(s * 100) / 100) + 's';
 function costText(cost) {
-  if (!cost) return '';
+  if (!cost) return null;
   costSession.warehouse += cost.warehouse_seconds || 0;
   costSession.cluster += cost.cluster_seconds || 0;
   const bits = [];
@@ -296,23 +426,26 @@ function costText(cost) {
   const session = [];
   if (costSession.warehouse) session.push(fmtSeconds(costSession.warehouse) + ' (Serverless SQL Warehouse)');
   if (costSession.cluster) session.push(fmtSeconds(costSession.cluster) + ' (All-purpose cluster)');
-  const el = $('cost-total');
-  el.textContent = 'Session cost so far: ' + (session.length ? session.join(' + ') : 'nothing yet');
-  el.style.display = 'block';
-  return bits.length ? 'Databricks cost: ' + bits.join(' + ') : 'Databricks cost: none (no Databricks compute)';
+  return { run: bits.length ? 'Databricks cost: ' + bits.join(' + ') : 'Databricks cost: none (no Databricks compute)',
+           session: 'Session cost so far: ' + (session.length ? session.join(' + ') : 'nothing yet') };
 }
 
-async function run(label, body, out) {
+async function run(label, body, out = $('result'), step = null, edges = null, stages = null) {
   stop(); lock(true);
+  clearTimeout(runstateTimer); stagesClear();
+  if (step !== null) { edgesOn(edges || step); stagesRun(stages || step, 'running'); }
   const started = await post(body);
-  if (started.error) { say(label + ' failed to start: ' + started.error, null, 'fail', out); lock(false); return false; }
+  if (started.error || !started.runId) { say(label + ' failed to start: ' + (started.error || 'no run id'), null, 'fail', out); lock(false); edgesOff(); stagesClear(); return false; }
   for (;;) {
     const s = await get('/api/run/' + started.runId);
     const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
     const subs = [];
     if (done) {
       const cost = costText(s.cost);
-      if (cost) subs.push({ text: cost });
+      if (cost) {
+        subs.push({ text: cost.run, cls: 'costline' });
+        subs.push({ text: cost.session });
+      }
       if (s.change) {
         if (s.change.skipped) {
           subs.push({ text: 'Skipped — ' + s.change.skipped });
@@ -324,165 +457,106 @@ async function run(label, body, out) {
       }
     }
     say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : null);
-    if (done) { lock(false); return s.status === 'SUCCESS'; }
+    if (done) {
+      lock(false); edgesOff();
+      if (step !== null) { stagesRun(stages || step, s.status === 'SUCCESS' ? 'done' : 'fail'); runstateTimer = setTimeout(stagesClear, 6000); }
+      return s.status === 'SUCCESS';
+    }
     await new Promise(r => setTimeout(r, 2000));
   }
 }
 
-const ACTIONS = {
-  change: box => {
-    const sel = document.createElement('select');
-    [['add_customer', 'add an unverified customer'], ['verify_customer', 'verify a customer (leaves the segment)'], ['deactivate_customer', 'deactivate a customer (leaves the segment)']].forEach(([v, l]) => sel.add(new Option(l, v)));
-    const b = document.createElement('button');
-    b.textContent = 'Make change in Databricks';
-    b.onclick = () => run('Change (' + sel.selectedOptions[0].text + ')', { action: 'change', change: sel.value });
-    box.append(sel, b);
-  },
-  run: (box, i) => {
-    if (i === 1) {
-      const b = document.createElement('button');
-      b.textContent = 'Run producer (steps 2.1 to 2.4)';
-      b.onclick = () => run('Publish', { action: 'sync' });
-      box.append(b);
-    } else {
-      const p = document.createElement('p');
-      p.style.cssText = 'margin: 0; font-size: 13.5px; color: var(--muted)';
-      p.textContent = 'Part of the same publish run — trigger it from step 2.1.';
-      box.append(p);
+// Every check renders into the step card's result area, like the runs.
+async function topicsCheck(out = $('result')) {
+  say('Reading the operator topics...', null, 'run', out);
+  const d = await get('/api/check/jobotron/topics');
+  if (d.error) { say('Topics check failed: ' + d.error, null, 'fail', out); return; }
+  const total = Object.values(d).reduce((n, t) => n + t.count, 0);
+  const subs = [{ text: (total ? '\u2713 ' : '\u2717 ') + total + ' message(s) on the operator topics. Each publish rewrites the whole eligible set — the last run\u2019s rows are what a topic holds.' }];
+  for (const [topic, info] of Object.entries(d)) {
+    subs.push({ text: topic + ': ' + info.count + ' message(s)', cls: 'strong' });
+    for (const m of info.messages) {
+      subs.push({ text: m.error ? 'decode error: ' + m.error : 'customer ' + m.key.customer_id + ' \u2192 ' + (m.value.job_type || '?') + ' (' + (m.value.locale || '-') + ', ' + (m.value.email || '-') + ')', mono: true });
     }
-  },
-  schema: box => {
-    const b = document.createElement('button');
-    b.textContent = 'Show schemas from Apicurio';
-    b.onclick = async () => {
-      stop(); lock(true);
-      say('Fetching schemas from the registry...', null, 'run');
-      try {
-        const d = await get('/api/schema/' + SYNC);
-        if (d.error) { say('Schema fetch failed: ' + d.error, null, 'fail'); return; }
-        const r = $('result');
-        r.textContent = '';
-        const any = Object.values(d).some(t => t && t.key && t.value);
-        const ic = document.createElement('span');
-        ic.className = 'icon ' + (any ? 'ok' : 'fail');
-        ic.textContent = any ? '\u2713' : '\u2717';
-        r.append(ic);
-        r.append(any ? ' Registry holds the operator subjects.' : ' No operator subjects in the registry yet — run the producer first.');
-        for (const [topic, info] of Object.entries(d)) {
-          const h = document.createElement('div');
-          h.style.cssText = 'margin-top: 8px; font-weight: 500';
-          h.textContent = info.key && info.value ? topic + ' — key v' + info.key.version + ' (id ' + info.key.id + '), value v' + info.value.version + ' (id ' + info.value.id + ')' : topic + ' — not registered';
-          r.append(h);
-          if (info.value) {
-            const pre = document.createElement('pre');
-            pre.style.cssText = 'font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; padding: 8px 10px; margin: 4px 0 0';
-            const width = Math.max(...Object.keys(info.value.columns).map(k => k.length));
-            pre.textContent = Object.entries(info.value.columns).map(([n, t]) => n.padEnd(width + 2) + t).join('\n');
-            r.append(pre);
-          }
-        }
-      } finally { lock(false); }
-    };
-    box.append(b);
-  },
-  topics: box => {
-    const b = document.createElement('button');
-    b.textContent = 'Read operator topics';
-    b.onclick = async () => {
-      stop(); lock(true);
-      say('Reading the operator topics...', null, 'run');
-      try {
-        const d = await get('/api/check/jobotron/topics');
-        if (d.error) { say('Topics check failed: ' + d.error, null, 'fail'); return; }
-        const r = $('result');
-        r.textContent = '';
-        const total = Object.values(d).reduce((n, t) => n + t.count, 0);
-        const ic = document.createElement('span');
-        ic.className = 'icon ' + (total ? 'ok' : 'fail');
-        ic.textContent = total ? '\u2713' : '\u2717';
-        r.append(ic);
-        r.append(' ' + total + ' message(s) on the operator topics. Each publish rewrites the whole eligible set — the last run\'s rows are what a topic holds.');
-        for (const [topic, info] of Object.entries(d)) {
-          const h = document.createElement('div');
-          h.style.cssText = 'margin-top: 8px; font-weight: 500';
-          h.textContent = topic + ': ' + info.count + ' message(s)';
-          r.append(h);
-          for (const m of info.messages) {
-            const line = document.createElement('div');
-            line.style.cssText = 'font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted)';
-            line.textContent = m.error ? 'decode error: ' + m.error : 'customer ' + m.key.customer_id + ' → ' + (m.value.job_type || '?') + ' (' + (m.value.locale || '-') + ', ' + (m.value.email || '-') + ')';
-            r.append(line);
-          }
-          if (info.count > info.messages.length) {
-            const more = document.createElement('div');
-            more.style.cssText = 'font-size: 12px; color: var(--muted)';
-            more.textContent = '… and ' + (info.count - info.messages.length) + ' more';
-            r.append(more);
-          }
-        }
-      } finally { lock(false); }
-    };
-    box.append(b);
-  },
-  worker: box => {
-    const b = document.createElement('button');
-    b.textContent = 'Run demo consumer';
-    b.onclick = () => run('Consume', { action: 'consume' });
-    const b2 = document.createElement('button');
-    b2.textContent = 'Show Postgres tables';
-    b2.onclick = async () => {
-      stop(); lock(true);
-      say('Reading the per-operator tables...', null, 'run');
-      try {
-        const d = await get('/api/check/jobotron/postgres');
-        if (d.error) { say('Postgres check failed: ' + d.error, null, 'fail'); return; }
-        const r = $('result');
-        r.textContent = '';
-        const ic = document.createElement('span');
-        ic.className = 'icon ok';
-        ic.textContent = '\u2713';
-        r.append(ic);
-        const total = Object.values(d).reduce((n, rows) => n + rows.length, 0);
-        r.append(' ' + total + ' row(s) across the operator tables — each rebuilt from its topic at the last consume.');
-        for (const [topic, rows] of Object.entries(d)) {
-          const h = document.createElement('div');
-          h.style.cssText = 'margin-top: 8px; font-weight: 500';
-          h.textContent = topic + ': ' + rows.length + ' row(s)';
-          r.append(h);
-          for (const row of rows) {
-            const line = document.createElement('div');
-            line.style.cssText = 'font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted)';
-            line.textContent = row.join(' | ');
-            r.append(line);
-          }
-        }
-      } finally { lock(false); }
-    };
-    const p = document.createElement('p');
-    p.style.cssText = 'margin: 8px 0 0; font-size: 13px; color: var(--muted)';
-    p.textContent = 'The RFC\'s real worker acts per message (dedup, re-validation, Iris/VOperDB actions, item state) — the mirror keeps this demo observable.';
-    box.append(b, b2, p);
+    if (info.count > info.messages.length) subs.push({ text: '\u2026 and ' + (info.count - info.messages.length) + ' more', mono: true });
   }
-};
-
-function renderActions() {
-  const box = $('acts');
-  box.innerHTML = '';
-  say('');
-  if (ACTIONS[S[i].a]) ACTIONS[S[i].a](box, i);
-  lock(busy);
+  say('Operator topics', null, total ? 'ok' : 'fail', out, subs);
 }
-const baseShow = show;
-show = k => { baseShow(k); renderActions(); };
+
+async function schemasCheck(out = $('result')) {
+  say('Fetching schemas from the registry...', null, 'run', out);
+  const d = await get('/api/schema/' + SYNC);
+  if (d.error) { say('Schema fetch failed: ' + d.error, null, 'fail', out); return; }
+  const any = Object.values(d).some(t => t && t.key && t.value);
+  const subs = [];
+  for (const [topic, info] of Object.entries(d)) {
+    subs.push({ text: info.key && info.value ? topic + ' — key v' + info.key.version + ' (id ' + info.key.id + '), value v' + info.value.version + ' (id ' + info.value.id + ')' : topic + ' — not registered', cls: 'strong' });
+    if (info.value) {
+      const width = Math.max(...Object.keys(info.value.columns).map(k => k.length));
+      subs.push({ text: Object.entries(info.value.columns).map(([n, t]) => n.padEnd(width + 2) + t).join('\n'), mono: true });
+    }
+  }
+  say(any ? 'Registry holds the operator subjects.' : 'No operator subjects yet — run the producer first.', null, any ? 'ok' : 'fail', out, subs);
+}
+
+async function postgresCheck(out = $('result')) {
+  say('Reading the per-operator tables...', null, 'run', out);
+  const d = await get('/api/check/jobotron/postgres');
+  if (d.error) { say('Postgres check failed: ' + d.error, null, 'fail', out); return; }
+  const total = Object.values(d).reduce((n, rows) => n + rows.length, 0);
+  const subs = [{ text: 'Each table is rebuilt from its topic at the last consume.' }];
+  for (const [topic, rows] of Object.entries(d)) {
+    subs.push({ text: topic + ': ' + rows.length + ' row(s)', cls: 'strong' });
+    for (const row of rows) subs.push({ text: row.join(' | '), mono: true });
+  }
+  say('\u2713 ' + total + ' row(s) across the operator tables.', null, 'ok', out, subs);
+}
+
+// The action rail: quick access to everything, always visible. Each action
+// jumps to its related pipeline step so the result lands in context.
+// A publish run moves data across the producer's full path — both tables in,
+// registry + topics out — so all four arrows carry dots while it runs.
+const PUBLISH_EDGES = ['L1a', 'L1b', 'L2a', 'L2b'];
+const CONSUME_EDGES = ['L4a', 'L4b', 'L5'];
+// A publish run animates only the producer box — the lake tables it reads stay calm.
+const PRODUCER_STAGES = ['producer'];
+// Setup provisions the tables, the subjects and the topics — those boxes spin.
+const SETUP_STAGES = ['customers', 'kyc', 'reg', 'topics'];
+const ACTIONS = [
+  { id: 'act-add', step: 0, go: out => run('Change (add an unverified customer)', { action: 'change', change: 'add_customer' }, out, 0) },
+  { id: 'act-verify', step: 0, go: out => run('Change (verify a customer)', { action: 'change', change: 'verify_customer' }, out, 0) },
+  { id: 'act-deactivate', step: 0, go: out => run('Change (deactivate a customer)', { action: 'change', change: 'deactivate_customer' }, out, 0) },
+  { id: 'act-publish', step: 1, go: out => run('Publish', { action: 'sync' }, out, 1, PUBLISH_EDGES, PRODUCER_STAGES) },
+  { id: 'act-consume', step: 6, go: out => run('Consume', { action: 'consume' }, out, 6, CONSUME_EDGES) },
+  { id: 'act-topics', step: 5, go: out => topicsCheck(out) },
+  { id: 'act-schemas', step: 3, go: out => schemasCheck(out) },
+  { id: 'act-postgres', step: 6, go: out => postgresCheck(out) },
+];
+for (const a of ACTIONS) {
+  $(a.id).onclick = () => { stop(); show(a.step); edgesOn(a.step); Promise.resolve(a.go($('result'))).finally(edgesOff); };
+}
 
 $('do-rebuild').onclick = async () => {
-  if (!confirm('This drops the Jobotron demo tables, deletes the operator topics and their registry subjects, then creates everything again and runs the first publish. Continue?')) return;
-  const out = $('bar-result');
-  if (await run('Reset (1 of 3)', { action: 'reset' }, out)) if (await run('Set up (2 of 3)', { action: 'setup' }, out)) await run('First publish (3 of 3)', { action: 'sync' }, out);
+  stop(); show(0);
+  if (!confirm('This drops the Jobotron demo tables, deletes the operator topics and their registry subjects, drops the consumer\u2019s Postgres tables, then creates everything again and runs the first publish and the first consume. Continue?')) return;
+  const out = $('result');
+  try {
+    // Reset and setup spin the boxes they touch (Databricks side; tables,
+    // subjects and topics). Publish and consume animate their own arrows.
+    if (await run('Reset (1 of 4)', { action: 'reset' }, out, 0)) if (await run('Set up (2 of 4)', { action: 'setup' }, out, 0, null, SETUP_STAGES)) if (await run('First publish (3 of 4)', { action: 'sync' }, out, 1, PUBLISH_EDGES, PRODUCER_STAGES)) await run('First consume (4 of 4)', { action: 'consume' }, out, 6, CONSUME_EDGES);
+  } finally { edgesOff(); }
 };
 
-fetch('/api/ping').then(r => r.json()).then(() => { helper = true; $('bar-msg').textContent = 'Connected to the helper. Jobotron demo.'; lock(false); }).catch(() => {});
-show(0); requestAnimationFrame(tick);
+fetch('/api/ping').then(r => r.json()).then(() => {
+  helper = true;
+  $('helper-pill').classList.add('ok');
+  $('helper-text').textContent = 'helper connected';
+  lock(false);
+}).catch(() => {
+  $('helper-pill').classList.add('fail');
+  $('helper-text').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh';
+});
+show(0);
 </script>
 </body>
 </html>
