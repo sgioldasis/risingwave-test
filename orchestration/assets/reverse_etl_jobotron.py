@@ -448,6 +448,8 @@ def build_consume_asset(cfg: JobotronConfig):
             }
         )
         read: dict[str, list[dict]] = {topic: [] for topic in cfg.topics.values()}
+        last_run: dict[str, str] = {}
+        last_ts: dict[str, int] = {}
         try:
             consumer.assign([TopicPartition(topic, 0) for topic in cfg.topics.values()])
             # Drain every topic fully, verified against the broker's watermarks. A
@@ -469,6 +471,8 @@ def build_consume_asset(cfg: JobotronConfig):
                             context.log.warning(f"Could not decode a message on {message.topic()}: {e}")
                             continue
                         read[message.topic()].append(value)
+                        last_run[message.topic()] = value.get("run_id")
+                        last_ts[message.topic()] = message.timestamp()[1]
                 lagging = []
                 for topic in cfg.topics.values():
                     lo, hi = consumer.get_watermark_offsets(TopicPartition(topic, 0), timeout=10.0, cached=False)
@@ -481,8 +485,16 @@ def build_consume_asset(cfg: JobotronConfig):
             consumer.close()
 
         current: dict[str, dict[int, dict]] = {}
+        # The current segment is the latest PUBLISH's full set. Grouping per topic by
+        # that topic's last message breaks when a publish legitimately emits ZERO
+        # messages for one operator (empty segment): the topic's last message is then
+        # from an OLDER run and its stale snapshot survives forever (a verified 1007
+        # did exactly that). The latest publish is the one whose message carries the
+        # newest Kafka timestamp across ALL topics -- topics without messages from it
+        # correctly rebuild empty.
+        stamps = [(last_ts[topic], rid) for topic, rid in last_run.items()]
+        latest_run = max(stamps)[1] if stamps else None
         for topic, values in read.items():
-            latest_run = values[-1].get("run_id") if values else None
             current[topic] = {int(v["customer_id"]): v for v in values if v.get("run_id") == latest_run}
             context.log.info(f"{topic}: latest publish {latest_run} holds {len(current[topic])} customer(s)")
 

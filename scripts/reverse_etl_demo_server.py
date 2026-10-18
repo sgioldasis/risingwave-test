@@ -268,20 +268,31 @@ def check_jobotron_topics() -> dict:
     out: dict[str, list] = {topic: [] for topic in JOBOTRON_TOPICS}
     try:
         consumer.assign([TopicPartition(topic, 0) for topic in JOBOTRON_TOPICS])
-        while True:
-            batch = consumer.consume(num_messages=100, timeout=2.0)
-            if not batch:
+        # Drain fully, verified against the broker's watermarks -- a plain "break on
+        # the first quiet window" loses the race on a cold consumer and reports an
+        # empty topic that actually holds messages (same bug the consume asset had).
+        for _ in range(10):
+            while True:
+                batch = consumer.consume(num_messages=500, timeout=5.0)
+                if not batch:
+                    break
+                for message in batch:
+                    if message.error() or message.topic() not in out:
+                        continue
+                    try:
+                        key = deserializer(message.key(), SerializationContext(message.topic(), MessageField.KEY))
+                        value = deserializer(message.value(), SerializationContext(message.topic(), MessageField.VALUE))
+                    except Exception as e:  # noqa: BLE001 - surface decode failures per message
+                        out[message.topic()].append({"error": f"{type(e).__name__}: {e}"})
+                        continue
+                    out[message.topic()].append({"key": key, "value": value})
+            lagging = []
+            for t in JOBOTRON_TOPICS:
+                lo, hi = consumer.get_watermark_offsets(TopicPartition(t, 0), timeout=10.0, cached=False)
+                if hi - lo > len(out[t]):
+                    lagging.append(t)
+            if not lagging:
                 break
-            for message in batch:
-                if message.error() or message.topic() not in out:
-                    continue
-                try:
-                    key = deserializer(message.key(), SerializationContext(message.topic(), MessageField.KEY))
-                    value = deserializer(message.value(), SerializationContext(message.topic(), MessageField.VALUE))
-                except Exception as e:  # noqa: BLE001 - surface decode failures per message
-                    out[message.topic()].append({"error": f"{type(e).__name__}: {e}"})
-                    continue
-                out[message.topic()].append({"key": key, "value": value})
         # Keep the payload bounded no matter what a run published.
         return {topic: {"count": len(rows), "messages": rows[:12]} for topic, rows in out.items()}
     finally:
