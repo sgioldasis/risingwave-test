@@ -116,6 +116,10 @@ def build_sink_health_job_and_schedule(cfg: ReverseEtlSyncConfig, check):
         name=f"{cfg.sync_name}_sink_health_schedule",
         job=job,
         cron_schedule=HEALTH_CRON,
-        default_status=DefaultScheduleStatus.RUNNING,
+        # Opt-in on purpose: auto-starting four */5 health jobs made every demo
+        # launch compete with background runs (and a stack rebuild or instance
+        # wipe would re-enable them silently). Start them from the Dagster UI
+        # (Automation) when a sync's sink should actually be watched.
+        default_status=DefaultScheduleStatus.STOPPED,
     )
     return job, schedule

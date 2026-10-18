@@ -1,0 +1,33 @@
+# The Jobotron producer demo (docs/poc/REVERSE_ETL_JOBOTRON.md): the RFC's upstream
+# publisher as a Dagster component. The query is the RFC's example job -- "send PM to
+# customers that remain unverified" -- run by DuckDB over delta-rs scans of the two
+# demo tables; one Avro message per selected customer goes to its operator topic
+# (jobotron_demo_gr / jobotron_demo_br), schemas in the staging Apicurio.
+type: orchestration.components.reverse_etl_jobotron.JobotronProducer
+
+attributes:
+  job_type: kyc.unverified_pm
+  catalog: de_dev
+  schema_name: sr_poc_external
+  query: |
+    SELECT c.customer_id, c.email, c.locale, c.operator
+    FROM customers AS c
+    JOIN kyc_cases AS k ON k.customer_id = c.customer_id
+    WHERE k.status = 'PENDING' AND c.is_active
+  operators:
+    - gr
+    - br
+  topic_template: "jobotron_demo_{operator}"
+  key_columns:
+    - customer_id
+  operator_column: operator
+  scan_columns:
+    customers:
+      - customer_id
+      - email
+      - locale
+      - operator
+      - is_active
+    kyc_cases:
+      - customer_id
+      - status
