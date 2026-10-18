@@ -450,19 +450,33 @@ def build_consume_asset(cfg: JobotronConfig):
         read: dict[str, list[dict]] = {topic: [] for topic in cfg.topics.values()}
         try:
             consumer.assign([TopicPartition(topic, 0) for topic in cfg.topics.values()])
-            while True:
-                batch = consumer.consume(num_messages=100, timeout=2.0)
-                if not batch:
+            # Drain every topic fully, verified against the broker's watermarks. A
+            # plain "break on the first quiet window" loses the race on a cold
+            # consumer (fresh metadata + fetch handshake) and silently rebuilds the
+            # tables EMPTY -- verified live. Watermarks make "fully drained" a fact,
+            # not a timing guess; the outer cap only guards a pathological loop.
+            for _ in range(10):
+                while True:
+                    batch = consumer.consume(num_messages=500, timeout=5.0)
+                    if not batch:
+                        break
+                    for message in batch:
+                        if message.error() or message.topic() not in read:
+                            continue
+                        try:
+                            value = deserializer(message.value(), SerializationContext(message.topic(), MessageField.VALUE))
+                        except Exception as e:  # noqa: BLE001 -- surface decode failures per message
+                            context.log.warning(f"Could not decode a message on {message.topic()}: {e}")
+                            continue
+                        read[message.topic()].append(value)
+                lagging = []
+                for topic in cfg.topics.values():
+                    lo, hi = consumer.get_watermark_offsets(TopicPartition(topic, 0), timeout=10.0, cached=False)
+                    if hi - lo > len(read[topic]):
+                        lagging.append(f"{topic} ({len(read[topic])}/{hi - lo})")
+                if not lagging:
                     break
-                for message in batch:
-                    if message.error() or message.topic() not in read:
-                        continue
-                    try:
-                        value = deserializer(message.value(), SerializationContext(message.topic(), MessageField.VALUE))
-                    except Exception as e:  # noqa: BLE001 -- surface decode failures per message
-                        context.log.warning(f"Could not decode a message on {message.topic()}: {e}")
-                        continue
-                    read[message.topic()].append(value)
+                context.log.info(f"Topics not fully drained yet: {', '.join(lagging)} -- reading again")
         finally:
             consumer.close()
 
