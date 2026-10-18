@@ -307,17 +307,20 @@ land as drop + add — run one sync first so the state picks up the ids. Renamin
 `RENAME COLUMN value TO description`) also needs the sync's `source_columns`/seed in its `defs.yaml` renamed
 with it, since the change ops build their SQL from it.
 
-## 5d. Bulk-load 1,000,000 rows (delta sync)
+## 5d. Bulk-load rows (delta sync)
 
-The page's change dropdown has "insert 1,000,000 rows (delta)" — one click runs the make_change job, which
-executes **ten INSERT statements of 100,000 rows each** (~25–37s of warehouse time; each commit chains off the
-previous one's `max(id)` via a scalar subquery, so repeated loads append after the last bulk row and the op
-works on a fresh table too). This is the load behind the stress numbers: a sync afterwards processes 1,000,000
+The page's change dropdown has "bulk insert rows (delta)" — selecting it reveals a **row-count input**
+(default 1,000,000). One click runs the make_change job, which executes **one INSERT statement per commit of at
+most 100,000 rows** (so 1,000,000 rows = ten statements; each commit chains off the previous one's `max(id)` via
+a scalar subquery, so repeated loads append after the last bulk row and the op works on a fresh table too). The
+per-commit ceiling is the point: with `REVERSE_ETL_CDF_CHUNK_VERSIONS=1` the sync reads one commit per chunk, and
+~100k rows is the proven driver ceiling — a 1M-row *single commit* OOMs the run worker. The total is only bounded
+by the input cap (10,000,000). This is the load behind the stress numbers: a sync afterwards processes 1,000,000
 events in ~2 minutes (10 read chunks of 100k rows, single Kafka flush, both targets converging).
 
 Two requirements are already wired: the commits need `REVERSE_ETL_CDF_CHUNK_VERSIONS=1` (set in `.env` — the
-default 10 would collect 1M rows in one read chunk and the sync would be OOM-killed; the op logs a warning if
-the setting is not 1), and the op is **delta-only** — the helper rejects it for the other syncs, whose schemas
+default 10 would collect up to 1M rows in one read chunk and the sync would be OOM-killed; the op logs a warning
+if the setting is not 1), and the op is **delta-only** — the helper rejects it for the other syncs, whose schemas
 differ. Repeated loads grow the dataset; the reset flow clears everything when the demo is done.
 
 ## 6. Run the sync from Databricks (optional)

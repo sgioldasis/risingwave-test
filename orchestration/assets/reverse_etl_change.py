@@ -29,6 +29,12 @@ from .reverse_etl_cdf_setup import _require_databricks_env, _rows_as_dicts, _run
 from .reverse_etl_config import ReverseEtlSyncConfig
 
 KEY = "id"
+# Per-commit row ceiling for the bulk generator: chunk_versions=1 makes the sync
+# read one commit per chunk, and ~100k rows is the empirically proven driver
+# ceiling (a 1M-row single commit OOMs the run worker, SIGKILLed by the VM).
+BULK_COMMIT_ROWS = 100_000
+# Sanity cap for one demo bulk load.
+BULK_MAX_ROWS = 10_000_000
 
 
 class DemoChangeSkip(ValueError):
@@ -39,6 +45,10 @@ class DemoChangeSkip(ValueError):
 
 class ChangeConfig(Config):
     change: str = "update"  # insert, update, delete, add_column, rename_column or drop_column
+    # Total row count for the bulk_1m generator (its name is historical). Split into
+    # commits of at most BULK_COMMIT_ROWS so every commit stays at the proven-safe
+    # size for the chunked CDF read (chunk_versions x rows_per_commit <= ~100k).
+    rows: int = 1_000_000
 
 
 def _columns(cfg: ReverseEtlSyncConfig) -> list[tuple[str, str]]:
@@ -101,7 +111,9 @@ def _rename_pair(existing: set[str]) -> tuple[str, str]:
     )
 
 
-def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: set[str] = frozenset()) -> list[str]:
+def change_statements(
+    cfg: ReverseEtlSyncConfig, change: str, existing_columns: set[str] = frozenset(), rows: int = 1_000_000
+) -> list[str]:
     """add_column adds the next free new_col_<n> STRING column, then updates the latest row so the
     change carries it (a new column alone makes no change event). rename_column flips the highest
     new_col_<n> to renamed_col_<n> (or back) -- a rename makes no change event either; the sync's
@@ -128,21 +140,26 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
             )
         return [f"ALTER TABLE {table} DROP COLUMN {demo_column[0]}"]
     if change == "bulk_1m":
-        # The delta sync's 1M-row load generator: ten commits of 100k rows — the
-        # shape the chunked sync reads fastest (those commits need
-        # REVERSE_ETL_CDF_CHUNK_VERSIONS=1, set in .env; the default 10 would
-        # collect 1M rows in one chunk and the sync would be OOM-killed). Each
+        # The delta sync's bulk load generator, parameterized by total rows
+        # (config.rows, default 1,000,000 -- the name bulk_1m is historical).
+        # Rows are split into commits of at most BULK_COMMIT_ROWS each: with
+        # REVERSE_ETL_CDF_CHUNK_VERSIONS=1 the sync reads one commit per chunk,
+        # so per-commit size (not the total) is what must stay ~<=100k. Each
         # commit chains off the previous one's max(id) via a scalar subquery, so
         # no pre-read is needed and repeated loads append after the last bulk
         # row (the reset flow clears the table when the demo is done).
         if cfg.sync_name != "reverse_etl_delta":
             raise ValueError(
-                "bulk_1m is the delta sync's 1M-row load generator (id/description/updated_at); "
+                "bulk_1m is the delta sync's bulk load generator (id/description/updated_at); "
                 f"{cfg.sync_name} has a different schema — use the row-level ops"
             )
+        if rows < 1 or rows > BULK_MAX_ROWS:
+            raise ValueError(f"rows must be between 1 and {BULK_MAX_ROWS:,}, got {rows:,}")
         names = ", ".join([KEY] + [name for name, _ in columns])
         statements = []
-        for _ in range(10):
+        emitted = 0
+        while emitted < rows:
+            chunk = min(BULK_COMMIT_ROWS, rows - emitted)
             values = ", ".join(
                 ["base + 1 + j"]
                 + [
@@ -153,8 +170,9 @@ def change_statements(cfg: ReverseEtlSyncConfig, change: str, existing_columns: 
             statements.append(
                 f"INSERT INTO {table} ({names}) SELECT {values} "
                 f"FROM (SELECT coalesce(max({KEY}), 0) AS base FROM {table}) m "
-                f"CROSS JOIN (SELECT explode(sequence(0, 99999)) AS j) s"
+                f"CROSS JOIN (SELECT explode(sequence(0, {chunk - 1})) AS j) s"
             )
+            emitted += chunk
         return statements
     if change == "insert":
         names = ", ".join([KEY] + [name for name, _ in columns])
@@ -182,7 +200,7 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
         if config.change in ("add_column", "rename_column", "drop_column"):
             existing = {r["col_name"] for r in _rows_as_dicts(_run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}
         try:
-            statements = list(change_statements(cfg, config.change, existing))
+            statements = list(change_statements(cfg, config.change, existing, rows=config.rows))
         except DemoChangeSkip as skip:
             # "Nothing to rename/drop" is a normal demo condition (the demo columns come and go with
             # the add/rename/drop cycle), not a failure: end the run green and tell the page why.
@@ -223,7 +241,7 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
         context.add_output_metadata({
             "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
             "databricks_statements": MetadataValue.int(usage["statements"]),
-            "rows_inserted": MetadataValue.int(1_000_000 if config.change == "bulk_1m" else len(statements)),
+            "rows_inserted": MetadataValue.int(config.rows if config.change == "bulk_1m" else len(statements)),
             # The exact SQL the demo page shows under the run result.
             "databricks_change_sql": MetadataValue.json({
                 "change": config.change, "table": cfg.source_fqn, "sql": statements,

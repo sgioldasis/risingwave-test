@@ -344,11 +344,22 @@ async function check(path, format) {
 const ACTIONS = {
   change: box => {
     const sel = document.createElement('select');
-    [['insert', 'insert a row'], ['update', 'update a row'], ['delete', 'delete a row'], ['add_column', 'add a column'], ['rename_column', 'rename a column'], ['drop_column', 'drop a column'], ['bulk_1m', 'insert 1,000,000 rows (delta)']].forEach(([v, l]) => sel.add(new Option(l, v)));
+    [['insert', 'insert a row'], ['update', 'update a row'], ['delete', 'delete a row'], ['add_column', 'add a column'], ['rename_column', 'rename a column'], ['drop_column', 'drop a column'], ['bulk_1m', 'bulk insert rows (delta)']].forEach(([v, l]) => sel.add(new Option(l, v)));
+    const rows = document.createElement('input');
+    rows.type = 'number'; rows.min = '1'; rows.max = '10000000'; rows.step = '1000';
+    rows.value = '1000000'; rows.title = 'Total rows for the bulk insert (delta only)';
+    rows.style.cssText = 'font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 4px 8px; width: 110px; display: none';
+    // The row count only applies to the bulk generator; show the input just for it.
+    const syncRows = () => { rows.style.display = sel.value === 'bulk_1m' ? '' : 'none'; };
+    sel.onchange = syncRows; syncRows();
     const b = document.createElement('button');
     b.textContent = 'Make change in Databricks';
-    b.onclick = () => run('Change (' + sel.selectedOptions[0].text + ')', { action: 'change', change: sel.value });
-    box.append(sel, b);
+    b.onclick = () => {
+      const body = { action: 'change', change: sel.value };
+      if (sel.value === 'bulk_1m') body.rows = Math.max(1, Math.round(Number(rows.value) || 1000000));
+      run('Change (' + (sel.value === 'bulk_1m' ? 'bulk ' + body.rows + ' rows' : sel.selectedOptions[0].text) + ')', body);
+    };
+    box.append(sel, rows, b);
   },
   sync: (box, i) => {
     if (i === 1) {

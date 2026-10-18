@@ -65,7 +65,7 @@ def gql(query: str, variables: dict | None = None) -> dict:
         raise RuntimeError(f"Dagster GraphQL {e.code}: {body[:300]}") from e
 
 
-def launch(sync: str, action: str, change: str | None) -> dict:
+def launch(sync: str, action: str, change: str | None, rows: int | None = None) -> dict:
     if sync not in SYNCS:
         raise ValueError(f"unknown sync {sync!r}")
     allowed_changes = JOBOTRON_CHANGES if sync == "jobotron" else CHANGES
@@ -93,7 +93,14 @@ def launch(sync: str, action: str, change: str | None) -> dict:
             raise ValueError(f"change for {sync} must be one of {allowed_changes}")
         if change == "bulk_1m" and sync != "delta":
             raise ValueError("bulk_1m is only available for the delta sync (its 1M-row load generator)")
-        params["runConfigData"] = {"ops": {f"reverse_etl_{sync}_make_change": {"config": {"change": change}}}}
+        config: dict = {"change": change}
+        if change == "bulk_1m":
+            # Optional total row count for the bulk generator (default 1,000,000).
+            try:
+                config["rows"] = int(rows) if rows is not None else 1_000_000
+            except (TypeError, ValueError):
+                raise ValueError(f"rows must be an integer, got {rows!r}") from None
+        params["runConfigData"] = {"ops": {f"reverse_etl_{sync}_make_change": {"config": config}}}
     elif action not in ("reset", "setup"):
         raise ValueError(f"unknown action {action!r}")
     result = gql(
@@ -392,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path != "/api/launch":
                 return self._json(404, {"error": "not found"})
             body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
-            self._json(200, launch(body.get("sync", ""), body.get("action", ""), body.get("change")))
+            self._json(200, launch(body.get("sync", ""), body.get("action", ""), body.get("change"), body.get("rows")))
         except Exception as e:
             self._json(400, {"error": str(e)})
 
