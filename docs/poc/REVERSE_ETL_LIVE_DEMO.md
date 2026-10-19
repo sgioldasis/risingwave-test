@@ -118,7 +118,7 @@ the Kaizen STG box (consumer group lag).
 | Object | What it is |
 |---|---|
 | Topic `reverse_etl_avro_topic` | On Kaizen's staging Kafka cluster. Each message is one change: the key is `{rid}`, the value has `before`, `after`, `op` (`c`, `u` or `d`) and `source`, in Avro. |
-| Apicurio registry | The shared staging registry (anonymous read and write, used by other teams). Holds the schemas `reverse_etl_avro_topic-key` and `reverse_etl_avro_topic-value`, through its Confluent-compatible API (`/apis/ccompat/v7`), in the default group. Messages carry only a schema id; readers look the schema up. Every sync run registers both schemas again; an identical schema returns the existing version, so a version is added only when the schema changes. |
+| Apicurio registry | The shared staging registry (anonymous read and write, used by other teams). Holds the schemas `reverse_etl_avro_topic-key` and `reverse_etl_avro_topic-value`, through its Confluent-compatible API (`/apis/ccompat/v7`), in the default group. Messages carry only a schema id; readers look the schema up. Every sync run registers both schemas again; an identical schema returns the existing version, so a version is added only when the schema changes. One wrinkle the sync handles for you: re-registering a schema that matches an OLDER version (the demo's second add → rename → drop → add cycle) does not make it the latest — the registry returns the old version's id and RisingWave then rejects the new column. The sync verifies the built schema IS the latest (deciding from the register's returned id — the registry's latest-version read lags its writes for a few seconds) and, when it deduped to an older version, soft-deletes the versions after it and registers again, so the version list can shrink by those retired numbers. |
 | Container `kafka-connect` | Kafka Connect with the Debezium JDBC sink plugin and the Confluent Avro converter, running locally. Its own bookkeeping topics are on the local Redpanda. |
 | Connector `reverse_etl_avro_sink` | Reads the topic (consumer group `connect-reverse_etl_avro_sink`) and upserts or deletes rows in Postgres, one task. Created by the `reverse_etl_avro_jdbc_sink` asset. |
 
@@ -284,8 +284,11 @@ optional Databricks notebook path does differ there — sync between changes on 
 The demo op for this is in the page's change dropdown ("rename a column"). Demo columns only — the op flips the
 highest `new_col_<n>` to `renamed_col_<n>`, and clicking it again renames that back — so the natural cycle is
 *add a column* → sync → *rename a column* → sync → (optionally *rename a column* again) → *drop a column* →
-sync; the drop takes either form. Sync *between* the add and the rename — or add, populate and rename all in one
-unsynced window — works: with the demo's single-version chunks (`REVERSE_ETL_CDF_CHUNK_VERSIONS=1` in `.env`;
+sync; the drop takes either form. The cycle repeats: a second add → rename after a drop works too (2026-10-19:
+the registry dedups the re-added column's schema against the first cycle's version and the sync now handles
+that — see the registry row above), even with the drop, re-add and rename in ONE unsynced window. Sync *between*
+the add and the rename — or add, populate and rename all in one unsynced window — works: with the demo's
+single-version chunks (`REVERSE_ETL_CDF_CHUNK_VERSIONS=1` in `.env`;
 the code default is 10) the sync pins each chunk's envelope to that chunk's schema (the populate's message
 carries the column under its old name, with the value), the watermark reaches every commit including the
 schema-only ones, and the sync diffs the schema the events were enveloped with against the final one — so the

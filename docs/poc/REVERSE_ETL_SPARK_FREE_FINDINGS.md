@@ -108,6 +108,37 @@ backend's internals), `REVERSE_ETL_JOBOTRON.md` (the full-snapshot producer).
      (the last event-bearing chunk's) against the final one, and propagates
      what changed: the rename reaches the targets data-preserving in the SAME
      sync, matching the source.
+8.  **Re-adding a column whose schema was registered before silently fails on
+    RisingWave** (verified live 2026-10-19, the demo's second add → rename →
+    drop → add cycle). Confluent-compatible registries dedupe registration by
+    content: registering a schema whose bytes already exist as an OLDER version
+    of the subject returns that version's schema id and does NOT create a new
+    version, so the registry's latest stays wherever it was. RisingWave
+    validates every `ADD COLUMN` against the registry's latest, so "the sync
+    registered the schema" is not enough -- the built schema must BE the latest.
+    The demo hits this on every second cycle: the re-add's envelope is
+    content-identical to the first add's version, the register no-ops, and
+    RisingWave answers `Column "new_col_1" is defined in SQL but not found in
+    the source`. Two more registry behaviours surfaced while fixing it: the
+    latest-version READ lags the writes for a few seconds (a register returned
+    the new version's schema id while `get_latest_version` still reported the
+    old one, which made a verify-once check fail against a state that was about
+    to be true), and a SOFT-deleted version's content stays resolvable by id, so
+    messages already on the topic still deserialize. Fix, in
+    `_register_avro_schemas`: decide from the register's returned schema id
+    against a snapshot taken BEFORE the write -- a fresh read after the write is
+    useless, because the lag outlasted a 4s retry budget in live testing (the
+    first fix verified the latest with `get_latest_version` after registering,
+    and the check kept failing against the stale old value even though the
+    register had just created the version). The returned id is authoritative:
+    unknown to the snapshot = a new version was created (the latest is ours);
+    matching the version that WAS the latest = the dedup landed there (the
+    latest is ours); matching an OLDER version = retire the versions after it
+    (soft delete) and register again -- the dedup then lands on that version,
+    now the latest. Re-verified live with both failing sequences: add + populate +
+    rename in one unsynced window, and then drop + add + populate + rename in one
+    unsynced window (the second cycle) -- both propagate end to end, and a no-op
+    sync confirms the watermark at the rename's commit.
 
 ## 3. Live proof — all four syncs, full cycles (2026-10-19)
 

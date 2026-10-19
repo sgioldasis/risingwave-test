@@ -435,7 +435,18 @@ All factories take the config and return Dagster objects; all names come from it
   new columns against the registry schema — and the registration keeps every column
   the table still has (`_registration_fields`), since RisingWave rebinds the whole
   table against the registry's latest on every `ADD COLUMN` (a pending rename's old
-  name or a pending drop must not be shed mid-flight).
+  name or a pending drop must not be shed mid-flight). Registration must make the
+  built schema the registry's *latest*, not just present: registries dedupe by
+  content, so re-registering a schema whose bytes already exist as an older version
+  (the demo's second add → rename → drop → add cycle) is a no-op that leaves the
+  latest behind and RisingWave rejects the column. `_register_avro_schemas` decides
+  from the register's returned schema id against a snapshot read BEFORE the write —
+  the registry's latest-version read lags its writes by seconds, so a post-write
+  verification raced its own register (seen live); when the returned id matches an
+  older version, the versions after it are soft-deleted and the register repeats,
+  landing the dedup on that version as the latest. Soft delete keeps the content
+  resolvable by id, so messages already on the topic still deserialize (all
+  verified live 2026-10-19; findings doc §2.8).
 - **`build_debezium_sink_asset`** — PUTs the connector config to Kafka Connect
   (`reverse_etl_avro_sink`, Debezium JDBC sink, `tasks.max` from config), waits for
   Connect, then for the connector to reach `RUNNING`. Postgres-side schema

@@ -840,14 +840,62 @@ def _schema_already_registered(client: SchemaRegistryClient, subject: str, schem
 
 
 def _register_avro_schemas(cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]) -> None:
-    """Register both schemas when the registry does not already hold them: RisingWave reads the value schema when
-    its table is created, which can be before the first message exists. Unchanged schemas are not re-registered --
-    the latest-version check saves two registry round-trips per unchanged sync."""
+    """Register both schemas and make sure the registry's LATEST version is the one
+    the sync just built.
+
+    Re-registering content that already exists as an OLDER version is a no-op on
+    Confluent-compatible registries: the register returns that version's schema id
+    and does not create a new version, so the latest stays wherever it was.
+    RisingWave validates every ADD COLUMN against the registry's latest, so
+    "registered" is not enough -- the built schema must BE the latest. The demo
+    walks into this on every second cycle: add → rename → drop → add again builds
+    a schema whose content equals the first add's version, the register dedupes to
+    it, and RisingWave rejects the column with 'Column "new_col_1" is defined in
+    SQL but not found in the source' (verified live 2026-10-19).
+
+    The latest-version READ also lags the writes for seconds (Apicurio, seen live
+    the same day: a register answered with a NEW version's schema id while
+    get_latest_version still reported the old one past a 4s retry window), so the
+    decision here never reads after writing: it takes a FRESH snapshot of the
+    subject (versions, ids, contents) before the register, then reads the
+    register's returned schema id -- authoritative for what the register did.
+    A returned id unknown to the snapshot means a new version was created (the
+    latest is ours); an id matching the version that WAS the latest means the
+    register deduped onto it (the latest is ours); an id matching an OLDER
+    version means the register deduped onto it, and the versions after it are
+    soft-deleted before registering again -- the dedup then lands on that
+    version, which is now the latest. Soft delete keeps the content resolvable
+    by id, so messages already on the topic still deserialize (verified live:
+    ids of the deleted versions still answer GET /schemas/ids/<id>)."""
     client = SchemaRegistryClient({"url": cfg.schema_registry_url})
     key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
     for subject, schema in ((cfg.key_subject, key_schema), (cfg.value_subject, value_schema)):
-        if not _schema_already_registered(client, subject, schema):
-            client.register_schema(subject, Schema(_avro_schema_string(schema), "AVRO"))
+        built = _avro_schema_string(schema)
+        # FRESH reads, before any write: version -> (schema id, content == built).
+        snapshot: dict[int, tuple[int, bool]] = {}
+        try:
+            for version in client.get_versions(subject):
+                entry = client.get_version(subject, version)
+                stored = entry.schema.schema_str if hasattr(entry.schema, "schema_str") else entry.schema
+                snapshot[version] = (entry.schema_id, json.loads(stored) == json.loads(built))
+        except SchemaRegistryError:
+            pass  # a missing subject registers below
+        if snapshot and snapshot[max(snapshot)][1]:
+            continue  # the latest already IS the built schema
+        schema_id = client.register_schema(subject, Schema(built, "AVRO"))
+        holder = next((v for v, (i, _) in snapshot.items() if i == schema_id), None)
+        if holder is None or holder == max(snapshot):
+            continue  # a new version was created, or the dedup landed on the version that was already latest
+        # The register deduped onto an OLDER version: retire everything after it
+        # (soft delete) and register again -- the dedup then lands on that
+        # version, now the latest. No reads after the writes: the register's id
+        # already told us everything this check would ask.
+        for version in sorted((v for v in snapshot if v > holder), reverse=True):
+            try:
+                client.delete_version(subject, version)
+            except SchemaRegistryError:
+                pass  # already gone
+        client.register_schema(subject, Schema(built, "AVRO"))
 
 
 def _build_avro_message(
