@@ -231,10 +231,28 @@ factors are not the DBUs:
     commit reads only its NEW files' rows; rewritten files fall back to the
     full snapshot diff, whose base materializes lazily. Memory is now the
     commit size for append-heavy histories -- the same shape as CDF.
-- **What would still hurt**: a table whose every commit rewrites the whole
-  file set (the fast path never fires) and whose snapshots outgrow memory --
-  the full-snapshot wall, the same one full-snapshot producers hit. A 1M-row
-  **single** commit is also the same memory ceiling the Spark path documented.
+- **The full-snapshot wall — identified, then removed (2026-10-19).** It fired
+  on **any** sync window that contained a rewrite commit (one UPDATE, one
+  DELETE, one MERGE — or a background `OPTIMIZE`/compaction, which also removes
+  files): the fast path compares file sets and only fired for pure appends, so
+  a rewrite window materialized the pre-image snapshot as a key-dict (carried
+  forward for the rest of the run) and scanned the full current snapshot —
+  **two full-table scans and O(all rows) memory, sized by the TABLE, not the
+  change**. The 1.5GiB run worker held ~1M-row snapshot dicts (the naive
+  measurement survived); a billion-row table would have needed ~1000× that and
+  OOMed long before its I/O finished. **Fixed the same day: the rewrite path
+  now diffs only the REWRITTEN FILE PAIRS** — a commit's log names exactly
+  which files it removed and added, and with deletion vectors off (enforced)
+  the changed rows live only in those pairs, so memory and I/O are sized by
+  the touched files. Verified live: update and delete windows produce the
+  identical events the full-snapshot diff produced, at touched-file cost.
+  What remains: partitioned tables and no-Azure-filesystem runs keep the full
+  snapshot fallback (correct at any shape, sized by the table), the first sync
+  is O(history) by design (a backfill), and each sync walks the full commit
+  log once for the per-version timestamp map (`history()`) — O(total commits),
+  fine at demo scale, worth revisiting if a table ever accumulates hundreds of
+  thousands of commits. A 1M-row **single** commit is also the same memory
+  ceiling the Spark path documented.
 - **Retention truncation**: if the requested start version has aged out of the
   log, `get_earliest_available_version()` (bisection on `load_as_version`)
   drives the existing baseline-vs-backfill decision; a mid-run truncation

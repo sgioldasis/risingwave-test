@@ -337,6 +337,18 @@ feature. Two design points worth keeping:
   read → produce → read with `flush=False` and per-chunk heartbeat lines —
   that machinery lives in the sync asset body (`reverse_etl_cdf_setup.py`) and
   is unchanged from the Spark days.
+- **Rewrite windows diff only the rewritten file pairs** (2026-10-19, after the
+  full-snapshot wall was measured). A commit's log names exactly which files it
+  removed and added; with deletion vectors off (enforced — the reader refuses
+  DV tables) the changed rows live only in those pairs, so the rewrite path
+  reads the removed files as the pre-image and the added files as the
+  post-image and diffs those — memory and I/O sized by the touched files, not
+  the table. Rows in untouched files cannot have changed, compaction's pairs
+  diff to nothing, and a pre-image needs no carry-forward state: the removed
+  files already hold the rows as of one version earlier. Partitioned tables
+  and no-Azure-filesystem runs keep the full-snapshot diff as the fallback
+  (correct at any shape). Verified live: update and delete windows emit the
+  same events the full-snapshot diff emitted (findings doc §6).
 - **Schema changes need no bisection.** Snapshot reads do not error on
   incompatible schema changes the way CDF reads do: an added or dropped column
   reads as `None` on the other side and never false-positives an event (the

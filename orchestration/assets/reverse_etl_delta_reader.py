@@ -318,17 +318,28 @@ def read_changes(
     reading (the same rule the Spark backend followed), so the read range matches
     exactly what the watermark will advance to.
 
-    Two read paths, chosen per commit:
+    Three read paths, chosen per commit:
 
     - **Append-only commit** (files added, none removed): every row of the NEW
       files is an insert -- read only those, never the cumulative snapshot. This
       is what keeps a 1M-row bulk load constant-memory per version (verified: it
       cut the 1M-row sync's wall time by reading ~1M row-versions instead of
       ~11M). Also covers version 0, whose whole content is inserts.
-    - **Rewritten files** (an UPDATE/DELETE/MERGE rewrite, or compaction): the
-      full snapshot diff as before. The previous snapshot is materialized
-      lazily -- an append-only history never pays for it; the first rewrite
-      scans its own v-1 once and the dict carries forward.
+    - **Rewritten files** (an UPDATE/DELETE/MERGE rewrite, or compaction): diff
+      only the REWRITTEN FILE PAIRS. The commit's log names exactly which files
+      it removed and added; with deletion vectors off (enforced below -- this
+      reader refuses DV tables) the changed rows live only in those pairs, rows
+      in untouched files cannot have changed, and compaction's pairs diff to
+      nothing. The removed files hold the touched rows' pre-image (they were
+      still referenced one version earlier), the added files the post-image, so
+      memory and I/O are sized by the touched files -- not by the table, which
+      is what the previous full-snapshot diff cost (two full scans plus an
+      O(all rows) key-dict carried forward).
+    - **Fallback for partitioned tables or a missing Azure filesystem**: the
+      full snapshot diff, correct at any shape but sized by the table. The
+      previous snapshot is materialized lazily -- an append-only history never
+      pays for it; the first rewrite scans its own v-1 once and the dict
+      carries forward.
 
     Partitioned tables disable the fast path: partition values live in file
     paths, not in the files, so added-file reads would come back without them."""
@@ -378,31 +389,71 @@ def read_changes(
         entry["version"]: _format_commit_timestamp(entry["timestamp"])
         for entry in _open(location).history()
     }
-    # Full snapshots for the diff, materialized lazily: an append-only history
-    # never needs one, the first rewrite scans its own v-1 once.
+    # Full snapshots for the fallback diff (no Azure filesystem or partitioned
+    # tables), materialized lazily: an append-only history never needs one, the
+    # first rewrite scans its own v-1 once.
     prev_rows: dict[tuple, dict[str, Any]] | None = None
 
     for version in range(since_version, end + 1):
         delta = _version_handle(location, version)
         cur_files = _file_paths(delta)
         commit_timestamp = commit_timestamps[version]
+        removed = prev_files - cur_files
+        added = cur_files - prev_files
 
-        if fast_path and not (prev_files - cur_files):
-            added = cur_files - prev_files
-            new_rows = _read_files_as_rows(
+        if fast_path:
+            if not removed:
+                # Append-only: the changed rows are exactly the new files' rows
+                # -- memory and I/O are the commit size, never the table size.
+                new_rows = _read_files_as_rows(
+                    delta, azure, container, [f"{root}/{path}" for path in sorted(added)], timestamp_columns
+                )
+                _format_rows(new_rows, timestamp_columns)
+                for row in new_rows:
+                    rows.append(_emit_row("insert", row, version, commit_timestamp))
+                prev_files = cur_files
+                continue
+            # A rewrite: diff only the REWRITTEN FILE PAIRS. The commit's log
+            # names exactly which files it removed and added; with deletion
+            # vectors off (enforced above -- this reader refuses DV tables) the
+            # changed rows live only in those pairs, rows in untouched files
+            # cannot have changed, and compaction's pairs diff to nothing. The
+            # removed files hold the touched rows' pre-image (they were still
+            # referenced one version earlier), the added files the post-image,
+            # so memory and I/O are sized by the touched files -- not by the
+            # table, which is what the full-snapshot diff below costs.
+            pre_rows = _read_files_as_rows(
+                delta, azure, container, [f"{root}/{path}" for path in sorted(removed)], timestamp_columns
+            )
+            post_rows = _read_files_as_rows(
                 delta, azure, container, [f"{root}/{path}" for path in sorted(added)], timestamp_columns
             )
-            _format_rows(new_rows, timestamp_columns)
-            for row in new_rows:
-                rows.append(_emit_row("insert", row, version, commit_timestamp))
-            if prev_rows is not None:
-                for row in new_rows:
-                    prev_rows[tuple(row[name] for name in key_columns)] = row
+            _format_rows(pre_rows, timestamp_columns)
+            _format_rows(post_rows, timestamp_columns)
+            pre = {tuple(row[name] for name in key_columns): row for row in pre_rows}
+            post = {tuple(row[name] for name in key_columns): row for row in post_rows}
+            for key, old_row in pre.items():
+                new_row = post.get(key)
+                if new_row is None:
+                    # Deleted (or updated-away): the delete row carries the
+                    # full preimage, which is what the Debezium envelope's
+                    # before needs.
+                    rows.append(_emit_row("delete", old_row, version, commit_timestamp))
+                elif _changed_payload_columns(old_row, new_row, skip):
+                    # CDF emits an update as preimage + postimage sharing the
+                    # key and commit version; _to_debezium_events() pairs them.
+                    rows.append(_emit_row("update_preimage", old_row, version, commit_timestamp))
+                    rows.append(_emit_row("update_postimage", new_row, version, commit_timestamp))
+            for key, new_row in post.items():
+                if key not in pre:
+                    rows.append(_emit_row("insert", new_row, version, commit_timestamp))
             prev_files = cur_files
             continue
 
-        # A rewrite: diff the full snapshots. The first rewrite materializes the
-        # diff base (the snapshot one version earlier) with one full scan.
+        # Fallback (partitioned tables, or no Azure filesystem to read files
+        # with): diff the full snapshots, correct at any shape but sized by
+        # the table. The first rewrite materializes the diff base (the
+        # snapshot one version earlier) with one full scan.
         current = _snapshot_rows(delta, timestamp_columns, key_columns, azure, container)
         if prev_rows is None:
             prev_rows = (
