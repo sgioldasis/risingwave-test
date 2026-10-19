@@ -490,6 +490,9 @@ function costText(cost) {
 // the run ends; Dagster reports only run status, so the walk is the page's
 // narration of the run, not per-phase telemetry.
 const SYNC_PLAN = {
+  // While the run is pending: the sync's own path, walked slowly (4s per
+  // phase) and looped. Dagster reports only run status, so the walk is the
+  // page's narration, not per-phase telemetry.
   phases: [
     { step: 1, nodes: ['state', 'sync'] },
     { step: 2, nodes: ['src', 'sync'] },
@@ -497,8 +500,19 @@ const SYNC_PLAN = {
     { step: 4, nodes: ['sync', 'kafka'] },
   ],
   loopFrom: 1,
-  doneStep: 5,
-  doneNodes: ['sync', 'state'],
+  // On success: walk the downstream steps so the animation covers the whole
+  // pipeline — the watermark move, then the readers (Kafka Connect and
+  // RisingWave take the topic), then Postgres — before the done badges land.
+  // The readers consume asynchronously, so this is narration too: they catch
+  // up within seconds of the produce.
+  doneWalk: [
+    { step: 5, nodes: ['sync', 'state'] },
+    { step: 6, nodes: ['kafka', 'connect', 'rw'] },
+    { step: 7, nodes: ['connect', 'pg', 'rw'] },
+  ],
+  doneNodes: ['sync', 'connect', 'pg', 'rw'],
+  failStep: 5,
+  failNodes: ['sync', 'state'],
 };
 const CHANGE_PLAN = { phases: [{ step: 0, nodes: ['src'] }] };
 const SETUP_PLAN = { phases: [{ step: 0, nodes: ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'] }] };
@@ -509,17 +523,21 @@ async function run(label, body, out = $('result'), plan = null, btn = null) {
   if (btn) btn.classList.add('running');
   const phases = plan ? plan.phases : null;
   let idx = -1;
+  let realProgress = false;
   const advance = () => {
     idx = idx < 0 ? 0 : (idx + 1 >= phases.length ? (plan.loopFrom ?? 0) : idx + 1);
     const ph = phases[idx];
     show(ph.step);
     stagesRun(ph.nodes, 'running');
     edgesLive(true);
-    capRun('running' + (phases.length > 1 ? ' — phase ' + (idx + 1) + '/' + phases.length : ''));
+    // The timed walk stays until real telemetry arrives (the helper returns
+    // the sync's chunk heartbeats) — then the chip shows the real progress
+    // and the walk stops touching it.
+    if (!realProgress) capRun('running' + (phases.length > 1 ? ' — phase ' + (idx + 1) + '/' + phases.length : ''));
   };
   if (phases) {
     advance();
-    if (phases.length > 1) phaseTimer = setInterval(advance, 2600);
+    if (phases.length > 1) phaseTimer = setInterval(advance, 4000);
   }
   const entry = say(label + ': starting…', null, 'run', out);
   const started = await post(body);
@@ -545,18 +563,55 @@ async function run(label, body, out = $('result'), plan = null, btn = null) {
           subs.push({ text: 'No statement ran — nothing to change' });
         }
       }
+    } else if (Array.isArray(s.log_tail)) {
+      // Real telemetry while the run is live: the sync's own heartbeat lines.
+      // The chip and the log entry show the latest chunk (versions, rows,
+      // events) and any phase evidence the step has logged so far.
+      let progress = null;
+      for (const line of s.log_tail) {
+        if (/^Chunk \d+\/\d+:/.test(line)) progress = line;
+        else if (/^Added column\(s\)|^Source renamed column\(s\)|^Produced \d+ event\(s\)/.test(line)) subs.push({ text: line, mono: true });
+      }
+      if (progress) {
+        realProgress = true;
+        subs.push({ text: progress, mono: true, strong: true });
+        const m = progress.match(/Chunk (\d+)\/(\d+):.*?, (\d+) rows?, (\d+) events? \(total (\d+)\)/);
+        if (m) capRun(`running — chunk ${m[1]}/${m[2]} · row events so far ${m[5]}`);
+      }
     }
-    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : null, entry);
+    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : (subs.length ? subs : null), entry);
     if (done) {
       clearInterval(phaseTimer); edgesLive(false); capRun(null);
       const ok = s.status === 'SUCCESS';
-      if (phases) {
-        if (plan.doneStep !== undefined) show(plan.doneStep);
-        stagesRun(plan.doneNodes || phases[phases.length - 1].nodes, ok ? 'done' : 'fail');
-        badgeTimer = setTimeout(stagesFade, 4500);
-      }
       if (btn) btn.classList.remove('running');
       lock(false);
+      if (phases && ok && plan.doneWalk) {
+        // Completion walk: the run produced — now walk the downstream steps
+        // (watermark move → readers → Postgres) so the animation covers the
+        // whole pipeline, comets riding each step's arrows, then land the
+        // done badges. A new action cancels the walk (it clears the timer).
+        let k = 0;
+        const walkStep = () => {
+          if (k < plan.doneWalk.length) {
+            const ph = plan.doneWalk[k];
+            show(ph.step); stagesRun(ph.nodes, 'running'); edgesLive(true);
+            k += 1;
+            phaseTimer = setTimeout(walkStep, 2400);
+          } else {
+            edgesLive(false);
+            stagesRun(plan.doneNodes || plan.doneWalk[plan.doneWalk.length - 1].nodes, 'done');
+            badgeTimer = setTimeout(stagesFade, 4500);
+          }
+        };
+        walkStep();
+      } else if (phases) {
+        if (!ok && plan.failStep !== undefined) show(plan.failStep);
+        stagesRun(
+          ok ? (plan.doneNodes || phases[phases.length - 1].nodes) : (plan.failNodes || phases[phases.length - 1].nodes),
+          ok ? 'done' : 'fail'
+        );
+        badgeTimer = setTimeout(stagesFade, 4500);
+      }
       return ok;
     }
     await new Promise(r => setTimeout(r, 2000));

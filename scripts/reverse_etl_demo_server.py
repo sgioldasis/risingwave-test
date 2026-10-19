@@ -172,6 +172,23 @@ def run_status(run_id: str) -> dict:
     end = info["endTime"] or time.time()
     out = {"status": info["status"], "seconds": round(end - (info["startTime"] or end))}
 
+    # While the run is live, hand the page its step's log lines: the sync's
+    # per-chunk heartbeats ("Chunk 2/6: versions 2-2, 2 rows, 1 events (total
+    # 4)") let the animation show REAL progress instead of a timed narration.
+    # Only for running runs — done runs get their summary from the metadata.
+    if info["status"] in ("RUNNING", "STARTED"):
+        logs = gql(
+            "query($i:ID!){runOrError(runId:$i){... on Run{eventConnection{events{"
+            "... on MessageEvent{message stepKey}}}}}}",
+            {"i": run_id},
+        )["runOrError"]
+        events = ((logs.get("eventConnection") or {}).get("events")) or []
+        out["log_tail"] = [
+            (event or {}).get("message") or ""
+            for event in events
+            if event and event.get("stepKey")
+        ][-10:]
+
     # Databricks cost, from the meter metadata the assets emit
     # (orchestration/assets/databricks_cost_meter.py). The delta-rs sync reads
     # for free; only the watermark write meters a second or two.
