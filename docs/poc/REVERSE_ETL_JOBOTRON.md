@@ -128,7 +128,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 
 **From the demo's hard-won lessons:**
 
-- Any producer-owned Delta table (if a later phase needs one) is **delta-rs-native only** — never Spark- or SQL-written (v7 writer protocol).
+- Any producer-owned Delta table (if a later phase needs one) is **delta-rs-native only** — never Spark- or SQL-written (v7 writer protocol). delta-rs 1.6.6 creates tables at protocol (reader 1, writer 2) — minimal, no features — and a Databricks write conforms to the table's existing protocol rather than upgrading it; the lock-out happens at *birth* (Databricks-created tables are v7 from the first commit, verified live: delta-rs answers `CommitFailedError: Unsupported table features required`) or by Databricks-side DDL that enables a newer writer feature. Note also (verified live 2026-10-19): the demo's service principal cannot register a delta-rs-born table in Unity Catalog — it holds neither `CREATE EXTERNAL TABLE` nor `MANAGE` on the storage's external location — so producer-owned tables stay warehouse-invisible unless that privilege is granted.
 - **No CDF anywhere** — snapshot queries only; that's what makes the component Spark-free *today* (see v1 rationale). Deletion vectors are an unambiguous win here (smaller scans, no CDF bloat possible).
 - Column-mapped tables scan fine via delta-rs (verified live); timestamps travel as microsecond-UTC strings per the `ZonedTimestamp` convention.
 
