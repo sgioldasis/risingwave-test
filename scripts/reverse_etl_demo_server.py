@@ -173,8 +173,8 @@ def run_status(run_id: str) -> dict:
     out = {"status": info["status"], "seconds": round(end - (info["startTime"] or end))}
 
     # Databricks cost, from the meter metadata the assets emit
-    # (orchestration/assets/databricks_cost_meter.py). The oss_spark sync
-    # reports 0.0 structurally: it touches no Databricks compute.
+    # (orchestration/assets/databricks_cost_meter.py). The delta-rs sync reads
+    # for free; only the watermark write meters a second or two.
     warehouse, cluster, compute = 0.0, 0.0, []
     change = None
     for mat in info.get("assetMaterializations") or []:

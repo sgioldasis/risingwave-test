@@ -43,7 +43,8 @@ from dagster_drt import DagsterDrtResource, DagsterDrtTranslator, drt_assets
 
 from .databricks_optimize import DATABRICKS_HOST, WAREHOUSE_ID, _get_token
 from .postgres_sink_setup import get_postgres_connection
-from .reverse_etl_cdf_setup import _get_row_fields, _require_databricks_env
+from .reverse_etl_cdf_setup import _require_databricks_env, get_table_location_cached
+from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig
 
 PROJECT_SOURCE = Path(__file__).resolve().parent.parent / "drt_demo"
@@ -58,7 +59,7 @@ DRT_KEYS_TABLE = "_drt_synced_keys"
 # One resource for all drt syncs; register it once in definitions.py.
 drt_resource = DagsterDrtResource(project_dir=str(WORKDIR))
 
-# Postgres types for the Connect types _get_row_fields() returns (the mapping the Debezium sink uses).
+# Postgres types for the Connect types get_row_fields() returns (the mapping the Debezium sink uses).
 _POSTGRES_TYPE_BY_CONNECT_TYPE = {
     "int8": "smallint",
     "int16": "smallint",
@@ -176,8 +177,10 @@ def _build_setup_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
     @op(name=f"{names.sync_name}_target_setup")
     def setup_target(context: OpExecutionContext) -> None:
         _require_databricks_env()
+        token = _get_token()
         columns = []
-        for name, connect_type, _ in _get_row_fields(_get_token(), cfg):
+        source_location = get_table_location_cached(token, cfg, cfg.source_fqn)
+        for name, connect_type, _ in get_row_fields(source_location):
             column_type = _POSTGRES_TYPE_BY_CONNECT_TYPE.get(connect_type, "text")
             suffix = " PRIMARY KEY" if name == cfg.key_column else ""
             columns.append(f'"{name}" {column_type}{suffix}')

@@ -21,10 +21,11 @@ from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_cdf_setup import (
     ZONED_TIMESTAMP,
     RowField,
-    _get_row_fields,
     _register_avro_schemas,
     _require_databricks_env,
+    get_table_location_cached,
 )
+from .reverse_etl_delta_reader import get_row_fields
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
 # SMALLINT (RisingWave has no 1-byte integer).
@@ -311,7 +312,8 @@ def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
     )
     def risingwave_table(context: AssetExecutionContext):
         _require_databricks_env()
-        row_fields = _get_row_fields(_get_token(), cfg)
+        token = _get_token()
+        row_fields = get_row_fields(get_table_location_cached(token, cfg, cfg.source_fqn))
         if cfg.encoding == "avro":
             _register_avro_schemas(cfg, [cfg.key_column], row_fields)
 

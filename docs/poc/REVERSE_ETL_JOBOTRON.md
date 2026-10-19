@@ -178,7 +178,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 ## 11. Non-goals
 
 - Everything the RFC assigns to Jobotron itself: the worker, the WebAPI, the state database, Redis idempotency, eligibility re-validation, Iris/CustomerService/VOperDB actions.
-- CDF/change replication (the existing sync's job) — and no CDF read here ever, so the delta-rs CDF gap is irrelevant to this component.
+- CDF/change replication (the existing sync's job) — no CDF read here ever, and since 2026-10-19 the sync does not read CDF either: it reconstructs changes by diffing snapshots per commit version (`reverse_etl_delta_reader.py`), so the delta-rs CDF gap is irrelevant to both components.
 - The Hangfire-vs-Jobotron debate (RFC comments [h]–[m]) — settled there; this doc only designs the data-platform producer.
 - Producer-side tombstones / segment-exit messages (§8.2 unless a job type demands it).
 

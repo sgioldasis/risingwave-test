@@ -191,12 +191,12 @@ Show:
 
 Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
-How it reads the changes: by default straight from Delta storage with OSS Delta on Spark — `extraction: oss_spark`
-in all four syncs' `defs.yaml`, zero Databricks compute (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`). Before
-touching Spark, the sync does a spark-free no-op check: the source's current version and the state table's
-watermark read with delta-rs (service-principal auth, no JVM) — when they are equal the run ends there (~8s
-instead of ~17s, whose floor was the Spark session start; the check's token and storage locations come from a
-small disk cache, and the heavy imports sit at module level so they never land in the run's measured seconds).
+How it reads the changes: by reconstructing them from Delta storage alone — for each commit version since the
+watermark, the sync diffs the snapshot at v-1 against the snapshot at v (`orchestration/assets/reverse_etl_delta_reader.py`,
+delta-rs reads with the service principal, no Spark, no warehouse; see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`).
+Before any of that, a no-op check reads the source's current version and the state table's watermark with delta-rs —
+when they are equal the run ends there. The check's token and storage locations come from a
+small disk cache, and the heavy imports sit at module level so they never land in the run's measured seconds.
 The state tables are plain Delta on purpose (no
 column mapping, deletion vectors off), because delta-rs rejects tables carrying those reader features. The change
 feed is read from the version after the watermark — one chunk at a time (10
@@ -204,11 +204,10 @@ commits by default, tunable via `REVERSE_ETL_CDF_CHUNK_VERSIONS` in `.env`), so 
 backlog streams read → produce through the driver and memory stays bounded by
 what a chunk can hold — `chunk_versions × rows_per_commit` must stay ≤ ~100k (a
 1M-row *single commit* OOMs the
-driver; spread over commits, 1M syncs fine) — and the watermark row is appended
+run worker; spread over commits, 1M syncs fine — measured at 120s with the
+append fast-path) — and the watermark row is appended
 back to the append-only state table (the
-freshest row wins on the next read; one auditable row per sync). The `databricks_sql` backend — one
-`table_changes()` query via the Statement Execution API — is still
-available per sync by flipping `extraction` in the sync's `defs.yaml`. Each changed row comes back with its change
+freshest row wins on the next read; one auditable row per sync). Each changed row comes back with its change
 type (`insert`, `delete`, `update_preimage`, `update_postimage`) and its
 commit version. The sync joins an update's old and new rows into one event with `before`, `after` and `op`
 (`c`, `u`, `d`). On the first run there is no watermark, so it starts at version 0 and reads the whole history.
@@ -268,19 +267,24 @@ One caveat for hand-testing: the Postgres sink caches the table schema in
 memory, so if you drop a column in Postgres *manually* while the source still sends it, the task fails
 unrecoverably and needs `POST /connectors/<sink>/tasks/0/restart` — the automated path avoids this because
 events stop carrying the field before the sync drops the column. Add and drop in the *same* unsynced window is
-fine on the page's syncs too — the zero-DBU reader splits the change-feed read at schema changes automatically
-(the optional Databricks notebook path does not; sync between changes there).
+fine on the page's syncs too — the zero-DBU reconstruction diffs each commit version's snapshots, so schema
+changes inside the window never break the read (the chunking is by version count, not by schema change; the
+optional Databricks notebook path does differ there — sync between changes on it).
 
 ## 5c. Rename a column (propagated, data-preserving)
 
 The demo op for this is in the page's change dropdown ("rename a column"). Demo columns only — the op flips the
 highest `new_col_<n>` to `renamed_col_<n>`, and clicking it again renames that back — so the natural cycle is
 *add a column* → sync → *rename a column* → sync → (optionally *rename a column* again) → *drop a column* →
-sync; the drop takes either form. Sync *between* the add and the rename: both in one unsynced window works (the
-sync handles it), but the produced message then carries the new name with a null, so the demo column's value
-does not survive — sequenced syncs keep it. Clicking *rename* or *drop* with no demo column on the table is a
-green no-op — the run result says "Skipped — …" with the reason, not a failure. By hand, a configured column can
-be renamed too:
+sync; the drop takes either form. Sync *between* the add and the rename — or add, populate and rename all in one
+unsynced window — works: with the demo's single-version chunks (`REVERSE_ETL_CDF_CHUNK_VERSIONS=1` in `.env`;
+the code default is 10) the sync pins the envelope's schema to each chunk's top commit, so the populate's message
+carries the column under its *old* name with the value intact, and the next chunk's rename propagation carries
+the value across on the targets. (Before the 2026-10-19 pinning fix a rename committing while a sync was in
+flight named the envelope with the new schema and silently nulled the value; with the chunk size raised above 1,
+a populate and a rename inside one chunk can still misname — keep the chunk size at 1 around renames.) Clicking
+*rename* or *drop* with no demo column on the table is a green no-op — the run result says "Skipped — …" with
+the reason, not a failure. By hand, a configured column can be renamed too:
 
 ```sql
 ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source RENAME COLUMN country TO destination;
@@ -288,8 +292,10 @@ ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source RENAME COLUMN country
 
 **Renames propagate as renames,** with the target data preserved. Delta's `delta.columnMapping.id` survives a
 rename while the name changes, so the sync can tell the two apart: the state table's `last_schema` now records
-each column's id alongside its name, and the zero-DBU reader pulls the current ids from the delta log's newest
-`metaData` action (pyspark's DataFrame schema strips field metadata, so the commit JSON is read instead). A
+each column's id alongside its name, and the zero-DBU reader pulls the current ids with delta-rs
+(`get_column_ids`, pinned to the synced version — delta-rs preserves the schema's field metadata, so this is a
+~0.2s local read, not a log-JSON parse; the ids are pinned to the same commit as the data for the same race
+reason as the schema pinning). A
 recorded column whose id reappears under a new name is a rename: RisingWave gets an `ADD COLUMN` + `UPDATE` copy
 + drop of the old name — v3.1 has no `RENAME COLUMN`, so this is how the data survives; the column moves to the
 end of the table. Postgres gets a native `RENAME COLUMN` — or, if the sink's schema evolution already created

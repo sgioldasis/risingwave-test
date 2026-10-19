@@ -11,7 +11,6 @@ type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 attributes:
   name: delta
   uniform: false
-  extraction: oss_spark
   encoding: avro
   # Same drop propagation as the other syncs (column mapping is on, so Delta
   # accepts DROP COLUMN on this source); renames propagate with data preserved.

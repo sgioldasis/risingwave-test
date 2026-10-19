@@ -21,7 +21,8 @@ import yaml
 from dagster import Config, MetadataValue, OpExecutionContext, in_process_executor, job, op
 
 from .databricks_optimize import DATABRICKS_HOST, _get_token
-from .reverse_etl_cdf_setup import _get_row_fields, _require_databricks_env
+from .reverse_etl_cdf_setup import _require_databricks_env, get_table_location_cached
+from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_risingwave_setup import add_missing_columns
 
@@ -108,7 +109,9 @@ def trigger_notebook_sync(context: OpExecutionContext, config: TriggerNotebookSy
     columns_added: list[str] = []
     if config.add_risingwave_columns:
         # Before the run, so the new column exists when RisingWave reads the first message carrying it.
-        columns_added = add_missing_columns(sync_config, _get_row_fields(token, sync_config))
+        columns_added = add_missing_columns(
+            sync_config, get_row_fields(get_table_location_cached(token, sync_config, sync_config.source_fqn))
+        )
         if columns_added:
             context.log.info(f"Added column(s) to RisingWave table {sync_config.risingwave_table}: {columns_added}")
 

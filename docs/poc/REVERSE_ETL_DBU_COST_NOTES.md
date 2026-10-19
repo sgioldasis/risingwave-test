@@ -455,6 +455,41 @@ succeeded). Worth a look when the container is rebuilt.
 
 ---
 
+### 2026-10-19 — the Spark path itself is gone (delta-rs version-range reconstruction)
+
+Full live proof (all four syncs), the measured Spark-era comparison, and the
+assessment: **`REVERSE_ETL_SPARK_FREE_FINDINGS.md`**.
+
+The experiment graduated past Spark: both extraction backends are deleted
+(`reverse_etl_spark_reader.py` with its local JVM, and the `table_changes()`
+SQL path) and the `extraction` config field with them. The sync asset now reads
+exclusively through `orchestration/assets/reverse_etl_delta_reader.py`: for
+each commit version in the requested range it diffs the snapshot at v-1 against
+the snapshot at v (two column-pruned scans) and emits CDF-shaped rows —
+insert, update_preimage + update_postimage pairs, delete — ordered by
+`_commit_version`, pinned to the version the watermark will advance to. That is
+what `readChangeFeed`/`table_changes()` do internally for tables without the
+CDF feature; per-version diffing is required so a key deleted in one commit and
+reinserted in the next emits both events. The watermark write stays the one
+small SQL statement (delta-rs cannot commit to the warehouse's v7 protocol
+state table): a full sync now meters ~1.5-2 warehouse seconds and nothing else.
+
+Two verified findings worth keeping:
+
+- **delta-rs 1.6.6 reads warehouse-written column-mapped sources wrong**
+  (columnMapping as a writer feature, no reader features — UniForm v2 and the
+  plain column-mapped flavor alike): the scan returns the logical schema with
+  every value None (the physical->logical rename is not applied). The reader
+  detects the all-None scan and re-reads the snapshot's parquet files directly,
+  renaming via `delta.columnMapping.physicalName` (pyarrow's AzureFileSystem,
+  same service principal) — and refuses sources with deletion vectors, which
+  file reads cannot apply.
+- The reconstruction reproduces `table_changes()`'s output exactly on the demo
+  loop: backfill of the 3-row seed as inserts, then insert/update/delete change
+  ops each produced the same single event the CDF read produced.
+
+---
+
 ## 6. How to verify against the billing system
 
 `system.billing.usage` has SKU-level detail — **verified runnable on

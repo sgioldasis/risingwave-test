@@ -6,7 +6,6 @@ type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 
 attributes:
   name: avro
-  extraction: oss_spark
   encoding: avro
   # Drop propagation: a column dropped from the source (the change dropdown's
   # "drop a column", or manually in Databricks) is dropped from RisingWave and

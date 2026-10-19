@@ -1,6 +1,6 @@
 # Reverse-ETL sync: a code walkthrough (Dagster side)
 
-*Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in).*
+*Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in). Updated 2026-10-19 for the delta-rs reconstruction backend — the OSS-Spark and SQL-warehouse branches described in the original are gone (`REVERSE_ETL_SPARK_FREE_FINDINGS.md` has the why and the measurements).*
 
 This walks through the Dagster implementation of the reverse-ETL sync: how one
 Databricks Delta table's changes flow to Kafka and on to RisingWave and Postgres,
@@ -28,8 +28,8 @@ The other docs cover behaviour and evidence; this one covers structure:
 | `orchestration/components/reverse_etl_cdf_sync.py` | The Dagster component: reads the YAML, builds the config |
 | `orchestration/assets/reverse_etl_config.py` | `ReverseEtlSyncConfig` — every name a sync needs, derived from a label |
 | `orchestration/assets/reverse_etl_defs.py` | Turns one config into assets, jobs, checks and schedules |
-| `orchestration/assets/reverse_etl_cdf_setup.py` | The heart: table setup, seed, the sync asset (both backends), event building, Kafka production |
-| `orchestration/assets/reverse_etl_spark_reader.py` | The OSS Delta backend: reads storage directly, zero Databricks compute |
+| `orchestration/assets/reverse_etl_cdf_setup.py` | The heart: table setup, seed, the sync asset, event building, Kafka production |
+| `orchestration/assets/reverse_etl_delta_reader.py` | The delta-rs backend: per-commit-version snapshot diffs reconstruct the change feed — no Spark, no CDF read, no Databricks compute |
 | `orchestration/assets/reverse_etl_change.py` | Demo changes (insert / update / delete / add column) |
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave target table + schema evolution |
 | `orchestration/assets/reverse_etl_debezium_sink.py` | The Kafka Connect Debezium JDBC sink (Postgres) |
@@ -68,7 +68,6 @@ class ReverseEtlSyncConfig:
     postgres_table: str       # "reverse_etl_avro_target"
     risingwave_table: str     # "reverse_etl_avro_target"
     ...
-    extraction: str = "oss_spark"   # or "databricks_sql"
     encoding: str = "avro"          # or "json"
 ```
 
@@ -104,7 +103,6 @@ shortest complete example:
 type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 attributes:
   name: avro
-  extraction: oss_spark      # how the sync asset reads the change feed (§6)
   encoding: avro             # Confluent wire format + staging registry
   catalog: de_dev
   schema_name: sr_poc_external
@@ -136,18 +134,11 @@ result into the project's `Definitions`. Adding a sync = adding one YAML file.
 
 ## 3. The sync asset — the heart
 
-`build_sync_asset(cfg)` (`reverse_etl_cdf_setup.py`) is a **dispatcher**:
-
-```python
-def build_sync_asset(cfg):
-    if cfg.extraction == "oss_spark":
-        return _build_sync_asset_oss_spark(cfg)
-    return _build_sync_asset_databricks_sql(cfg)
-```
-
-Both branches build an asset with the **same name** (`cfg.sync_asset`), the same
-deps, the same Kafka messages and the same watermark semantics — they differ only
-in *how they read Databricks*. The skeleton both share:
+`build_sync_asset(cfg)` (`reverse_etl_cdf_setup.py`) builds the single sync
+asset — since 2026-10-19 there is one backend, the delta-rs reconstruction
+(§6); the former OSS-Spark and SQL-warehouse branches are deleted
+(`REVERSE_ETL_SPARK_FREE_FINDINGS.md` records why and what they measured).
+The asset skeleton:
 
 0. **Spark-free no-op pre-check**: before anything heavy, the sync reads the
    source's current version and the state table's watermark with delta-rs (no
@@ -169,7 +160,7 @@ in *how they read Databricks*. The skeleton both share:
    sync appends one row (a cheap single-commit insert — the read-modify-write
    `MERGE` this replaced cost ~2s per real sync), and the read takes the *freshest*
    row for the sync. History accumulates harmlessly — one auditable row per sync —
-   and the spark-free pre-check picks the max the same way.
+   and the no-op pre-check picks the max the same way.
 2. **First-run policy**: if `REVERSE_ETL_BACKFILL_VERSION` is set, backfill from
    that explicit version (`_resolve_backfill_version`); else if the table's
    earliest available version is 0 (full history intact) backfill from the
@@ -180,9 +171,14 @@ in *how they read Databricks*. The skeleton both share:
    `table_changes()` and `readChangeFeed` error past the table's latest version
    (`DELTA_CDC_START_VERSION_AFTER_LATEST`) rather than returning empty.
 4. **Group CDF rows into Debezium envelopes** (`_to_debezium_events`, §4).
-5. **Schema evolution (adds)**: if there are events, read the source's current columns
-   and `add_missing_columns()` on RisingWave *before* producing — RisingWave only
-   fills a column from messages read after the column exists.
+5. **Schema evolution (adds)**: if there are events, read the source's columns
+   *pinned to the chunk's top commit* (`get_row_fields(source_location,
+   version=chunk_to)`) and `add_missing_columns()` on RisingWave *before*
+   producing — RisingWave only fills a column from messages read after the
+   column exists. The pin is not cosmetic: a `RENAME COLUMN` committing between
+   the data read and a "live" schema read names the envelope's columns with the
+   new schema while the rows still carry the value under the old name, and the
+   projection silently nulls it (verified live 2026-10-19, findings doc §2.6).
 6. **Produce to Kafka** (`_produce_to_kafka`, §5).
 7. **Drop & rename propagation** (`_propagate_column_drops`, before the state write): when
    `propagate_drops` is on, diff the current source columns against `last_schema`
@@ -191,9 +187,10 @@ in *how they read Databricks*. The skeleton both share:
    a change (a partial or failed schema read can never trigger one). Since the
    ids landed in `last_schema`, the diff is rename-aware: the state records each
    column's `delta.columnMapping.id` (`{"name": ..., "id": ...}`; the reader
-   tolerates the original name-only format), and the zero-DBU reader fetches the
-   current ids spark-free with delta-rs (`get_column_ids` — pyspark's DataFrame
-   schema strips field metadata, but delta-rs preserves it, so this is a ~0.2s
+   tolerates the original name-only format), and the reader fetches the
+   current ids with delta-rs (`get_column_ids` — Spark's DataFrame
+   schema strips field metadata, verified back when the sync ran on OSS Delta
+   Spark, but delta-rs preserves it, so this is a ~0.2s
    local read rather than a Spark log-scan; the id is what survives a
    `RENAME COLUMN`). A recorded column whose id reappears under a new name is a
    **rename**: RisingWave gets `rename_columns_in_risingwave` — `ADD COLUMN` the
@@ -229,39 +226,25 @@ in *how they read Databricks*. The skeleton both share:
    and renamed, message previews, extraction, and the cost entries from the
    meter, §9).
 
-**Watermark semantics** — the subtle part, commented in both branches:
-`startingVersion` of `table_changes()`/`readChangeFeed` is **inclusive**, and
+**Watermark semantics** — the subtle part, commented in the asset:
+the reconstruction's version range is **inclusive**, and
 `last_version` was already fully processed by the previous run, so the next read
 starts at `last_version + 1`. Resuming from `last_version` itself would re-deliver
 that version's rows. On a first-run baseline with no rows, the watermark is set to
 the table's *current* version so the run is still a real checkpoint. And when the
 read comes back **empty but the version advanced**, the commits were schema-only —
-Change Data Feed emits no rows for an `ADD`/`DROP COLUMN` — so the watermark still
+the reconstruction emits no rows for an `ADD`/`DROP COLUMN` — so the watermark still
 moves to the current version. (Letting it strand on the old watermark was a live
 bug: the schema commit was re-read by every sync forever, and drop propagation
 never saw it.)
 
-### The `oss_spark` branch (the default, zero DBUs)
-
-`_build_sync_asset_oss_spark` does every read through
-`orchestration/assets/reverse_etl_spark_reader.py` (§6). The token minted at the
-start is **control-plane only**: it resolves the two tables' storage locations via
-the Unity Catalog REST API. No SQL ever runs against a warehouse — the change
-feed, the watermark, the schema and the table history all come from the Delta
-transaction log on storage, read by a small local Spark session
-(`local[1]`, 512 MB) inside the webserver container. pyspark/delta are imported
-*lazily inside the asset body* so definitions keep loading on machines without
-them (and because `reverse_etl_risingwave_setup` imports this module — see §11).
-
-### The `databricks_sql` branch (the comparison baseline)
-
-Same skeleton, but every read is SQL on the warehouse: `_read_changes` runs
-`table_changes()`, the watermark is an `INSERT` into the append-only state
-table (the spark path appends too), the schema comes from
-`information_schema`. All of it goes through `_run_sql` (§7) and meters as
-`databricks_warehouse_seconds` — which is exactly how the zero-DBU claim in
-`REVERSE_ETL_DBU_COST_NOTES.md` stays honest: flip `extraction:` in the YAML and
-the same asset reports measured seconds instead of 0.
+The reads themselves are `read_changes()` in `reverse_etl_delta_reader.py` (§6):
+file-set comparison per commit version, new files only for append-only commits,
+full snapshot diff for rewrites. The comparison baseline for this path is the
+Databricks **notebook** (`reverse_etl_notebook_sync_job`, Spark + `readChangeFeed`
+inside the workspace) — the SQL-warehouse branch was deleted with the refactor,
+its measurements preserved in `REVERSE_ETL_DBU_COST_NOTES.md` and
+`REVERSE_ETL_SPARK_FREE_FINDINGS.md`.
 
 ## 4. Building Debezium events — `_to_debezium_events`
 
@@ -325,74 +308,83 @@ reads and calls `_flush_producer` **once, after the last chunk**: the broker
 transfers while the next chunk's Spark read runs instead of every chunk paying
 its own round-trip.
 
-## 6. The OSS Delta backend — `reverse_etl_spark_reader.py`
+## 6. The delta-rs backend — `reverse_etl_delta_reader.py`
 
-The zero-DBU module. Every function mirrors a SQL helper from
-`reverse_etl_cdf_setup.py` with the same output contract, so the two backends are
-drop-in equivalents:
+The zero-Databricks-compute module. (Live proof across all four syncs, the
+performance comparison against the Spark era, and the when-to-use-which
+assessment live in `REVERSE_ETL_SPARK_FREE_FINDINGS.md`.)
 
-- `get_table_location(token, cfg, fqn)` — the table's `abfss` storage location via
-  the **UC REST API** (`/api/2.1/unity-catalog/tables/<fqn>`). Control plane, free.
-  Replaces the `DESCRIBE DETAIL` the prototypes ran on the warehouse.
-- `get_spark_session(storage_account)` — a deliberately small local session:
-  `local[1]`, 512 MB driver (the webserver container shares the box), UI off,
-  Delta's catalog + extensions, `spark.sql.session.timeZone=UTC`, and the ABFS
-  OAuth settings that let the `ADLS_*` service principal read the tables' bytes
-  directly. `configure_spark_with_delta_pip` wires the Delta jars (pip-installed
-  `delta-spark`, pinned); `hadoop-azure` always comes from Maven because pyspark
-  does not bundle it.
-- `read_changes` — `readChangeFeed` from `startingVersion` **pinned to an
-  `endingVersion`** (the source's current version the caller just fetched, so the
-  read range matches the watermark exactly), ordered by `_commit_version`; every
-  `TIMESTAMP` column rendered through `date_format` into a microsecond UTC
-  string, because a collected `TimestampType` would render in the machine's
-  timezone and drift from the SQL path's output. The sync calls it one **version
-  chunk** at a time (`_version_chunks`): a backlog of many commits streams
-  read → produce → read through the driver instead of collecting every row up
-  front. (A prefetch thread was tried and reverted: the reader's collect→dict
-  conversion and the main thread's serialization are both GIL-bound, so they
-  contend — the 1M sync measured 187s vs 126s without it. The overlap that pays
-  is the produce loop's `flush=False`: the broker transfers while the next
-  chunk's Spark read runs.) Each chunk logs a **heartbeat** line (`Chunk 3/10:
-  versions 134-134, 100000 rows, 100000 events (total 300000)`) — the pipeline is
-  bursty by design and the targets visibly plateau while the next chunk reads;
-  the heartbeat turns that plateau into narrated progress. The chunk size is
-  `REVERSE_ETL_CDF_CHUNK_VERSIONS` (default 10, set in
-  `docker-compose.yml`): the bound that matters is **rows per chunk** —
-  `chunk_versions × rows_per_commit` must stay ≤ ~100k, the empirically proven
-  driver ceiling (a 1M-row **single commit** OOMs the run worker: the kernel
-  SIGKILLs the collect; spread over commits, 1M syncs fine — 100 × 10k-row
-  commits, or 10 × 100k-row commits with the chunk size at 1). On
-  `DELTA_CHANGE_DATA_FEED_INCOMPATIBLE_SCHEMA_CHANGE` — an `ADD`/`DROP COLUMN`
-  committed inside the read range, which Delta refuses even when the error
-  message's own suggested split still ends at a drop — the reader **bisects the
-  range and concatenates the segments** (a single-version range always starts at
-  its own schema, so the recursion terminates). The warehouse path does not do
-  this: sync between schema changes there, or the read fails until the watermark
-  is moved (sink doc, section on column mapping).
-- `read_state` / `write_state` — the state table read (watermark + `last_schema`,
-  freshest row wins) and a **spark append** (append-only insert, one auditable row
-  per sync). In the common case neither runs through Spark: the spark-free
-  pre-check already read the watermark, the source's version *and* `last_schema`,
-  and the sync reuses all three instead of paying two more Spark planning cycles
-  — `read_state` is only the fail-open fallback when the pre-check could not run.
-  `write_state` stays a Spark write deliberately: this Databricks runtime creates
-  every Spark-written table with a v7 protocol whose writer-feature list
-  (rowTracking, domainMetadata as 'supported') delta-rs 1.6 refuses to commit
-  to, so a table cannot have both writers — delta-rs keeps the reads, Spark the
-  write. The state table must be **plain Delta** (option A in
-  `REVERSE_ETL_DBU_COST_NOTES.md` §5): OSS Delta cannot commit to a
-  UniForm table (`DELTA_MISSING_ICEBERG_CLASS`), while the source stays UniForm so
-  StarRocks/Databricks Iceberg readers keep working. Column mapping is on (not a
-  UniForm feature — it is what makes `DROP COLUMN` legal), and OSS Delta
-  reads/writes column-mapped tables fine.
-- `get_current_version` / `get_earliest_available_version` — the commit versions
-  still in `_delta_log`, read **driver-side** through Hadoop's FS API (no Spark
-  job, no stage): a commit is exactly a 20-digit `.json` file, so latest/earliest
-  is a max/min over one listing (~0.1s). This replaced `history()` reads, which
-  ran a 50-task stage over the whole log. `get_spark_session` seeds the session's
-  global Hadoop conf with the `fs.*` ABFS settings so driver-side filesystem
-  access authenticates (Spark only auto-propagates `spark.hadoop.*` there).
+The reconstruction: for each commit version in the requested range, diff the
+snapshot at v-1 against the snapshot at v (two column-pruned scans) and emit
+CDF-shaped rows — `insert`, `update_preimage` + `update_postimage` pairs,
+`delete` — ordered by `_commit_version`, which is what
+`readChangeFeed`/`table_changes()` do internally for tables without the CDF
+feature. Two design points worth keeping:
+
+- **Per-version diffing is required for correctness.** A key deleted in one
+  commit and reinserted in the next must emit both events; a diff over a whole
+  range would net them out to nothing. The sync still chunks the range
+  (`_version_chunks`, `REVERSE_ETL_CDF_CHUNK_VERSIONS`) and streams
+  read → produce → read with `flush=False` and per-chunk heartbeat lines —
+  that machinery lives in the sync asset body (`reverse_etl_cdf_setup.py`) and
+  is unchanged from the Spark days.
+- **Schema changes need no bisection.** Snapshot reads do not error on
+  incompatible schema changes the way CDF reads do: an added or dropped column
+  reads as `None` on the other side and never false-positives an event (the
+  row-diff compares values, treating an absent column as null). Drop
+  propagation onto the targets is unchanged (evidence-gated via the state
+  table's `last_schema`, `get_column_ids` for renames).
+
+Function contract, mirroring the deleted Spark module:
+
+- `read_changes(cfg, location, since_version, until_version)` — the
+  reconstruction; the caller pins `until_version` to the source's current
+  version so the read range matches the watermark exactly. Every `TIMESTAMP`
+  column is rendered into a microsecond UTC string before comparison, so a
+  datetime-vs-formatted-string mismatch can never read as a change.
+- `read_state` — the state table read (watermark + `last_schema`, freshest row
+  wins), only the fail-open fallback when the delta-rs pre-check could not run.
+  The watermark WRITE is the one small SQL statement `_write_state()` in
+  `reverse_etl_cdf_setup.py`, deliberately: this Databricks runtime creates
+  every warehouse-written table with a v7 protocol whose writer-feature list
+  (rowTracking, domainMetadata) delta-rs 1.6 refuses to commit to, so a table
+  cannot have both writers — delta-rs keeps the reads, one SQL insert the
+  write. The state table stays **plain Delta** (option A in
+  `REVERSE_ETL_DBU_COST_NOTES.md` §5).
+- `get_current_version` / `get_earliest_available_version` — `DeltaTable
+  .version()` for the latest; a bisection on `load_as_version()` for the
+  earliest, where "loadable" means exactly what the reconstruction needs: a
+  version readable as a snapshot, through commit files or a checkpoint. Any
+  load failure that does not look like an unavailable version re-raises — a
+  wrong "earliest" would silently corrupt the first-run backfill decision.
+- `get_row_fields(location, version=None)` / `get_column_ids(location,
+  version=None)` — the schema reads, current by default. The sync passes the
+  version it is reading: schema and data must come from the same commit, or a
+  rename landing mid-run nulls values under the renamed column (findings doc
+  §2.6).
+
+Every versioned read goes through `_version_handle(location, version)` — a
+fresh `DeltaTable` constructed *at* that version, so schema, add actions and
+data are consistent by construction (a reused handle across `load_as_version()`
+jumps is one less thing to reason about, at the cost of one handle construction
+per version; log replay is checkpoint-bounded). Per-version commit timestamps —
+the envelope's `source.commit_timestamp` — come from a `{version: timestamp}`
+map built once per read from the *current* handle's full `history()`, keyed by
+each entry's version field: on a version-pinned handle, `history()` mislabels
+entries (the version field shifts by the pin, and `history(1)` reports the
+newest commit's fields under the pinned version's label — findings doc §2.5).
+
+One verified delta-rs finding shapes the read path: **1.6.6 does not apply the
+columnMapping physical→logical rename for warehouse-written column-mapped
+sources** (columnMapping as a writer feature, no reader features — verified on
+both the UniForm v2 and the plain column-mapped flavor) — `to_pyarrow_table()`
+returns the logical schema with every value None. The reader detects the
+all-None scan and re-reads the snapshot's parquet files directly, renaming via
+`delta.columnMapping.physicalName` with pyarrow's `AzureFileSystem` (the same
+service principal), and refuses sources with deletion vectors, which file reads
+cannot apply. The earlier claim that "OSS Delta reads column-mapped tables
+fine" held for plain column-mapped tables and is wrong for this UniForm v2
+shape — hence the fallback.
 
 ## 7. The SQL-warehouse plumbing — `databricks_optimize.py` + `_run_sql`
 
@@ -460,7 +452,8 @@ A per-process accumulator. `_run_sql` records every warehouse statement's wall
 time; every instrumented asset/op calls `meter_reset()` at entry and emits
 `databricks_warehouse_seconds` / `databricks_statements` (+ `databricks_compute`,
 and `databricks_cluster_seconds` on the notebook path) as run metadata. The
-`oss_spark` sync emits 0.0 **structurally** — it makes no compute calls. The demo
+delta-rs sync emits `0.0` for reads **structurally** — it makes no compute calls
+(only the watermark write meters a second or two). The demo
 helper reads the metadata back through GraphQL and shows it as the "Databricks
 cost" chip; the semantics (seconds, not DBUs) are in
 `REVERSE_ETL_DBU_COST_NOTES.md`. Per-process is deliberate: multiprocess steps get
@@ -471,12 +464,12 @@ isolation for free, and the in-process setup job resets at every asset entry.
 | Step | Where |
 |---|---|
 | Demo change (e.g. `UPDATE`) commits → new source version | `reverse_etl_change.py` `make_change` |
-| Sync materializes: watermark + `last_schema` read | spark-free `precheck_versions` (reused); `read_state`/`_read_state` only as the fail-open fallback |
-| CDF rows read since `last_version + 1` | `reverse_etl_spark_reader.read_changes` (or `_read_changes`) |
+| Sync materializes: watermark + `last_schema` read | delta-rs `precheck_versions` (reused); SQL `_read_state` only as the fail-open fallback |
+| CDF rows read since `last_version + 1` | `reverse_etl_delta_reader.read_changes` (reconstructed: file sets per commit, new files only for appends) |
 | Rows → Debezium envelopes | `_to_debezium_events` |
-| Source schema read; RisingWave columns added | `get_row_fields` (delta-rs, spark-free) → `reverse_etl_risingwave_setup.add_missing_columns` |
+| Source schema read (pinned to the chunk's top commit); RisingWave columns added | `get_row_fields(location, version=chunk_to)` (delta-rs) → `reverse_etl_risingwave_setup.add_missing_columns` |
 | Avro schemas registered; events produced, delivery verified | `_register_avro_schemas` → `_produce_to_kafka` |
-| Watermark + `last_schema` written to the state table | `write_state` (or `_write_state`) |
+| Watermark + `last_schema` written to the state table | `_write_state` (the one small SQL statement; delta-rs cannot commit to the v7 state table) |
 | RisingWave applies the change (native Debezium + Avro) | RisingWave `reverse_etl_avro_target` |
 | Postgres upserts/deletes via the JDBC sink | `reverse_etl_debezium_sink` (created) → connector |
 | Health checked every 5 min | `reverse_etl_health.sink_healthy` |
@@ -492,6 +485,21 @@ isolation for free, and the in-process setup job resets at every asset entry.
   source DDL sets DVs off; re-enable them and every delete sync becomes
   file-scale. (The bloat is invisible on small files — the seed rows' deletes
   looked clean all along.)
+- **Never read the source schema "live" inside the sync.** The read range is
+  pinned from the pre-check; the schema used to name the envelope and detect
+  renames must be pinned to the same commit (`get_row_fields(location,
+  version=...)`, `get_column_ids(location, version=...)`). A `RENAME COLUMN`
+  committing between the two reads names the envelope's columns with the new
+  schema while the rows carry the value under the old name — the projection
+  nulls it, and because the state row then records the new schema, no later
+  sync can even detect the rename. Verified live 2026-10-19: a populated value
+  was lost exactly this way, and recovered only by a new populate event after
+  the fix.
+- **delta-rs `history()` lies on version-pinned handles.** Pinned below the
+  latest version, every entry's `version` field shifts by the pin and
+  `history(1)` carries the newest commit's operation and timestamp. Per-version
+  commit metadata must come from a current handle's full `history()`, keyed by
+  each entry's version field.
 - **Lazy imports are load-bearing.** `reverse_etl_risingwave_setup` imports
   `reverse_etl_cdf_setup`; the sync asset imports it back *inside the function
   body*. Same for pyspark/delta (not installed everywhere definitions load) and

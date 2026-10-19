@@ -6,8 +6,8 @@ ops reset the meter when they start and emit the snapshot as run metadata
 (`databricks_warehouse_seconds`). The demo helper
 (scripts/reverse_etl_demo_server.py) reads that metadata back through the
 Dagster GraphQL API and shows cost chips on the demo page — e.g. the sync asset
-on the oss_spark path emits 0.0, structurally, because it touches no Databricks
-compute at all (see docs/poc/REVERSE_ETL_DBU_COST_NOTES.md section 5).
+on the delta-rs path emits 0.0 for reads, structurally, because they touch no
+Databricks compute (only the watermark write runs one small SQL statement)
 
 The meter is deliberately per-process: Dagster's multiprocess executor runs
 each step in its own process, so a step's snapshot is its own usage. For the

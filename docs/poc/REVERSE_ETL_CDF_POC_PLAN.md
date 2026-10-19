@@ -43,6 +43,10 @@ adopting a third-party tool.
 > backend. The rest of this document describes the SQL path as originally
 > designed; see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md` for the zero-DBU
 > backend, its verification, and the billing actuals.
+>
+> **2026-10-19 (superseded):** both backends are gone — the syncs read with the
+> delta-rs reconstruction (`reverse_etl_delta_reader.py`), no Spark, no CDF
+> read, no `extraction` field. See `REVERSE_ETL_SPARK_FREE_FINDINGS.md`.
 
 A first cut was scaffolded as a throwaway sandbox project
 (`~/Projects/dagster-test/dagster-poc/reverse-etl`) to prove the design:

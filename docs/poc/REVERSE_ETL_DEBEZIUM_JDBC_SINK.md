@@ -55,9 +55,9 @@ Postgres and a local Redpanda topic, covering insert, update and delete.
         |
         |  Dagster asset reverse_etl_cdf_to_kafka  OR  the Databricks notebook of the same name
         |  (BATCH, manual / on demand; section 10.3)
-        |  reads the change feed since the stored watermark -- OSS Delta on Spark, straight from
-        |  storage by default (zero Databricks compute; extraction: oss_spark), or table_changes()
-        |  via the SQL warehouse (extraction: databricks_sql) -- see docs/poc/REVERSE_ETL_DBU_COST_NOTES.md
+        |  reads the changes since the stored watermark -- reconstructed from Delta storage alone
+        |  (per-commit-version snapshot diffs via delta-rs; zero Databricks compute for the reads,
+        |  one small SQL statement advances the watermark) -- see docs/poc/REVERSE_ETL_DBU_COST_NOTES.md
         |  groups CDF rows into Debezium before/after/op events
         v
  External Kafka cluster (SASL_SSL)    <-- KAFKA_OUTPUT_BOOTSTRAP
@@ -1257,10 +1257,13 @@ larger ones. The size of the change (50 or 10,000 rows) made no measurable diffe
   keep it in sync with the repo file manually), and from a laptop neutral-CWD run the job's step does not see the
   definitions `.env` parser's variables, so source `.env` explicitly (inside the container the dagster CLI injects
   it and no workaround is needed).
-- **2026-10-14: this comparison is superseded for the Dagster side.** The sync now reads the change feed and writes
-  the watermark straight from Delta storage with OSS Delta on Spark (`extraction: oss_spark`) — zero Databricks
-  compute per sync. The make-change SQL and the one-time setup/seed DDL are the only remaining cost. See
+- **2026-10-14: this comparison is superseded for the Dagster side.** The sync reads the change feed and writes
+  the watermark from Delta storage with zero Databricks compute per sync. The make-change SQL and the one-time
+  setup/seed DDL are the only remaining cost. See
   docs/poc/REVERSE_ETL_DBU_COST_NOTES.md (sections 5 and 6, with billing-system actuals and the recurring-job audit).
+- **2026-10-19 (superseded again):** the OSS Spark reader is deleted too — the syncs reconstruct changes with
+  delta-rs alone (`reverse_etl_delta_reader.py`); the notebook path on this page is now the only Spark consumer.
+  See docs/poc/REVERSE_ETL_SPARK_FREE_FINDINGS.md.
 - **Not measured:** dollar cost (the DBU price is not known here), the Auto CDC pipeline's cost, and the always-on
   Kafka, Connect, RisingWave and Postgres side (local in this demo).
 

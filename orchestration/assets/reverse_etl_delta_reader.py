@@ -1,0 +1,430 @@
+"""delta-rs backend for the reverse-ETL syncs: the change feed reconstructed from
+snapshot diffs alone -- no CDF read, no Spark, no warehouse scans.
+
+Replaces both former backends -- the Databricks SQL path (table_changes(), DBUs)
+and the OSS Spark path (a local JVM reading the change feed) -- with version-range
+reconstruction on delta-rs alone:
+
+    for each commit version v in the requested range:
+        diff the snapshot at v-1 against the snapshot at v
+        -> insert / delete / update_preimage + update_postimage rows
+
+which is exactly what Spark's readChangeFeed does internally for tables without
+the CDF table feature -- it reconstructs changes by diffing versions too. The
+reconstruction needs no CDF read support in delta-rs (which does not exist), no
+warehouse, and no JVM: per commit version, either just the new files' rows
+(append-only commits) or two column-pruned snapshot scans and a dict diff
+(rewrites).
+Per-version diffing is required for correctness: a key deleted in one
+commit and reinserted in the next must emit both events, which an endpoint diff
+over a range would net out to nothing.
+
+Row contract (identical to what table_changes()/readChangeFeed produced, so
+_to_debezium_events() and everything downstream is unchanged):
+- one dict per CDF row; payload values typed (int/bool/str), every TIMESTAMP
+  column rendered as a microsecond UTC string (_MICROSECOND_TIMESTAMP_FORMAT);
+- `_change_type` in {insert, update_preimage, update_postimage, delete};
+- `_commit_version` int, `_commit_timestamp` formatted the same way;
+- rows ordered by `_commit_version` (required: consumers apply events for the
+  same key oldest-to-newest); within one version order is irrelevant --
+  _to_debezium_events() groups preimages/postimages by key and pairs them
+  positionally.
+
+Writes stay out of this module by design: delta-rs can read but not commit to
+the warehouse-created state table (this runtime stamps rowTracking and
+domainMetadata writer features delta-rs 1.6 refuses), so the watermark advances
+through the one small SQL statement _write_state() in reverse_etl_cdf_setup --
+the only warehouse touch a sync has left. Reads (the expensive part) are free.
+
+Memory profile, two paths: an **append-only commit reads only its new files**
+(constant memory per version -- the 1M-row bulk load syncs at ~100k rows of
+working set per chunk), while a **rewritten-files commit diffs two full
+cumulative snapshots** (materialized lazily, then carried forward). For a table
+whose history is append-heavy -- the common production shape -- memory stays at
+the commit size; a table that rewrites everything in every commit is the honest
+limit of snapshot reconstruction, and REVERSE_ETL_CDF_CHUNK_VERSIONS bounds how
+many versions accumulate before they stream to Kafka.
+"""
+
+import datetime
+import io
+import re
+from typing import Any
+
+import pyarrow as pa
+import pyarrow.fs as pafs
+import pyarrow.parquet as pq
+from deltalake import DeltaTable
+
+from .reverse_etl_cdf_setup import (
+    _azure_storage_options,
+    CHANGE_TYPE_COLUMN,
+    COMMIT_TIMESTAMP_COLUMN,
+    COMMIT_VERSION_COLUMN,
+    ReverseEtlSyncConfig,
+    RowField,
+    ZONED_TIMESTAMP,
+)
+
+# Delta/Spark schema types -> Kafka Connect types, same semantics as the SQL
+# path's _CONNECT_TYPE_BY_DATABRICKS_TYPE: anything not listed travels as a
+# plain string. Delta's type names match Spark's typeName() for the common
+# primitives ('long', 'string', 'timestamp', ...), which is why the same map
+# served the Spark backend unchanged.
+_CONNECT_TYPE_BY_DELTA_TYPE = {
+    "byte": "int8",
+    "short": "int16",
+    "integer": "int32",
+    "long": "int64",
+    "float": "float",
+    "double": "double",
+    "boolean": "boolean",
+    "string": "string",
+    "timestamp": ZONED_TIMESTAMP,
+}
+
+_CDF_METADATA_COLUMNS = (CHANGE_TYPE_COLUMN, COMMIT_VERSION_COLUMN, COMMIT_TIMESTAMP_COLUMN)
+
+# The SQL path rendered timestamps with the Java pattern
+# ("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'" -> "2026-10-18T17:26:36.779212Z"); the
+# strftime equivalent for Python datetimes out of delta-rs (always UTC instants,
+# hence the literal Z).
+_PY_MICROSECOND_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
+
+
+def _format_timestamp(value: Any) -> str:
+    """One TIMESTAMP value -> the SQL path's exact microsecond UTC string."""
+    if not isinstance(value, datetime.datetime):
+        return str(value)
+    if value.tzinfo is not None:
+        value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return value.strftime(_PY_MICROSECOND_TIMESTAMP_FORMAT) + "Z"
+
+
+def _format_commit_timestamp(timestamp_ms: int) -> str:
+    """A commit's timestamp (epoch milliseconds, from the delta log) in the same
+    microsecond format -- CDF's _commit_timestamp is the commit's own timestamp,
+    and the SQL path rendered it with the same date_format as payload columns."""
+    moment = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=datetime.timezone.utc)
+    return moment.strftime(_PY_MICROSECOND_TIMESTAMP_FORMAT) + "Z"
+
+
+def _open(location: str) -> DeltaTable:
+    return DeltaTable(location, storage_options=_azure_storage_options(location))
+
+
+def get_row_fields(location: str, version: int | None = None) -> list[RowField]:
+    """The source table's columns via delta-rs -- (name, connect type, nullable)
+    per column, the same contract the information_schema read served.
+
+    `version=None` reads the current snapshot; a version pins the read to that
+    commit -- the sync pins it to the same version as the data it read, because
+    a commit landing between the data read and the schema read would name the
+    envelope's columns with the newer schema and silently null out every value
+    under a renamed column (_coerce_row projects by row.get(name)).
+
+    Anything compound (struct/map/array) travels as a plain string, exactly as
+    the Spark variant mapped StructType."""
+    delta = _version_handle(location, version) if version is not None else _open(location)
+    fields = delta.schema().fields
+    row_fields: list[RowField] = []
+    for field in fields:
+        type_name = getattr(field.type, "type", None)  # PrimitiveType carries the Delta name; compound types don't
+        row_fields.append((field.name, _CONNECT_TYPE_BY_DELTA_TYPE.get(type_name, "string"), field.nullable))
+    if not row_fields:
+        raise RuntimeError(f"No columns found in the Delta schema at {location}")
+    return row_fields
+
+
+def read_state(cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[int | None, str | None]:
+    """(watermark, last_schema) for this sync's state row -- the delta-rs read
+    precheck_versions() does for the no-op case, as the full path's fallback when
+    the pre-check thread failed. The table can carry duplicate rows for one
+    sync_name; the freshest row wins, not an arbitrary scan order."""
+    state = _open(state_location).to_pyarrow_table()
+    rows = [row for row in state.to_pylist() if row.get("sync_name") == cfg.sync_name]
+    if not rows:
+        return None, None
+    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
+    version = int(freshest["last_commit_version"]) if freshest["last_commit_version"] is not None else None
+    return version, freshest.get("last_schema")
+
+
+def get_current_version(location: str) -> int:
+    """The table's latest committed version (DESCRIBE HISTORY LIMIT 1 equivalent)."""
+    return _open(location).version()
+
+
+_VERSION_LOAD_FAILURE = re.compile(
+    "status.*404|does not exist|not found|no valid|Cannot find|cannot load|earliest|truncated|expired",
+    re.IGNORECASE,
+)
+
+
+def get_earliest_available_version(location: str) -> int:
+    """Earliest version still loadable from the table's transaction log (full
+    DESCRIBE HISTORY equivalent), by bisection on load_as_version().
+
+    What "loadable" means here is exactly what this reader needs: a version the
+    reconstruction can read as a snapshot, whether through commit files or a
+    checkpoint. 0 means the log's full history is intact and a first-run backfill
+    can reconstruct everything; anything greater means history has aged out and
+    the sync baselines instead of backfilling a silently incomplete picture."""
+    delta = _open(location)
+    latest = delta.version()
+    if latest <= 0:
+        return max(latest, 0)
+    lo, hi = 0, latest
+    while lo < hi:
+        mid = (lo + hi) // 2
+        try:
+            delta.load_as_version(mid)
+        except Exception as e:  # noqa: BLE001 -- any load failure means "not available"; bisect on
+            if not _VERSION_LOAD_FAILURE.search(str(e)):
+                raise
+            lo = mid + 1
+        else:
+            hi = mid
+    delta.load_as_version(latest)  # leave the handle on the current snapshot
+    return lo
+
+
+def _physical_rename_map(delta: DeltaTable) -> dict[str, str]:
+    """{physical name: logical name} per column, from the schema's
+    delta.columnMapping.physicalName metadata. Empty when the table has no
+    column mapping (physical names are the logical names)."""
+    return {
+        field.metadata["delta.columnMapping.physicalName"]: field.name
+        for field in delta.schema().fields
+        if field.metadata and "delta.columnMapping.physicalName" in field.metadata
+    }
+
+
+def _version_handle(location: str, version: int) -> DeltaTable:
+    """A DeltaTable pinned to exactly this version -- a fresh handle per read.
+
+    Constructing at the version keeps schema, add actions and data consistent
+    by construction: everything the versioned reads derive from the handle
+    (logical column order, physical rename map, file set, snapshot) comes from
+    one snapshot, with no dependence on how a reused handle refreshes its
+    cached state across load_as_version() jumps.
+
+    Note the one delta-rs quirk this does NOT fix (see read_changes): history()
+    on a version-pinned handle returns the full log with version fields offset
+    by the pin -- per-version commit metadata must come from a current handle's
+    history(), keyed by each entry's version field."""
+    return DeltaTable(location, storage_options=_azure_storage_options(location), version=version)
+
+
+def _format_rows(rows: list[dict[str, Any]], timestamp_columns: list[str]) -> None:
+    """Timestamps become the contract's microsecond strings IN PLACE, before any
+    comparison or envelope building, so a datetime-vs-formatted-string mismatch
+    can never read as a change. Idempotent (formatted values are not datetimes)."""
+    for row in rows:
+        for column in timestamp_columns:
+            if row.get(column) is not None:
+                row[column] = _format_timestamp(row[column])
+
+
+def _read_files_as_rows(
+    delta: DeltaTable,
+    azure: pafs.FileSystem,
+    container: str,
+    uris: list[str],
+    timestamp_columns: list[str],
+) -> list[dict[str, Any]]:
+    """Rows of specific parquet data files, with the columnMapping physical->logical
+    rename applied. delta-rs 1.6 does not apply the rename for warehouse-written
+    column-mapped tables (verified live): to_pyarrow_table() returns the logical
+    schema with every value None. Columns the files carry beyond the logical
+    schema (CDF's _change_type/__is_cdc sidecars on files written by an UPDATE)
+    are dropped. Timestamp formatting is the caller's job (_format_rows)."""
+    rename = _physical_rename_map(delta)
+    logical_order = [field.name for field in delta.schema().fields]
+    tables: list[pa.Table] = []
+    for uri in uris:
+        path = uri.split(".dfs.core.windows.net/", 1)[1]
+        with azure.open_input_stream(f"{container}/{path}") as handle:
+            file_table = pq.read_table(io.BytesIO(handle.readall()))
+        if rename:
+            file_table = file_table.rename_columns([rename.get(name, name) for name in file_table.column_names])
+        tables.append(file_table.select([name for name in logical_order if name in file_table.column_names]))
+    # Files written by different operations record different column nullability
+    # (e.g. the CDF sidecar columns on an UPDATE's rewrite); promote merges them.
+    table = pa.concat_tables(tables, promote_options="default") if tables else None
+    return table.to_pylist() if table is not None else []
+
+
+def _snapshot_rows(
+    delta: DeltaTable,
+    timestamp_columns: list[str],
+    key_columns: list[str],
+    azure: pafs.FileSystem | None = None,
+    container: str = "",
+) -> dict[tuple, dict[str, Any]]:
+    """One version's snapshot as {key tuple: payload row}, timestamps formatted.
+
+    `delta` must be a handle pinned to that version (see _version_handle) --
+    schema, add actions and data all read from the same snapshot. Timestamps
+    become the contract's microsecond strings BEFORE any comparison, so a
+    datetime-vs-formatted-string mismatch can never read as a change."""
+    rows = delta.to_pyarrow_table().to_pylist()
+    if rows and all(value is None for row in rows for value in row.values()):
+        if azure is None:
+            raise RuntimeError(
+                "delta-rs returned an all-None snapshot and no Azure filesystem is available to re-read the files"
+            )
+        rows = _read_files_as_rows(delta, azure, container, delta.file_uris(), timestamp_columns)
+    _format_rows(rows, timestamp_columns)
+    return {tuple(row[name] for name in key_columns): row for row in rows}
+
+
+def _changed_payload_columns(old_row: dict[str, Any], new_row: dict[str, Any], skip: set[str]) -> bool:
+    """True when the two rows differ on any non-key column. A column absent from
+    one side (added or dropped between the versions) reads as None, so schema
+    drift alone never produces an event -- drop propagation handles schema."""
+    return any(old_row.get(name) != new_row.get(name) for name in (set(old_row) | set(new_row)) - skip)
+
+
+def _file_paths(delta: DeltaTable) -> set[str]:
+    """The snapshot's data-file paths (relative to the table root) from the add
+    actions -- a log-only read, no data."""
+    return {
+        action["path"]
+        for action in pa.table(delta.get_add_actions(flatten=True)).to_pylist()
+        if action.get("path")
+    }
+
+
+def _emit_row(change_type: str, row: dict[str, Any], version: int, commit_timestamp: str) -> dict[str, Any]:
+    return {
+        **row,
+        CHANGE_TYPE_COLUMN: change_type,
+        COMMIT_VERSION_COLUMN: version,
+        COMMIT_TIMESTAMP_COLUMN: commit_timestamp,
+    }
+
+
+def read_changes(
+    cfg: ReverseEtlSyncConfig,
+    location: str,
+    since_version: int,
+    until_version: int | None = None,
+) -> list[dict[str, Any]]:
+    """Reconstructed CDF rows for the inclusive version range [since_version,
+    until_version], ordered by `_commit_version`.
+
+    The caller pins `until_version` to the source's current version right before
+    reading (the same rule the Spark backend followed), so the read range matches
+    exactly what the watermark will advance to.
+
+    Two read paths, chosen per commit:
+
+    - **Append-only commit** (files added, none removed): every row of the NEW
+      files is an insert -- read only those, never the cumulative snapshot. This
+      is what keeps a 1M-row bulk load constant-memory per version (verified: it
+      cut the 1M-row sync's wall time by reading ~1M row-versions instead of
+      ~11M). Also covers version 0, whose whole content is inserts.
+    - **Rewritten files** (an UPDATE/DELETE/MERGE rewrite, or compaction): the
+      full snapshot diff as before. The previous snapshot is materialized
+      lazily -- an append-only history never pays for it; the first rewrite
+      scans its own v-1 once and the dict carries forward.
+
+    Partitioned tables disable the fast path: partition values live in file
+    paths, not in the files, so added-file reads would come back without them."""
+    end = until_version if until_version is not None else get_current_version(location)
+    if end < since_version:
+        return []
+
+    delta = _open(location)
+    features = (delta.protocol().writer_features or []) + (delta.protocol().reader_features or [])
+    if "deletionVectors" in features:
+        raise RuntimeError(
+            f"{cfg.source_fqn} has deletion vectors enabled -- the delta-rs backend reads snapshot files "
+            "directly (see _read_files_as_rows) and cannot apply them; recreate the source without them"
+        )
+
+    fields = get_row_fields(location)
+    timestamp_columns = [name for name, connect_type, _ in fields if connect_type == ZONED_TIMESTAMP]
+    key_columns = [cfg.key_column]
+    skip = set(key_columns) | set(_CDF_METADATA_COLUMNS)
+    container = location.split("@")[0].replace("abfss://", "").replace("az://", "")
+    azure = None
+    if container and "@" in location:
+        options = _azure_storage_options(location)
+        azure = pafs.AzureFileSystem(
+            account_name=location.split("@")[1].split(".")[0],
+            client_id=options["client_id"],
+            tenant_id=options["tenant_id"],
+            client_secret=options["client_secret"],
+        )
+    root = location.rstrip("/")
+    fast_path = azure is not None and not delta.metadata().partition_columns
+
+    rows: list[dict[str, Any]] = []
+    if since_version > 0:
+        prev_files: set[str] = _file_paths(_version_handle(location, since_version - 1))
+    else:
+        prev_files = set()
+    # Per-version commit timestamps from the log, read through a CURRENT (never
+    # version-pinned) handle. delta-rs mislabels history on pinned handles
+    # (verified 2026-10-19): pinned below the latest version, history() returns
+    # the full log with every entry's version field offset by the pin, and
+    # history(1) reports the newest commit's operation and timestamp under the
+    # pinned version's label -- so events from a multi-version read would all
+    # carry one wrong timestamp instead of their own commit's. On the current
+    # handle history() is correct, so the map is keyed by the real version.
+    commit_timestamps = {
+        entry["version"]: _format_commit_timestamp(entry["timestamp"])
+        for entry in _open(location).history()
+    }
+    # Full snapshots for the diff, materialized lazily: an append-only history
+    # never needs one, the first rewrite scans its own v-1 once.
+    prev_rows: dict[tuple, dict[str, Any]] | None = None
+
+    for version in range(since_version, end + 1):
+        delta = _version_handle(location, version)
+        cur_files = _file_paths(delta)
+        commit_timestamp = commit_timestamps[version]
+
+        if fast_path and not (prev_files - cur_files):
+            added = cur_files - prev_files
+            new_rows = _read_files_as_rows(
+                delta, azure, container, [f"{root}/{path}" for path in sorted(added)], timestamp_columns
+            )
+            _format_rows(new_rows, timestamp_columns)
+            for row in new_rows:
+                rows.append(_emit_row("insert", row, version, commit_timestamp))
+            if prev_rows is not None:
+                for row in new_rows:
+                    prev_rows[tuple(row[name] for name in key_columns)] = row
+            prev_files = cur_files
+            continue
+
+        # A rewrite: diff the full snapshots. The first rewrite materializes the
+        # diff base (the snapshot one version earlier) with one full scan.
+        current = _snapshot_rows(delta, timestamp_columns, key_columns, azure, container)
+        if prev_rows is None:
+            prev_rows = (
+                _snapshot_rows(_version_handle(location, version - 1), timestamp_columns, key_columns, azure, container)
+                if version > 0
+                else {}
+            )
+        for key, old_row in prev_rows.items():
+            if key not in current:
+                # Deleted (or updated-away): CDF's delete row carries the full
+                # preimage, which is what the Debezium envelope's before needs.
+                rows.append(_emit_row("delete", old_row, version, commit_timestamp))
+        for key, new_row in current.items():
+            old_row = prev_rows.get(key)
+            if old_row is None:
+                rows.append(_emit_row("insert", new_row, version, commit_timestamp))
+            elif _changed_payload_columns(old_row, new_row, skip):
+                # CDF emits an update as preimage + postimage sharing the key
+                # and commit version; _to_debezium_events() pairs them.
+                rows.append(_emit_row("update_preimage", old_row, version, commit_timestamp))
+                rows.append(_emit_row("update_postimage", new_row, version, commit_timestamp))
+        prev_rows = current
+        prev_files = cur_files
+
+    return rows
