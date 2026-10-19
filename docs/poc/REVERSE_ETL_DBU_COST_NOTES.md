@@ -289,6 +289,20 @@ findings from that change, both verified live against this workspace:
   (`DeltaTable.load_cdf`) for the source tables: it rejects column-mapped
   tables outright ("not supported for CHANGE DATA FEED scans yet") — and column
   mapping is what makes DROP/RENAME COLUMN work.
+- **There is no Databricks-created table shape delta-rs can write** (verified
+  live 2026-10-19, asked directly): creating a table with pinned legacy
+  properties (`'delta.minReaderVersion' = 2, 'delta.minWriterVersion' = 5`)
+  is overridden — the table is born (reader 3, writer 7) with the runtime's
+  full default feature list — and opting the mandatory features out at creation
+  is refused outright: `[DELTA_UNSUPPORTED_FEATURE_STATUS] Expecting the status
+  for table feature domainmetadata to be "supported", but got "unsupported"`.
+  The runtime mandates rowTracking/domainMetadata at birth, so every
+  Databricks-created table requires features delta-rs cannot commit. The only
+  dual-writer shape would be a delta-rs-born table that Databricks also writes
+  (plain Spark writes conform to a table's existing protocol rather than
+  upgrading it), but registering a delta-rs-born table in Unity Catalog needs
+  `CREATE EXTERNAL TABLE` on the external location — a privilege the demo's
+  service principal does not hold (nor `MANAGE`, so it cannot self-grant).
 - **Never re-create a state table via `CREATE OR REPLACE`**: the RTAS inherits
   the source selection's bumped protocol and lands exactly on the unwritable
   shape. Drop + re-create with the plain DDL instead (the setup asset does).
