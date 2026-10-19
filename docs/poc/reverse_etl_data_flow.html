@@ -48,17 +48,25 @@
   button { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
   button:hover { background: var(--card); }
   button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
-  .acts { margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .acts select, .bar select { font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 4px 8px; }
-  .acts button, .bar button { border-color: var(--active); }
-  button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
+  button:disabled, select:disabled, input:disabled { opacity: .45; cursor: not-allowed; }
   .result { font-size: 13px; color: var(--muted); margin: 8px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+  .runbox { background: var(--card); border-radius: 12px; padding: 12px 16px 10px; margin: 12px 0 0; }
+  .runbox-title { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+  .runbox .result { margin: 4px 0 0; }
+  .runbox .result:empty::before { content: "No runs yet — the rail on the left starts everything."; font-size: 12.5px; }
+  .rentry { padding: 7px 0; border-bottom: 0.5px solid var(--card-border); }
+  .rentry:last-child { border-bottom: 0; padding-bottom: 2px; }
+  .rentry .rsub { margin-top: 4px; overflow-wrap: anywhere; }
+  .rentry .rsub.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
+  .rentry .rsub.strong { color: var(--text); font-weight: 600; }
+  .caprun { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--active); margin: 6px 0 0; }
+  .caprun .icon.run { width: 11px; height: 11px; margin-right: 0; }
+  .caprun .phase { color: var(--muted); font-weight: 400; }
   .icon { display: inline-block; width: 1.1em; margin-right: 6px; text-align: center; font-weight: 700; }
   .icon.ok { color: #2e9e4f; } .icon.fail { color: #d64545; }
   .icon.run { width: 12px; height: 12px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--active); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .result a { color: var(--blue-t); }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px; font-size: 13px; color: var(--muted); }
   .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
   ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1200px; }
   li { display: grid; grid-template-columns: 28px 1fr; gap: 10px 10px; align-content: start; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
@@ -79,22 +87,112 @@
   .notes code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
   .notes pre { margin: 0 0 16px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55; overflow-x: auto; }
   .notes .label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
-  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } .icon.run { animation-duration: 3s; } }
-</style>
+  /* ── layout: action rail + main (mirrors the Jobotron page's rail) ── */
+  .topbar { max-width: 1200px; margin: 0 auto 18px; display: flex; align-items: flex-start; gap: 14px; }
+  .topbar .titles { margin-right: auto; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--card);
+    border: 0.5px solid var(--card-border); border-radius: 999px; padding: 5px 12px; margin-top: 4px; white-space: nowrap; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+  .pill.ok .dot { background: #2e9e4f; box-shadow: 0 0 0 3px rgba(46, 158, 79, .18); }
+  .pill.ok { color: var(--text); }
+  .pill.fail .dot { background: #d64545; }
+  .layout { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 242px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .rail { position: sticky; top: 16px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 12px;
+    padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .sgroup { display: flex; flex-direction: column; gap: 6px; }
+  .sgroup + .sgroup { border-top: 0.5px solid var(--card-border); padding-top: 12px; }
+  .slabel { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .rail button { width: 100%; text-align: left; padding: 7px 11px; font-size: 13px; }
+  .rail button.running::before { content: ""; display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line);
+    border-top-color: var(--active); border-radius: 50%; margin-right: 7px; vertical-align: -2px; animation: spin .8s linear infinite; }
+  .rail select, .rail input { font: inherit; font-size: 13px; color: var(--text); background: transparent;
+    border: 0.5px solid var(--line); border-radius: 8px; padding: 5px 8px; width: 100%; }
+  .rail .hint { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 2px 0 0; overflow-wrap: anywhere; }
+  .rail button.danger { color: #d64545; border-color: #d64545; }
+  .maincol { min-width: 0; }
+  /* run activity: pulsing components, flowing dashes on the arrows in play,
+     and a badge (spinner / ✓ / ✗) pinned to each component's corner */
+  .node.active { animation: nodepulse 1.5s ease-in-out infinite; }
+  @keyframes nodepulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  /* The comet: a bright pill sweeping each lit arrow while an action runs,
+     the Jobotron page's comet adapted to SVG. The base edge dims to a faint
+     track; the overlay (a cloned line) carries the moving dash. Only runs
+     light the overlays — browsing a step shows the static lit arrow. */
+  .edge.on.live { stroke: color-mix(in srgb, var(--active) 40%, var(--line)); }
+  .edge-flow { stroke: #ffedd0; stroke-width: 3; stroke-linecap: round; opacity: 0; pointer-events: none; }
+  .edge-flow.on { opacity: 1; stroke-dasharray: 18 var(--len, 300); animation: comet 1.4s linear infinite;
+    filter: drop-shadow(0 0 6px rgba(239, 159, 39, .8)); }
+  @keyframes comet { from { stroke-dashoffset: 18px; } to { stroke-dashoffset: calc(-1 * var(--len, 300)); } }
+  .badge circle { fill: var(--card); stroke: var(--card-border); stroke-width: 0.5; }
+  .badge .arc { fill: none; stroke: var(--active); stroke-width: 2.2; stroke-dasharray: 21.2 7.1; animation: spindash .8s linear infinite; }
+  @keyframes spindash { to { stroke-dashoffset: -28.3; } }
+  .badge text { font-size: 11px; font-weight: 700; }
+  .badge.done text { fill: #2e9e4f; } .badge.fail text { fill: #d64545; }
+  .badge { transition: opacity .5s; }
+  .badge.fading { opacity: 0; }
+  @media (max-width: 1150px) {
+    .layout { grid-template-columns: 1fr; }
+    .rail { position: static; flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+    .sgroup { flex: 1 1 200px; }
+    .sgroup + .sgroup { border-top: 0; padding-top: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } .icon.run { animation-duration: 3s; }
+    .node.active, .rail button.running::before, .badge .arc { animation: none; } .edge-flow.on { display: none; } }</style>
 </head>
 <body>
-<h1>Reverse-ETL data flow</h1>
-<p class="sub">Syncs changes from the Databricks (UniForm) table to Postgres and RisingWave through Kafka. Use the buttons, click a step, or press the left and right arrow keys.</p>
-<p class="sub" id="bar-msg" style="margin-top: -14px; font-size: 13px">Buttons need the helper: run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/</p>
-<p class="sub" id="cost-total" style="margin-top: -14px; font-size: 13px; color: #2e9e4f; display: none"></p>
+<header class="topbar">
+  <div class="titles">
+    <h1>Reverse-ETL data flow</h1>
+    <p class="sub">Syncs changes from the Databricks source table to Postgres and RisingWave through Kafka. Use the rail, click a step, or press the left and right arrow keys.</p>
+  </div>
+  <div class="pill" id="helper-pill"><span class="dot"></span><span id="bar-msg">checking helper…</span></div>
+</header>
 
-<div class="bar" id="bar">
-  <select id="sync-select" aria-label="Choose the sync's source table"></select>
-  <button id="do-rebuild" disabled>Reset and set up</button>
-  <p class="result" id="bar-result" style="margin: 0"></p>
-</div>
+<div class="layout">
+  <aside class="rail" id="rail" aria-label="Demo actions">
+    <div class="sgroup">
+      <div class="slabel">Source table</div>
+      <select id="sync-select" aria-label="Choose the sync's source table"></select>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Changes · Databricks</div>
+      <select id="change-select">
+        <option value="insert">insert a row</option>
+        <option value="update">update a row</option>
+        <option value="delete">delete a row</option>
+        <option value="add_column">add a column</option>
+        <option value="rename_column">rename a column</option>
+        <option value="drop_column">drop a column</option>
+        <option value="bulk_1m">bulk insert rows (delta)</option>
+      </select>
+      <input id="bulk-rows" type="number" min="1" max="10000000" step="1000" value="1000000" title="Total rows for the bulk insert (delta only)" style="display:none">
+      <button id="act-change">Make change in Databricks</button>
+      <p class="hint">One change = one new table version. Run a sync afterwards to flow it downstream.</p>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Pipeline</div>
+      <button id="act-sync">Run sync (steps 2.1 – 2.5)</button>
+      <p class="hint">delta-rs reads the versions after the watermark — no Spark, no warehouse scans — produces the events, then moves the watermark.</p>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Inspect</div>
+      <button id="act-schema">Schemas in Apicurio</button>
+      <button id="act-readers">Check readers</button>
+      <button id="act-postgres">Show Postgres rows</button>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Demo</div>
+      <button id="do-rebuild" class="danger">Reset and set up</button>
+      <p class="hint">Drops the source and state tables, the topic, the connector and both targets, then recreates them and runs the first sync.</p>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Session cost</div>
+      <p class="hint" id="cost-total" style="display: none"></p>
+    </div>
+  </aside>
 
-<div class="wrap">
+  <main class="maincol">
+    <div class="wrap">
   <div>
     <svg viewBox="0 0 770 350" role="img" aria-label="Source table and state table feed a sync, which writes schemas to a registry and messages to Kafka; Kafka Connect writes Postgres and RisingWave reads the topic directly.">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
@@ -110,7 +208,7 @@
       <line id="e9" class="edge" x1="485" y1="76" x2="485" y2="130" marker-end="url(#arrow)"/>
       <line id="e10" class="edge" x1="560" y1="48" x2="660" y2="130" marker-end="url(#arrow)"/>
 
-      <g id="n-src" class="node coral"><rect x="10" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="41" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" x="85" y="60" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
+      <g id="n-src" class="node coral"><rect x="10" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="41" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" id="src-sub" x="85" y="60" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
       <g id="n-state" class="node coral"><rect x="10" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="261" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" x="85" y="280" text-anchor="middle" dominant-baseline="central">Watermark</text></g>
       <g id="n-sync" class="node purple"><rect x="10" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="151" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="85" y="170" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
       <g id="n-reg" class="node teal"><rect x="410" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="485" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
@@ -119,16 +217,20 @@
       <g id="n-pg" class="node blue"><rect x="210" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="285" y="151" text-anchor="middle" dominant-baseline="central">Postgres</text><text class="ts" x="285" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
       <g id="n-rw" class="node blue"><rect x="610" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="685" y="151" text-anchor="middle" dominant-baseline="central">RisingWave</text><text class="ts" x="685" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
 
-      <g id="dots"></g>
+      <g id="badges"></g>
 
       <g class="coral"><rect x="30" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="46" y="327" dominant-baseline="central">Databricks</text></g>
       <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster</text></g>
       <g class="teal"><rect x="236" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="252" y="327" dominant-baseline="central">Kafka side</text></g>
       <g class="blue"><rect x="336" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="352" y="327" dominant-baseline="central">Targets</text></g>
     </svg>
+    <div class="runbox">
+      <p class="runbox-title">Run status</p>
+      <p class="result" id="result"></p>
+    </div>
   </div>
   <div class="side">
-    <div class="caption"><p class="ct" id="cap-t"></p><p class="cd" id="cap-d"></p><div class="acts" id="acts"></div><p class="result" id="result"></p></div>
+    <div class="caption"><p class="ct" id="cap-t"></p><p class="caprun" id="cap-run" style="display:none"></p><p class="cd" id="cap-d"></p></div>
     <div class="controls">
       <button id="prev" aria-label="Previous step">&larr; Back</button>
       <button id="play">Play</button>
@@ -138,6 +240,8 @@
   </div>
 </div>
 <ol id="steps"></ol>
+  </main>
+</div>
 
 <section class="notes">
   <h2>The Databricks source table</h2>
@@ -145,10 +249,10 @@
   <div class="grid">
     <div>
       <ul>
-        <li><b>A Delta table (UniForm, readable as Iceberg) with Change Data Feed on.</b> The sync reads changes with <code>table_changes()</code>, which only works when <code>delta.enableChangeDataFeed</code> is true. Changes made before it was switched on are not in the feed.</li>
+        <li><b>A Delta table with Change Data Feed on</b> (the three UniForm syncs create it readable as Iceberg; the delta sync creates it plain Delta with column mapping — the dropdown shows which). The sync itself does <b>not</b> read the Change Data Feed: it reconstructs the changes from snapshot diffs with delta-rs (no Spark, no warehouse scans), so it only needs the table's Delta log. Keeping <code>delta.enableChangeDataFeed</code> on costs nothing and keeps the table compatible with the notebook comparison path, which does read <code>table_changes()</code>.</li>
         <li><b>A key column that never repeats and never changes.</b> Here it is <code>rid</code>, an identity column Databricks fills in on insert. Every target is keyed on it. The business <code>id</code> is not used as the key: Unity Catalog primary keys are informational, so two rows can share an <code>id</code>, and deleting one removed the other downstream.</li>
         <li><b>The key must exist from creation.</b> An identity column cannot be added to an existing table, so adding it later means the reset job, then the setup job.</li>
-        <li><b>UniForm (optional but on by default here).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation: turning them on later is a schema commit that breaks Change Data Feed reads spanning it. The Iceberg side is read-only.</li>
+        <li><b>UniForm (optional; on for the avro/cdf/orders sources, off for the delta source).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation, because turning them on later is a schema commit — harmless for the sync (the reconstruction diffs snapshots and handles schema changes natively), but a metadata-generation event for the Iceberg side. The Iceberg side is read-only.</li>
         <li><b>Your own columns</b> go in <code>source_columns</code> in the sync's YAML (here <code>id</code>, <code>value</code>, <code>updated_at</code>).</li>
         <li><b>Inserts must list their columns</b>, as in <code>INSERT INTO t (id, value) VALUES (...)</code>. A column-less insert fails on a table with an identity column.</li>
         <li><b>Schema changes:</b> adding a column is carried to the targets, and so is dropping one (drop propagation is on for every sync): the sync diffs the source schema against the state table's recorded <code>last_schema</code> and drops the vanished column from RisingWave and Postgres too — RisingWave fills <code>&lt;col&gt;_ts</code> companions in first, Postgres follows the broader rule and also re-drops anything a sink replay re-added. Renames propagate as renames now: the state records each column's <code>delta.columnMapping.id</code> (stable across a rename), so the sync can tell the two apart — RisingWave gets add + update-copy + drop (no <code>RENAME COLUMN</code> there, but the data survives), Postgres a native rename plus an automatic sink task restart, because the JDBC sink's in-memory schema cache would fail the next message otherwise. Every source table is created with column mapping, so Delta accepts <code>DROP COLUMN</code> and <code>RENAME COLUMN</code> everywhere; type changes are still refused by Delta and stay out of scope.</li>
@@ -197,9 +301,9 @@ TBLPROPERTIES (
 
 <script>
 const S = [
-  { num: '1', t: 'A row changes in Databricks', a: 'change', d: 'The table must have Change Data Feed (CDF) enabled: it records the before and after of each changed row. Changes made before CDF was enabled are not recorded. Each commit creates one new version of the Databricks table, however many rows it changes. Adding a column is a commit too.', n: ['src'], e: [] },
+  { num: '1', t: 'A row changes in Databricks', a: 'change', d: 'Each commit creates one new version of the Databricks table, however many rows it changes. Adding, renaming or dropping a column is a commit too. The source keeps Change Data Feed on for the notebook comparison path, but the sync itself does not read the feed — it reconstructs the changes from the table\'s snapshots, so nothing has to be recorded beforehand.', n: ['src'], e: [] },
   { num: '2.1', t: 'The sync reads the watermark', a: 'sync', d: 'The sync is always triggered from Dagster, but the processing can run in Dagster (as an asset) or in Databricks (as a notebook, started by a Dagster job). The steps are the same, and both share one watermark, so use only one per change. It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
-  { num: '2.2', t: 'The sync reads the changes', a: 'sync', d: 'The default Dagster backend reads the change feed straight from the Delta transaction log on storage with OSS Delta on Spark — zero Databricks compute. The alternative databricks_sql backend runs table_changes(), a Databricks table function that always executes on Databricks compute. Either way the sync reads from the version after the watermark. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op. It reads the current column list of the source table on every run, so a column added since the last run is included automatically.', n: ['src', 'sync'], e: ['e1'] },
+  { num: '2.2', t: 'The sync reads the changes', a: 'sync', d: 'The Dagster backend reconstructs the change feed itself with delta-rs, reading the table\'s snapshots straight from storage — no Spark, no Databricks compute, no warehouse scans, and no CDF read. Per commit version since the watermark: an append-only commit reads only its new files; rewritten files diff the snapshot against the previous version\'s. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op. The schema naming the events is pinned to the version being synced, so a column added since the last run is included automatically — and a rename committing mid-run cannot null values.', n: ['src', 'sync'], e: ['e1'] },
   { num: '2.3', t: 'Schemas go to the registry', a: 'schema', d: 'Both Avro schemas (key and value) are checked against the registry on every run, and only registered when they are new or changed — unchanged schemas cost one lookup each. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
   { num: '2.4', t: 'Events go to Kafka', a: 'sync', d: 'The sync produces one Avro message per change, in the Debezium format: before, after, op and source. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
   { num: '2.5', t: 'The watermark moves', a: 'sync', d: 'Only after the messages are produced does the sync write the new version to the state table. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] },
@@ -209,8 +313,24 @@ const S = [
 const NODES = ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'];
 const EDGES = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'e10'];
 const $ = id => document.getElementById(id);
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let i = 0, timer = null, live = [];
+let i = 0, timer = null;
+
+// Comet overlays, one per arrow: a cloned line carrying the bright sweeping
+// dash (the Jobotron page's comet, adapted to SVG). Each line's length feeds
+// the dash math via --len; the overlays only animate during action runs.
+const flowEls = {};
+EDGES.forEach(e => {
+  const l = $(e);
+  const len = Math.hypot(+l.getAttribute('x2') - +l.getAttribute('x1'), +l.getAttribute('y2') - +l.getAttribute('y1'));
+  l.style.setProperty('--len', len + 'px');
+  const flow = l.cloneNode();
+  flow.setAttribute('class', 'edge-flow');
+  flow.removeAttribute('id');
+  flow.removeAttribute('marker-end');
+  flow.style.setProperty('--len', len + 'px');
+  l.parentNode.appendChild(flow);
+  flowEls[e] = flow;
+});
 
 const list = $('steps');
 S.forEach((s, k) => {
@@ -227,22 +347,10 @@ function show(k) {
   const s = S[i];
   NODES.forEach(n => { $('n-' + n).style.opacity = s.n.includes(n) ? 1 : 0.4; });
   EDGES.forEach(e => $(e).classList.toggle('on', s.e.includes(e)));
-  $('dots').innerHTML = '';
-  live = s.e.map(e => {
-    const l = $(e), c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    c.setAttribute('r', 5); c.setAttribute('fill', '#ef9f27');
-    $('dots').appendChild(c);
-    return { c, x1: +l.getAttribute('x1'), y1: +l.getAttribute('y1'), x2: +l.getAttribute('x2'), y2: +l.getAttribute('y2') };
-  });
   [...list.children].forEach((li, n) => li.classList.toggle('on', n === i));
   $('cap-t').textContent = s.num + '. ' + s.t;
   $('cap-d').textContent = s.d;
   $('pos').textContent = 'Step ' + s.num + ' of ' + S.length;
-}
-function tick(now) {
-  const p = reduce ? 1 : (now % 1400) / 1400;
-  live.forEach(o => { o.c.setAttribute('cx', o.x1 + (o.x2 - o.x1) * p); o.c.setAttribute('cy', o.y1 + (o.y2 - o.y1) * p); });
-  requestAnimationFrame(tick);
 }
 function start() { stop(); timer = setInterval(() => show(i + 1), 4500); $('play').textContent = 'Pause'; }
 function stop() { if (timer) { clearInterval(timer); timer = null; } $('play').textContent = 'Play'; }
@@ -261,25 +369,94 @@ let helper = false, busy = false;
 const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
 const get = url => fetch(url).then(r => r.json());
 
-function say(text, url, state, r = $('result'), subs = null) {
-  r.textContent = '';
+// The run log lives under the diagram: each action prepends an entry, and an
+// in-flight action UPDATES its own entry in place — the 2s poll must not spam
+// the log with "RUNNING (2s)", "RUNNING (4s)" lines. The log keeps the last
+// few entries for reference.
+const RUNLOG_MAX = 6;
+function say(text, url, state, r = $('result'), subs = null, entry = null) {
+  const e = entry || document.createElement('div');
+  if (!entry) {
+    e.className = 'rentry';
+    r.prepend(e);
+    while (r.children.length > RUNLOG_MAX) r.lastChild.remove();
+  }
+  e.innerHTML = '';
   if (state) {
     const ic = document.createElement('span');
     ic.className = 'icon ' + state;
     ic.textContent = { ok: '\u2713', fail: '\u2717' }[state] || '';
-    r.append(ic);
+    e.append(ic);
   }
-  r.append(text);
-  if (url) { r.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; r.append(a); }
+  e.append(text);
+  if (url) { e.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; e.append(a); }
   if (subs) for (const s of subs) {
     const d = document.createElement('div');
-    d.style.marginTop = '4px';
-    if (s.mono) { d.style.fontFamily = 'ui-monospace, Menlo, monospace'; d.style.fontSize = '12.5px'; d.style.color = 'var(--muted)'; }
+    d.className = 'rsub' + (s.mono ? ' mono' : '') + (s.strong ? ' strong' : '');
     d.textContent = s.text;
-    r.append(d);
+    e.append(d);
   }
+  return e;
 }
-function lock(on) { busy = on; document.querySelectorAll('.acts button, .acts select, .bar button').forEach(b => { b.disabled = on || !helper; }); }
+function lock(on) { busy = on; document.querySelectorAll('#rail button, #rail select, #rail input').forEach(b => { b.disabled = on || !helper; }); }
+
+// ── run activity: badges on the components in play, comets sweeping the
+// arrows in play. Browsing a step lights it statically; a RUNNING action adds
+// the pulsing nodes, the sweeping comets and the corner badges
+// (spinner while in flight, ✓ / ✗ fading a few seconds after it ends).
+const NS = 'http://www.w3.org/2000/svg';
+let phaseTimer = null, badgeTimer = null;
+function edgesLive(on) {
+  EDGES.forEach(e => {
+    flowEls[e].classList.toggle('on', !!on && $(e).classList.contains('on'));
+  });
+}
+function stagesClear() { $('badges').innerHTML = ''; NODES.forEach(n => $('n-' + n).classList.remove('active')); }
+function stagesRun(names, state) {
+  $('badges').innerHTML = '';
+  for (const n of names) {
+    const g = $('n-' + n); if (!g) continue;
+    const rect = g.querySelector('rect');
+    const cx = +rect.getAttribute('x') + +rect.getAttribute('width') - 9;
+    const cy = +rect.getAttribute('y') + 9;
+    const b = document.createElementNS(NS, 'g');
+    b.setAttribute('class', 'badge ' + state);
+    const ring = document.createElementNS(NS, 'circle');
+    ring.setAttribute('cx', cx); ring.setAttribute('cy', cy); ring.setAttribute('r', 7.5);
+    b.appendChild(ring);
+    if (state === 'running') {
+      const arc = document.createElementNS(NS, 'circle');
+      arc.setAttribute('class', 'arc');
+      arc.setAttribute('cx', cx); arc.setAttribute('cy', cy); arc.setAttribute('r', 4.5);
+      b.appendChild(arc);
+    } else {
+      const t = document.createElementNS(NS, 'text');
+      t.setAttribute('x', cx); t.setAttribute('y', cy);
+      t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
+      t.textContent = state === 'done' ? '\u2713' : '\u2717';
+      b.appendChild(t);
+    }
+    $('badges').appendChild(b);
+  }
+  NODES.forEach(n => $('n-' + n).classList.toggle('active', state === 'running' && names.includes(n)));
+}
+function stagesFade() {
+  document.querySelectorAll('.badge').forEach(b => b.classList.add('fading'));
+  NODES.forEach(n => $('n-' + n).classList.remove('active'));
+  badgeTimer = setTimeout(stagesClear, 700);
+}
+// The step card right of the diagram is the run's home surface: while an
+// action runs it carries a live chip (spinner + what is happening), so the
+// eye stays on the card, not on the browsable step grid at the bottom.
+function capRun(text) {
+  const el = $('cap-run');
+  if (!text) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'flex';
+  el.innerHTML = '';
+  const ic = document.createElement('span');
+  ic.className = 'icon run';
+  el.append(ic, text);
+}
 
 // Databricks cost meter: the runs report what they used via run metadata
 // (orchestration/assets/databricks_cost_meter.py), the helper returns it from
@@ -306,10 +483,52 @@ function costText(cost) {
   return bits.length ? 'Databricks cost: ' + bits.join(' + ') : 'Databricks cost: none (no Databricks compute)';
 }
 
-async function run(label, body, out) {
+// Each action maps to the step it belongs to and the components it touches,
+// so while it runs the page shows that step, pulses those nodes, dashes their
+// arrows and spins their badges. A sync walks its own path — watermark read →
+// change read → schemas → Kafka — and lands on the watermark move (2.5) when
+// the run ends; Dagster reports only run status, so the walk is the page's
+// narration of the run, not per-phase telemetry.
+const SYNC_PLAN = {
+  phases: [
+    { step: 1, nodes: ['state', 'sync'] },
+    { step: 2, nodes: ['src', 'sync'] },
+    { step: 3, nodes: ['sync', 'reg'] },
+    { step: 4, nodes: ['sync', 'kafka'] },
+  ],
+  loopFrom: 1,
+  doneStep: 5,
+  doneNodes: ['sync', 'state'],
+};
+const CHANGE_PLAN = { phases: [{ step: 0, nodes: ['src'] }] };
+const SETUP_PLAN = { phases: [{ step: 0, nodes: ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'] }] };
+
+async function run(label, body, out = $('result'), plan = null, btn = null) {
   stop(); lock(true);
+  clearTimeout(badgeTimer); clearInterval(phaseTimer); stagesClear();
+  if (btn) btn.classList.add('running');
+  const phases = plan ? plan.phases : null;
+  let idx = -1;
+  const advance = () => {
+    idx = idx < 0 ? 0 : (idx + 1 >= phases.length ? (plan.loopFrom ?? 0) : idx + 1);
+    const ph = phases[idx];
+    show(ph.step);
+    stagesRun(ph.nodes, 'running');
+    edgesLive(true);
+    capRun('running' + (phases.length > 1 ? ' — phase ' + (idx + 1) + '/' + phases.length : ''));
+  };
+  if (phases) {
+    advance();
+    if (phases.length > 1) phaseTimer = setInterval(advance, 2600);
+  }
+  const entry = say(label + ': starting…', null, 'run', out);
   const started = await post(body);
-  if (started.error) { say(label + ' failed to start: ' + started.error, null, 'fail', out); lock(false); return false; }
+  if (started.error || !started.runId) {
+    say(label + ' failed to start: ' + (started.error || 'no run id'), null, 'fail', out, null, entry);
+    clearInterval(phaseTimer); edgesLive(false); stagesClear(); capRun(null);
+    if (btn) btn.classList.remove('running');
+    lock(false); return false;
+  }
   for (;;) {
     const s = await get('/api/run/' + started.runId);
     const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
@@ -327,130 +546,103 @@ async function run(label, body, out) {
         }
       }
     }
-    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : null);
-    if (done) { lock(false); return s.status === 'SUCCESS'; }
+    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : null, entry);
+    if (done) {
+      clearInterval(phaseTimer); edgesLive(false); capRun(null);
+      const ok = s.status === 'SUCCESS';
+      if (phases) {
+        if (plan.doneStep !== undefined) show(plan.doneStep);
+        stagesRun(plan.doneNodes || phases[phases.length - 1].nodes, ok ? 'done' : 'fail');
+        badgeTimer = setTimeout(stagesFade, 4500);
+      }
+      if (btn) btn.classList.remove('running');
+      lock(false);
+      return ok;
+    }
     await new Promise(r => setTimeout(r, 2000));
   }
 }
 
-async function check(path, format) {
+async function check(path, format, step, nodes) {
   stop(); lock(true);
-  say('Checking...', null, 'run');
+  show(step); stagesRun(nodes, 'running'); capRun('checking…');
+  const entry = say('Checking...', null, 'run');
   const d = await get('/api/check/' + SYNC + '/' + path);
-  say(format(d), null, JSON.stringify(d).includes('"error"') ? 'fail' : 'ok');
+  const ok = !JSON.stringify(d).includes('"error"');
+  const f = format(d);
+  say(f.text ?? f, null, ok ? 'ok' : 'fail', $('result'), f.subs || null, entry);
+  stagesRun(nodes, ok ? 'done' : 'fail');
+  capRun(null);
+  badgeTimer = setTimeout(stagesFade, 4500);
   lock(false);
 }
 
-const ACTIONS = {
-  change: box => {
-    const sel = document.createElement('select');
-    [['insert', 'insert a row'], ['update', 'update a row'], ['delete', 'delete a row'], ['add_column', 'add a column'], ['rename_column', 'rename a column'], ['drop_column', 'drop a column'], ['bulk_1m', 'bulk insert rows (delta)']].forEach(([v, l]) => sel.add(new Option(l, v)));
-    const rows = document.createElement('input');
-    rows.type = 'number'; rows.min = '1'; rows.max = '10000000'; rows.step = '1000';
-    rows.value = '1000000'; rows.title = 'Total rows for the bulk insert (delta only)';
-    rows.style.cssText = 'font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 4px 8px; width: 110px; display: none';
-    // The row count only applies to the bulk generator; show the input just for it.
-    const syncRows = () => { rows.style.display = sel.value === 'bulk_1m' ? '' : 'none'; };
-    sel.onchange = syncRows; syncRows();
-    const b = document.createElement('button');
-    b.textContent = 'Make change in Databricks';
-    b.onclick = () => {
-      const body = { action: 'change', change: sel.value };
-      if (sel.value === 'bulk_1m') body.rows = Math.max(1, Math.round(Number(rows.value) || 1000000));
-      run('Change (' + (sel.value === 'bulk_1m' ? 'bulk ' + body.rows + ' rows' : sel.selectedOptions[0].text) + ')', body);
-    };
-    box.append(sel, rows, b);
-  },
-  sync: (box, i) => {
-    if (i === 1) {
-      const b = document.createElement('button');
-      b.textContent = 'Run sync (steps 2.1 to 2.5)';
-      b.onclick = () => run('Sync', { action: 'sync' });
-      box.append(b);
-    } else {
-      const p = document.createElement('p');
-      p.style.cssText = 'margin: 0; font-size: 13.5px; color: var(--muted)';
-      p.textContent = 'Part of the same sync run — trigger it from step 2.1.';
-      box.append(p);
-    }
-  },
-  schema: box => {
-    const b = document.createElement('button');
-    b.textContent = 'Show columns from Apicurio';
-    b.onclick = async () => {
-      stop(); lock(true);
-      say('Fetching schemas from the registry...', null, 'run');
-      try {
-        const d = await get('/api/schema/' + SYNC);
-        if (d.error) { say('Schema fetch failed: ' + d.error, null, 'fail'); return; }
-        const registered = d.key && d.value;
-        const r = $('result');
-        r.textContent = '';
-        if (registered) {
-          const ic = document.createElement('span');
-          ic.className = 'icon ok';
-          ic.textContent = '\u2713';
-          r.append(ic);
-        }
-        r.append(registered
-          ? 'Registry holds the ' + SYNC + ' schemas — key v' + d.key.version + ' (id ' + d.key.id + '), value v' + d.value.version + ' (id ' + d.value.id + ')'
-          : 'No ' + SYNC + ' schemas in the registry yet.');
-        const block = (title, cols) => {
-          const h = document.createElement('div');
-          h.style.cssText = 'margin-top: 8px; font-weight: 500';
-          h.textContent = title;
-          r.append(h);
-          const pre = document.createElement('pre');
-          pre.style.cssText = 'font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; padding: 8px 10px; margin: 4px 0 0';
-          const width = Math.max(...Object.keys(cols).map(k => k.length));
-          pre.textContent = Object.entries(cols).map(([n, t]) => n.padEnd(width + 2) + t).join('\n');
-          r.append(pre);
-        };
-        if (registered) {
-          block('Key columns', d.key.columns);
-          block('Row columns', d.value.columns);
-          const env = document.createElement('div');
-          env.style.cssText = 'margin-top: 8px; color: var(--muted)';
-          env.textContent = 'Every message wraps the row in the Debezium envelope: ' + d.value.envelope.join(' / ') + '.';
-          r.append(env);
-        } else {
-          const note = document.createElement('div');
-          note.style.cssText = 'margin-top: 8px; color: var(--muted)';
-          note.textContent = 'This sync encodes messages as JSON with the schema embedded in every message — the registry stays empty until a sync with encoding: avro runs.';
-          r.append(note);
-        }
-      } finally { lock(false); }
-    };
-    box.append(b);
-  },
-  readers: box => {
-    const b = document.createElement('button');
-    b.textContent = 'Check readers';
-    b.onclick = () => check('readers', d => 'Kafka Connect: ' + (d.kafka_connect.error ? d.kafka_connect.error : d.kafka_connect.connector + ', tasks ' + d.kafka_connect.tasks.join(', ')) + '. RisingWave rows: ' + (d.risingwave_rows.error || d.risingwave_rows) + '.');
-    box.append(b);
-  },
-  postgres: box => {
-    const b = document.createElement('button');
-    b.textContent = 'Show Postgres rows';
-    b.onclick = () => check('postgres', d => d.error ? 'Postgres check failed: ' + d.error : d.rows + ' rows. Latest: ' + d.latest.map(r => r.join(' | ')).join(' ; '));
-    box.append(b);
-  }
+// ── the action rail: quick access to everything, always visible, mirroring
+// the Jobotron page. Each action shows its related step and pulses the
+// components it touches while it runs; results land in the step card.
+$('act-change').onclick = e => {
+  const body = { action: 'change', change: $('change-select').value };
+  if (body.change === 'bulk_1m') body.rows = Math.max(1, Math.round(Number($('bulk-rows').value) || 1000000));
+  const label = 'Change (' + $('change-select').selectedOptions[0].text + ')';
+  run(label, body, $('result'), CHANGE_PLAN, e.currentTarget);
 };
+const syncRows = () => { $('bulk-rows').style.display = $('change-select').value === 'bulk_1m' ? '' : 'none'; };
+$('change-select').onchange = syncRows; syncRows();
 
-function renderActions() {
-  const box = $('acts');
-  box.innerHTML = '';
-  say('');
-  if (ACTIONS[S[i].a]) ACTIONS[S[i].a](box, i);
-  lock(busy);
-}
-const baseShow = show;
-show = k => { baseShow(k); renderActions(); };
+$('act-sync').onclick = e => run('Sync', { action: 'sync' }, $('result'), SYNC_PLAN, e.currentTarget);
+
+$('act-schema').onclick = async () => {
+  stop(); lock(true);
+  show(3); stagesRun(['sync', 'reg'], 'running'); capRun('fetching…');
+  const entry = say('Fetching schemas from the registry...', null, 'run');
+  try {
+    const d = await get('/api/schema/' + SYNC);
+    const registered = !d.error && d.key && d.value;
+    const subs = [];
+    if (registered) {
+      subs.push({ text: 'key v' + d.key.version + ' (id ' + d.key.id + ') — value v' + d.value.version + ' (id ' + d.value.id + ')', mono: true, strong: true });
+      const block = (title, cols) => {
+        subs.push({ text: title, strong: true });
+        const width = Math.max(...Object.keys(cols).map(k => k.length));
+        subs.push({ text: Object.entries(cols).map(([n, t]) => n.padEnd(width + 2) + t).join('\n'), mono: true });
+      };
+      block('Key columns', d.key.columns);
+      block('Row columns', d.value.columns);
+      subs.push({ text: 'Every message wraps the row in the Debezium envelope: ' + d.value.envelope.join(' / ') + '.' });
+      say('Registry holds the ' + SYNC + ' schemas.', null, 'ok', $('result'), subs, entry);
+    } else if (d.error) {
+      say('Schema fetch failed: ' + d.error, null, 'fail', $('result'), null, entry);
+    } else {
+      subs.push({ text: 'This sync encodes messages as JSON with the schema embedded in every message — the registry stays empty until a sync with encoding: avro runs.' });
+      say('No ' + SYNC + ' schemas in the registry yet.', null, null, $('result'), subs, entry);
+    }
+    stagesRun(['sync', 'reg'], d.error ? 'fail' : 'done');
+    capRun(null);
+    badgeTimer = setTimeout(stagesFade, 4500);
+  } finally { lock(false); }
+};
+$('act-readers').onclick = () => check('readers', d => ({ text: 'Kafka Connect: ' + (d.kafka_connect.error ? d.kafka_connect.error : d.kafka_connect.connector + ', tasks ' + d.kafka_connect.tasks.join(', ')) + '. RisingWave rows: ' + (d.risingwave_rows.error || d.risingwave_rows) + '.' }), 6, ['kafka', 'connect', 'rw']);
+$('act-postgres').onclick = () => check('postgres', d => {
+  if (d.error) return { text: 'Postgres check failed: ' + d.error };
+  // Column headings from the query itself (the set moves with the demo's
+  // schema changes), every column padded to its widest cell so the rows line up.
+  const cols = d.columns || [];
+  const cells = d.latest.map(r => r.map(v => String(v)));
+  const width = cols.map((c, j) => Math.max(String(c).length, ...cells.map(r => (r[j] || '').length)));
+  const line = cells => cells.map((c, j) => (c || '').padEnd(width[j])).join(' | ');
+  const subs = [];
+  if (cols.length) subs.push({ text: line(cols), mono: true, strong: true });
+  for (const r of cells) subs.push({ text: line(r), mono: true });
+  if (d.rows > d.latest.length) subs.push({ text: '… and ' + (d.rows - d.latest.length) + ' more', mono: true });
+  return { text: d.rows + ' row(s) in the target — latest ' + d.latest.length + ', newest first:', subs };
+}, 7, ['connect', 'pg']);
 
 $('do-rebuild').onclick = async () => {
   if (!confirm('This drops the ' + SYNC + ' source and state tables, the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
-  const out = $('bar-result');
-  if (await run('Reset (1 of 3)', { action: 'reset' }, out)) if (await run('Set up (2 of 3)', { action: 'setup' }, out)) await run('First sync (3 of 3)', { action: 'sync' }, out);
+  const btn = $('do-rebuild');
+  // Reset and setup provision every component on the canvas, so all of them
+  // spin; the first sync then walks the pipeline as any sync does.
+  if (await run('Reset (1 of 3)', { action: 'reset' }, $('result'), SETUP_PLAN, btn)) if (await run('Set up (2 of 3)', { action: 'setup' }, $('result'), SETUP_PLAN, btn)) await run('First sync (3 of 3)', { action: 'sync' }, $('result'), SYNC_PLAN, btn);
 };
 
 // Table selector: switch the sync (and its source table) without leaving the page.
@@ -460,6 +652,19 @@ const SYNC_LABELS = {
   orders: 'orders (UniForm · JSON)',
   delta: 'delta (plain Delta · Avro)',
 };
+// The source tables' flavors, matching each sync's defs.yaml (uniform: true is
+// the config default; the delta sync sets uniform: false — plain Delta with
+// column mapping, no UniForm).
+const SOURCE_SUBTITLES = {
+  avro: 'Delta + Iceberg (UniForm)',
+  cdf: 'Delta + Iceberg (UniForm)',
+  orders: 'Delta + Iceberg (UniForm)',
+  delta: 'Plain Delta (no UniForm)',
+};
+function setSourceSubtitle(name) {
+  const el = document.querySelector('#n-src .ts');
+  if (el) el.textContent = SOURCE_SUBTITLES[name] || '';
+}
 const syncSelect = $('sync-select');
 for (const [name, label] of Object.entries(SYNC_LABELS)) {
   const opt = document.createElement('option');
@@ -471,16 +676,19 @@ for (const [name, label] of Object.entries(SYNC_LABELS)) {
 syncSelect.onchange = () => {
   SYNC = syncSelect.value;
   history.replaceState(null, '', '?sync=' + SYNC);
-  $('bar-msg').textContent = helper ? 'Connected to the helper. Sync: ' + SYNC + '.' : $('bar-msg').textContent;
+  setSourceSubtitle(SYNC);
+  $('bar-msg').textContent = helper ? 'helper connected · sync: ' + SYNC : $('bar-msg').textContent;
   $('result').textContent = '';
-  $('bar-result').textContent = '';
   costSession.warehouse = 0;
   costSession.cluster = 0;
   $('cost-total').style.display = 'none';
 };
 
-fetch('/api/ping').then(r => r.json()).then(() => { helper = true; $('bar-msg').textContent = 'Connected to the helper. Sync: ' + SYNC + '.'; lock(false); }).catch(() => {});
-show(0); requestAnimationFrame(tick);
+fetch('/api/ping').then(r => r.json()).then(() => { helper = true; $('helper-pill').classList.add('ok'); $('bar-msg').textContent = 'helper connected · sync: ' + SYNC; lock(false); }).catch(() => {
+  $('helper-pill').classList.add('fail');
+  $('bar-msg').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/';
+});
+show(0); setSourceSubtitle(SYNC);
 </script>
 </body>
 </html>

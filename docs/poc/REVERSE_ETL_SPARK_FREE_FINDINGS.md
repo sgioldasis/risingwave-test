@@ -84,6 +84,30 @@ backend's internals), `REVERSE_ETL_JOBOTRON.md` (the full-snapshot producer).
    plus a rename inside one multi-version chunk can still misname). Re-verified
    after the fix: a populated renamed column reaches Postgres and RisingWave
    with its value intact.
+7. **Three sync-flow defects the rename demo surfaced in one afternoon**
+   (verified live 2026-10-19, all fixed and re-verified with the exact
+   add → populate → rename → one-sync sequence):
+   - **0-row chunks skipped the watermark.** The chunk loop `continue`d past
+     the watermark update when a commit produced no rows, so a schema-only
+     commit landing after the last data event in the same sync was read but
+     never watermarked -- the watermark stranded on the last data commit and
+     the change's propagation deferred to the next sync (the user's "rename
+     didn't show in Postgres"). The watermark now advances for every chunk.
+   - **The envelope schema was resolved once and reused.** `row_fields` was
+     read at the first event-bearing chunk and reused for every later chunk,
+     so a column added between chunks never made it into later events'
+     envelopes -- `_coerce_row`'s projection silently dropped those values
+     (the populate's new-column value was lost exactly this way when the seed
+     backfill shared the sync). The schema is now re-read per event-bearing
+     chunk, pinned to that chunk's top commit.
+   - **Renames entirely inside the unsynced window were invisible.** The
+     propagation diffs the state table's `last_schema` against the final
+     schema -- but `last_schema` predates an add+rename that both happened
+     since the last sync, so there was no recorded old name to detect. The
+     sync now also diffs the schema the events were actually enveloped with
+     (the last event-bearing chunk's) against the final one, and propagates
+     what changed: the rename reaches the targets data-preserving in the SAME
+     sync, matching the source.
 
 ## 3. Live proof — all four syncs, full cycles (2026-10-19)
 

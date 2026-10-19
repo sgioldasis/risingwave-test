@@ -1318,8 +1318,14 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         events_synced = 0
         op_counts: dict[str, int] = {}
         preview_events: list[dict[str, Any]] = []
+        raw_preview_events: list[dict[str, Any]] = []
         delivery_errors: list[str] = []
         risingwave_columns_added: list[str] = []
+        # The schema the last produced events were enveloped with, and its
+        # version -- the propagation needs it to catch schema changes landing
+        # inside the unsynced window AFTER the last data event (see below).
+        event_row_fields: list[RowField] | None = None
+        event_fields_version: int | None = None
         row_fields: list[RowField] = []
         new_version: int | None = None
         rows_seen = False
@@ -1339,30 +1345,46 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             chunks = _version_chunks(chunk_start, current_version, _CDF_CHUNK_VERSIONS)
             for index, (chunk_from, chunk_to) in enumerate(chunks):
                 rows = read_changes(cfg, source_location, chunk_from, chunk_to)
+                # The watermark advances for EVERY chunk -- including 0-row
+                # schema-only ones -- because it must reach the pinned top.
+                # Updating it only for row-bearing chunks stranded the
+                # watermark on the last EVENT-bearing chunk: a RENAME
+                # committing after the last data event in the same sync was
+                # read (0 rows) but never watermarked, deferring its
+                # propagation to the next sync (verified live 2026-10-19 --
+                # Postgres kept the old column name after the rename demo).
+                chunk_watermark = _next_watermark(rows, current_version)
+                new_version = chunk_watermark if new_version is None else max(new_version, chunk_watermark)
                 if not rows:
                     continue
                 rows_seen = True
                 events = _to_debezium_events(rows, key_columns)
-                if events and not row_fields:
-                    # The first chunk with events: resolve the schema and make
-                    # RisingWave ready before any message is produced — it only
-                    # fills a column from messages read after the column exists.
-                    # Imported here because that module imports this one.
-                    # Pinned to the chunk's top version -- the same commit the
-                    # data was read at. Reading the schema "live" instead races
-                    # a RENAME COLUMN landing mid-run: the envelope would name
-                    # the column with the new schema while the rows carry the
-                    # value under the old name, and _coerce_row's projection
-                    # silently nulls it (verified live 2026-10-19 -- the
-                    # rename-column demo lost a populated value exactly this
-                    # way). A chunk spanning multiple versions only pins to its
-                    # top; this deployment sets single-version chunks
-                    # (REVERSE_ETL_CDF_CHUNK_VERSIONS=1) -- the code default is 10.
-                    row_fields = get_row_fields(source_location, version=chunk_to)
-                    risingwave_columns_added = add_missing_columns(cfg, row_fields)
-                    if risingwave_columns_added:
-                        context.log.info(f"Added column(s) to the RisingWave table: {risingwave_columns_added}")
                 if events:
+                    # Resolve the schema PER EVENT-BEARING CHUNK, pinned to the
+                    # chunk's top version -- the same commit the data was read
+                    # at -- and make RisingWave ready before any message is
+                    # produced (it only fills a column from messages read after
+                    # the column exists). Set-once-and-reuse is wrong the
+                    # moment the schema changes between chunks: later chunks'
+                    # events would be enveloped with the FIRST chunk's column
+                    # list, and _coerce_row's projection would silently drop
+                    # every value under a column the first chunk predated
+                    # (verified live 2026-10-19 -- with the seed backfill in
+                    # the same sync, the populate's new-column value was lost
+                    # exactly this way). Imported here because that module
+                    # imports this one. A chunk spanning multiple versions only
+                    # pins to its top; this deployment sets single-version
+                    # chunks (REVERSE_ETL_CDF_CHUNK_VERSIONS=1) -- the code
+                    # default is 10.
+                    row_fields = get_row_fields(source_location, version=chunk_to)
+                    event_row_fields = row_fields
+                    event_fields_version = chunk_to
+                    risingwave_added = add_missing_columns(cfg, row_fields)
+                    for added in risingwave_added:
+                        if added not in risingwave_columns_added:
+                            risingwave_columns_added.append(added)
+                    if risingwave_added:
+                        context.log.info(f"Added column(s) to the RisingWave table: {risingwave_added}")
                     # flush=False: the broker transfers while the NEXT chunk's
                     # version-diff read runs; one bounded flush after the last
                     # chunk (below) is the single delivery checkpoint.
@@ -1372,10 +1394,14 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     events_synced += len(events)
                     for op, count in _summarize_ops(events).items():
                         op_counts[op] = op_counts.get(op, 0) + count
+                    # The previews snapshot the events AS PRODUCED, with THIS
+                    # chunk's schema -- re-projecting earlier chunks' events at
+                    # metadata-build time with a later chunk's schema would
+                    # show nulls for columns those events never carried.
                     if len(preview_events) < MESSAGE_PREVIEW_LIMIT:
-                        preview_events += events[: MESSAGE_PREVIEW_LIMIT - len(preview_events)]
-                chunk_watermark = _next_watermark(rows, current_version)
-                new_version = chunk_watermark if new_version is None else max(new_version, chunk_watermark)
+                        preview_events += _message_previews(cfg, events, key_columns, row_fields)[: MESSAGE_PREVIEW_LIMIT - len(preview_events)]
+                    if len(raw_preview_events) < RAW_MESSAGE_LIMIT:
+                        raw_preview_events += _raw_messages(cfg, events, key_columns, row_fields)[: RAW_MESSAGE_LIMIT - len(raw_preview_events)]
                 # Per-chunk heartbeat: the pipeline is bursty by design (read
                 # 100k -> build -> enqueue -> repeat), and without this line a
                 # demo audience just sees the targets plateau every chunk.
@@ -1409,16 +1435,62 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         columns_dropped: dict[str, list[str]] = {}
         columns_renamed: list[str] = []
         if new_version is not None and new_version != last_version:
-            # A schema-only commit (e.g. DROP COLUMN) emits no CDF events, so
-            # the current fields may not have been read yet. Pinned to the same
-            # version the watermark advances to -- never the schema "live", for
-            # the same race reason as the chunk loop above.
-            if not row_fields:
-                row_fields = get_row_fields(source_location, version=current_version)
+            # The propagation diffs the table's FINAL schema -- the version the
+            # watermark advances to -- against last_schema. The chunk loop's
+            # row_fields are pinned to the last EVENT-bearing chunk and must
+            # not leak here: a RENAME committing after the last data event in
+            # the same sync would otherwise never leave that chunk's schema,
+            # the diff would see no change, and the rename would never reach
+            # the targets (verified live 2026-10-19: add + populate + rename in
+            # one unsynced window left the value under the old column name in
+            # Postgres). Reading the ids here unconditionally too keeps the
+            # pair from the same commit -- the leak wrote state rows pairing
+            # one commit's names with another's ids (id=None), which would
+            # turn the next sync's diff into a bogus drop.
+            row_fields = get_row_fields(source_location, version=current_version)
             column_ids = get_column_ids(source_location, version=current_version)
             schema_changes = _propagate_column_drops(cfg, row_fields, last_schema, context.log, column_ids)
             columns_dropped = schema_changes["dropped"]
             columns_renamed = schema_changes["renamed"]
+            if event_row_fields is not None and event_fields_version is not None:
+                # The targets were fed events under the EVENT-era schema.
+                # Anything changing between that schema and the final one -- a
+                # RENAME or DROP landing inside the unsynced window, after the
+                # last data event -- is invisible to the last_schema diff (the
+                # state predates those columns) and must be applied here too,
+                # or the targets keep the old name while the source moved on
+                # (verified live 2026-10-19: add + populate + rename in one
+                # unsynced window left the value under new_col_1 in Postgres).
+                # The state diff above already EXECUTED its own changes, so the
+                # event-era schema is adjusted by them first -- otherwise the
+                # same rename would be detected twice and the second ALTER
+                # would fail on the already-renamed column.
+                # The event-era ids come from the event-era version: the final
+                # ids no longer contain the old name, and an id-less recorded
+                # column would read as a drop instead of the rename it was.
+                event_ids = get_column_ids(source_location, version=event_fields_version)
+                event_recorded = [
+                    {"name": field[0], "id": event_ids.get(field[0])}
+                    for field in event_row_fields
+                ]
+                for old_to_new in schema_changes["renamed"]:
+                    old, new = [part.strip() for part in old_to_new.split("->")]
+                    for entry in event_recorded:
+                        if entry["name"] == old:
+                            entry["name"] = new
+                for target, names in schema_changes["dropped"].items():
+                    for name in names:
+                        event_recorded = [entry for entry in event_recorded if entry["name"] != name]
+                event_changes = _propagate_column_drops(
+                    cfg, row_fields, json.dumps(event_recorded), context.log, column_ids
+                )
+                for target, names in event_changes["dropped"].items():
+                    for name in names:
+                        if name not in columns_dropped[target]:
+                            columns_dropped[target].append(name)
+                for pair in event_changes["renamed"]:
+                    if pair not in columns_renamed:
+                        columns_renamed.append(pair)
             _write_state(token, cfg, new_version, _last_schema_json(row_fields, column_ids))
             if columns_renamed:
                 context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
@@ -1435,9 +1507,9 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
             "columns_dropped": MetadataValue.json(columns_dropped),
             "columns_renamed": MetadataValue.json(columns_renamed),
-            "kafka_messages": MetadataValue.json(_message_previews(cfg, preview_events, key_columns, row_fields)),
+            "kafka_messages": MetadataValue.json(preview_events),
             "kafka_messages_truncated": MetadataValue.bool(events_synced > MESSAGE_PREVIEW_LIMIT),
-            "kafka_messages_raw": MetadataValue.json(_raw_messages(cfg, preview_events, key_columns, row_fields)),
+            "kafka_messages_raw": MetadataValue.json(raw_preview_events),
             "extraction": MetadataValue.text("delta_rs"),
             "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; one small SQL write advances the watermark"),
             **_cost_metadata(),

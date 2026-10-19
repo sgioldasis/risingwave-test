@@ -278,13 +278,13 @@ highest `new_col_<n>` to `renamed_col_<n>`, and clicking it again renames that b
 *add a column* → sync → *rename a column* → sync → (optionally *rename a column* again) → *drop a column* →
 sync; the drop takes either form. Sync *between* the add and the rename — or add, populate and rename all in one
 unsynced window — works: with the demo's single-version chunks (`REVERSE_ETL_CDF_CHUNK_VERSIONS=1` in `.env`;
-the code default is 10) the sync pins the envelope's schema to each chunk's top commit, so the populate's message
-carries the column under its *old* name with the value intact, and the next chunk's rename propagation carries
-the value across on the targets. (Before the 2026-10-19 pinning fix a rename committing while a sync was in
-flight named the envelope with the new schema and silently nulled the value; with the chunk size raised above 1,
-a populate and a rename inside one chunk can still misname — keep the chunk size at 1 around renames.) Clicking
-*rename* or *drop* with no demo column on the table is a green no-op — the run result says "Skipped — …" with
-the reason, not a failure. By hand, a configured column can be renamed too:
+the code default is 10) the sync pins each chunk's envelope to that chunk's schema (the populate's message
+carries the column under its old name, with the value), the watermark reaches every commit including the
+schema-only ones, and the sync diffs the schema the events were enveloped with against the final one — so the
+in-window rename propagates to the targets data-preserving in the SAME sync. (2026-10-19 fixed two defects that
+broke this window: empty chunks skipped the watermark update, and the envelope schema was resolved once for the
+whole run.) Clicking *rename* or *drop* with no demo column on the table is a green no-op — the run result says
+"Skipped — …" with the reason, not a failure. By hand, a configured column can be renamed too:
 
 ```sql
 ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source RENAME COLUMN country TO destination;

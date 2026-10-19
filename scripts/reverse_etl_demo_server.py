@@ -351,10 +351,16 @@ def check_postgres(sync: str) -> dict:
             host="localhost", port=5432, dbname="postgres", connect_timeout=5,
             user=os.environ.get("POSTGRES_USER", "postgres"), password=os.environ.get("POSTGRES_PASSWORD", ""),
         )
-        count = _rows(conn, f"select count(*) from {table}")[0][0]
-        latest = _rows(conn, f"select * from {table} order by 1 desc limit 5")
+        with conn.cursor() as cur:
+            cur.execute(f"select count(*) from {table}")
+            count = cur.fetchall()[0][0]
+            cur.execute(f"select * from {table} order by 1 desc limit 5")
+            latest = [[str(v) for v in row] for row in cur.fetchall()]
+            # The column set moves with the demo's schema changes (add/rename),
+            # so the names come from the query itself, not a hardcoded list.
+            columns = [d.name for d in cur.description]
         conn.close()
-        return {"rows": count, "latest": latest}
+        return {"rows": count, "latest": latest, "columns": columns}
     except Exception as e:
         return {"error": type(e).__name__}
 

@@ -171,20 +171,29 @@ The asset skeleton:
    `table_changes()` and `readChangeFeed` error past the table's latest version
    (`DELTA_CDC_START_VERSION_AFTER_LATEST`) rather than returning empty.
 4. **Group CDF rows into Debezium envelopes** (`_to_debezium_events`, §4).
-5. **Schema evolution (adds)**: if there are events, read the source's columns
-   *pinned to the chunk's top commit* (`get_row_fields(source_location,
+5. **Schema evolution (adds)**: for every event-bearing chunk, read the source's
+   columns *pinned to that chunk's top commit* (`get_row_fields(source_location,
    version=chunk_to)`) and `add_missing_columns()` on RisingWave *before*
    producing — RisingWave only fills a column from messages read after the
-   column exists. The pin is not cosmetic: a `RENAME COLUMN` committing between
-   the data read and a "live" schema read names the envelope's columns with the
-   new schema while the rows still carry the value under the old name, and the
-   projection silently nulls it (verified live 2026-10-19, findings doc §2.6).
+   column exists. Per chunk, not once for the run: a schema change between
+   chunks must reach the later chunks' envelopes, or the projection silently
+   drops those values (verified live 2026-10-19, findings doc §2.7). The pin
+   itself is not cosmetic either: a `RENAME COLUMN` committing between the data
+   read and a "live" schema read names the envelope's columns with the new
+   schema while the rows still carry the value under the old name, and the
+   projection silently nulls it (findings doc §2.6).
 6. **Produce to Kafka** (`_produce_to_kafka`, §5).
 7. **Drop & rename propagation** (`_propagate_column_drops`, before the state write): when
    `propagate_drops` is on, diff the current source columns against `last_schema`
    — the JSON column list the state row has recorded since the previous sync. A
    column present there but absent from the current read is positive evidence of
-   a change (a partial or failed schema read can never trigger one). Since the
+   a change (a partial or failed schema read can never trigger one). A second
+   diff — the schema the events were actually enveloped with against the final
+   one — catches renames and drops landing *inside* the unsynced window, after
+   the last data event, which `last_schema` (recorded before those columns
+   existed) can never see; the two diffs' results are merged, with the event-era
+   record adjusted by the state diff's changes first so nothing propagates
+   twice. Since the
    ids landed in `last_schema`, the diff is rename-aware: the state records each
    column's `delta.columnMapping.id` (`{"name": ..., "id": ...}`; the reader
    tolerates the original name-only format), and the reader fetches the
