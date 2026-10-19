@@ -66,6 +66,14 @@ job is to land those seeded rows in RisingWave and Postgres. After it, you are a
 The Postgres check needs a devbox
 shell (`POSTGRES_PASSWORD`). Opened as a plain file, the page is the animation only.
 
+While a sync runs (2026-10-19): the diagram walks the sync's steps and, on success, continues through the
+downstream ones — the watermark move, the two readers, Postgres — before the green badges land; a failure
+stops at the watermark step with red badges. The walk's timing is the page's own (Dagster reports only run
+status), but the status chip and the run log show the run's **real** progress read back from the Dagster
+event log: the sync's per-chunk heartbeat (`Chunk 2/6: versions 2-2, 2 rows, 1 events (total 4)`) replaces
+the invented phase counter in the chip, and the heartbeat and schema-propagation lines (`Produced N event(s)
+to …`, `Added column(s) to the RisingWave table …`) appear in the run log as they are logged.
+
 Debezium appears three times: the messages on the topic are Debezium change events (`before`, `after`, `op`), the
 Kafka Connect connector is the Debezium JDBC sink, and RisingWave reads the topic with `FORMAT DEBEZIUM ENCODE AVRO`.
 
