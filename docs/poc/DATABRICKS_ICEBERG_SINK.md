@@ -7,9 +7,9 @@ ms.topic: troubleshooting
 
 RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) into **Databricks Unity Catalog Iceberg tables** running in parallel to the existing Lakekeeper sinks. This document records the full integration path, every gotcha encountered, and the rationale for each decision.
 
-> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see `DATABRICKS_ICEBERG_READ.md` §6.
+> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6.
 >
-> **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and `DATABRICKS_ICEBERG_READ.md` §6 for the view.
+> **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 for the view.
 >
 > **Update (2026-09-02):** Newly created managed Iceberg tables in the current workspace receive the `delta.feature.catalogManaged` protocol feature. RisingWave, StarRocks, and Trino IRC commits failed with `ErrorCode: 2012` while that feature was enabled. Running `ALTER TABLE ... DROP FEATURE catalogManaged` on an isolated probe restored RisingWave and StarRocks writes while preserving `Provider = iceberg`, managed-table status, ownership, and predictive optimization. See §19 for the evidence and migration guardrails.
 
@@ -29,7 +29,7 @@ The turnover flow demonstrates **upsert semantics without Iceberg delete files**
 upserting MV (`mv_casino_turnover_latest`, one row per customer) cannot sink to UC
 directly because UC rejects delete files (§16). Instead the per-event snapshots land
 append-only and a read-side view applies the "latest per customer" collapse. See
-`DATABRICKS_ICEBERG_READ.md` §6 for the view.
+[`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 for the view.
 
 **Design principle — one table per Kafka topic, hybrid schema:**  
 RisingWave handles structural transformation only (UNNEST, type casting, protobuf field extraction). No business-logic aggregation happens before the sink. Each Databricks table has:
@@ -82,7 +82,7 @@ Source: `mv_casino_transactions_full` — one row per casino transaction (all me
 | `currency_id` | INT | |
 | `transaction_created_at` | TIMESTAMP | |
 | `amount_abs` | DECIMAL(20,8) | |
-| `properties` | STRING (JSON) | All other proto fields — see `DATABRICKS_ICEBERG_READ.md` §6 |
+| `properties` | STRING (JSON) | All other proto fields — see [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 |
 
 ```sql
 CREATE SINK IF NOT EXISTS sink_casino_transactions_databricks
@@ -124,7 +124,7 @@ Source: `mv_sportsbook_bets` — one row per sportsbook bet.
 | `placed_at` | TIMESTAMP | |
 | `stake_euro` | DECIMAL(20,8) | |
 | `stake_local` | DECIMAL(20,8) | |
-| `properties` | STRING (JSON) | All other proto fields — see `DATABRICKS_ICEBERG_READ.md` §6 |
+| `properties` | STRING (JSON) | All other proto fields — see [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 |
 
 ```sql
 CREATE SINK IF NOT EXISTS sink_sportsbook_bets_databricks

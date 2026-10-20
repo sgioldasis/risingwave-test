@@ -9,7 +9,7 @@ The repository already has most of the raw pieces:
 - `docker-compose.yml` contains a commented StarRocks service scaffold.
 - `starrocks/docker-entrypoint.sh` injects Hadoop configuration for FE and BE and tunes StarRocks metadata/data caches.
 - `starrocks/init_catalog.sh` creates the StarRocks external catalogs.
-- `docs/poc/STARROCKS_SERVING_LAYER.md` documents the serving-layer design and previous validation.
+- [`docs/poc/STARROCKS_SERVING_LAYER.md`](STARROCKS_SERVING_LAYER.md) documents the serving-layer design and previous validation.
 
 The implementation should activate and harden those existing pieces rather than creating a parallel integration path.
 
@@ -269,8 +269,8 @@ docker exec -it starrocks mysql -h 127.0.0.1 -P 9030 -u root
 
 After implementation, update:
 
-- `docs/poc/STARROCKS_SERVING_LAYER.md` with the always-on startup workflow.
-- `README.md` with a short StarRocks section and start/query commands.
+- [`docs/poc/STARROCKS_SERVING_LAYER.md`](STARROCKS_SERVING_LAYER.md) with the always-on startup workflow.
+- [`README.md`](../../README.md) with a short StarRocks section and start/query commands.
 - `bin/show_links.sh` with StarRocks UI and MySQL connection details.
 
 ## Cleanup

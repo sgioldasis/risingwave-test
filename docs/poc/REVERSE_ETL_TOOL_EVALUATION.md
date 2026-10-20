@@ -61,7 +61,7 @@ What dlt offers as of 2026-10-15 (verified against the project README and docs):
 - **Sources**: REST APIs, SQL databases (SQLAlchemy), filesystem, DataFrames /
   Arrow. **No Databricks CDF source.** The `sql_database` source against
   Databricks reads through a SQL warehouse — the per-sync DBU cost this POC just
-  eliminated (see REVERSE_ETL_DBU_COST_NOTES.md). Our OSS Delta read only fits
+  eliminated (see [REVERSE_ETL_DBU_COST_NOTES.md](REVERSE_ETL_DBU_COST_NOTES.md)). Our OSS Delta read only fits
   as a custom DataFrame resource.
 - **Incremental loading** with dlt-managed state, kept in dlt's own state store.
 - A **Dagster integration** (dagster-dlt) exposing pipelines as assets.
@@ -152,7 +152,7 @@ Databricks DBUs per run — already measured in section 14.1.2 of the sink doc.
 
 - APR-233 "Explore & Standardize Batch Reverse ETL" (epic, read 2026-10-15 via ACLI).
 - dlt project README and docs (github.com/dlt-hub/dlt, fetched 2026-10-15).
-- REVERSE_ETL_CDF_POC_PLAN.md — drt / ADR 0004 finding.
-- REVERSE_ETL_DBU_COST_NOTES.md — warehouse vs OSS Delta cost measurements.
+- [REVERSE_ETL_CDF_POC_PLAN.md](REVERSE_ETL_CDF_POC_PLAN.md) — drt / ADR 0004 finding.
+- [REVERSE_ETL_DBU_COST_NOTES.md](REVERSE_ETL_DBU_COST_NOTES.md) — warehouse vs OSS Delta cost measurements.
 
 [APR-233]: https://kaizengaming.atlassian.net/browse/APR-233

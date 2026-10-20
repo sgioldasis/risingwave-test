@@ -431,7 +431,7 @@ not drt.
 3. **Load the history separately.** The pipeline's first run baselines at the table's current version
    without loading the existing rows, unless a backfill is requested (the asset's first-run logic
    in `reverse_etl_cdf_setup.py`, the notebook's `backfill_from_version`, and
-   `REVERSE_ETL_CDF_POC_PLAN.md`). A backfill through the change feed is limited to the retained
+   [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md)). A backfill through the change feed is limited to the retained
    history, so the billions of historical rows need their own initial load, for example a Spark
    batch job into the target. That is not built. [source]
 4. **Match the Delta history retention to the trigger schedule.** The change feed reaches back only as

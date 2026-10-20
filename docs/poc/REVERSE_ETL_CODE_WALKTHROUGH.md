@@ -1,6 +1,6 @@
 # Reverse-ETL sync: a code walkthrough (Dagster side)
 
-*Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in). Updated 2026-10-19 for the delta-rs reconstruction backend — the OSS-Spark and SQL-warehouse branches described in the original are gone (`REVERSE_ETL_SPARK_FREE_FINDINGS.md` has the why and the measurements).*
+*Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in). Updated 2026-10-19 for the delta-rs reconstruction backend — the OSS-Spark and SQL-warehouse branches described in the original are gone ([`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md) has the why and the measurements).*
 
 This walks through the Dagster implementation of the reverse-ETL sync: how one
 Databricks Delta table's changes flow to Kafka and on to RisingWave and Postgres,
@@ -10,11 +10,11 @@ who has to maintain or extend it.
 
 The other docs cover behaviour and evidence; this one covers structure:
 
-- What the sync does and why: `REVERSE_ETL_CDF_POC_PLAN.md`
-- The Debezium JDBC sink and message encodings: `REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`
-- Databricks cost of every piece (measured): `REVERSE_ETL_DBU_COST_NOTES.md`
-- Live demo and operating notes: `REVERSE_ETL_LIVE_DEMO.md`
-- Tool choices (drt/dlt/SaaS/OSS): `REVERSE_ETL_TOOL_EVALUATION.md`
+- What the sync does and why: [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md)
+- The Debezium JDBC sink and message encodings: [`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md)
+- Databricks cost of every piece (measured): [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)
+- Live demo and operating notes: [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md)
+- Tool choices (drt/dlt/SaaS/OSS): [`REVERSE_ETL_TOOL_EVALUATION.md`](REVERSE_ETL_TOOL_EVALUATION.md)
 - The notebook (option B) internals: the notebook at
   `/Users/s.gioldasis-si@devkaizengaming.com/reverse_etl_cdf_to_kafka` in the DEV workspace
 
@@ -137,7 +137,7 @@ result into the project's `Definitions`. Adding a sync = adding one YAML file.
 `build_sync_asset(cfg)` (`reverse_etl_cdf_setup.py`) builds the single sync
 asset — since 2026-10-19 there is one backend, the delta-rs reconstruction
 (§6); the former OSS-Spark and SQL-warehouse branches are deleted
-(`REVERSE_ETL_SPARK_FREE_FINDINGS.md` records why and what they measured).
+([`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md) records why and what they measured).
 The asset skeleton:
 
 0. **Spark-free no-op pre-check**: before anything heavy, the sync reads the
@@ -252,8 +252,8 @@ file-set comparison per commit version, new files only for append-only commits,
 full snapshot diff for rewrites. The comparison baseline for this path is the
 Databricks **notebook** (`reverse_etl_notebook_sync_job`, Spark + `readChangeFeed`
 inside the workspace) — the SQL-warehouse branch was deleted with the refactor,
-its measurements preserved in `REVERSE_ETL_DBU_COST_NOTES.md` and
-`REVERSE_ETL_SPARK_FREE_FINDINGS.md`.
+its measurements preserved in [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) and
+[`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md).
 
 ## 4. Building Debezium events — `_to_debezium_events`
 
@@ -309,7 +309,7 @@ callbacks + the bounded `flush` fail the run **before the watermark append that
 follows**, so the next sync replays the same version instead of silently skipping
 events that never reached the topic. Replays are harmless: both targets upsert by
 key. (This was added after a broker blip proved the failure was silent — see
-`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`.) The producer itself is tuned for volume
+[`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md).) The producer itself is tuned for volume
 syncs: lz4 compression on the wire, 50ms linger so librdkafka batches, and raised
 queue/batch ceilings — the final `flush` absorbs the linger, and a one-event demo
 sync never notices it. The chunked sync (`flush=False` per chunk) enqueues as it
@@ -321,7 +321,7 @@ its own round-trip.
 
 The zero-Databricks-compute module. (Live proof across all four syncs, the
 performance comparison against the Spark era, and the when-to-use-which
-assessment live in `REVERSE_ETL_SPARK_FREE_FINDINGS.md`.)
+assessment live in [`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md).)
 
 The reconstruction: for each commit version in the requested range, diff the
 snapshot at v-1 against the snapshot at v (two column-pruned scans) and emit
@@ -371,7 +371,7 @@ Function contract, mirroring the deleted Spark module:
   (rowTracking, domainMetadata) delta-rs 1.6 refuses to commit to, so a table
   cannot have both writers — delta-rs keeps the reads, one SQL insert the
   write. The state table stays **plain Delta** (option A in
-  `REVERSE_ETL_DBU_COST_NOTES.md` §5).
+  [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5).
 - `get_current_version` / `get_earliest_available_version` — `DeltaTable
   .version()` for the latest; a bisection on `load_as_version()` for the
   earliest, where "loadable" means exactly what the reconstruction needs: a
@@ -476,7 +476,7 @@ All factories take the config and return Dagster objects; all names come from it
 - **`build_sink_health_check` + `build_sink_health_job_and_schedule`** — an
   `@asset_check` on the sink asset: connector/task states via the Connect API and
   consumer-group lag via Kafka admin, on a 5-minute schedule. Reads no Databricks
-  anything (verified in the cost audit, `REVERSE_ETL_DBU_COST_NOTES.md`).
+  anything (verified in the cost audit, [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 - **`build_reset_job`** — chained ops: delete connector, drop RisingWave table,
   drop Postgres table, delete topic + consumer group, drop Databricks tables. Every
   name must match the config's `reset_name_prefixes`/`reset_schema` allowlist or
@@ -498,7 +498,7 @@ delta-rs sync emits `0.0` for reads **structurally** — it makes no compute cal
 (only the watermark write meters a second or two). The demo
 helper reads the metadata back through GraphQL and shows it as the "Databricks
 cost" chip; the semantics (seconds, not DBUs) are in
-`REVERSE_ETL_DBU_COST_NOTES.md`. Per-process is deliberate: multiprocess steps get
+[`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md). Per-process is deliberate: multiprocess steps get
 isolation for free, and the in-process setup job resets at every asset entry.
 
 ## 10. One change, end to end
@@ -551,7 +551,7 @@ isolation for free, and the in-process setup job resets at every asset entry.
   shared session state); asset materializations (sync) run the default
   multiprocess executor — which is also why the meter resets per step.
 - **Laptop runs**: the `dagster` CLI loads `<CWD>/.env` and overrides real env —
-  run from a neutral CWD with `PYTHONPATH=<repo>` (see `REVERSE_ETL_LIVE_DEMO.md`).
+  run from a neutral CWD with `PYTHONPATH=<repo>` (see [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md)).
 - **The notebook** cannot import this repo; its widget defaults must be kept equal
   to the config it serves.
 - **Watermark + inclusive `startingVersion`**: any new reader of the state table

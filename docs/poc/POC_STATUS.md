@@ -68,7 +68,7 @@
 
 | Action Item | Status | Notes |
 |-------------|--------|-------|
-| Databricks — bidirectional data exchange | ✅ Done | ⚠️ Sheet says "Not Started". Append-only Iceberg sinks to UC working (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`). Azure AD OAuth2 + explicit ADLS Gen2 account key. Trino federation for reads. See `DATABRICKS_ICEBERG_SINK.md`. |
+| Databricks — bidirectional data exchange | ✅ Done | ⚠️ Sheet says "Not Started". Append-only Iceberg sinks to UC working (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`). Azure AD OAuth2 + explicit ADLS Gen2 account key. Trino federation for reads. See [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md). |
 | Apache Iceberg sink — continuous ingest + compaction | ✅ Done | ⚠️ Sheet says "In Progress". Lakekeeper REST catalog + MinIO. Upsert sinks working. Compaction working. Snapshot expiration broken (RW ≤ 2.8). |
 | dbt integration | ✅ Done | ⚠️ Sheet says "In Progress". All MVs, sources, and sinks defined as dbt models using `dbt-risingwave` adapter. Both `casino_prd_dbt_assets` and `realtime_funnel_dbt_assets` tested on staging this week. Feature flags `ENABLE_PYTHON_UDFS` and `ENABLE_LAKEKEEPER` added to allow clean dbt runs on staging without Lakekeeper or Python UDF support. |
 | Dagster orchestration | ✅ Done | Full pipeline orchestrated: proto compile, MinIO upload, Avro schema registration, source creation, Databricks view, Trino views. Confirmed end-to-end against staging RisingWave this week. |
@@ -148,9 +148,9 @@
 
 | Finding | Impact | Workaround | Reference |
 |---------|--------|------------|-----------|
-| Unity Catalog rejects Iceberg delete files | Upsert sinks stall silently | Append-only + read-side `QUALIFY ROW_NUMBER()` VIEW | `DATABRICKS_ICEBERG_SINK.md §16` |
-| ADLS Gen2 not supported by OpenDAL (RW ≤ 2.8.4) | `vended_credentials` and S3FileIO both fail | Explicit `adlsgen2.account_key` | `DATABRICKS_ICEBERG_SINK.md §7` |
-| Iceberg snapshot expiration broken with REST catalog | Snapshots accumulate indefinitely | Manual `expire_snapshots` / `VACUUM` | `DATABRICKS_ICEBERG_SINK.md §11` |
+| Unity Catalog rejects Iceberg delete files | Upsert sinks stall silently | Append-only + read-side `QUALIFY ROW_NUMBER()` VIEW | [`DATABRICKS_ICEBERG_SINK.md §16`](DATABRICKS_ICEBERG_SINK.md) |
+| ADLS Gen2 not supported by OpenDAL (RW ≤ 2.8.4) | `vended_credentials` and S3FileIO both fail | Explicit `adlsgen2.account_key` | [`DATABRICKS_ICEBERG_SINK.md §7`](DATABRICKS_ICEBERG_SINK.md) |
+| Iceberg snapshot expiration broken with REST catalog | Snapshots accumulate indefinitely | Manual `expire_snapshots` / `VACUUM` | [`DATABRICKS_ICEBERG_SINK.md §11`](DATABRICKS_ICEBERG_SINK.md) |
 | UNNEST blocks `TUMBLE` + `EMIT ON WINDOW CLOSE` (v2.7.4) | Windowed aggregation on nested arrays not possible | Fixed in v2.8 | Memory: `reference_rw_unnest_watermark` |
-| `DatabaseFailureIsolation` disabled (local Mac license) | Single job failure resets full DB | Retry-wrapped DDL; not an issue in proper deployment | `PRODUCTION_CASINO_DEMO.md §6` |
+| `DatabaseFailureIsolation` disabled (local Mac license) | Single job failure resets full DB | Retry-wrapped DDL; not an issue in proper deployment | [`PRODUCTION_CASINO_DEMO.md §6`](PRODUCTION_CASINO_DEMO.md) |
 | Python UDFs require `enable_udf: true` in Helm | `risingwave_python_udfs` Dagster asset fails on staging | Add `enable_udf: true` under `risingwave.frontendNode.config` in staging Helm values | Confirmed 2026-06-20 |

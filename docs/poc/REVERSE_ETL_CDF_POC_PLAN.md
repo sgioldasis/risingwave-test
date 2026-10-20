@@ -41,12 +41,12 @@ adopting a third-party tool.
 > Delta, so the sync itself costs zero Databricks DBUs. `table_changes()` via
 > the Statement Execution API remains available as the `databricks_sql`
 > backend. The rest of this document describes the SQL path as originally
-> designed; see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md` for the zero-DBU
+> designed; see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) for the zero-DBU
 > backend, its verification, and the billing actuals.
 >
 > **2026-10-19 (superseded):** both backends are gone — the syncs read with the
 > delta-rs reconstruction (`reverse_etl_delta_reader.py`), no Spark, no CDF
-> read, no `extraction` field. See `REVERSE_ETL_SPARK_FREE_FINDINGS.md`.
+> read, no `extraction` field. See [`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md).
 
 A first cut was scaffolded as a throwaway sandbox project
 (`~/Projects/dagster-test/dagster-poc/reverse-etl`) to prove the design:
@@ -268,7 +268,7 @@ runs a handful of statements and exits, unlike the long-running
 
 > **Later removed:** the seed script, this wrapper and the script-runner entry below were deleted. Seeding is
 > now the `reverse_etl_<label>_seed` asset, the last step of each sync's setup job (see
-> `REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`, section 14.4).
+> [`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md), section 14.4).
 
 - `bin/3_run_reverse_etl_seed.sh` — thin wrapper, same shape as
   `bin/3_run_wallet_producer.sh`: `exec uv run python scripts/reverse_etl_poc_seed.py`.

@@ -9,7 +9,7 @@ Real-time streaming pipeline that reads live casino and sportsbook data from Kai
 > - Sources use `scan.startup.mode = 'latest'` — fast, history-free startup; the 5-minute rolling windows fill over time as live events arrive. `'earliest'` (full-history backfill) is available but slow/unpredictable on this cluster — run it off-demo, not interactively.
 > - Iceberg sinks use `connector = 'iceberg'` (write directly to Lakekeeper), **not** `ENGINE = iceberg` managed tables. The sink auto-creates the Iceberg table.
 > - The `rw_managed_*` Iceberg tables are queried via **Trino** (`datalake` catalog), not RisingWave — there are no RisingWave Iceberg read-sources.
-> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot expiration also works as of v3.0.0 (was broken through v2.8.4 — see §7 and BRAZIL_WORKLOAD_TUNING.md §20).
+> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot expiration also works as of v3.0.0 (was broken through v2.8.4 — see §7 and [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §20).
 >
 > **High-volume tuning:** for running this demo against the high-volume **Brazil** topics
 > (`cronus.casino.out.br`, `bets-out-br`) on a single-node stack — including the
@@ -857,7 +857,7 @@ retain last 12 snapshots) and compaction snapshots are protected from GC. The si
 **Historical note (2.7.4–2.8.4):** `enable_snapshot_expiration` and related options were accepted
 in the DDL but had no effect with the Lakekeeper REST catalog. Definitively tested on 2.8.0
 (2026-06-01): with `max_age='60000'` (1 min), snapshot count grew 17→23 and oldest aged past 14.5
-min — nothing pruned. See BRAZIL_WORKLOAD_TUNING.md §19 for the sampled data. The Trino
+min — nothing pruned. See [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19 for the sampled data. The Trino
 `expire_snapshots` workaround is no longer needed.
 
 > **Note:** To change options on an existing sink, DROP and recreate it — Iceberg table data in Lakekeeper/MinIO is preserved.

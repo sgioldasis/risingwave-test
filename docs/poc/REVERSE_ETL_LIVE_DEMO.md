@@ -201,7 +201,7 @@ Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
 How it reads the changes: by reconstructing them from Delta storage alone — for each commit version since the
 watermark, the sync diffs the snapshot at v-1 against the snapshot at v (`orchestration/assets/reverse_etl_delta_reader.py`,
-delta-rs reads with the service principal, no Spark, no warehouse; see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`).
+delta-rs reads with the service principal, no Spark, no warehouse; see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 Before any of that, a no-op check reads the source's current version and the state table's watermark with delta-rs —
 when they are equal the run ends there. The check's token and storage locations come from a
 small disk cache, and the heavy imports sit at module level so they never land in the run's measured seconds.
@@ -240,7 +240,7 @@ Run the sync asset again and query both targets: the update is applied in both. 
 (`DELETE FROM ... WHERE id = 1`): the row disappears from both. (The delta source keeps **deletion vectors
 off** on purpose: with DVs on, a 1-row DELETE makes Delta's Change Data Feed emit the whole touched file —
 100,000 spurious delete events per delete on a bulk-loaded table — and the sync relays that verbatim; see the
-deletion-vectors gotcha in `REVERSE_ETL_CODE_WALKTHROUGH.md` §11.)
+deletion-vectors gotcha in [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md) §11.)
 
 ## 5. Add a column
 
@@ -362,7 +362,7 @@ The source tables of `avro`, `cdf` and `orders` are created as UniForm tables: D
 metadata generated next to it. The `delta` sync's source is deliberately plain Delta — Change Data Feed plus
 column mapping, no UniForm — as the counterexample: the sync reads it exactly the same way, but it does not
 appear in `databricks_uc` below. The watermark (state) tables are plain Delta too, since OSS Delta writes their
-watermarks (see `docs/poc/REVERSE_ETL_DBU_COST_NOTES.md` §5). The UniForm tables can be read by another engine
+watermarks (see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5). The UniForm tables can be read by another engine
 through Unity Catalog's Iceberg REST API, with no copy
 and no pipeline. StarRocks already has that catalog (`databricks_uc`), so in a SQL client on StarRocks:
 

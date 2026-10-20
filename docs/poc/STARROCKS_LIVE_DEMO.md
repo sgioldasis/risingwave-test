@@ -9,7 +9,7 @@ StarRocks sits in front of the stack as the query layer. One SQL endpoint (the M
 RisingWave windows and Databricks history in a single query without copying either, rewrites queries to a
 materialized view on its own, and holds its own tables with upserts, partial updates and storage-level aggregation.
 
-This script was written from the StarRocks docs (`docs/SR_POC_*.md`, `docs/poc/STARROCKS_SERVING_LAYER.md`) and
+This script was written from the StarRocks docs (`docs/SR_POC_*.md`, [`docs/poc/STARROCKS_SERVING_LAYER.md`](STARROCKS_SERVING_LAYER.md)) and
 checked against the code on 2026-10-11 (job names, model names, UI labels, endpoint fields). It was not run as one
 continuous pass: each part was run separately while the demos were built, so do a dry run first. Several of the older
 docs contain statements that later changes made stale; where that happened this script follows the code and says so.
@@ -103,7 +103,7 @@ All the objects below are in the StarRocks database `sr_local_db_sr_local_db`.
 
 - A **fresh** `devbox shell`. A shell left open since a previous session does not pick up `.env` changes, and
   Script Runner inherits it; `starrocks-init` then fails with a `must be set` error (see "If something goes wrong").
-- Credentials for Databricks are in `.env`. The Superset login is in the project's `CLAUDE.md`.
+- Credentials for Databricks are in `.env`. The Superset login is in the project's [`CLAUDE.md`](../../CLAUDE.md).
 - A Databricks SQL editor open on the DEV workspace, for the table edits.
 - Two shell shortcuts:
   ```
@@ -209,7 +209,7 @@ Do this as its own segment, with the funnel producer running: it breaks the hot 
 - The degradation is silent staleness, not an error page. That is deliberate, and it is why the banner exists: before
   it, nobody could tell fresh results from stale ones without reading the HTTP response.
 - This failure mode was tested before (the isolated hot-catalog failure and the RisingWave frontend restart in
-  `SR_POC_UNIFIED_PLAN.md`); you are reproducing it, not improvising.
+  [`SR_POC_UNIFIED_PLAN.md`](../SR_POC_UNIFIED_PLAN.md)); you are reproducing it, not improvising.
 - If StarRocks itself is the thing that is down there is no fallback: the aggregate endpoint returns HTTP 503. That
   was tested separately and is not part of this demo.
 
@@ -392,11 +392,11 @@ The MinIO console (http://localhost:9400) shows the objects StarRocks wrote unde
 
 | Topic | Doc |
 |---|---|
-| Architecture and the failure tests | `docs/SR_POC_UNIFIED_PLAN.md` |
-| Run instructions for the first demos | `docs/SR_POC_LIVE_DEMO_RUNBOOK.md`, `docs/SR_POC_SUPERSET_DEMOS_RUNBOOK.md` |
-| Zero copy, the cached comparison, the country table | `docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md` |
-| Query rewrite and the 2026-09-14 incident | `docs/SR_POC_QUERY_REWRITE_DEMO.md` |
-| Primary Key, partial update, synchronous MV | `docs/SR_POC_WALLET_UPSERT_DEMO.md` |
-| `AGGREGATE KEY` on the funnel | `docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md` |
-| Shared-data storage | `docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md`, `docs/SR_POC_STARROCKS_SHARED_DATA_AZURE.md` |
-| Where it helps and where it does not | `docs/SR_POC_STARROCKS_EVALUATION_SUMMARY.md` |
+| Architecture and the failure tests | [`docs/SR_POC_UNIFIED_PLAN.md`](../SR_POC_UNIFIED_PLAN.md) |
+| Run instructions for the first demos | [`docs/SR_POC_LIVE_DEMO_RUNBOOK.md`](../SR_POC_LIVE_DEMO_RUNBOOK.md), [`docs/SR_POC_SUPERSET_DEMOS_RUNBOOK.md`](../SR_POC_SUPERSET_DEMOS_RUNBOOK.md) |
+| Zero copy, the cached comparison, the country table | [`docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md`](../SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) |
+| Query rewrite and the 2026-09-14 incident | [`docs/SR_POC_QUERY_REWRITE_DEMO.md`](../SR_POC_QUERY_REWRITE_DEMO.md) |
+| Primary Key, partial update, synchronous MV | [`docs/SR_POC_WALLET_UPSERT_DEMO.md`](../SR_POC_WALLET_UPSERT_DEMO.md) |
+| `AGGREGATE KEY` on the funnel | [`docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md`](../SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md) |
+| Shared-data storage | [`docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md`](../SR_POC_STARROCKS_SHARED_DATA_MINIO.md), [`docs/SR_POC_STARROCKS_SHARED_DATA_AZURE.md`](../SR_POC_STARROCKS_SHARED_DATA_AZURE.md) |
+| Where it helps and where it does not | [`docs/SR_POC_STARROCKS_EVALUATION_SUMMARY.md`](../SR_POC_STARROCKS_EVALUATION_SUMMARY.md) |

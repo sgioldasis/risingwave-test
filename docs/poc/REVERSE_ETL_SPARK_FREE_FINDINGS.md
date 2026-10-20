@@ -6,9 +6,9 @@ JVM (`extraction: oss_spark`, `reverse_etl_spark_reader.py`) and the
 reconstructs the change feed from snapshot diffs alone. This doc records what
 was built, what was verified live, the delta-rs findings it surfaced, the
 measured performance against the Spark era, and the assessment of where each
-approach belongs. Companion docs: `REVERSE_ETL_DBU_COST_NOTES.md` (the cost
-experiments this graduated from), `REVERSE_ETL_CODE_WALKTHROUGH.md` §6 (the
-backend's internals), `REVERSE_ETL_JOBOTRON.md` (the full-snapshot producer).
+approach belongs. Companion docs: [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) (the cost
+experiments this graduated from), [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md) §6 (the
+backend's internals), [`REVERSE_ETL_JOBOTRON.md`](REVERSE_ETL_JOBOTRON.md) (the full-snapshot producer).
 
 ## 1. What changed
 
@@ -51,7 +51,7 @@ backend's internals), `REVERSE_ETL_JOBOTRON.md` (the full-snapshot producer).
    refused outright — file reads cannot apply DVs — and both source-creation
    paths keep DVs off anyway (see finding 3).
 3. **DVs + CDF is a correctness trap the old path barely dodged** (verified
-   2026-10-14, `REVERSE_ETL_DBU_COST_NOTES.md` §5): with DVs enabled, a 1-row
+   2026-10-14, [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5): with DVs enabled, a 1-row
    DELETE made CDF emit the whole touched file — 300,000 change rows for a
    100k-row table, which relayed verbatim would have deleted 100,000 legitimate
    target rows. Snapshot diffs do not have this failure mode: a diff of two

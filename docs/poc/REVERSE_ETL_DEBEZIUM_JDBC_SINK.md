@@ -272,7 +272,7 @@ Value (schema abbreviated to the field list):
 `_to_debezium_events()` (unchanged) turns Databricks CDF rows into one logical event per change: CDF's
 `update_preimage` + `update_postimage` pair collapses into a single `u` event, and CDF's four `_change_type`
 values map to Debezium's `c`/`u`/`d`. The key column is cast to an integer because the Databricks Statement Execution
-API returns numerics as JSON strings (timestamps are formatted in the query, section 4.3). See `REVERSE_ETL_CDF_POC_PLAN.md` section "3c" for the full reasoning.
+API returns numerics as JSON strings (timestamps are formatted in the query, section 4.3). See [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) section "3c" for the full reasoning.
 
 ### 4.6 Key: why `rid` and not `id`
 
@@ -951,7 +951,7 @@ Notes and limits:
 - **Starting over.** Run `reverse_etl_cdf_reset_job`, then `reverse_etl_cdf_setup_job` (which seeds), then
   the sync (section 10, "Starting a new demo from a known state"). To repair only the RisingWave table, rebuild it (section 10.4).
 - **Which Kafka.** The data topic lives on Kaizen's staging Kafka cluster (SASL_SSL, SCRAM-SHA-512), named in
-  `REVERSE_ETL_CDF_POC_PLAN.md` and read from `KAFKA_OUTPUT_BOOTSTRAP` at run time. The local Redpanda only holds
+  [`REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md) and read from `KAFKA_OUTPUT_BOOTSTRAP` at run time. The local Redpanda only holds
   Kafka Connect's own bookkeeping topics; no pipeline data passes through it.
 - **Updating the Debezium version.** Change `DEBEZIUM_VERSION` in `Dockerfile.debezium-connect` and update
   `JDBC_PLUGIN_SHA512` to the value from
@@ -1260,10 +1260,10 @@ larger ones. The size of the change (50 or 10,000 rows) made no measurable diffe
 - **2026-10-14: this comparison is superseded for the Dagster side.** The sync reads the change feed and writes
   the watermark from Delta storage with zero Databricks compute per sync. The make-change SQL and the one-time
   setup/seed DDL are the only remaining cost. See
-  docs/poc/REVERSE_ETL_DBU_COST_NOTES.md (sections 5 and 6, with billing-system actuals and the recurring-job audit).
+  [docs/poc/REVERSE_ETL_DBU_COST_NOTES.md](REVERSE_ETL_DBU_COST_NOTES.md) (sections 5 and 6, with billing-system actuals and the recurring-job audit).
 - **2026-10-19 (superseded again):** the OSS Spark reader is deleted too — the syncs reconstruct changes with
   delta-rs alone (`reverse_etl_delta_reader.py`); the notebook path on this page is now the only Spark consumer.
-  See docs/poc/REVERSE_ETL_SPARK_FREE_FINDINGS.md.
+  See [docs/poc/REVERSE_ETL_SPARK_FREE_FINDINGS.md](REVERSE_ETL_SPARK_FREE_FINDINGS.md).
 - **Not measured:** dollar cost (the DBU price is not known here), the Auto CDC pipeline's cost, and the always-on
   Kafka, Connect, RisingWave and Postgres side (local in this demo).
 
@@ -1396,6 +1396,6 @@ group and both target tables were all absent, as expected.
 - Redpanda docs: "Deploy Kafka Connect in Docker" / "Deploy Redpanda Connectors in Docker".
 - Confluence, "Auto CDC API PoC" (space DnA, page 1088651694): the Delta + Change Data Feed + Auto CDC bridge for
   SCD2 history, compared in section 14.1.2.
-- drt, a reverse-ETL tool tried against the same source table: `docs/poc/REVERSE_ETL_DRT_COMPARISON.md`.
-- In this repo: `docs/poc/REVERSE_ETL_CDF_POC_PLAN.md`, `dbt/models/sink_funnel_to_postgres.sql`,
+- drt, a reverse-ETL tool tried against the same source table: [`docs/poc/REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON.md).
+- In this repo: [`docs/poc/REVERSE_ETL_CDF_POC_PLAN.md`](REVERSE_ETL_CDF_POC_PLAN.md), `dbt/models/sink_funnel_to_postgres.sql`,
   `orchestration/assets/postgres_sink_setup.py`.

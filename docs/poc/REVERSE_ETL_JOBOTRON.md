@@ -21,7 +21,7 @@ Two other review comments are addressed by this plan:
 
 **Why this strengthens the RFC, not just satisfies it.** The RFC lists "Databricks as a datasource" as a con (~$10/month/task, exact cost TBD) and "E2E testing difficulty" as another. The producer described here answers both:
 
-- It runs the candidate query **directly against the lake with a service principal** — delta-rs reads, no warehouse, no Spark, **0.0 DBUs** (the same thesis as `REVERSE_ETL_DBU_COST_NOTES.md`).
+- It runs the candidate query **directly against the lake with a service principal** — delta-rs reads, no warehouse, no Spark, **0.0 DBUs** (the same thesis as [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 - It runs on the **existing Dagster stack** and the **existing local demo stack** (Kafka + Apicurio), so the producer→Kafka path is E2E-testable on a laptop — the exact pain the RFC's review thread flagged.
 
 ## 2. What the producer does

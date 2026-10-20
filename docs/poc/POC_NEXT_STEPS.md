@@ -19,7 +19,7 @@ This document tracks what is remaining, what is complete, known limitations of t
 - Grafana dashboard: UC1/UC2 business metrics + Iceberg/Kafka sink health panels (Trino + Prometheus datasources)
 - RisingWave-native Iceberg compaction (`connector='iceberg'` + `compaction.trigger_snapshot_count` — no Spark)
 - Iceberg tables queried via Trino (`casino_trino_views` Dagster asset creates the Grafana metadata views)
-- **Databricks Unity Catalog**: append-only Iceberg sinks working (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`); Azure AD OAuth2 + explicit ADLS Gen2 account key; Trino federation for reads; `QUALIFY ROW_NUMBER()` VIEW workaround for upsert semantics (UC rejects delete files — see `DATABRICKS_ICEBERG_SINK.md §16`)
+- **Databricks Unity Catalog**: append-only Iceberg sinks working (`rw_casino_transactions`, `rw_sportsbook_bets`, `rw_casino_turnover_90d`); Azure AD OAuth2 + explicit ADLS Gen2 account key; Trino federation for reads; `QUALIFY ROW_NUMBER()` VIEW workaround for upsert semantics (UC rejects delete files — see [`DATABRICKS_ICEBERG_SINK.md §16`](DATABRICKS_ICEBERG_SINK.md))
 - **Staging Kafka verified**: `stg-ocp-kfk01-bootstrap.kaizengaming.net:9096` SASL_SSL/SCRAM-SHA-512 confirmed; both `cronus.casino.out.br` and `bets-out-br` topics present
 - **SASL support in SQL**: `sql/casino_prd_source.sql` and `sql/casino_prd_bets_source.sql` use `\if :USE_SASL` conditional; `.env`-driven via `KAFKA_CASINO_BOOTSTRAP`, `KAFKA_BETS_BOOTSTRAP`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`
 - **R4 latency**: sub-second source-to-sink confirmed on production data (~1,500 msg/s); formal benchmark at ≥10k/s still outstanding
@@ -72,7 +72,7 @@ what the casino pipeline currently demonstrates.
 | Interop — Iceberg (continuous sink + compaction) | High | ✅ Done | `connector='iceberg'` sinks → Lakekeeper; native compaction working. |
 | Interop — dbt (define/deploy RW objects) | High | ✅ Done | `dbt/models/casino_prd/` + custom materializations. |
 | Interop — Dagster (assets, trigger, monitor) | High | ✅ Done | `casino_prd_full_job`, asset groups, `casino_trino_views`. |
-| Interop — Databricks (Iceberg read/write) | High | ⚠️ Partial | Append-only Iceberg sinks to UC working. Upsert blocked (UC rejects delete files). Read from Databricks into RW not tested. See `DATABRICKS_ICEBERG_SINK.md §16–18`. |
+| Interop — Databricks (Iceberg read/write) | High | ⚠️ Partial | Append-only Iceberg sinks to UC working. Upsert blocked (UC rejects delete files). Read from Databricks into RW not tested. See [`DATABRICKS_ICEBERG_SINK.md §16–18`](DATABRICKS_ICEBERG_SINK.md). |
 | Interop — Power BI (PG connector) | High | ❌ Missing | RW is PG-wire compatible; not validated from Power BI. |
 | Interop — Atlan (catalog + lineage) | Medium | ❌ Missing | See Step 9 below. Two paths: PG connector + dbt lineage import. |
 | Interop — incident.io (alerts → incidents) | Medium | ❌ Missing | Prometheus/Grafana in place. See Step 10 below. |
@@ -98,7 +98,7 @@ what the casino pipeline currently demonstrates.
 
 ### Step 1 — Kafka output sinks for UC1 and UC2 — ✅ DONE
 
-`sink_casino_real_bet_kafka` (→ `casino_real_bet_output`) and `sink_turnover_percentage_kafka` (→ `casino_turnover_percentage_output`) are implemented as dbt models in `dbt/models/casino_prd/`, in the raw SQL (`sql/casino_prd_funnel_iceberg.sql`), and Redpanda is enabled in `docker-compose.yml`. See PRODUCTION_CASINO_DEMO.md §4.5 / §5.8. They remain the prerequisite for the R4 benchmark below.
+`sink_casino_real_bet_kafka` (→ `casino_real_bet_output`) and `sink_turnover_percentage_kafka` (→ `casino_turnover_percentage_output`) are implemented as dbt models in `dbt/models/casino_prd/`, in the raw SQL (`sql/casino_prd_funnel_iceberg.sql`), and Redpanda is enabled in `docker-compose.yml`. See [PRODUCTION_CASINO_DEMO.md](PRODUCTION_CASINO_DEMO.md) §4.5 / §5.8. They remain the prerequisite for the R4 benchmark below.
 
 ---
 

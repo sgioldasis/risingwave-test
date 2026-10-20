@@ -472,7 +472,7 @@ succeeded). Worth a look when the container is rebuilt.
 ### 2026-10-19 — the Spark path itself is gone (delta-rs version-range reconstruction)
 
 Full live proof (all four syncs), the measured Spark-era comparison, and the
-assessment: **`REVERSE_ETL_SPARK_FREE_FINDINGS.md`**.
+assessment: **[`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md)**.
 
 The experiment graduated past Spark: both extraction backends are deleted
 (`reverse_etl_spark_reader.py` with its local JVM, and the `table_changes()`

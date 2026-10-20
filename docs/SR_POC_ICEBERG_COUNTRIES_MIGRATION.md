@@ -610,7 +610,7 @@ trivial):
    hasn't run since the restart; unrelated to this migration). The
    casino_prd/sportsbook models also failed (storage-account permission
    and Kafka broker connectivity issues) -- pre-existing, unrelated
-   separate demo per this repo's CLAUDE.md, not touched.
+   separate demo per this repo's [CLAUDE.md](../CLAUDE.md), not touched.
 
 **Verified**: re-ran the same live-read `EXPLAIN ANALYZE` from the ninth
 follow-up, now filtered to a single `window_date`: `ScanTime` dropped from
@@ -981,7 +981,7 @@ Every external permission and auth boundary checked out. The actual root
 cause: **`funnel_summary_historical` had the `delta.feature.catalogManaged`
 protocol feature**, which this project had already discovered once before
 on an isolated probe table (see "StarRocks write capability" section
-below / docs/SR_POC_TESTING_PLAN.md section 2.1.9) -- it silently blocks
+below / [docs/SR_POC_TESTING_PLAN.md](SR_POC_TESTING_PLAN.md) section 2.1.9) -- it silently blocks
 external-engine (RisingWave/StarRocks/Trino) writes via Unity Catalog's
 Iceberg REST Catalog commit endpoint, with **zero error surfaced anywhere**,
 even though reads, auth, and metadata fetches all work normally. It

@@ -399,7 +399,7 @@ ORDER BY total_turnover DESC;
 
 This is the read-time replacement for an upsert sink. Unity Catalog does not
 support Iceberg delete files, so an upserting `mv_casino_turnover_latest` sink
-stalls silently (see `DATABRICKS_ICEBERG_SINK.md` §16). Instead, RisingWave
+stalls silently (see [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md) §16). Instead, RisingWave
 lands the per-event rolling-turnover snapshots **append-only** into
 `de_dev.rw_poc.rw_casino_turnover_90d` (sink `sink_casino_turnover_90d_databricks`),
 and the "latest row per customer" collapse happens here via `QUALIFY` — no
@@ -525,7 +525,7 @@ Sources and views persist across sessions once created by `casino_prd_full_job`.
 | Limitation | Detail |
 |---|---|
 | **Sources are live, not streaming** | A `CREATE SOURCE` reads the current Iceberg snapshot on each query — data is always fresh. However, it is a batch scan, not a continuous stream; you cannot base a `CREATE MATERIALIZED VIEW` on it for real-time incremental updates. |
-| **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by Predictive Optimization (enabled on `de_dev.rw_poc`) and the `databricks_optimize` Dagster step. See §17 of `DATABRICKS_ICEBERG_SINK.md`. |
+| **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by Predictive Optimization (enabled on `de_dev.rw_poc`) and the `databricks_optimize` Dagster step. See §17 of [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md). |
 | **Not suitable for very large tables** | Full Parquet scan from ADLS. For billion-row tables: OOM risk + slow network I/O. See §11 (production viability) below. |
 | **No partition pruning** | RisingWave 2.8.4 opens all Parquet files regardless of `WHERE` clause filters — no partition-level skipping. Row-group pruning via Parquet min/max statistics still applies within each file. Future roadmap item. |
 | **`properties` JSON is not vectorized** | JSON extraction via `(properties::jsonb)->>'key'` falls back to row-by-row string parsing. Use flat typed columns for high-frequency analytical aggregations. |
@@ -715,7 +715,7 @@ IcebergV2 error: Failed to load manifest list in cache
 Unexpected (persistent) at read, context: { timeout: 10 } => io timeout reached
 ```
 
-**Root cause:** The table lives in `stkznneucommoncdddevstd` — Databricks' internal managed ADLS account. We don't have the key for this account, and `vended_credentials = true` does not provide working Azure credentials through RisingWave's OpenDAL read path (same limitation as writes — see §7 of `DATABRICKS_ICEBERG_SINK.md`).
+**Root cause:** The table lives in `stkznneucommoncdddevstd` — Databricks' internal managed ADLS account. We don't have the key for this account, and `vended_credentials = true` does not provide working Azure credentials through RisingWave's OpenDAL read path (same limitation as writes — see §7 of [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md)).
 
 ### What works vs what doesn't
 

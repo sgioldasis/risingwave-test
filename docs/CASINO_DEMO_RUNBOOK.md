@@ -1271,7 +1271,7 @@ Use `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY event_ts DESC) = 1` instead. S
 
 **`FULL OUTER JOIN` with `ROW_NUMBER()` Top-1 inputs panics the database**
 Use `UNION ALL + GROUP BY` pivot instead. See `mv_turnover_percentage` for the pattern
-and the crash post-mortem in `docs/poc/PRODUCTION_CASINO_DEMO.md §5.5`.
+and the crash post-mortem in [`docs/poc/PRODUCTION_CASINO_DEMO.md §5.5`](poc/PRODUCTION_CASINO_DEMO.md).
 
 ### Infrastructure
 
@@ -1318,5 +1318,5 @@ panels directly.
 
 ---
 
-*For deeper tuning details see `docs/poc/BRAZIL_WORKLOAD_TUNING.md`. For the original PoC
-business definitions see `docs/poc/PRODUCTION_CASINO_DEMO.md`.*
+*For deeper tuning details see [`docs/poc/BRAZIL_WORKLOAD_TUNING.md`](poc/BRAZIL_WORKLOAD_TUNING.md). For the original PoC
+business definitions see [`docs/poc/PRODUCTION_CASINO_DEMO.md`](poc/PRODUCTION_CASINO_DEMO.md).*
