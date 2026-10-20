@@ -219,6 +219,161 @@ version, and `last_schema` reflects the source's current columns (that is the
 drop-propagation evidence). If the watermark stalls while `DESCRIBE HISTORY`
 grows, the sync runs are failing — check Dagster before Databricks.
 
+## A worked example, from zero (defaults only)
+
+A complete runbook: create a realistic table with pure Databricks defaults —
+no special properties — define the sync, and walk every Dagster action end to
+end. Every command is copy-pasteable; the only file edit is the YAML in Step 2.
+
+### Step 1 — Create and seed the table (Databricks SQL editor)
+
+```sql
+CREATE TABLE de_dev.sr_poc_external.reverse_etl_demo_source (
+    id BIGINT NOT NULL,
+    description STRING,
+    total DOUBLE,
+    updated_at TIMESTAMP
+)
+USING DELTA;
+
+INSERT INTO de_dev.sr_poc_external.reverse_etl_demo_source VALUES
+(1, 'first',  9.5,  current_timestamp()),
+(2, 'second', 20.0, current_timestamp()),
+(3, 'third',  7.25, current_timestamp());
+```
+
+No `TBLPROPERTIES`, no opt-outs. The runtime defaults give this table deletion
+vectors (enabled), a writer-v7 protocol (`deletionVectors`, `rowTracking`,
+`domainMetadata`) and no Change Data Feed — and the sync reads it exactly as
+is: the DV-aware reader applies the keep-masks, and CDF is never used. Naming
+the table `reverse_etl_demo_source` means everything derives from the sync's
+`name` — no `source_table` override — and the reset job's allowlist covers it.
+Seeding before the setup job means the setup's own sync backfills these rows,
+and both targets populate in that one run.
+
+### Step 2 — Define the sync (the full YAML file)
+
+Create `orchestration/defs/reverse_etl_demo/defs.yaml` with exactly this
+content:
+
+```yaml
+# The from-zero demo sync (docs/poc/REVERSE_ETL_EXISTING_TABLE.md): one
+# Databricks Delta table synced to Kafka, then to Postgres and RisingWave.
+# The source table is created and seeded by hand with default table
+# properties (Step 1); the setup job creates everything else.
+type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+
+attributes:
+  name: demo
+  catalog: de_dev
+  schema_name: sr_poc_external
+  source_columns:
+    - "id BIGINT NOT NULL"
+    - "description STRING"
+    - "total DOUBLE"
+    - "updated_at TIMESTAMP"
+  encoding: avro
+  propagate_drops: false
+```
+
+That is the whole file: every other name (`reverse_etl_demo_source` / `_state`
+/ `_topic` / `_target` / `_sink`, the setup/reset/make-change jobs) derives
+from `name`, and `source_columns` is ignored while the table already exists.
+`encoding: avro` puts the messages in the Confluent wire format with the
+schemas in the staging registry (`reverse_etl_demo_topic-key` / `-value`
+subjects); `json` embeds the schema in every message instead.
+
+### Step 3 — Load the definitions (restart Dagster)
+
+```bash
+docker compose restart dagster-webserver dagster-daemon
+```
+
+Wait until `localhost:3000` responds again (~30s), then confirm the new
+definitions are there: Assets shows the `reverse_etl_demo_*` assets and Jobs
+shows `reverse_etl_demo_setup_job` / `_reset_job`. A restart is needed
+whenever definitions change; the code server picks the files up on reload.
+
+### Step 4 — Run the setup job (Dagster UI)
+
+Jobs → `reverse_etl_demo_setup_job` → **Launch run**. In order, it:
+
+1. creates the watermark state table `reverse_etl_demo_state` (plain Delta —
+   DDL in "The state table" section below);
+2. creates the Kafka topic `reverse_etl_demo_topic` and registers the
+   `reverse_etl_demo_topic-key` / `-value` Avro subjects in the staging
+   registry;
+3. runs the **first sync** — a backfill emitting the three seeded rows as
+   insert events to the topic;
+4. creates the RisingWave target `reverse_etl_demo_target` and the Debezium
+   JDBC sink connector, which consume the topic from the beginning — so the
+   backfilled events land in both targets automatically.
+
+### Step 5 — Verify the first sync
+
+```bash
+psql -h localhost -U postgres -d postgres -c \
+  "SELECT * FROM reverse_etl_demo_target ORDER BY id;"
+psql -h localhost -p 4566 -U root -d dev -c \
+  "SELECT * FROM reverse_etl_demo_target ORDER BY id;"
+curl -s localhost:4002/api/check/demo/postgres
+```
+
+Three rows each. The setup run's metadata shows the backfill (3 insert
+events) and ~0 warehouse seconds — delta-rs reads storage directly; the only
+warehouse touch a sync ever makes is one small SQL write.
+
+### Step 6 — Make changes and sync incrementally
+
+In Databricks, change some rows:
+
+```sql
+UPDATE de_dev.sr_poc_external.reverse_etl_demo_source
+SET description = 'second (updated)', updated_at = current_timestamp() WHERE id = 2;
+DELETE FROM de_dev.sr_poc_external.reverse_etl_demo_source WHERE id = 3;
+INSERT INTO de_dev.sr_poc_external.reverse_etl_demo_source
+VALUES (4, 'fourth', 12.0, current_timestamp());
+```
+
+Then sync: Assets → search `reverse_etl_demo_to_kafka` → select it →
+**Materialize selected** → Launch run. Expect one run to emit: one
+`update_preimage` + one `update_postimage` (paired into a single Debezium
+update), one `delete` carrying the full preimage, one `insert`. With DVs
+enabled, the UPDATE and DELETE create real deletion vectors and the sync's
+DV-aware path applies the masks — exactly as on a production table. (The
+repo's `reverse_etl_demo_make_change` asset drives the same demo changes with
+run config; the SQL above is the by-hand equivalent.)
+
+### Step 7 — Schedule recurring syncs
+
+Quickest: Dagster UI → Automation → the `reverse_etl_demo_to_kafka` asset →
+add a cron automation condition (e.g. daily). In code: add a schedule next to
+the other definitions (the demo's sink-health schedule in
+`reverse_etl_defs.py` shows the pattern).
+
+### Step 8 — Watch the watermark (Databricks SQL)
+
+```sql
+SELECT sync_name, last_commit_version
+FROM de_dev.sr_poc_external.reverse_etl_demo_state
+WHERE sync_name = 'demo'
+ORDER BY last_commit_version DESC
+LIMIT 1;
+```
+
+After every completed sync, `last_commit_version` equals the source's top
+`DESCRIBE HISTORY` version, and `last_schema` carries the source's current
+columns (the drop-propagation evidence). If the watermark stalls while
+`DESCRIBE HISTORY` grows, the sync runs are failing — check Dagster before
+Databricks.
+
+### Step 9 — Reset (start over)
+
+Jobs → `reverse_etl_demo_reset_job` → **Launch run**. It drops the source
+table, the state table, the Kafka topic and registry subjects, the connector
+and both target tables — allowed because every name matches the
+`reverse_etl_` prefix allowlist. Then Step 1 and Step 4 again to start fresh.
+
 ## Safety notes
 
 - **The reset job refuses to run for this sync.** `_assert_reset_allowed`
