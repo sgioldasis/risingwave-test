@@ -205,6 +205,53 @@ grows, the sync runs are failing — check Dagster before Databricks.
   own topics (which may be what you want for two independent targets, but it
   doubles the reads).
 
+## The state table
+
+`reverse_etl_<name>_state` is the sync's only Databricks-side bookkeeping:
+`sync_name`, `last_commit_version` (the watermark), and `last_schema` (JSON of
+the source's columns with their `delta.columnMapping.id`s — the evidence the
+drop-propagation pass diffs against).
+
+- **Write pattern: append-only.** One `INSERT` per sync run; readers take the
+  freshest row per `sync_name` (`max(last_commit_version)` wins). History
+  accumulates harmlessly — one row per run, a few hundred rows a year on a
+  daily schedule.
+- **Single writer, by constraint.** The sync's delta-rs no-op pre-check *reads*
+  this table, and delta-rs cannot commit to Databricks-written v7 protocol
+  tables — so the only writer is the one small SQL `INSERT` at the end of each
+  sync. This is why the table must stay plain Delta (no column mapping, no
+  deletion vectors — delta-rs rejects those reader features) and must never be
+  `CREATE OR REPLACE`d (that would inherit the source's bumped protocol).
+- **The watermark key is `sync_name`.** Change a sync's `name`/`sync_name` and
+  its state rows stop matching: the next sync finds no watermark and starts
+  from 0 — a full backfill.
+
+### The drop+recreate trap
+
+If the **source** table is dropped and recreated while the state table
+survives, the recreated table's version numbering restarts at 0 — below the
+watermark. Every sync then reads 0 changes, and because the freshest state row
+wins, the low fallback watermark the empty run writes never beats the stale
+high row. **The sync stalls silently until the new source accumulates more
+versions than the old watermark ever reached, and versions below it are never
+synced.**
+
+Re-baseline by clearing the state (the next sync then backfills from v0 —
+safe, the targets upsert by key):
+
+```sql
+DELETE FROM de_dev.my_schema.reverse_etl_customers_state
+WHERE sync_name = 'customers';
+-- or drop the table entirely; the setup job recreates it
+```
+
+Related: a manual drop+recreate also moves a managed table to fresh storage,
+while the sync caches storage locations for 10 minutes — a stale entry points
+at the *old* table's files. The reset job clears the cache deliberately; after
+a *manual* drop+recreate, either wait out the TTL or delete
+`$DAGSTER_HOME/dagster_storage/reverse_etl_control_plane_cache.json` before
+syncing.
+
 ## See also
 
 - [REVERSE_ETL_CODE_WALKTHROUGH.md](REVERSE_ETL_CODE_WALKTHROUGH.md) — the
