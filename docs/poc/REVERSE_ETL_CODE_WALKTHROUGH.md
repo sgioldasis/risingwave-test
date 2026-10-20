@@ -439,6 +439,16 @@ All factories take the config and return Dagster objects; all names come from it
   (not an op) so its run metadata — including its measured warehouse seconds and the
   exact SQL it ran (`databricks_change_sql`, which the demo page shows under the
   result) — is queryable.
+  The ops stay inside what Delta natively supports, which is narrower than it
+  looks: **adding a column** is always allowed (metadata-only; existing rows read
+  `NULL`); **dropping, renaming, and reordering columns require column mapping**
+  (without it Delta refuses `DROP COLUMN` — legacy readers match columns by name
+  and would break). With mapping (`delta.columnMapping.mode = name`, set on every
+  demo table) a drop or rename is a logical schema edit: each column carries a
+  stable `delta.columnMapping.id` and physical name, so old Parquet files stay
+  readable and the change touches no data. **Type changes** are widening-only
+  (`byte→short→int→long`, `float→double`, recent versions); anything lossy would
+  need a table rewrite and has no `ALTER`.
 - **`build_risingwave_table_asset`** — creates the RisingWave target
   (`CREATE ... INCLUDE timestamp AS rw_event_timestamp` style upsert/delete table,
   `FORMAT DEBEZIUM ENCODE AVRO/JSON` per encoding). `add_missing_columns()` is the
