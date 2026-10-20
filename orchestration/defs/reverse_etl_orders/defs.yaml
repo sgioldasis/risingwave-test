@@ -1,16 +1,42 @@
+# The orders-shaped sync: the same pipeline as cdf, with a different table shape
+# (an extra DOUBLE `total` column) and the default JSON encoding -- the second
+# table the event matrix in docs/poc/REVERSE_ETL_SPARK_FREE_FINDINGS.md was
+# verified on. Every name is derived from `name`: reverse_etl_orders_source,
+# reverse_etl_orders_target, reverse_etl_orders_topic, reverse_etl_orders_sink,
+# reverse_etl_orders_setup_job, ...
+# No `encoding` field -- the component's default is JSON with the schema
+# embedded in every message (the avro and delta syncs opt into the registry's
+# Avro).
 type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
 
 attributes:
+  # The sync label every other name derives from: reverse_etl_orders_source /
+  # _state / _topic / _sink, the orders_setup_job / _reset_job / make-change
+  # job, and the Postgres + RisingWave target tables. It is also the watermark
+  # key and the Debezium envelope prefix -- changing it on an existing sync
+  # restarts that sync from the beginning.
   name: orders
   # Same drop propagation as avro (see that defs.yaml).
   propagate_drops: true
+  # The Databricks catalog and scratch schema where the setup creates the source
+  # and the watermark state table; the reset job only drops reverse_etl_* names
+  # here.
   catalog: de_dev
   schema_name: sr_poc_external
+  # Column DDL the setup asset creates the source table with (the component adds
+  # the identity key `rid` itself -- the key everywhere downstream). Used only
+  # when the table has to be created; never applied to an existing table.
   source_columns:
     - "id BIGINT NOT NULL"
     - "description STRING"
     - "total DOUBLE"
     - "updated_at TIMESTAMP"
+  # Demo seed, run as the LAST step of the setup job -- after the setup's own
+  # baseline sync, so the watermark starts at the pre-seed version and it is the
+  # chain's first data sync that lands these rows on the targets. {source_table}
+  # is substituted with the source table name. The MERGE keeps re-runs
+  # idempotent, and the trailing update + delete give every fresh setup its
+  # first update and delete events.
   seed_statements:
     - |
       MERGE INTO {source_table} AS target
