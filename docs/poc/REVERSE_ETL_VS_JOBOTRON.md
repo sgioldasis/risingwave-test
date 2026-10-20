@@ -68,8 +68,9 @@ many times it changed.
 
 ## See also
 
-- `REVERSE_ETL_CODE_WALKTHROUGH.md` — the sync's read paths and schema flow.
-- `REVERSE_ETL_JOBOTRON.md` — the producer demo, its RFC framing and registry
-  behavior.
-- `REVERSE_ETL_SPARK_FREE_FINDINGS.md` — §2.8 (registry id-based dedup),
-  §6 (reader scaling, the file-pair diff).
+- [REVERSE_ETL_CODE_WALKTHROUGH.md](REVERSE_ETL_CODE_WALKTHROUGH.md) — the
+  sync's read paths and schema flow.
+- [REVERSE_ETL_JOBOTRON.md](REVERSE_ETL_JOBOTRON.md) — the producer demo, its
+  RFC framing and registry behavior.
+- [REVERSE_ETL_SPARK_FREE_FINDINGS.md](REVERSE_ETL_SPARK_FREE_FINDINGS.md) —
+  §2.8 (registry id-based dedup), §6 (reader scaling, the file-pair diff).
