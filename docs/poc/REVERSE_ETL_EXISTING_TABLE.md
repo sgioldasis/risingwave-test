@@ -12,11 +12,14 @@ note records the steps and the traps. Written 2026-10-20.
   rewritten-file-pair diff, full-snapshot fallback; see
   [REVERSE_ETL_CODE_WALKTHROUGH.md](REVERSE_ETL_CODE_WALKTHROUGH.md) §6 and
   [REVERSE_ETL_SPARK_FREE_FINDINGS.md](REVERSE_ETL_SPARK_FREE_FINDINGS.md) §6).
-- **Deletion vectors must be off.** The reader refuses DV tables outright: a
-  row hidden by a DV inside a Parquet file would silently corrupt the diff.
-  Check the table's `delta.deletionVectors` property; if it is enabled,
-  disabling it (and rewriting any files that carry DVs) is a table-owner
-  change.
+- **Deletion vectors must be off — and to have never been on.** The reader
+  refuses DV tables outright: a row hidden by a DV inside a Parquet file would
+  silently corrupt the diff. The check is on the table's Delta *protocol*
+  features, and a protocol feature is never removed — so a table created (or
+  ever altered) with DVs enabled cannot be made reader-acceptable by
+  disabling them afterwards, even after `REORG PURGE` clears every file
+  (verified live 2026-10-20: writer v7 keeps `deletionVectors` listed and the
+  reader still refuses). See the remediation below for what actually works.
 - **UniForm is irrelevant** — the sync is UniForm-agnostic end to end (the
   `delta` sync exists to prove exactly that).
 - **Column mapping** — only needed if you want drop/rename propagation. Without
@@ -65,12 +68,25 @@ GRANT READ FILES ON EXTERNAL LOCATION `<location-url>` TO `<service-principal>`;
 ### Remediation SQL (only if a check fails)
 
 ```sql
--- Deletion vectors present? Disable, then rewrite the files that still carry
--- them. Both statements create commits — the first sync will simply read them
--- as rewrite windows and emit no events (the rows are unchanged).
-ALTER TABLE de_dev.my_schema.customers_raw
-  SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');
-REORG TABLE de_dev.my_schema.customers_raw APPLY (PURGE);
+-- Deletion vectors ENABLED? Disabling alone does NOT help the sync —
+-- verified live 2026-10-20: ALTER SET '...' = 'false' + REORG PURGE leaves
+-- the deletionVectors feature in the table's protocol, and the reader
+-- refuses on the protocol (features are never removed). The sync-compatible
+-- fix is a one-time rewrite into a fresh table created with DVs disabled at
+-- creation — that protocol has no deletionVectors feature (it is how every
+-- demo table is built, and the reader reads those daily). One-time warehouse
+-- read+write: the only DBU cost in this whole setup.
+CREATE OR REPLACE TABLE de_dev.my_schema.customers_raw_dvfree
+USING DELTA
+TBLPROPERTIES (
+  'delta.enableDeletionVectors' = 'false'
+  -- + 'delta.columnMapping.mode' = 'name', 'delta.minReaderVersion' = '2',
+  --   'delta.minWriterVersion' = '5'  if drop/rename propagation is wanted
+)
+AS SELECT * FROM de_dev.my_schema.customers_raw;
+-- Then either point the sync's source_table at the copy, or swap names so
+-- future writes land in the DV-free table (if the old table name is
+-- recreated, mind the state-table drop+recreate trap below).
 
 -- Want drop/rename propagation on a table without column mapping?
 -- Metadata-only, but it bumps the protocol: pre-DBR-12 readers stop working.
@@ -85,6 +101,49 @@ ALTER TABLE de_dev.my_schema.customers_raw SET TBLPROPERTIES (
 ALTER TABLE de_dev.my_schema.customers_raw
   SET TBLPROPERTIES ('delta.universalFormat.enabledFormats' = 'iceberg');
 ```
+
+### The deletion-vectors trade-off (before running the ALTER)
+
+DVs are Databricks' default row-level delete mechanism: DELETE/UPDATE/MERGE
+record compact per-file bitmaps of dead rows instead of rewriting the affected
+Parquet files, and reads filter them out. The trade-off is cheap writes vs.
+read interop — and the sync needs the interop.
+
+What disabling costs on an existing table:
+
+- **Fast point-DML — the real loss.** Every DELETE/UPDATE/MERGE reverts to
+  rewriting each affected file in full: slower DML, more write I/O, more
+  compute, more OPTIMIZE work afterward.
+- **A one-time rewrite burst** — `REORG TABLE … APPLY (PURGE)` rewrites every
+  file that still carries DVs (proportional to DV-carrying files, not table
+  size).
+- **The protocol stays bumped** — disabling does not undo reader-v3/writer-v7;
+  the lock-out of pre-feature readers is permanent either way (irrelevant for
+  the sync: delta-rs reads v7 tables, it just cannot have DVs enabled).
+
+What disabling does *not* cost:
+
+- **Data** — no rows are touched; only future DML strategy changes.
+- **Read performance** — scans get marginally simpler (no bitmap application,
+  no dead rows read).
+- **Re-enabling** — turning DVs back on later is just the property again; new
+  DML starts creating DVs from that point.
+
+The asymmetry that matters for the sync: **DVs off from creation keeps the
+table readable by the sync; DVs enabled at any point puts the feature in the
+table's protocol permanently, and no ALTER removes it.** Disabling afterwards
+makes the table DV-*free* but not reader-acceptable — a table that has ever
+had DVs enabled can only serve the sync after the one-time rewrite into a
+fresh DV-free table shown in the remediation above.
+
+Decision heuristic: an **append-mostly** source (inserts plus occasional
+updates — the common reverse-ETL shape) loses almost nothing by disabling,
+since updates already rewrite whole files without DVs. A **DML-heavy** source
+(CDC-style MERGEs, frequent deletes) genuinely benefits from DVs — weigh the
+rewrite cost honestly, but note there is no middle ground: the reader refuses
+DV tables outright, a once-enabled table cannot be un-refused, and the
+alternatives (a DV-free copy refreshed by scheduled warehouse CTAS, CDF feeds
+read by Spark, a Spark-based reader) all give up more than the DVs were worth.
 
 ## 2. Define the sync (one YAML)
 
