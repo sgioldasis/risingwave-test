@@ -339,9 +339,8 @@ feature. Two design points worth keeping:
   is unchanged from the Spark days.
 - **Rewrite windows diff only the rewritten file pairs** (2026-10-19, after the
   full-snapshot wall was measured). A commit's log names exactly which files it
-  removed and added; with deletion vectors off (enforced — the reader refuses
-  DV tables) the changed rows live only in those pairs, so the rewrite path
-  reads the removed files as the pre-image and the added files as the
+  removed and added; the changed rows live only in those pairs, so the rewrite
+  path reads the removed files as the pre-image and the added files as the
   post-image and diffs those — memory and I/O sized by the touched files, not
   the table. Rows in untouched files cannot have changed, compaction's pairs
   diff to nothing, and a pre-image needs no carry-forward state: the removed
@@ -349,6 +348,30 @@ feature. Two design points worth keeping:
   and no-Azure-filesystem runs keep the full-snapshot diff as the fallback
   (correct at any shape). Verified live: update and delete windows emit the
   same events the full-snapshot diff emitted (findings doc §6).
+- **Deletion vectors are read, not refused** (2026-10-20, after the reader
+  spent its first weeks refusing them). A DV-only commit — Delta marking rows
+  dead inside an existing file — re-adds the SAME data file, which path-set
+  comparison reports as no change, so on DV tables the reader takes each
+  commit's real actions from its JSON log entry (`_commit_actions`) and
+  filters every touched file's rows through its deletion-vector keep-mask
+  (`_dv_masks`: delta-rs's `deletion_vectors()` decodes the payloads). The
+  mask must be the one in force at the diffed version — a file's DV evolves
+  commit by commit — so pre-images read the masks of the version-1 handle,
+  cached per version. Verified live on a Databricks DV table: DV deletes and
+  updates emit correct events, a second DV on the same file diffs against the
+  previous mask, and OPTIMIZE's compaction (which clears DVs) diffs to
+  nothing. Partitioned DV tables read raw with their partition columns
+  injected from the add actions' typed partition values (`_partition_values`:
+  delta-rs reports them in their schema types — a DATE partition arrives as
+  date32 — the same contract the snapshot read produces; verified live with a
+  DATE + STRING partitioned DV table, full event replay matching the
+  warehouse). DATE columns anywhere in a source are now normalized to ISO
+  strings like the SQL path produced. One constraint remains: the Azure
+  filesystem must be available — delta-rs's own scan refuses DV tables
+  entirely (`to_pyarrow_table` raises even on deltalake 1.6), so a no-Azure
+  DV source is refused with a clear message. The demo tables keep
+  DVs off at creation (simpler protocol; the state table must stay DV-free
+  regardless, because the no-op pre-check reads it with delta-rs).
 - **Schema changes need no bisection.** Snapshot reads do not error on
   incompatible schema changes the way CDF reads do: an added or dropped column
   reads as `None` on the other side and never false-positives an event (the
@@ -402,8 +425,8 @@ both the UniForm v2 and the plain column-mapped flavor) — `to_pyarrow_table()`
 returns the logical schema with every value None. The reader detects the
 all-None scan and re-reads the snapshot's parquet files directly, renaming via
 `delta.columnMapping.physicalName` with pyarrow's `AzureFileSystem` (the same
-service principal), and refuses sources with deletion vectors, which file reads
-cannot apply. The earlier claim that "OSS Delta reads column-mapped tables
+service principal); on DV tables the raw re-read also applies each file's
+deletion-vector keep-mask, since the raw parquet still holds DV-deleted rows. The earlier claim that "OSS Delta reads column-mapped tables
 fine" held for plain column-mapped tables and is wrong for this UniForm v2
 shape — hence the fallback.
 
@@ -518,15 +541,20 @@ isolation for free, and the in-process setup job resets at every asset entry.
 
 ## 11. Gotchas worth knowing before editing
 
-- **Deletion vectors must stay OFF on the source.** With DVs enabled (this
-  runtime defaults new plain-Delta tables to `'delta.enableDeletionVectors' =
-  'true'`), a 1-row DELETE makes the Change Data Feed emit the *whole touched
-  file*: verified live — two single-row deletes on 100k-row files produced
-  200,000 delete + 100,000 insert CDF rows, the sync relayed them verbatim, and
-  the targets lost 100,000 legitimate rows (900,002 instead of 1,000,000). The
-  source DDL sets DVs off; re-enable them and every delete sync becomes
-  file-scale. (The bloat is invisible on small files — the seed rows' deletes
-  looked clean all along.)
+- **Deletion vectors and the source (history + current state).** With the old
+  Spark/CDF backend, DVs enabled on the source made a 1-row DELETE emit the
+  *whole touched file* through the Change Data Feed: verified live 2026-10 —
+  two single-row deletes on 100k-row files produced 200,000 delete + 100,000
+  insert CDF rows, the sync relayed them verbatim, and the targets lost
+  100,000 legitimate rows (900,002 instead of 1,000,000). That was the
+  reason the source DDL set DVs off, and the delta-rs reader initially
+  refused DV tables outright. Since 2026-10-20 the delta-rs reader is
+  DV-aware (applies each file's keep-mask per version — see the design points
+  above), so a DV-enabled unpartitioned source syncs correctly and keeps
+  Databricks' cheap point-DML. The demo tables still create with DVs off —
+  simpler protocol, no need — but re-enabling them is no longer a sync
+  hazard. The **state table** must keep DVs off regardless: the no-op
+  pre-check reads it with delta-rs, which rejects DV reader features.
 - **Never read the source schema "live" inside the sync.** The read range is
   pinned from the pre-check; the schema used to name the envelope and detect
   renames must be pinned to the same commit (`get_row_fields(location,

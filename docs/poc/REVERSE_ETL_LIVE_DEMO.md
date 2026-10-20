@@ -237,10 +237,12 @@ SET value = 'changed', updated_at = current_timestamp() WHERE id = 1;
 ```
 
 Run the sync asset again and query both targets: the update is applied in both. A delete works the same way
-(`DELETE FROM ... WHERE id = 1`): the row disappears from both. (The delta source keeps **deletion vectors
-off** on purpose: with DVs on, a 1-row DELETE makes Delta's Change Data Feed emit the whole touched file —
-100,000 spurious delete events per delete on a bulk-loaded table — and the sync relays that verbatim; see the
-deletion-vectors gotcha in [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md) §11.)
+(`DELETE FROM ... WHERE id = 1`): the row disappears from both. (The demo sources keep **deletion vectors off** at
+creation — a choice, not a requirement since 2026-10-20: the delta-rs reader now applies DV keep-masks per version,
+so a DV-enabled unpartitioned source syncs correctly. The old hazard was Spark's Change Data Feed, which made a
+1-row DELETE emit the whole touched file — 100,000 spurious delete events per delete on a bulk-loaded table — and
+the sync relayed that verbatim; see the deletion-vectors gotcha in
+[`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md) §11.)
 
 ## 5. Add a column
 

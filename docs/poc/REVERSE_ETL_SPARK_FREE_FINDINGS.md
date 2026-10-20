@@ -47,9 +47,14 @@ backend's internals), [`REVERSE_ETL_JOBOTRON.md`](REVERSE_ETL_JOBOTRON.md) (the 
 2. **The fallback that makes reads correct**: the reader detects the all-None
    scan and re-reads the snapshot's parquet files directly, renaming via the
    schema's `physicalName` metadata with pyarrow's `AzureFileSystem` (the same
-   service principal, no extra credentials). Deletion-vector sources are
-   refused outright — file reads cannot apply DVs — and both source-creation
-   paths keep DVs off anyway (see finding 3).
+   service principal, no extra credentials). Deletion-vector sources were
+   refused outright at first — file reads cannot apply DVs — and both
+   source-creation paths keep DVs off anyway (see finding 3). Amended
+   2026-10-20: the reader now applies deletion vectors (per-version keep-masks
+   via delta-rs's `deletion_vectors()`, commit actions from the JSON log), so
+   DV sources sync correctly — partitioned ones included, with partition
+   columns injected from the add actions' typed values; only a no-Azure
+   DV source is still refused.
 3. **DVs + CDF is a correctness trap the old path barely dodged** (verified
    2026-10-14, [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5): with DVs enabled, a 1-row
    DELETE made CDF emit the whole touched file — 300,000 change rows for a
@@ -242,9 +247,10 @@ factors are not the DBUs:
   measurement survived); a billion-row table would have needed ~1000× that and
   OOMed long before its I/O finished. **Fixed the same day: the rewrite path
   now diffs only the REWRITTEN FILE PAIRS** — a commit's log names exactly
-  which files it removed and added, and with deletion vectors off (enforced)
-  the changed rows live only in those pairs, so memory and I/O are sized by
-  the touched files. Verified live: update and delete windows produce the
+  which files it removed and added, and the changed rows live only in those
+  pairs (deletion vectors included since 2026-10-20: each touched file's rows
+  are filtered through its per-version DV keep-mask), so memory and I/O are
+  sized by the touched files. Verified live: update and delete windows produce the
   identical events the full-snapshot diff produced, at touched-file cost.
   What remains: partitioned tables and no-Azure-filesystem runs keep the full
   snapshot fallback (correct at any shape, sized by the table), the first sync

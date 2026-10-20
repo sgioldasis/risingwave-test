@@ -496,8 +496,8 @@ Two verified findings worth keeping:
   every value None (the physical->logical rename is not applied). The reader
   detects the all-None scan and re-reads the snapshot's parquet files directly,
   renaming via `delta.columnMapping.physicalName` (pyarrow's AzureFileSystem,
-  same service principal) — and refuses sources with deletion vectors, which
-  file reads cannot apply.
+  same service principal); on DV tables the raw re-read also applies each
+  file's deletion-vector keep-mask (2026-10-20).
 - The reconstruction reproduces `table_changes()`'s output exactly on the demo
   loop: backfill of the 3-row seed as inserts, then insert/update/delete change
   ops each produced the same single event the CDF read produced.
