@@ -65,11 +65,13 @@ run metadata: customers published, per-operator counts, duration, warehouse_seco
 | Option | SQL power | Delta access | JVM | Verdict |
 |---|---|---|---|---|
 | **delta-rs scan → DuckDB over the snapshots** (recommended) | full SQL incl. joins | delta-rs — **proven on our tables** | no | recommended |
-| DuckDB + its `delta` extension | full SQL + pushdown | bundles its own kernel reader | no | later optimization (§8.6); unverified column-mapping behavior |
+| DuckDB + its `delta` extension | full SQL + pushdown | delta-kernel-rs streaming scan — no Arrow materialization | no | Phase-4 lever (§8.6); **verified live on our tables (2026-10-21)** — see below |
 | Daft / polars | partial SQL | delta-rs based | no | dialect limits on the joins we need |
 | Databricks job (the RFC's literal wording) | full SQL | native | n/a | meters DBUs — the RFC's own cost con; this plan exists to avoid it |
 
 Same reasoning as v1, with one update: **multi-table joins are in scope from day one** — real selection queries join customer attributes with KYC/domain tables (the RFC's whole point is moving *complex* selection queries off VOperDB). delta-rs scans each source into pyarrow; DuckDB registers each under its YAML alias and joins freely. The known trade-off stays: no predicate pushdown into the scans on day one, mitigated by column pruning (§4) and a sizing spike (§9 Phase 0).
+
+**The `delta` extension path is verified live (2026-10-21).** The exact defs.yaml candidate query ran unchanged over both demo tables' abfss locations via `delta_scan` — `INSTALL azure` + one secret in the `PROVIDER service_principal` / `TENANT_ID` parameter form, using the same SP credentials the producer already holds (the `OAUTH2_ENDPOINT` parameter form is rejected on this version) — and returned the publish run's exact 4-row selection in ~6 s cold. The tables are column-mapped, so the extension's old "unverified column-mapping behavior" caveat is retired by direct test, not just by the kernel's design (delta-kernel-rs handles column mapping and deletion vectors at the kernel level; pushdown features — constant-filter pushdown since v0.1.0, file skipping + partition-info pushdown since v0.3.0 — are shipped, not future work). Day one still recommends the delta-rs path: zero new moving parts and the volumes don't need it yet. The extension is the scale lever (§8.6), not a correction.
 
 ## 4. The YAML contract (v2)
 
@@ -130,7 +132,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 
 - Any producer-owned Delta table (if a later phase needs one) is **delta-rs-native only** — never Spark- or SQL-written (v7 writer protocol). delta-rs 1.6.6 creates tables at protocol (reader 1, writer 2) — minimal, no features — and a Databricks write conforms to the table's existing protocol rather than upgrading it; the lock-out happens at *birth* (Databricks-created tables are v7 from the first commit, verified live: delta-rs answers `CommitFailedError: Unsupported table features required`) or by Databricks-side DDL that enables a newer writer feature. Note also (verified live 2026-10-19): the demo's service principal cannot register a delta-rs-born table in Unity Catalog — it holds neither `CREATE EXTERNAL TABLE` nor `MANAGE` on the storage's external location — so producer-owned tables stay warehouse-invisible unless that privilege is granted.
 - **No CDF anywhere** — snapshot queries only; that's what makes the component Spark-free *today* (see v1 rationale). Deletion vectors are an unambiguous win here (smaller scans, no CDF bloat possible).
-- Column-mapped tables scan fine via delta-rs (verified live); timestamps travel as microsecond-UTC strings per the `ZonedTimestamp` convention.
+- Column-mapped tables scan fine via delta-rs (verified live) — and via the `delta` extension's `delta_scan` (verified live 2026-10-21, §3.1). Timestamps travel as microsecond-UTC strings per the `ZonedTimestamp` convention.
 
 **From the RFC:**
 
@@ -145,7 +147,13 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 3. **Operator routing** — `topic_template` + loud failure on unknown operator (§7), vs a static allowlist per job. Leaning allowlist in YAML + template for naming.
 4. **Avro schema contract ownership.** The value subject is a cross-team contract (Big Data publishes, A&P consumes). Apicurio compatibility = BACKWARD; a shape change requires A&P's worker to be compatible first. Who approves? (Ties to the RFC's open ownership comment.)
 5. **Payload field set per job type** — A&P states what the actions need; the YAML selects exactly that. Email/Phone in payload is the RFC's stated GDPR concern — keep them out of any job that doesn't need them.
-6. **Scan sizing.** Customer tables are large; the day-one no-pushdown scan needs a spike (§9) measuring a realistic multi-million-row, column-pruned scan + join. If it's slow, the DuckDB `delta` extension (pushdown) is the Phase-4 lever.
+6. **Scan sizing — the scale ladder.** Customer tables are large; the day-one path materializes each column-pruned snapshot in RAM (`to_pyarrow_table()`), so at real scale the binding constraint is **memory before time**: five pruned columns at 5 B rows ≈ 40 GB (`customer_id`) + ~150 GB (`email`) + ~75 GB (`phone_number`) + ~25 GB (`locale`) + 5 GB (`is_active`) ≈ **~295 GB** — an OOM on any single worker long before the scan finishes; ~1 B rows is ~60 GB. The rungs, in the order to reach for them:
+   1. **Column discipline** — the YAML's `scan_columns` hints already make GDPR minimization ≈ memory minimization; a job that never touches a heavy string never scans it.
+   2. **Two-pass** — pass 1 scans only ids + filter columns and joins to the eligible-id set; pass 2 fetches payload fields only for the selected ids (the small segment at full-set semantics). Halves the heavy-string bytes; pass 2's cost depends on file skipping engaging on `customer_id` (rung 3's layout caveat).
+   3. **The `delta` extension** (Phase 4, verified live — §3.1): the scan streams through DuckDB's morsel-driven operators and joins spill to disk, so the memory wall disappears and the wall becomes I/O time. Pushdown only pays when the layout cooperates: `status = 'PENDING'` skips files only if status is clustered or the table is partitioned on it — on an interleaved table every file's min/max contains 'PENDING' and I/O stays full. At billions of rows, warehouse-side clustering/partitioning (Databricks OPTIMIZE/liquid clustering) becomes part of the producer's data contract, agreed per job.
+   4. **Shard by operator** — routing is already per-operator; per-operator scans bound each worker's memory and parallelize. Buys parallelism, not fewer bytes.
+   5. **Per-job fallback** — a job whose table is billions of rows with low selectivity and no layout control gets the RFC's literal Databricks job (~$10/month/task is small money against straining the path); the YAML can carry a per-job engine choice, so the producer is not all-or-nothing.
+   The spike (§9 Phase 0) therefore measures **peak memory alongside time**, at realistic scale and real selectivity (the actual PENDING fraction), on real file layout — that decides which rung a job lands on. The criterion extends from "hour-safe" to "hour-safe *and* fits the worker, or streams via the extension."
 7. **Dagster code ownership** — the RFC's open comment; this plan assumes Big Data owns the producer, A&P owns the worker and the message-contract approval (§8.4).
 8. **Prod Kafka TLS** — the demo stack is plaintext; prod needs SSL config in the producer's Kafka settings (RFC's GDPR in-transit answer).
 9. **Run metadata vs RFC run concept** — is Dagster's run metadata sufficient for Big Data's visibility, or does A&P want a producer-side heartbeat (e.g., a control message per run) their WebAPI could surface? Ask; default: Dagster metadata only.
@@ -154,7 +162,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 ## 9. Phased plan
 
 **Phase 0 — spikes (before component code):**
-1. *Selection round-trip*: delta-rs scans (column-pruned) of two realistic lake tables → DuckDB join + filter → correct rows, timing on a multi-million-row customer table.
+1. *Selection round-trip*: delta-rs scans (column-pruned) of two realistic lake tables → DuckDB join + filter → correct rows; timing **and peak memory** on a realistic-scale customer table (§8.6).
 2. *Message contract*: pyarrow result → Avro envelope (`run_id`, `job_type`, payload) → register in Apicurio → consume and decode; timestamps byte-identical to the sync's convention.
 3. *Operator routing*: one result set → per-operator topics, loud failure on unknown operator.
 
@@ -164,7 +172,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 
 **Phase 3 — more job types:** onboard the remaining KYC jobs; per-job payload contracts with A&P; encryption-at-rest variant if a job type requires it (§8).
 
-**Phase 4 — pushdown (only if spike says so):** evaluate the DuckDB `delta` extension.
+**Phase 4 — pushdown (only if spike says so):** switch the scan source to the DuckDB `delta` extension. No longer an open evaluation — verified live on our tables (2026-10-21, §3.1): same abfss locations, same SP credentials, same candidate query, correct rows. The change is small: `INSTALL azure`, one service-principal secret, and `delta_scan()` replacing the `DeltaTable → to_pyarrow_table → register` sequence.
 
 ## 10. Verification criteria
 
