@@ -21,7 +21,7 @@ Two other review comments are addressed by this plan:
 
 **Why this strengthens the RFC, not just satisfies it.** The RFC lists "Databricks as a datasource" as a con (~$10/month/task, exact cost TBD) and "E2E testing difficulty" as another. The producer described here answers both:
 
-- It runs the candidate query **directly against the lake with a service principal** — delta-rs reads, no warehouse, no Spark, **0.0 DBUs** (the same thesis as [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
+- It runs the candidate query **directly against the lake with a service principal** — Delta reads (delta-rs snapshots day one; the `delta` extension's streaming `delta_scan` as the verified-live scale option, §3.1), no warehouse, no Spark, **0.0 DBUs** (the same thesis as [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 - It runs on the **existing Dagster stack** and the **existing local demo stack** (Kafka + Apicurio), so the producer→Kafka path is E2E-testable on a laptop — the exact pain the RFC's review thread flagged.
 
 ## 2. What the producer does
@@ -44,10 +44,13 @@ jobotron.yaml (per job)
 resolve each source table location (UC REST API — reused)
    │
    ▼
-delta-rs snapshot scans (abfss://, service principal) ── column-pruned
-   │  pyarrow, zero-copy registration
+scan per the job's scan_engine (§4) ── column-pruned either way
+   │  delta_rs (day one):  delta-rs snapshot scans (abfss://, service principal)
+   │                       → pyarrow, zero-copy registration
+   │  delta_extension:     DuckDB views over the delta extension's streaming
+   │                       delta_scan (no Arrow materialization, verified live)
    ▼
-DuckDB over the snapshots ── runs the YAML candidate query (joins included)
+DuckDB over the aliases ── runs the YAML candidate query (joins included)
    │  result batch (pyarrow): customer_id, operator, payload fields
    ▼
 route by operator → topic_template; stamp run_id
@@ -71,7 +74,7 @@ run metadata: customers published, per-operator counts, duration, warehouse_seco
 
 Same reasoning as v1, with one update: **multi-table joins are in scope from day one** — real selection queries join customer attributes with KYC/domain tables (the RFC's whole point is moving *complex* selection queries off VOperDB). delta-rs scans each source into pyarrow; DuckDB registers each under its YAML alias and joins freely. The known trade-off stays: no predicate pushdown into the scans on day one, mitigated by column pruning (§4) and a sizing spike (§9 Phase 0).
 
-**The `delta` extension path is verified live (2026-10-21).** The exact defs.yaml candidate query ran unchanged over both demo tables' abfss locations via `delta_scan` — `INSTALL azure` + one secret in the `PROVIDER service_principal` / `TENANT_ID` parameter form, using the same SP credentials the producer already holds (the `OAUTH2_ENDPOINT` parameter form is rejected on this version) — and returned the publish run's exact 4-row selection in ~6 s cold. The tables are column-mapped, so the extension's old "unverified column-mapping behavior" caveat is retired by direct test, not just by the kernel's design (delta-kernel-rs handles column mapping and deletion vectors at the kernel level; pushdown features — constant-filter pushdown since v0.1.0, file skipping + partition-info pushdown since v0.3.0 — are shipped, not future work). Day one still recommends the delta-rs path: zero new moving parts and the volumes don't need it yet. The extension is the scale lever (§8.6), not a correction.
+**The `delta` extension path is verified live (2026-10-21), with one environment caveat.** The exact defs.yaml candidate query ran unchanged over both demo tables' abfss locations via `delta_scan` — `INSTALL azure` + one secret in the `PROVIDER service_principal` / `TENANT_ID` parameter form, using the same SP credentials the producer already holds (the `OAUTH2_ENDPOINT` parameter form is rejected on this version) — and returned the publish run's exact 4-row selection in ~6 s cold. The tables are column-mapped, so the extension's old "unverified column-mapping behavior" caveat is retired by direct test, not just by the kernel's design (delta-kernel-rs handles column mapping and deletion vectors at the kernel level; pushdown features — constant-filter pushdown since v0.1.0, file skipping + partition-info pushdown since v0.3.0 — are shipped, not future work). Day one still recommends the delta-rs path: zero new moving parts and the volumes don't need it yet — the extension is the scale lever (§8.6), not a correction. The caveat: the path works from the **host venv** but fails inside the **Dagster container** — the image's `duckdb-azure` build cannot fetch Azure tokens (`GetToken(): … Problem with the SSL CA cert`), even though system TLS to login.microsoftonline.com is fine there; a container-image issue, not a credentials or design one. The demo therefore stays on `delta_rs` (§12), and a job's default flips to the extension only when the image is fixed **and** the sizing spike says so (§8.6).
 
 ## 4. The YAML contract (v2)
 
@@ -95,6 +98,9 @@ query: |
 key_columns: [customer_id]             # Kafka record key (worker's idempotency identity)
 operator_column: operator              # routing column (consumed at produce time)
 topic_template: "jobotron-{operator}"  # per-operator shared topic per the RFC
+scan_engine: delta_rs                  # optional; "delta_extension" switches the scans to
+                                       # the DuckDB delta extension's streaming delta_scan
+                                       # (verified live 2026-10-21, §3.1/§8.6)
 ```
 
 Notes:
@@ -106,8 +112,8 @@ Notes:
 ## 5. Pipeline stages
 
 1. **Resolve** — table locations via the existing cached UC helper; per-source storage options.
-2. **Scan** — delta-rs `to_pyarrow_table(columns=…)` per source, honoring the pruning hints.
-3. **Query** — register all sources in DuckDB under their aliases; execute the YAML query; fetch as pyarrow.
+2. **Scan** — per the job's `scan_engine` knob (§4): `delta_rs` (day one) reads column-pruned snapshots via delta-rs `to_pyarrow_table(columns=…)`; `delta_extension` registers each alias as a DuckDB view over the extension's streaming `delta_scan()`, projected to the same column allowlist (verified live 2026-10-21, §3.1/§8.6).
+3. **Query** — execute the YAML query over the aliases (registered snapshots or `delta_scan` views — identical text either way); fetch as pyarrow.
 4. **Route & stamp** — derive each row's topic from `operator_column` + `topic_template`; stamp `run_id` and `job_type`.
 5. **Schema** — derive the Avro schema from the result shape + envelope fields; register/verify key + value subjects in Apicurio (reused logic, known-check, `ZonedTimestamp` microsecond-UTC convention).
 6. **Produce** — one message per customer, key = `key_columns` tuple; the reused producer loop (lz4, linger, chunked produce with final flush, `BufferError` backpressure, delivery-callback accounting). Routing by topic is a per-partition produce detail, not a new mechanism.
@@ -172,7 +178,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 
 **Phase 3 — more job types:** onboard the remaining KYC jobs; per-job payload contracts with A&P; encryption-at-rest variant if a job type requires it (§8).
 
-**Phase 4 — pushdown (only if spike says so):** switch the scan source to the DuckDB `delta` extension. No longer an open evaluation — verified live on our tables (2026-10-21, §3.1): same abfss locations, same SP credentials, same candidate query, correct rows. The change is small: `INSTALL azure`, one service-principal secret, and `delta_scan()` replacing the `DeltaTable → to_pyarrow_table → register` sequence.
+**Phase 4 — pushdown (only if spike says so):** switch the scan source to the DuckDB `delta` extension. **Implemented 2026-10-21** as the per-job `scan_engine` knob (§4) and verified live on the demo tables from the host venv. The demo's `defs.yaml` stays on the day-one `delta_rs` default for now — the Dagster container image's `duckdb-azure` build cannot fetch Azure tokens (TLS/CA failure inside the image, §3.1) — so a job's default flips to the extension only when the image is fixed **and** the spike says so (§8.6).
 
 ## 10. Verification criteria
 
@@ -204,7 +210,7 @@ The producer exists as one Dagster component and is driven by an animation page,
 | Topics / subjects | `jobotron_demo_gr` / `jobotron_demo_br`; Apicurio subjects `<topic>-key` / `<topic>-value` (identical schemas share ids across topics) |
 | Reset chain | page's "Reset and set up" runs reset → setup → first publish → first consume (4 steps): after it, topics AND the per-operator Postgres tables hold exactly the fresh segment |
 
-What one publish run does (verified 2026-10-18): UC location lookups (cached, control plane only), column-pruned delta-rs scans of both tables, the join in DuckDB, Avro key/value schemas derived from the result shape and ensured in Apicurio, one message per selected customer routed by `operator`, bounded flush — **~5s end to end, `0.0` warehouse seconds**, segment 4 = gr 2 (1001, 1002) + br 2 (1004, 1005). A change op (add/verify/deactivate) followed by a publish moves the segment with no tombstones — the customer simply stops (or starts) appearing, which is the full-snapshot semantics of §8.1 in action.
+What one publish run does (verified 2026-10-18 on the day-one engine; re-verified 2026-10-21 through **both** scan engines from the host venv — the demo's `defs.yaml` stays on the day-one `delta_rs` default, see §3.1's container caveat): UC location lookups (cached, control plane only), column-pruned scans of both tables, the join in DuckDB, Avro key/value schemas derived from the result shape and ensured in Apicurio, one message per selected customer routed by `operator`, bounded flush — **~5-7s end to end on `delta_rs`, ~13-15s on `delta_extension`, `0.0` warehouse seconds either way**, segment 4 = gr 2 + br 2 (gr 1002 + 1007, br 1004 + 1005 at the 2026-10-21 state). A change op (add/verify/deactivate) followed by a publish moves the segment with no tombstones — the customer simply stops (or starts) appearing, which is the full-snapshot semantics of §8.1 in action.
 
 The **demo consumer** (`reverse_etl_jobotron_consume`, the page's step 4) closes the loop observably: it drains each operator topic fully (verified against the broker's watermarks — no timing races) and rebuilds `jobotron_demo_<operator>` in the demo Postgres (the same database the Debezium sink writes) from **the messages of the latest publish run only**. "Latest" is the publish whose messages carry the newest Kafka timestamp across *all* topics — a publish that legitimately emits zero messages for one operator (empty per-operator segment) must still retire that operator's older snapshot, which per-topic grouping would keep forever (verified live: a manually verified customer lingered until this was fixed). A customer that left the segment disappears at the next consume, empty table and all. The RFC's real worker would instead act per message and keep its own item state.
 

@@ -1,7 +1,9 @@
 # Reverse ETL syncs vs the Jobotron producer
 
 The orchestration contains two kinds of Kafka producers over Databricks Delta
-tables. They sit on the same infrastructure — delta-rs reads, Avro, the staging
+tables. They sit on the same infrastructure — direct Delta reads (delta-rs; the
+Jobotron adds the delta extension's streaming `delta_scan` as a second scan
+engine), Avro, the staging
 schema registry, Kafka — but they solve different problems: the four reverse
 ETL syncs are a **CDC pipeline** (state replication), while the Jobotron
 producer is the RFC's **upstream publisher** (a job that fans out rows matching
@@ -11,8 +13,10 @@ a business rule). This note records the exact overlap and the exact differences.
 
 Both are defs.yaml-driven Dagster components that:
 
-- **Read Delta directly through delta-rs** — filesystem scans through the
-  service principal, no warehouse, no Spark, no DBUs.
+- **Read Delta directly, no compute** — filesystem scans through the
+  service principal (delta-rs in all four syncs; the Jobotron's per-job
+  `scan_engine` knob also supports the delta extension's streaming
+  `delta_scan`), no warehouse, no Spark, no DBUs.
 - **Produce Avro to Kafka** via confluent_kafka's `AvroSerializer`, with one
   `<topic>-key` and one `<topic>-value` subject per topic in the shared
   staging Apicurio registry.
@@ -29,7 +33,7 @@ read-after-write.
 
 | | Reverse ETL syncs (`avro`, `cdf`, `orders`, `delta`) | Jobotron producer |
 |---|---|---|
-| **What it reads** | Changes since a watermark — the change feed is reconstructed by diffing Delta versions (append fast path, rewritten-file-pair diff, full-snapshot fallback; see the reader's docstring and findings §6) | Current state — full delta-rs scans registered in DuckDB, then the YAML's `query` selects candidates (day one: no predicate pushdown, hence `scan_columns`) |
+| **What it reads** | Changes since a watermark — the change feed is reconstructed by diffing Delta versions (append fast path, rewritten-file-pair diff, full-snapshot fallback; see the reader's docstring and findings §6) | Current state — full scans registered in DuckDB (per-job `scan_engine`: delta-rs snapshots, or the delta extension's streaming `delta_scan` views), then the YAML's `query` selects candidates (day-one engine: no predicate pushdown, hence `scan_columns`) |
 | **Incremental?** | Yes — the watermark lives in the sync's state table; each sync emits only what changed since it last committed | No — every run re-selects whoever currently matches the query; nothing tracks what was sent before |
 | **What it emits** | Debezium-style change events: `{"before", "after", "op": "c"/"u"/"d", "source": {"commit_version", "commit_timestamp"}}`, keyed on the identity key `rid`. An update's preimage/postimage pair collapses into one event's `before`/`after` | The selected rows as-is: `{"run_id", "job_type", ...row}`, keyed on `key_columns` (the `customer_id`). No ops, no before-images |
 | **Routing** | One topic per sync | One topic per operator (`topic_template` filled from `operator_column`) |
