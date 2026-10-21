@@ -5,10 +5,13 @@ operator topic, schemas in Apicurio. The Jobotron worker itself (dedup, eligibil
 re-validation, actions, state) is the RFC's Accounts & Payments scope and is NOT
 built here; this component is the data-platform side of that boundary.
 
-No Spark, no JVM, no Databricks compute in the publish path: delta-rs scans the
-tables (column-pruned) with the service principal, DuckDB -- already a project
-dependency -- runs the YAML query over the snapshots, confluent-kafka produces.
-The cost meter reads 0.0 warehouse seconds on every publish run.
+No Spark, no JVM, no Databricks compute in the publish path: the tables are scanned
+with the service principal, DuckDB -- already a project dependency -- runs the YAML
+query, confluent-kafka produces. The scan engine is a per-job knob (scan_engine):
+"delta_rs" materializes column-pruned snapshots via delta-rs (day one); "delta_extension"
+registers DuckDB views over the delta extension's streaming delta_scan (verified live
+on the demo tables 2026-10-21). Either way the cost meter reads 0.0 warehouse seconds
+on every publish run.
 
 No CDF anywhere: the query runs against each table's current snapshot, which is
 exactly what frees this component from the delta-rs CDF gap that pins the CDF
@@ -25,6 +28,7 @@ live on the shared staging broker/registry (same convention as the reverse_etl_*
 topics).
 """
 
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -109,6 +113,12 @@ class JobotronConfig:
     reset_job: str = f"{BASE}_reset_job"
     change_job: str = f"{BASE}_make_change_job"
     schema_registry_url: str = SCHEMA_REGISTRY_URL
+    # Per-job scan engine (docs/poc/REVERSE_ETL_JOBOTRON.md §8.6 scale ladder): "delta_rs"
+    # (day one) materializes column-pruned snapshots via delta-rs and registers them
+    # zero-copy; "delta_extension" registers DuckDB views over the delta extension's
+    # streaming delta_scan -- same YAML query, no Arrow materialization, spill-to-disk
+    # joins (verified live on the demo tables 2026-10-21, §3.1).
+    scan_engine: str = "delta_rs"
 
     @property
     def customers_fqn(self) -> str:
@@ -308,6 +318,26 @@ def build_setup_asset(cfg: JobotronConfig):
     return setup
 
 
+def _ensure_delta_scan_secret(connection: duckdb.DuckDBPyConnection, location: str) -> None:
+    """Azure credentials for delta_scan() over the tables' abfss:// locations, as a DuckDB
+    secret on the run's connection: the same service principal _azure_storage_options feeds
+    delta-rs, in the extension's PROVIDER service_principal / TENANT_ID parameter form
+    (verified live 2026-10-21 -- the OAUTH2_ENDPOINT form is rejected on this version).
+    Dropped and recreated per run so a rotated secret can never outlive the job."""
+    connection.execute("INSTALL azure")
+    connection.execute("LOAD azure")
+    account = location.split("@")[1].split(".")[0]
+    connection.execute("DROP SECRET IF EXISTS jobotron_delta_scan")
+    connection.execute(
+        "CREATE SECRET jobotron_delta_scan ("
+        "TYPE azure, PROVIDER service_principal, "
+        f"ACCOUNT_NAME '{account}', "
+        f"CLIENT_ID '{os.environ['DATABRICKS_AZURE_CLIENT_ID']}', "
+        f"CLIENT_SECRET '{os.environ['DATABRICKS_AZURE_CLIENT_SECRET']}', "
+        f"TENANT_ID '{os.environ['DATABRICKS_AZURE_TENANT_ID']}')"
+    )
+
+
 def build_publish_asset(cfg: JobotronConfig):
     @asset(
         name=cfg.publish_asset,
@@ -315,7 +345,7 @@ def build_publish_asset(cfg: JobotronConfig):
         description=(
             "Run the candidate-selection query from jobotron.yaml over the demo tables and publish "
             f"one Avro message per selected customer to its operator topic ({', '.join(cfg.topics.values())}). "
-            "delta-rs scan + DuckDB query: no Spark, no JVM, zero Databricks compute."
+            f"Scan engine {cfg.scan_engine} + DuckDB query: no Spark, no JVM, zero Databricks compute."
         ),
     )
     def publish(context: AssetExecutionContext):
@@ -324,28 +354,47 @@ def build_publish_asset(cfg: JobotronConfig):
         meter_reset()
         started = time.monotonic()
 
-        # 1. Resolve locations (UC REST, cached) and scan each source with delta-rs:
-        #    control-plane + storage reads only, column-pruned per the config.
-        snapshots: dict[str, pa.Table] = {}
-        for alias, (fqn, columns) in cfg.sources.items():
-            location = get_table_location_cached(token, cfg, fqn)
-            delta = DeltaTable(location, storage_options=_azure_storage_options(location))
-            snapshots[alias] = delta.to_pyarrow_table(columns=list(columns))
-            context.log.info(
-                f"Scanned {fqn} at version {delta.version()}: {snapshots[alias].num_rows} rows, "
-                f"columns {list(columns)}"
-            )
+        # 1. Resolve locations (UC REST, cached) -- control-plane reads only, no compute.
+        locations: dict[str, str] = {
+            alias: get_table_location_cached(token, cfg, fqn) for alias, (fqn, _columns) in cfg.sources.items()
+        }
 
-        # 2. DuckDB runs the candidate query over the snapshots (zero-copy Arrow
-        #    registration, in-process -- the only SQL engine in the whole path).
-        #    fetch_arrow_table() materializes the result: duckdb 1.5's .arrow()
-        #    returns a RecordBatchReader instead of a Table.
+        # 2. The scan engine is the per-job YAML knob (§8.6): both branches feed the
+        #    SAME YAML query over the SAME aliases -- only each alias's source differs.
+        if cfg.scan_engine not in ("delta_rs", "delta_extension"):
+            raise ValueError(f"Unknown scan_engine {cfg.scan_engine!r} (expected delta_rs or delta_extension)")
         connection = duckdb.connect()
-        for alias, snapshot in snapshots.items():
-            connection.register(alias, snapshot)
+        if cfg.scan_engine == "delta_extension":
+            # Phase-4 lever, verified live on these tables (2026-10-21): each alias
+            # becomes a view over the extension's streaming delta_scan() -- no Arrow
+            # snapshot materialization, morsel-driven scans, spill-to-disk joins. The
+            # view projects ONLY the scan_columns allowlist, so a query edit touching a
+            # non-allowlisted column fails loudly instead of silently scanning it
+            # (payload minimization by construction).
+            _ensure_delta_scan_secret(connection, next(iter(locations.values())))
+            for alias, (fqn, columns) in cfg.sources.items():
+                location = locations[alias]
+                version = DeltaTable(location, storage_options=_azure_storage_options(location)).version()
+                projection = ", ".join(columns) if columns else "*"
+                connection.execute(f"CREATE VIEW {alias} AS SELECT {projection} FROM delta_scan('{location}')")
+                context.log.info(f"Scanned {fqn} via delta_scan at version {version} (streaming view): {projection}")
+        else:
+            # Day-one engine: delta-rs scans each source column-pruned into a pyarrow
+            # snapshot; DuckDB registers it zero-copy (in-process, the only SQL engine
+            # in the whole path).
+            for alias, (fqn, columns) in cfg.sources.items():
+                delta = DeltaTable(locations[alias], storage_options=_azure_storage_options(locations[alias]))
+                snapshot = delta.to_pyarrow_table(columns=list(columns))
+                connection.register(alias, snapshot)
+                context.log.info(
+                    f"Scanned {fqn} at version {delta.version()}: {snapshot.num_rows} rows, "
+                    f"columns {list(columns)}"
+                )
+        # fetch_arrow_table() materializes the result: duckdb 1.5's .arrow() returns a
+        # RecordBatchReader instead of a Table.
         result = connection.execute(cfg.query).fetch_arrow_table()
         connection.close()
-        context.log.info(f"Candidate query selected {result.num_rows} customer(s)")
+        context.log.info(f"Candidate query selected {result.num_rows} customer(s) [scan_engine={cfg.scan_engine}]")
 
         # 3. Schemas derived from the result shape (an empty result still carries the
         #    schema), ensured per operator subject before any message uses them.
