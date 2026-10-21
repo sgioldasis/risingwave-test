@@ -2,7 +2,7 @@ x-image: &image
   image: ${RW_IMAGE:-risingwavelabs/risingwave:v3.1.0}
 
 x-lakekeeper-image: &lakekeeper-image
-  image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.14.0}
+  image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.14.1}
 
 x-lakekeeper-environment: &lakekeeper-environment
   - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
@@ -1114,7 +1114,7 @@ services:
   # docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md confirmed it end-to-end.
   # Commented out (not deleted) in case of a revert.
   # starrocks:
-  #   image: ${STARROCKS_IMAGE:-starrocks/allin1-ubuntu:4.1.4}
+  #   image: ${STARROCKS_IMAGE:-starrocks/allin1-ubuntu:4.1.6}
   #   container_name: starrocks
   #   entrypoint: ["/usr/bin/tini-static", "--", "/starrocks-entrypoint.sh"]
   #   ports:
@@ -1181,8 +1181,9 @@ services:
     # jdbc_uri, see starrocks/init_catalog.sh) -- the version bump alone did
     # NOT fix it. Kept anyway: it did fix a separate, real issue (JDBC
     # catalog row-count instability across repeated queries), no downside
-    # found. See the doc for the full investigation.
-    image: starrocks/fe-ubuntu:4.1.4
+    # found. See the doc for the full investigation. Bumped again to 4.1.6 on
+    # 2026-10-21 for the 4.1.x patch fixes (docs.starrocks.io release notes 4.1).
+    image: starrocks/fe-ubuntu:4.1.6
     hostname: starrocks
     container_name: starrocks
     user: root
@@ -1224,7 +1225,7 @@ services:
       iceberg_net:
 
   starrocks-cn:
-    image: starrocks/cn-ubuntu:4.1.4
+    image: starrocks/cn-ubuntu:4.1.6
     hostname: starrocks-cn
     container_name: starrocks-cn
     user: root

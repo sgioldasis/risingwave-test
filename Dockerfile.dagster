@@ -91,40 +91,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     UV_LINK_MODE=copy \
     uv sync --frozen --no-install-project --no-dev
 
-# Pre-warm the Spark Ivy cache with the zero-DBU reverse-ETL sync's runtime
-# packages (io.delta:delta-spark + hadoop-azure and their transitives), so the
-# first sync inside the container needs no Maven reachability — Maven is
-# unreachable on the VPN while the demo needs the VPN for staging Kafka.
-# The cache is warmed by resolving the exact same package set the sync resolves
-# at run time (the delta-spark pip package versions the io.delta coordinates
-# from the installed package; hadoop-azure must match the extra_packages in
-# orchestration/assets/reverse_etl_spark_reader.py). Ivy fetched 14 artifacts
-# (~15.5 MB) on a cold cache on 2026-10-14. SPARK_CONF_DIR also applies at run
-# time, so the session hits the warm cache instead of the network. See
-# docs/poc/REVERSE_ETL_DBU_COST_NOTES.md section 5.
-ENV SPARK_CONF_DIR=/opt/spark-conf
-RUN mkdir -p /opt/spark-ivy /opt/spark-conf && \
-    printf 'spark.jars.ivy /opt/spark-ivy\n' > /opt/spark-conf/spark-defaults.conf
-
-RUN /opt/dagster-venv/bin/python - <<'EOF'
-from pyspark.sql import SparkSession
-from delta import configure_spark_with_delta_pip
-
-builder = (
-    SparkSession.builder.master("local[1]")
-    .config("spark.ui.enabled", "false")
-    .config("spark.driver.memory", "512m")
-)
-spark = configure_spark_with_delta_pip(
-    builder, extra_packages=["org.apache.hadoop:hadoop-azure:3.4.2"]
-).getOrCreate()
-print(f"Ivy cache warmed for Spark {spark.version}")
-spark.stop()
-EOF
-
-# The dagster user (uid 1000) must be able to read the cache and write into it
-# (Ivy takes lock files there on resolution).
-RUN chown -R dagster:dagster /opt/spark-ivy /opt/spark-conf
+# (The Spark Ivy pre-warm and its compile check were removed with delta-spark
+# on 2026-10-21 -- they served the deleted reverse_etl_spark_reader.py. The
+# Iceberg compaction job stages its jars at /opt/iceberg-jars above and needs
+# no Ivy fetch.)
 
 # Note: This project is NOT installed as a package.
 # Instead, we use PYTHONPATH to include the workspace root.

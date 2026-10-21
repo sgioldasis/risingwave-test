@@ -158,10 +158,10 @@ and tens of seconds of startup per sync run.
 The zero-DBU option that delta-rs could not deliver, tried immediately after with a
 matched Spark/Delta pair. Same table, same abfss location, same ADLS service
 principal; reader is OSS Delta 4.0.0 on self-managed Spark (pyspark 4.0.4, local
-mode). Script: `scripts/spark_cdf_zero_dbu_prototype.py`, run as
+mode). Script: `scripts/archive/spark_cdf_zero_dbu_prototype.py`, run as
 
     uv run --python 3.13 --with delta-spark==4.0.0 --with "pyspark<4.1" \
-      python scripts/spark_cdf_zero_dbu_prototype.py
+      python scripts/archive/spark_cdf_zero_dbu_prototype.py
 
 It works, end to end, with no Databricks involvement at any point:
 
@@ -223,7 +223,7 @@ against the component-built demo jobs.
 Whether the component-built demo sync (`ReverseEtlCdfSync` -> `build_sync_asset`,
 asset `reverse_etl_<label>_to_kafka`) can run on the zero-cost path. Every Databricks
 call in the sync asset was checked, and the two uncertain ones were tested live
-(script: `scripts/zero_cost_sync_feasibility.py`, same matched Spark/Delta pair as
+(script: `scripts/archive/zero_cost_sync_feasibility.py`, same matched Spark/Delta pair as
 section 4).
 
 | Sync-asset step | Today (Databricks compute) | Zero-cost replacement | Verified |
@@ -252,7 +252,7 @@ Fix (applied and verified 2026-10-14): the state table is internal bookkeeping �
 nothing reads it through Iceberg — so it does not need UniForm at all.
 `build_table_setup_asset()` now creates it as **plain Delta** (no TBLPROPERTIES;
 the source table keeps them for StarRocks). Verified on the live `cdf` state
-table, recreated with the new DDL (`scripts/option_a_plain_state_verification.py`):
+table, recreated with the new DDL (`scripts/archive/option_a_plain_state_verification.py`):
 
 - OSS Delta MERGE wrote the watermark (Delta version 1, op MERGE) — the write that
   failed on the UniForm table.
