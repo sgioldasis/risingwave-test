@@ -64,6 +64,7 @@
   .caprun .phase { color: var(--muted); font-weight: 400; }
   .icon { display: inline-block; width: 1.1em; margin-right: 6px; text-align: center; font-weight: 700; }
   .icon.ok { color: #2e9e4f; } .icon.fail { color: #d64545; }
+  .failline { color: #d64545; font-size: 13px; line-height: 1.4; }
   .icon.run { width: 12px; height: 12px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--active); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .result a { color: var(--blue-t); }
@@ -366,8 +367,8 @@ document.addEventListener('keydown', e => {
 // Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
 let SYNC = new URLSearchParams(location.search).get('sync') || 'avro';
 let helper = false, busy = false;
-const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
-const get = url => fetch(url).then(r => r.json());
+const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+const get = url => fetch(url).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
 
 // The run log lives under the diagram: each action prepends an entry, and an
 // in-flight action UPDATES its own entry in place — the 2s poll must not spam
@@ -540,20 +541,39 @@ async function run(label, body, out = $('result'), plan = null, btn = null) {
     if (phases.length > 1) phaseTimer = setInterval(advance, 4000);
   }
   const entry = say(label + ': starting…', null, 'run', out);
-  const started = await post(body);
+  let started;
+  try { started = await post(body); }
+  catch (e) { say(label + ' failed to start: ' + e.message, null, 'fail', out, null, entry); clearInterval(phaseTimer); edgesLive(false); stagesClear(); capRun(null); if (btn) btn.classList.remove('running'); lock(false); return false; }
   if (started.error || !started.runId) {
     say(label + ' failed to start: ' + (started.error || 'no run id'), null, 'fail', out, null, entry);
     clearInterval(phaseTimer); edgesLive(false); stagesClear(); capRun(null);
     if (btn) btn.classList.remove('running');
     lock(false); return false;
   }
+  let pollsFailed = 0;
   for (;;) {
-    const s = await get('/api/run/' + started.runId);
+    let s;
+    try {
+      s = await get('/api/run/' + started.runId);
+      pollsFailed = 0;
+    } catch (e) {
+      // A server hiccup must never swallow the run's outcome: keep polling, and
+      // only give up (loudly, in red) after several consecutive failures.
+      if (++pollsFailed >= 5) {
+        say(label + ': status polling failed (' + e.message + ') — check the run in Dagster', started.url, 'fail', out, null, entry);
+        clearInterval(phaseTimer); edgesLive(false); capRun(null);
+        if (btn) btn.classList.remove('running');
+        lock(false); return false;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
     const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
     const subs = [];
     if (done) {
       const cost = costText(s.cost);
       if (cost) subs.push({ text: cost });
+      if (s.error) subs.push({ text: s.error, cls: 'failline' });
       if (s.change) {
         if (s.change.skipped) {
           subs.push({ text: 'Skipped — ' + s.change.skipped });
@@ -622,7 +642,13 @@ async function check(path, format, step, nodes) {
   stop(); lock(true);
   show(step); stagesRun(nodes, 'running'); capRun('checking…');
   const entry = say('Checking...', null, 'run');
-  const d = await get('/api/check/' + SYNC + '/' + path);
+  let d;
+  try { d = await get('/api/check/' + SYNC + '/' + path); }
+  catch (e) {
+    say('Check failed: ' + e.message, null, 'fail', $('result'), null, entry);
+    stagesRun(nodes, 'fail'); capRun(null); lock(false);
+    return false;
+  }
   const ok = !JSON.stringify(d).includes('"error"');
   const f = format(d);
   say(f.text ?? f, null, ok ? 'ok' : 'fail', $('result'), f.subs || null, entry);

@@ -213,6 +213,31 @@ def run_status(run_id: str) -> dict:
         "compute": compute,
     }
     out["change"] = change
+
+    # A failed run must fail LOUDLY in the animation: surface the root cause (the
+    # raise-from chain's innermost exception, which otherwise only shows in the
+    # Dagster UI's error viewer) as a red sub-line on the page. Best-effort — the
+    # FAILURE state itself still renders if this lookup hiccups.
+    if out["status"] in ("FAILURE", "CANCELED"):
+        try:
+            errs = gql(
+                "query($i:ID!){runOrError(runId:$i){... on Run{eventConnection{events{"
+                "... on ExecutionStepFailureEvent{error{causes{className message}}} "
+                "... on RunFailureEvent{error{causes{className message}}}}}}}}",
+                {"i": run_id},
+            )["runOrError"]
+            causes = [
+                cause
+                for event in ((errs.get("eventConnection") or {}).get("events")) or []
+                if event and event.get("error")
+                for cause in (event["error"].get("causes") or [])
+            ]
+            if causes:
+                root = causes[-1]  # the innermost cause is the actionable one
+                text = f"[{root.get('className')}] {root.get('message') or ''}".strip()
+                out["error"] = ("…" + text[-260:]) if len(text) > 260 else text
+        except Exception:
+            pass
     return out
 
 

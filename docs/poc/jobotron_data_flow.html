@@ -151,6 +151,7 @@
   .result .mono, .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--faint); }
   .result .strong { color: var(--text); font-weight: 600; }
   .costline { color: var(--ok); }
+  .failline { color: #e02424; font-size: 13px; line-height: 1.4; }
   .icon { display: inline-block; width: 1.1em; margin-right: 7px; text-align: center; font-weight: 700; }
   .icon.ok { color: var(--ok); } .icon.fail { color: var(--fail); }
   .icon.run { width: 13px; height: 13px; vertical-align: -2px; border: 2px solid var(--border-strong);
@@ -234,7 +235,7 @@
           <div id="st-kyc" class="stage g-coral"><span class="tag">Databricks</span><div class="name">KYC cases</div><div class="desc">Delta · joined in</div><span class="runstate"></span></div>
         </div>
         <div class="links-col"><div id="e-L1a" class="link"></div><div id="e-L1b" class="link"></div></div>
-        <div id="st-producer" class="stage g-violet wide"><span class="tag">Dagster · zero-DBU</span><div class="name">Jobotron producer</div><div class="desc">delta-rs scan → DuckDB join</div><span class="runstate"></span>
+        <div id="st-producer" class="stage g-violet wide"><span class="tag">Dagster · zero-DBU</span><div class="name">Jobotron producer</div><div class="desc">Delta scan → DuckDB join</div><span class="runstate"></span>
           <div class="chips"><span id="chip-scan" class="chip">scan</span><span id="chip-query" class="chip">query</span><span id="chip-schema" class="chip">schema</span><span id="chip-route" class="chip">route</span></div>
         </div>
         <div class="links-col"><div id="e-L2a" class="link"></div><div id="e-L2b" class="link"></div></div>
@@ -272,7 +273,7 @@
     <div class="notes">
       <div class="note">
         <h2>The demo tables</h2>
-        <p class="sub">Created by the setup job. Both are <b>plain Delta with no Change Data Feed</b> — the producer reads each table's current snapshot with delta-rs, so the CDF machinery (and the delta-rs CDF gap that pins the CDF syncs to Spark) never applies. No state table: the full eligible set is published every run and the worker deduplicates.</p>
+        <p class="sub">Created by the setup job. Both are <b>plain Delta with no Change Data Feed</b> — the producer reads each table's current snapshot per the job's <code>scan_engine</code> knob (delta-rs snapshots, or the DuckDB delta extension's streaming <code>delta_scan</code>), so the CDF machinery (and the delta-rs CDF gap that pins the CDF syncs to Spark) never applies. No state table: the full eligible set is published every run and the worker deduplicates.</p>
         <ul>
           <li><b>Customers</b> carries the routing column: <code>operator</code> picks the topic; an unknown value fails the run — nothing publishes cross-market.</li>
           <li><b>KYC cases</b> holds one row per customer. The query is the RFC's example job: <i>send PM to customers that remain unverified</i>.</li>
@@ -305,12 +306,13 @@ TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');
       </div>
       <div class="note">
         <h2>Components and jobs</h2>
-        <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>): the setup job creates tables, topics and seed; the publish asset runs the whole query-to-Kafka path in one run — delta-rs + DuckDB, <code>0.0</code> warehouse seconds; the change ops edit the demo data; the reset job tears it all down; the consume asset mirrors the topics into Postgres. Design and RFC context: <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
+        <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>): the setup job creates tables, topics and seed; the publish asset runs the whole query-to-Kafka path in one run — Delta scan + DuckDB (per-job <code>scan_engine</code> knob), <code>0.0</code> warehouse seconds; the change ops edit the demo data; the reset job tears it all down; the consume asset mirrors the topics into Postgres. Design and RFC context: <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
         <details>
           <summary>Show the publish asset's pipeline</summary>
 <pre style="margin-top: 10px">resolve locations (UC REST, cached) — control plane only
-delta-rs to_pyarrow_table(columns=…) — column-pruned scans
-DuckDB .register(alias).execute(yaml query) — the join
+scan per scan_engine: delta_rs → delta-rs column-pruned snapshots
+                      delta_extension → views over streaming delta_scan
+DuckDB register(alias) / view(alias) → execute(yaml query) — the join
 derive Avro key/value schemas from the RESULT shape
 ensure subjects jobotron_demo_&lt;op&gt;-key / -value
 route rows by operator; unknown operator fails the run
@@ -325,8 +327,8 @@ metadata: rows per operator, previews, warehouse_seconds 0.0</pre>
 <script>
 const S = [
   { num: '1', t: "A customer's KYC state changes in Databricks", d: 'Three demo ops edit the two tables: adding a customer with a PENDING case makes it join the segment; verifying or deactivating one makes it leave. Both are plain warehouse SQL on the demo tables, metered as usual. Nothing is published until the producer runs.', n: ['customers', 'kyc'] },
-  { num: '2.1', t: 'The producer scans the lake tables', chip: 'scan', d: 'The Dagster asset resolves each table location through the Unity Catalog REST API (control plane, no compute) and scans it with delta-rs — column-pruned to what the query selects, straight from ADLS storage with the service principal. No Spark session, no JVM, no Databricks compute anywhere in the run.', n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
-  { num: '2.2', t: 'DuckDB runs the candidate query', chip: 'query', d: 'The snapshots are registered in DuckDB through the zero-copy Arrow interface and the query from jobotron.yaml runs in-process — a real SQL join, the thing the RFC moves off VOperDB onto the data platform. Every row of the result is one customer in the segment; an empty result still carries the schema, so the next steps hold.', n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
+  { num: '2.1', t: 'The producer scans the lake tables', chip: 'scan', d: "The Dagster asset resolves each table location through the Unity Catalog REST API (control plane, no compute) and scans it per the job's scan_engine knob: delta_rs materializes column-pruned delta-rs snapshots; delta_extension registers views over the delta extension's streaming delta_scan — no Arrow materialization, verified live on these tables. Either way it reads straight from ADLS storage with the service principal. No Spark session, no JVM, no Databricks compute anywhere in the run.", n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
+  { num: '2.2', t: 'DuckDB runs the candidate query', chip: 'query', d: 'Each source lands in DuckDB under its YAML alias — zero-copy Arrow registration (delta_rs) or a view over the streaming delta_scan (delta_extension) — and the query from jobotron.yaml runs in-process: a real SQL join, the thing the RFC moves off VOperDB onto the data platform. Every row of the result is one customer in the segment; an empty result still carries the schema, so the next steps hold.', n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
   { num: '2.3', t: 'Schemas go to the registry', chip: 'schema', d: 'The Avro schemas are derived from the query result shape: key = customer_id, value = run_id + job_type + the selected columns (payload minimization by construction). They are ensured per operator subject — jobotron_demo_<op>-key and -value — and only registered when new or changed.', n: ['producer', 'reg'], e: ['L2a'] },
   { num: '2.4', t: 'One message per customer, routed by operator', chip: 'route', d: 'Each result row becomes one message: key = customer_id (the identity the worker deduplicates on), value = run_id + job_type + payload. The operator column picks the topic — jobotron_demo_gr or jobotron_demo_br — and an unknown operator fails the run rather than publishing cross-market. run_id groups the messages into one job run, the unit the RFC counts (about 57 runs a day across its job set).', n: ['producer', 'topics'], e: ['L2b'] },
   { num: '3', t: 'The topics hold the current segment', d: "The topics are this demo's endpoint: every publish rewrites the whole eligible set, so a topic always reflects the last run. A customer that left the segment simply stops appearing — no tombstone. The worker's dedup and eligibility re-validation make republishing safe; volumes are tiny (the RFC sizes all operators at about 20,000 messages a day).", n: ['producer', 'reg', 'topics'], e: ['L2a', 'L2b'] },
@@ -388,8 +390,8 @@ document.addEventListener('keydown', e => {
 
 const SYNC = 'jobotron';
 let helper = false, busy = false;
-const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => r.json());
-const get = url => fetch(url).then(r => r.json());
+const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+const get = url => fetch(url).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
 
 function say(text, url, state, r = $('result'), subs = null) {
   r.textContent = '';
@@ -431,10 +433,28 @@ async function run(label, body, out = $('result'), step = null, edges = null, st
   stop(); lock(true);
   clearTimeout(runstateTimer); stagesClear();
   if (step !== null) { edgesOn(edges || step); stagesRun(stages || step, 'running'); }
-  const started = await post(body);
-  if (started.error || !started.runId) { say(label + ' failed to start: ' + (started.error || 'no run id'), null, 'fail', out); lock(false); edgesOff(); stagesClear(); return false; }
+  let started;
+  try { started = await post(body); }
+  catch (e) { say(label + ' failed to start: ' + e.message, null, 'fail', out); lock(false); edgesOff(); if (step !== null) stagesRun(stages || step, 'fail'); return false; }
+  if (!started || !started.runId) { say(label + ' failed to start: ' + ((started && started.error) || 'no run id'), null, 'fail', out); lock(false); edgesOff(); if (step !== null) stagesRun(stages || step, 'fail'); return false; }
+  let pollsFailed = 0;
   for (;;) {
-    const s = await get('/api/run/' + started.runId);
+    let s;
+    try {
+      s = await get('/api/run/' + started.runId);
+      pollsFailed = 0;
+    } catch (e) {
+      // A server hiccup must never swallow the run's outcome: keep polling, and
+      // only give up (loudly, in red) after several consecutive failures.
+      if (++pollsFailed >= 5) {
+        say(label + ': status polling failed (' + e.message + ') — check the run in Dagster', started.url, 'fail', out);
+        lock(false); edgesOff();
+        if (step !== null) stagesRun(stages || step, 'fail');
+        return false;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
     const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
     const subs = [];
     if (done) {
@@ -443,6 +463,7 @@ async function run(label, body, out = $('result'), step = null, edges = null, st
         subs.push({ text: cost.run, cls: 'costline' });
         subs.push({ text: cost.session });
       }
+      if (s.error) subs.push({ text: s.error, cls: 'failline' });
       if (s.change) {
         if (s.change.skipped) {
           subs.push({ text: 'Skipped — ' + s.change.skipped });
@@ -456,7 +477,11 @@ async function run(label, body, out = $('result'), step = null, edges = null, st
     say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : null);
     if (done) {
       lock(false); edgesOff();
-      if (step !== null) { stagesRun(stages || step, s.status === 'SUCCESS' ? 'done' : 'fail'); runstateTimer = setTimeout(stagesClear, 6000); }
+      if (step !== null) {
+        stagesRun(stages || step, s.status === 'SUCCESS' ? 'done' : 'fail');
+        // failures stay red until the next action — a wiped badge reads as "nothing happened"
+        if (s.status === 'SUCCESS') runstateTimer = setTimeout(stagesClear, 6000);
+      }
       return s.status === 'SUCCESS';
     }
     await new Promise(r => setTimeout(r, 2000));
@@ -538,7 +563,7 @@ const ACTIONS = [
   { id: 'act-postgres', step: 6, go: out => postgresCheck(out) },
 ];
 for (const a of ACTIONS) {
-  $(a.id).onclick = () => { stop(); show(a.step); edgesOn(a.step); Promise.resolve(a.go($('result'))).finally(edgesOff); };
+  $(a.id).onclick = () => { stop(); show(a.step); edgesOn(a.step); Promise.resolve(a.go($('result'))).catch(e => say('Action failed: ' + e.message, null, 'fail')).finally(edgesOff); };
 }
 
 $('do-rebuild').onclick = async () => {
