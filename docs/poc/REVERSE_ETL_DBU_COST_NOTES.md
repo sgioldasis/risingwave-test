@@ -237,6 +237,19 @@ section 4).
 | seed asset / make-change job | SQL INSERT/UPDATE/DELETE | stays on Databricks SQL (it is the demo's "change data in Databricks" step) | — |
 | topic / RisingWave / sink / health assets | already Databricks-free | unchanged | — |
 
+### 2026-10-22 addendum: the watermark state left Databricks entirely
+
+The two rows above that still touched Databricks — **read the watermark** and
+**write the watermark** — are gone. The state moved to a Postgres table
+(`reverse_etl_sync_state`, keyed by `sync_name`, append-only with the same
+freshest-row-wins read): private bookkeeping nothing in Databricks reads, so it
+no longer justifies a warehouse round-trip. Every sync run now meters
+**0.0 Databricks seconds**, including runs that move data; the plain-Delta
+state table, its UniForm blocker, and the writer-protocol constraints below are
+all historical. The change-feed reads were already free (delta-rs); the seed /
+make-change statements remain Databricks SQL by design — that step *is* the
+demo's "change data in Databricks".
+
 ### The watermark-write blocker
 
 OSS Delta **cannot commit to tables with

@@ -32,11 +32,15 @@ _to_debezium_events() and everything downstream is unchanged):
   _to_debezium_events() groups preimages/postimages by key and pairs them
   positionally.
 
-Writes stay out of this module by design: delta-rs can read but not commit to
-the warehouse-created state table (this runtime stamps rowTracking and
-domainMetadata writer features delta-rs 1.6 refuses), so the watermark advances
-through the one small SQL statement _write_state() in reverse_etl_cdf_setup --
-the only warehouse touch a sync has left. Reads (the expensive part) are free.
+Writes stay out of this module by design: the watermark state lives in Postgres
+(reverse_etl_sync_state -- private bookkeeping nothing in Databricks reads), so a
+sync has ZERO Databricks warehouse touches: reads (the expensive part) are
+delta-rs and free, and the watermark advances through one small Postgres INSERT
+(_write_state() in reverse_etl_cdf_setup). The state used to be a Delta table
+next to the source -- delta-rs could read but not commit to the warehouse-created
+table (this runtime stamps rowTracking and domainMetadata writer features
+delta-rs 1.6 refuses), which is why the write was SQL and metered; the Postgres
+move deleted that last cost along with the table's protocol constraints.
 
 Memory profile, two paths: an **append-only commit reads only its new files**
 (constant memory per version -- the 1M-row bulk load syncs at ~100k rows of

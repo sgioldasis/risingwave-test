@@ -9,12 +9,13 @@
 <path d="M1120,80 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
 <text x="1260.0" y="106.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_avro_source</text>
 <text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">UniForm + Change Data Feed, key rid</text>
-<path d="M60,210 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
-<text x="200.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_state</text>
-<text x="200.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">watermark: last version synced</text>
+<path d="M60,1010 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
+<text x="200.0" y="1036.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_sync_state</text>
+<text x="200.0" y="1054.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">watermark (Postgres): last version synced</text>
 <rect x="600" y="70" width="300" height="70" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
 <text x="750.0" y="101.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION B: Databricks job</text>
 <text x="750.0" y="119.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync</text>
+<text x="750.0" y="134.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">legacy — its Delta state table is gone</text>
 <rect x="600" y="200" width="300" height="80" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="750.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Notebook reverse_etl_cdf_to_kafka</text>
 <text x="750.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(one notebook for every label)</text>
@@ -25,7 +26,7 @@
 <rect x="560" y="430" width="320" height="100" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
 <text x="720.0" y="467.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION A: asset</text>
 <text x="720.0" y="485.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_to_kafka</text>
-<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(run A OR B, never both: shared watermark)</text><text x="720.0" y="522.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">extraction: OSS Delta — zero Databricks compute</text>
+<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(option B is legacy — see its note)</text><text x="720.0" y="522.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">extraction: OSS Delta — zero Databricks compute</text>
 <rect x="1000" y="430" width="280" height="70" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="1140.0" y="461.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync_job</text>
 <text x="1140.0" y="479.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(starts option B)</text>
@@ -57,9 +58,7 @@
 <path d="M750,140 L750,200" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
 <rect x="755.6" y="159" width="38.8" height="20" fill="white" opacity="0.92"/>
 <text x="775" y="174" font-size="13" text-anchor="middle" fill="#0f172a">runs</text>
-<path d="M600,255 L340,255" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
-<rect x="447.0" y="244" width="46.0" height="20" fill="white" opacity="0.92"/>
-<text x="470" y="259" font-size="13" text-anchor="middle" fill="#0f172a">moves</text>
+
 <path d="M1340,150 L1340,345 L800,345 L800,430" fill="none" stroke="#f97316" stroke-width="2.5" marker-end="url(#af97316)"/>
 <rect x="982.2" y="334" width="175.6" height="20" fill="white" opacity="0.92"/>
 <text x="1070" y="349" font-size="13" text-anchor="middle" fill="#0f172a">changes since watermark</text>
@@ -69,9 +68,9 @@
 <path d="M890,280 L890,300 L940,300 L940,740" fill="none" stroke="#f97316" stroke-width="2.5" stroke-dasharray="2 5" stroke-linecap="round" marker-end="url(#af97316)"/>
 <rect x="873.8" y="649" width="132.4" height="20" fill="white" opacity="0.92"/>
 <text x="940" y="664" font-size="13" text-anchor="middle" fill="#0f172a">registers schemas</text>
-<path d="M640,430 L640,345 L200,345 L200,280" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
-<rect x="307.0" y="334" width="46.0" height="20" fill="white" opacity="0.92"/>
-<text x="330" y="349" font-size="13" text-anchor="middle" fill="#0f172a">moves</text>
+<path d="M600,530 L600,930 L200,930 L200,1010" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
+<rect x="377.0" y="904" width="46.0" height="20" fill="white" opacity="0.92"/>
+<text x="400" y="919" font-size="13" text-anchor="middle" fill="#0f172a">moves</text>
 <path d="M1040,430 L1040,105 L900,105" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#a16a34a)"/>
 <rect x="1009.8" y="369" width="60.4" height="20" fill="white" opacity="0.92"/>
 <text x="1040" y="384" font-size="13" text-anchor="middle" fill="#0f172a">run-now</text>

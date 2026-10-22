@@ -12,6 +12,7 @@ reset_name_prefixes allowlist and reset_schema.
 
 import time
 
+import psycopg2
 import requests
 from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, op
 
@@ -144,6 +145,29 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         for table in (cfg.source_fqn, cfg.state_fqn):
             _run_sql(token, f"DROP TABLE IF EXISTS {table}")
             context.log.info(f"Dropped {table} (if it existed)")
+        # The state table lives in Postgres now (reverse_etl_sync_state); the
+        # cfg.state_fqn DROP above is legacy cleanup for state tables created
+        # before the move. The sync starts from a first-run watermark either way.
+        # The Postgres state table is SHARED by every sync (keyed by sync_name),
+        # so a reset must delete only this sync's rows — dropping the table
+        # would wipe every other sync's watermark too (bit us live: a delta
+        # reset erased the avro rows).
+        with get_postgres_connection() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        "DELETE FROM reverse_etl_sync_state WHERE sync_name = %s",
+                        (cfg.sync_name,),
+                    )
+                except psycopg2.errors.UndefinedTable:
+                    conn.rollback()
+                    context.log.info("reverse_etl_sync_state does not exist — nothing to clear")
+                else:
+                    conn.commit()
+        context.log.info(
+            f"Cleared {cfg.sync_name}'s watermark rows from reverse_etl_sync_state "
+            "(other syncs' watermarks untouched)"
+        )
         # Dropping + recreating moves the managed tables to new storage locations,
         # so any cached location now points at the DEAD tables — a sync right
         # after this reset would pre-check "no new commits" against them (a green

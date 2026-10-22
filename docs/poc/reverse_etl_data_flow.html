@@ -174,7 +174,7 @@
     <div class="sgroup">
       <div class="slabel">Pipeline</div>
       <button id="act-sync">Run sync (steps 2.1 – 2.5)</button>
-      <p class="hint">delta-rs reads the versions after the watermark — no Spark, no warehouse scans — produces the events, then moves the watermark.</p>
+      <p class="hint">delta-rs reads the versions after the watermark — no Spark, no warehouse scans — produces the events, then moves the watermark with a plain Postgres write.</p>
     </div>
     <div class="sgroup">
       <div class="slabel">Inspect</div>
@@ -185,7 +185,7 @@
     <div class="sgroup">
       <div class="slabel">Demo</div>
       <button id="do-rebuild" class="danger">Reset and set up</button>
-      <p class="hint">Drops the source and state tables, the topic, the connector and both targets, then recreates them and runs the first sync.</p>
+      <p class="hint">Drops the source table (and any legacy state table), clears this sync's watermark rows, drops the topic, the connector and both targets, then recreates them and runs the first sync. Other syncs' watermarks are untouched — the Postgres state table is shared and keyed by sync name.</p>
     </div>
     <div class="sgroup">
       <div class="slabel">Session cost</div>
@@ -196,7 +196,7 @@
   <main class="maincol">
     <div class="wrap">
   <div>
-    <svg viewBox="0 0 770 350" role="img" aria-label="Source table and state table feed a sync, which writes schemas to a registry and messages to Kafka; Kafka Connect writes Postgres and RisingWave reads the topic directly.">
+    <svg viewBox="0 0 770 350" role="img" aria-label="Databricks source table and the Postgres state table feed a sync, which writes schemas to a registry and messages to Kafka; Kafka Connect writes Postgres and RisingWave reads the topic directly.">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 
       <line id="e1" class="edge" x1="85" y1="76" x2="85" y2="130" marker-end="url(#arrow)"/>
@@ -211,7 +211,7 @@
       <line id="e10" class="edge" x1="560" y1="48" x2="660" y2="130" marker-end="url(#arrow)"/>
 
       <g id="n-src" class="node coral"><rect x="10" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="41" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" id="src-sub" x="85" y="60" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
-      <g id="n-state" class="node coral"><rect x="10" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="261" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" x="85" y="280" text-anchor="middle" dominant-baseline="central">Watermark</text></g>
+      <g id="n-state" class="node blue"><rect x="10" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="261" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" x="85" y="280" text-anchor="middle" dominant-baseline="central">Watermark · Postgres</text></g>
       <g id="n-sync" class="node purple"><rect x="10" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="151" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="85" y="170" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
       <g id="n-reg" class="node teal"><rect x="410" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="485" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
       <g id="n-kafka" class="node teal"><rect x="410" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="261" text-anchor="middle" dominant-baseline="central">Kafka topic</text><text class="ts" x="485" y="280" text-anchor="middle" dominant-baseline="central">Debezium change events</text></g>
@@ -224,7 +224,7 @@
       <g class="coral"><rect x="30" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="46" y="327" dominant-baseline="central">Databricks</text></g>
       <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster</text></g>
       <g class="teal"><rect x="236" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="252" y="327" dominant-baseline="central">Kafka side</text></g>
-      <g class="blue"><rect x="336" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="352" y="327" dominant-baseline="central">Targets</text></g>
+      <g class="blue"><rect x="336" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="352" y="327" dominant-baseline="central">Postgres (targets + state)</text></g>
     </svg>
     <div class="runbox">
       <p class="runbox-title">Run status</p>
@@ -257,7 +257,7 @@
         <li><b>UniForm (optional; on for the avro/cdf/orders sources, off for the delta source).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation, because turning them on later is a schema commit — harmless for the sync (the reconstruction diffs snapshots and handles schema changes natively), but a metadata-generation event for the Iceberg side. The Iceberg side is read-only.</li>
         <li><b>Your own columns</b> go in <code>source_columns</code> in the sync's YAML (here <code>id</code>, <code>value</code>, <code>updated_at</code>).</li>
         <li><b>Inserts must list their columns</b>, as in <code>INSERT INTO t (id, value) VALUES (...)</code>. A column-less insert fails on a table with an identity column.</li>
-        <li><b>Schema changes:</b> adding a column is carried to the targets, and so is dropping one (drop propagation is on for every sync): the sync diffs the source schema against the state table's recorded <code>last_schema</code> and drops the vanished column from RisingWave and Postgres too — RisingWave fills <code>&lt;col&gt;_ts</code> companions in first, Postgres follows the broader rule and also re-drops anything a sink replay re-added. Renames propagate as renames now: the state records each column's <code>delta.columnMapping.id</code> (stable across a rename), so the sync can tell the two apart — RisingWave gets add + update-copy + drop (no <code>RENAME COLUMN</code> there, but the data survives), Postgres a native rename plus an automatic sink task restart, because the JDBC sink's in-memory schema cache would fail the next message otherwise. Every source table is created with column mapping, so Delta accepts <code>DROP COLUMN</code> and <code>RENAME COLUMN</code> everywhere; type changes are still refused by Delta and stay out of scope.</li>
+        <li><b>Schema changes:</b> adding a column is carried to the targets, and so is dropping one (drop propagation is on for every sync): the sync diffs the source schema against the state table's recorded <code>last_schema</code> (a Postgres row) and drops the vanished column from RisingWave and Postgres too — RisingWave fills <code>&lt;col&gt;_ts</code> companions in first, Postgres follows the broader rule and also re-drops anything a sink replay re-added. Renames propagate as renames now: the state records each column's <code>delta.columnMapping.id</code> (stable across a rename), so the sync can tell the two apart — RisingWave gets add + update-copy + drop (no <code>RENAME COLUMN</code> there, but the data survives), Postgres a native rename plus an automatic sink task restart, because the JDBC sink's in-memory schema cache would fail the next message otherwise. Every source table is created with column mapping, so Delta accepts <code>DROP COLUMN</code> and <code>RENAME COLUMN</code> everywhere; type changes are still refused by Delta and stay out of scope.</li>
       </ul>
     </div>
     <div>
@@ -276,39 +276,38 @@ TBLPROPERTIES (
   'delta.enableIcebergCompatV2' = 'true',
   'delta.universalFormat.enabledFormats' = 'iceberg'
 );</pre>
-      <p class="label">State table (the watermark, steps 2.1 and 2.5)</p>
+      <p class="label">State table (the watermark, steps 2.1 and 2.5) — Postgres</p>
 <pre>CREATE TABLE IF NOT EXISTS
-  de_dev.sr_poc_external.reverse_etl_avro_state (
-  sync_name STRING,
-  last_commit_version BIGINT
-) USING DELTA
-TBLPROPERTIES (
-  'delta.columnMapping.mode' = 'name',
-  'delta.enableDeletionVectors' = 'false',
-  'delta.enableIcebergCompatV2' = 'true',
-  'delta.universalFormat.enabledFormats' = 'iceberg'
-);</pre>
+  reverse_etl_sync_state (
+  sync_name TEXT NOT NULL,
+  last_commit_version BIGINT NOT NULL,
+  last_schema TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- private bookkeeping, so it left Databricks entirely: the sync's
+-- last warehouse touch (the watermark write) is gone — every run
+-- meters 0.0 Databricks seconds. Append-only, freshest row wins.</pre>
     </div>
   </div>
 </section>
 
 <section class="notes">
   <h2>Components and jobs</h2>
-  <p class="sub">The same flow as a component map: where everything runs, both sync options (A and B share one watermark — run one or the other, never both), and the sink-health checks. The sync asset reads the change feed with OSS Delta — zero Databricks compute — and every run meters what it used, shown above as the Databricks cost line. Full picture: <code>docs/poc/REVERSE_ETL_LIVE_DEMO.md</code>.</p>
+  <p class="sub">The same flow as a component map: where everything runs, and the sink-health checks. The sync asset (option A) is the demo's sync path — it reads the change feed with OSS Delta and keeps its watermark in Postgres, so every run meters <b>0.0</b> Databricks seconds, shown above as the Databricks cost line. Option B (the Databricks notebook) is legacy: it still expects the dropped Delta state table. Full picture: <code>docs/poc/REVERSE_ETL_LIVE_DEMO.md</code>.</p>
   <details style="margin-top: 12px">
     <summary style="cursor: pointer; font-size: 15px; font-weight: 500">Show the architecture diagram</summary>
-    <img src="img/reverse_etl_components.svg" alt="Reverse-ETL components: Databricks source and state tables, Dagster jobs and the sync asset, Kafka topic and registry, RisingWave and Postgres targets" style="width: 100%; max-width: 1200px; margin-top: 12px; border: 0.5px solid var(--card-border); border-radius: 12px; background: white">
+    <img src="img/reverse_etl_components.svg" alt="Reverse-ETL components: the Databricks source table, the Postgres state table and targets, Dagster jobs and the sync asset, the Kafka topic and registry" style="width: 100%; max-width: 1200px; margin-top: 12px; border: 0.5px solid var(--card-border); border-radius: 12px; background: white">
   </details>
 </section>
 
 <script>
 const S = [
   { num: '1', t: 'A row changes in Databricks', a: 'change', d: 'Each commit creates one new version of the Databricks table, however many rows it changes. Adding, renaming or dropping a column is a commit too. The source keeps Change Data Feed on for the notebook comparison path, but the sync itself does not read the feed — it reconstructs the changes from the table\'s snapshots, so nothing has to be recorded beforehand.', n: ['src'], e: [] },
-  { num: '2.1', t: 'The sync reads the watermark', a: 'sync', d: 'The sync is always triggered from Dagster, but the processing can run in Dagster (as an asset) or in Databricks (as a notebook, started by a Dagster job). The steps are the same, and both share one watermark, so use only one per change. It asks the state table which table version was already synced. On the first run that is 0.', n: ['state', 'sync'], e: ['e2'] },
+  { num: '2.1', t: 'The sync reads the watermark', a: 'sync', d: 'The sync is always triggered from Dagster, but the processing can run in Dagster (as an asset) or in Databricks (as a notebook, started by a Dagster job). The steps are the same. It asks the state table — a Postgres row since 2026-10-22, when the watermark left Databricks — which table version was already synced. On the first run that is 0. Option B (the notebook) is legacy: it still expects the dropped Delta state table, so it cannot run against the current stack.', n: ['state', 'sync'], e: ['e2'] },
   { num: '2.2', t: 'The sync reads the changes', a: 'sync', d: 'The Dagster backend reconstructs the change feed itself with delta-rs, reading the table straight from storage — no Spark, no Databricks compute, no warehouse scans, and no CDF read. Per commit version since the watermark: an append-only commit reads only its new files; a rewrite commit diffs just the file pairs the commit rewrote — the removed files are the pre-image, the added ones the post-image — so memory and I/O are sized by the change, not the table. Deletion vectors are read too: each touched file\'s rows are filtered through its per-version keep-mask (a DV-only commit re-adds the same file and is picked up from the commit\'s own log entry), and partitioned DV tables get their partition columns injected from the add actions. Partitioned tables without DVs fall back to a full-snapshot diff. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op. The schema naming the events is pinned to the version being synced, so a column added since the last run is included automatically — and a rename committing mid-run cannot null values.', n: ['src', 'sync'], e: ['e1'] },
   { num: '2.3', t: 'Schemas go to the registry', a: 'schema', d: 'Both Avro schemas (key and value) are checked against the registry on every run, and only registered when they are new or changed — unchanged schemas cost one lookup each. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
   { num: '2.4', t: 'Events go to Kafka', a: 'sync', d: 'The sync produces one Avro message per change, in the Debezium format: before, after, op and source. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
-  { num: '2.5', t: 'The watermark moves', a: 'sync', d: 'Only after the messages are produced does the sync write the new version to the state table. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] },
+  { num: '2.5', t: 'The watermark moves', a: 'sync', d: 'Only after the messages are produced does the sync write the new version to the Postgres state table — a plain INSERT, no Databricks compute. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] },
   { num: '3', t: 'Two readers take the topic', a: 'readers', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Each message carries only a schema id; both readers fetch that schema from the registry to decode it. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE AVRO), so it applies each change to its table here, with no connector. For a new column, the sync first adds it to the RisingWave table, after the new schema version is registered, because RisingWave only fills a column from messages read after the column exists.', n: ['kafka', 'reg', 'connect', 'rw'], e: ['e5', 'e7', 'e9', 'e10'] },
   { num: '4', t: 'Postgres applies the change', a: 'postgres', d: 'The Debezium JDBC sink (an open-source Kafka Connect connector, Apache 2.0, running in a local container) reads the topic and upserts or deletes the row in Postgres, keyed on rid. Postgres is only the target of this demo: the sink writes through JDBC, so the target can be SQL Server, which the connector supports, or another supported database. A new column is added to the Postgres table by the sink itself (schema evolution). Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] }
 ];
@@ -720,7 +719,7 @@ $('act-postgres').onclick = () => check('postgres', d => {
 }, 7, ['connect', 'pg']);
 
 $('do-rebuild').onclick = async () => {
-  if (!confirm('This drops the ' + SYNC + ' source and state tables, the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
+  if (!confirm('This drops the ' + SYNC + ' source table, clears its watermark rows (other syncs are untouched), and drops the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
   const btn = $('do-rebuild');
   // Reset and setup provision every component on the canvas, so all of them
   // spin; the first sync then walks the pipeline as any sync does.

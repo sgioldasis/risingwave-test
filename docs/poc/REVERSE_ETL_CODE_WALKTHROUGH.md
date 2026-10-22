@@ -60,7 +60,9 @@ class ReverseEtlSyncConfig:
     catalog: str
     schema: str
     source_table: str         # "reverse_etl_avro_source"
-    state_table: str          # "reverse_etl_avro_state" — the watermark
+    state_table: str          # "reverse_etl_avro_state" — legacy FQN: the watermark
+                              # lives in Postgres (reverse_etl_sync_state); this
+                              # name remains only for the reset's cleanup drop
     key_column: str           # "rid" (identity column, see below)
     source_columns: tuple[str, ...]
     kafka_topic: str          # "reverse_etl_avro_topic"
@@ -141,22 +143,21 @@ asset — since 2026-10-19 there is one backend, the delta-rs reconstruction
 The asset skeleton:
 
 0. **Spark-free no-op pre-check**: before anything heavy, the sync reads the
-   source's current version and the state table's watermark with delta-rs (no
-   JVM, service-principal auth — `precheck_versions`) and
-   ends the run when they are equal: a schema change is always a commit, so an
+   source's current version with delta-rs (no JVM, service-principal auth) and
+   the watermark from the Postgres state table (`precheck_versions`), and ends
+   the run when they are equal: a schema change is always a commit, so an
    unchanged version cannot hide one. A no-op sync costs ~8s instead of ~17s,
-   whose floor was the Spark session start. The token and the storage locations
+   whose floor was the Spark session start. The token and the storage location
    it needs come from a small disk cache (`dagster_storage/`, TTLs 45min/10min —
-   `_get_token_cached`/`get_table_location_cached`), which is also why the state
-   tables are created *plain* Delta (no column
-   mapping, deletion vectors off): delta-rs rejects tables carrying those
-   reader features. The reset job **clears this cache** after dropping the
-   tables — a drop+recreate moves them to new storage locations, and a cached
-   location would point at the dead tables (a green no-op that silently skips
-   everything; bit us live). The check is bounded by a 5s
-   watchdog and fails open — any problem with it simply runs the full sync.
-1. **Read the watermark** from the state table (`last_commit_version` for this
-   `sync_name`). `None` means first run. The state table is **append-only**: every
+   `_get_token_cached`/`get_table_location_cached`). The reset job **clears
+   this cache** after dropping the tables — a drop+recreate moves them to new
+   storage locations, and a cached location would point at the dead tables (a
+   green no-op that silently skips everything; bit us live). The check is
+   bounded by a 5s watchdog and fails open — any problem with it simply runs
+   the full sync.
+1. **Read the watermark** from the Postgres state table (`reverse_etl_sync_state`,
+   `last_commit_version` for this `sync_name`). `None` means first run. The state
+   is **append-only**: every
    sync appends one row (a cheap single-commit insert — the read-modify-write
    `MERGE` this replaced cost ~2s per real sync), and the read takes the *freshest*
    row for the sync. History accumulates harmlessly — one auditable row per sync —
@@ -370,8 +371,7 @@ feature. Two design points worth keeping:
   filesystem must be available — delta-rs's own scan refuses DV tables
   entirely (`to_pyarrow_table` raises even on deltalake 1.6), so a no-Azure
   DV source is refused with a clear message. The demo tables keep
-  DVs off at creation (simpler protocol; the state table must stay DV-free
-  regardless, because the no-op pre-check reads it with delta-rs).
+  DVs off at creation (simpler protocol).
 - **Schema changes need no bisection.** Snapshot reads do not error on
   incompatible schema changes the way CDF reads do: an added or dropped column
   reads as `None` on the other side and never false-positives an event (the
@@ -386,15 +386,18 @@ Function contract, mirroring the deleted Spark module:
   version so the read range matches the watermark exactly. Every `TIMESTAMP`
   column is rendered into a microsecond UTC string before comparison, so a
   datetime-vs-formatted-string mismatch can never read as a change.
-- `read_state` — the state table read (watermark + `last_schema`, freshest row
+- `read_state` — the Postgres state read (watermark + `last_schema`, freshest row
   wins), only the fail-open fallback when the delta-rs pre-check could not run.
-  The watermark WRITE is the one small SQL statement `_write_state()` in
-  `reverse_etl_cdf_setup.py`, deliberately: this Databricks runtime creates
-  every warehouse-written table with a v7 protocol whose writer-feature list
-  (rowTracking, domainMetadata) delta-rs 1.6 refuses to commit to, so a table
-  cannot have both writers — delta-rs keeps the reads, one SQL insert the
-  write. The state table stays **plain Delta** (option A in
-  [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5).
+  The watermark WRITE is a small Postgres INSERT, `_write_state()` in
+  `reverse_etl_cdf_setup.py`: the state moved out of Databricks entirely
+  (2026-10-22 — it used to be a **plain Delta** table, option A in
+  [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5, with a
+  writer-protocol story: this Databricks runtime creates every warehouse-written
+  table with a v7 protocol whose writer-feature list (rowTracking,
+  domainMetadata) delta-rs 1.6 refuses to commit to, so a table could not have
+  both writers). Since the state is private bookkeeping nothing in Databricks
+  reads, it moved to Postgres — a sync now has **zero** Databricks warehouse
+  touches: delta-rs keeps the reads, Postgres the write.
 - `get_current_version` / `get_earliest_available_version` — `DeltaTable
   .version()` for the latest; a bisection on `load_as_version()` for the
   earliest, where "loadable" means exactly what the reconstruction needs: a
@@ -447,8 +450,8 @@ All factories take the config and return Dagster objects; all names come from it
 - **`build_table_setup_asset`** — creates the source table if absent, with the
   properties the whole design rests on: `delta.enableChangeDataFeed`, column
   mapping, deletion vectors off, UniForm/iceberg compat — plus the identity key —
-  and the state table (plain Delta with column mapping; every demo table takes
-  `DROP COLUMN`). Idempotent (`IF NOT EXISTS`).
+  and the Postgres state table (`reverse_etl_sync_state`, created via
+  `get_postgres_connection`). Idempotent (`IF NOT EXISTS` everywhere).
 - **`build_seed_asset`** — optional demo rows (the YAML's `seed_statements`,
   `{source_table}` substituted), run as the *last* step of the setup job so the
   rows wait in Databricks until the first sync.
@@ -501,7 +504,10 @@ All factories take the config and return Dagster objects; all names come from it
   consumer-group lag via Kafka admin, on a 5-minute schedule. Reads no Databricks
   anything (verified in the cost audit, [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 - **`build_reset_job`** — chained ops: delete connector, drop RisingWave table,
-  drop Postgres table, delete topic + consumer group, drop Databricks tables. Every
+  drop Postgres table, delete topic + consumer group, drop Databricks tables, delete
+  this sync's rows from the shared `reverse_etl_sync_state` (a `DELETE … WHERE
+  sync_name = %s` — never a `DROP TABLE`, which would wipe every other sync's
+  watermark; bit us live when a delta reset erased the avro rows). Every
   name must match the config's `reset_name_prefixes`/`reset_schema` allowlist or
   the op raises before touching anything.
 - **Option B** (`reverse_etl_notebook_job.py`) — `reverse_etl_notebook_sync_job`
@@ -509,7 +515,12 @@ All factories take the config and return Dagster objects; all names come from it
   missing RisingWave columns first, runs it with the sync's label as a parameter,
   and waits. The notebook repeats the config's Databricks-side values as widget
   defaults (it cannot import this repo) — the config is the source of truth.
-  It shares the watermark through the same state table: run A *or* B, never both.
+  It shares the watermark through the same Postgres state row
+  (`reverse_etl_sync_state`, keyed by `sync_name`). Option B caveat: the
+  Databricks notebook still expects the dropped Delta state table, so it cannot
+  run against the current stack — reviving it means teaching the notebook to
+  reach Postgres (JDBC), which the demo's devbox Postgres does not allow from a
+  Databricks cluster.
 
 ## 9. The cost meter — `databricks_cost_meter.py`
 

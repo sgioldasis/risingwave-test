@@ -32,12 +32,12 @@ the live run" in the design doc.
 
 import json
 import os
+import psycopg2
 import threading
 import time
 from itertools import zip_longest
 from typing import Any
 
-import pyarrow.compute as pc
 import requests
 from confluent_kafka import Producer
 from confluent_kafka.schema_registry import (
@@ -57,6 +57,7 @@ from deltalake import DeltaTable
 from .databricks_cost_meter import record as meter_record
 from .databricks_cost_meter import reset as meter_reset
 from .databricks_cost_meter import snapshot as meter_snapshot
+from .postgres_sink_setup import get_postgres_connection
 from .databricks_optimize import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -107,29 +108,28 @@ def _azure_storage_options(location: str) -> dict[str, str]:
     }
 
 
-def precheck_versions(cfg: ReverseEtlSyncConfig, source_location: str, state_location: str) -> tuple[int | None, int, str | None]:
+def precheck_versions(cfg: ReverseEtlSyncConfig, source_location: str) -> tuple[int | None, int, str | None]:
     """(watermark, source's current version, the state row's last_schema) without
-    starting Spark, via delta-rs.
+    any warehouse compute: the source's version via a delta-rs log read, the
+    watermark via the Postgres state table (reverse_etl_sync_state).
 
     Powers the sync's no-op pre-check: when the source's version equals
     the watermark there is nothing to sync — a schema change is always a commit,
-    so an unchanged version cannot hide one. Only the log is read for the source;
-    the state read is a full-snapshot scan of a one-row table, which is why the
-    state tables must be created *plain* — delta-rs rejects tables with the
-    deletionVectors or columnMapping reader features (verified live). The
-    last_schema rides along so the Spark path can reuse all three values instead
-    of re-reading them (read_state + get_current_version cost a planning cycle
-    each). Raises on any problem; the caller fails open to the full sync. The
-    deltalake and pyarrow imports are module-level (see the imports above):
-    importing them here would add ~1.5s to every run's measured window."""
+    so an unchanged version cannot hide one. Only the log is read for the source.
+    The state used to be a Delta table next to the source (full-snapshot scans,
+    plain-Delta/protocol constraints, a metered SQL write) — it moved to Postgres,
+    which deleted all of that along with the sync's last warehouse touch. The
+    last_schema rides along so the full path can reuse all three values instead
+    of re-reading them. Raises on any problem; the caller fails open to the full
+    sync. The deltalake import is module-level (see the imports above):
+    importing it here would add ~1.5s to every run's measured window."""
     options = _azure_storage_options(source_location)
     current_version = DeltaTable(source_location, storage_options=options).version()
-    state = DeltaTable(state_location, storage_options=_azure_storage_options(state_location)).to_pyarrow_table()
-    rows = state.filter(pc.equal(state.column("sync_name"), cfg.sync_name)).to_pylist()
+    rows = _pg_state_read(cfg.sync_name)
     if not rows:
         return None, current_version, None
-    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
-    return int(freshest["last_commit_version"]), current_version, freshest.get("last_schema")
+    version, last_schema = rows[0]  # freshest row wins (ORDER BY last_commit_version DESC)
+    return version, current_version, last_schema
 
 
 # The control-plane lookups (the AAD token, the UC storage locations) are stable
@@ -341,34 +341,75 @@ def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in data_array]
 
 
-def _read_state(token: str, cfg: ReverseEtlSyncConfig) -> tuple[int | None, str | None]:
+STATE_TABLE = "reverse_etl_sync_state"
+
+
+def _pg_state_read(sync_name: str) -> list[tuple[int | None, str | None]]:
+    """[(last_commit_version, last_schema), ...] freshest first. A missing state
+    table means no sync has ever run — the first-run state, not an error."""
+    conn = get_postgres_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    f"SELECT last_commit_version, last_schema FROM {STATE_TABLE} "
+                    "WHERE sync_name = %s ORDER BY last_commit_version DESC",
+                    (sync_name,),
+                )
+            except psycopg2.errors.UndefinedTable:
+                conn.rollback()
+                return []
+            return [(int(v) if v is not None else None, s) for v, s in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _pg_state_write(sync_name: str, version: int, last_schema: str) -> None:
+    """Append-only watermark advance (freshest-row-wins on read), same protocol
+    the Delta state table used — now a Postgres INSERT, the sync's last
+    Databricks warehouse touch gone."""
+    conn = get_postgres_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {STATE_TABLE} (sync_name, last_commit_version, last_schema) VALUES (%s, %s, %s)",
+                (sync_name, version, last_schema),
+            )
+        conn.commit()
+    except psycopg2.errors.UndefinedTable:
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TABLE IF NOT EXISTS {STATE_TABLE} ("
+                "sync_name TEXT NOT NULL, last_commit_version BIGINT NOT NULL, "
+                "last_schema TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+            cur.execute(
+                f"INSERT INTO {STATE_TABLE} (sync_name, last_commit_version, last_schema) VALUES (%s, %s, %s)",
+                (sync_name, version, last_schema),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_state(cfg: ReverseEtlSyncConfig) -> tuple[int | None, str | None]:
     """(watermark, last_schema) for this sync's state row. last_schema is the JSON
     list of source column names recorded at the previous sync — the evidence the
     drop-propagation pass needs (a column in last_schema but absent from the
     current read is a drop, not a partial read)."""
-    response = _run_sql(
-        token,
-        f"SELECT last_commit_version, last_schema FROM {cfg.state_fqn} WHERE sync_name = '{cfg.sync_name}'",
-    )
-    rows = _rows_as_dicts(response)
+    rows = _pg_state_read(cfg.sync_name)
     if not rows:
         return None, None
-    # The state table can carry duplicate rows for one sync_name, and they can
-    # diverge — the freshest row wins, not an arbitrary result order.
-    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
-    version = int(freshest["last_commit_version"]) if freshest["last_commit_version"] is not None else None
-    return version, freshest.get("last_schema")
+    version, last_schema = rows[0]
+    return version, last_schema
 
 
-def _write_state(token: str, cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
+def _write_state(cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
     # Append-only, matching the deleted Spark backend's write_state: read_state takes the freshest
     # row for the sync_name, so history accumulates harmlessly and the write is a
     # cheap single-statement insert.
-    escaped_schema = last_schema.replace("'", "''")
-    _run_sql(
-        token,
-        f"INSERT INTO {cfg.state_fqn} VALUES ('{cfg.sync_name}', {version}, '{escaped_schema}')",
-    )
+    _pg_state_write(cfg.sync_name, version, last_schema)
 
 
 _MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
@@ -1171,42 +1212,31 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         )
         context.log.info(ready)
 
-        # Plain Delta on purpose: the watermark is internal bookkeeping that nothing
-        # reads through Iceberg (unlike the source table, which keeps UniForm for
-        # StarRocks). OSS Delta cannot commit to UniForm tables — the commit hook
-        # runs the Iceberg conversion with a shaded Databricks-only class
-        # ([DELTA_MISSING_ICEBERG_CLASS]) — and the zero-DBU sync writes this
-        # table's watermark from Spark. See docs/poc/REVERSE_ETL_DBU_COST_NOTES.md
-        # section 5. Column mapping is on for consistency with the source tables
-        # (every demo table takes DROP COLUMN); the state table has no Change Data
-        # Feed — nothing reads its change feed, reads are full snapshots + MERGE.
-        # The state table is deliberately PLAIN Delta: no column mapping (it never
-        # takes DROP COLUMN) and deletion vectors off — delta-rs rejects tables
-        # with those reader features, and the sync's delta-rs no-op pre-check
-        # reads the watermark from here (precheck_versions). Keep it Spark-
-        # written: this runtime rejects 'disabled' feature statuses outright
-        # ([DELTA_UNSUPPORTED_FEATURE_STATUS]), and any Spark-written table
-        # carries a v7 protocol whose writer-feature list delta-rs cannot commit
-        # to — so the state table has a single writer (the one small SQL INSERT
-        # that advances the watermark). Never re-create it via CREATE OR REPLACE:
-        # that inherits the source's bumped protocol.
-        _run_sql(
-            token,
-            f"""
-        CREATE TABLE IF NOT EXISTS {cfg.state_fqn} (
-            sync_name STRING, last_commit_version BIGINT, last_schema STRING
-        ) USING DELTA
-        TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')
-        """,
-        )
-        context.log.info(
-            f"{cfg.state_fqn} ready (plain Delta, no UniForm; last_schema records the source's "
-            "columns for drop propagation)"
-        )
+        # The sync's watermark state lives in Postgres (reverse_etl_sync_state):
+        # private bookkeeping nothing in Databricks reads, so it moved out of the
+        # lakehouse entirely. That deletes the sync's LAST warehouse touch (the
+        # state read + the watermark INSERT) and, with it, the whole plain-Delta
+        # constraint dance the Delta state table forced — no deletion vectors, no
+        # column mapping, single-writer v7 nuances — all of it obsolete. Same
+        # semantics as the Delta table had: append-only, freshest-row-wins.
+        with get_postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
+                        sync_name TEXT NOT NULL,
+                        last_commit_version BIGINT NOT NULL,
+                        last_schema TEXT,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """
+                )
+            conn.commit()
+        context.log.info(f"{STATE_TABLE} ready (Postgres: watermark + last_schema per sync)")
 
         context.add_output_metadata({
             "source_table": MetadataValue.text(cfg.source_fqn),
-            "state_table": MetadataValue.text(cfg.state_fqn),
+            "state_table": MetadataValue.text(f"{STATE_TABLE} (Postgres)"),
             **_cost_metadata(),
         })
 
@@ -1215,8 +1245,8 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
 
 def build_sync_asset(cfg: ReverseEtlSyncConfig):
     """The sync asset: delta-rs version-range reconstruction (see
-    reverse_etl_delta_reader.py) -- no CDF read, no Spark, no warehouse scans;
-    the only warehouse touch is the watermark write."""
+    reverse_etl_delta_reader.py) -- no CDF read, no Spark, no warehouse anything:
+    reads are delta-rs and the watermark state lives in Postgres."""
     return _build_sync_asset_delta_rs(cfg)
 
 
@@ -1244,7 +1274,6 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         producer: Producer | None = None
 
         source_location = get_table_location_cached(token, cfg, cfg.source_fqn)
-        state_location = get_table_location_cached(token, cfg, cfg.state_fqn)
 
         # delta-rs no-op pre-check: read the source's current version and the
         # state table's watermark (no Spark, no warehouse) and end the run when
@@ -1257,7 +1286,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
 
         def _precheck() -> None:
             try:
-                precheck["result"] = precheck_versions(cfg, source_location, state_location)
+                precheck["result"] = precheck_versions(cfg, source_location)
             except Exception as error:  # noqa: BLE001 — fail-open is the design
                 precheck["error"] = error
 
@@ -1288,7 +1317,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     "kafka_messages_truncated": MetadataValue.bool(False),
                     "kafka_messages_raw": MetadataValue.json([]),
                     "extraction": MetadataValue.text("delta_rs"),
-                    "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; one small SQL write advances the watermark"),
+                    "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; the watermark state lives in Postgres"),
                     **_cost_metadata(),
                 })
                 return
@@ -1305,9 +1334,9 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             # ago — re-reading both costs two snapshot loads for the same answer.
             last_version, current_version, last_schema = precheck_result
         else:
-            # The pre-check failed (or hung): the SQL state read is the only
+            # The pre-check failed (or hung): the Postgres state read is the only
             # fallback that does not repeat whatever broke the delta-rs read.
-            last_version, last_schema = _read_state(token, cfg)
+            last_version, last_schema = _read_state(cfg)
             current_version = None
         chunk_start: int | None = None
 
@@ -1539,7 +1568,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                 for pair in event_changes["renamed"]:
                     if pair not in columns_renamed:
                         columns_renamed.append(pair)
-            _write_state(token, cfg, new_version, _last_schema_json(row_fields, column_ids))
+            _write_state(cfg, new_version, _last_schema_json(row_fields, column_ids))
             if columns_renamed:
                 context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
             if columns_dropped:
@@ -1559,7 +1588,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             "kafka_messages_truncated": MetadataValue.bool(events_synced > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(raw_preview_events),
             "extraction": MetadataValue.text("delta_rs"),
-            "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; one small SQL write advances the watermark"),
+            "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; the watermark state lives in Postgres"),
             **_cost_metadata(),
         })
 

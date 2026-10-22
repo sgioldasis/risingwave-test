@@ -123,6 +123,9 @@ class ReverseEtlSyncConfig:
 
     @property
     def state_fqn(self) -> str:
+        """Legacy: the Delta state table's FQN, pre-Postgres. The watermark state
+        lives in the Postgres table reverse_etl_sync_state now; this FQN remains
+        only so the reset can drop a table created by an older demo run."""
         return f"{self.catalog}.{self.schema}.{self.state_table}"
 
     @property
