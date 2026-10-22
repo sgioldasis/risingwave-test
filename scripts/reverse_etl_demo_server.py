@@ -19,7 +19,9 @@ topics check needs the KAFKA_OUTPUT_* credentials from .env (the bin script sour
 import json
 import os
 import re
+import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -44,7 +46,101 @@ SCHEMA_REGISTRY = os.environ.get(
 )
 
 
-def gql(query: str, variables: dict | None = None) -> dict:
+def _dagster_unreachable(text: str | None) -> bool:
+    """True when the failure is the dead code server (the Mac slept with the stack
+    up: on wake the server's heartbeat watchdog fires -- `heartbeat=True` is
+    hardcoded for managed gRPC locations -- and `watch_server=False` means nothing
+    respawns it, so every launch/poll fails until the services restart)."""
+    t = text or ""
+    return (
+        "user code server" in t
+        or "UserCodeUnreachable" in t
+        or "Could not reach user code server" in t
+    )
+
+
+_DAGSTER_RESTART_LOCK = threading.Lock()
+_DAGSTER_LAST_RESTART = 0.0
+_DAGSTER_RESTART_COOLDOWN = 300  # seconds: one self-heal attempt per window
+
+
+def _restart_dagster() -> None:
+    """Self-heal: restart the dagster services and wait for the code location to
+    load. Throttled so a persistently broken stack fails fast instead of
+    restarting in a loop; the caller retries the original request exactly once."""
+    global _DAGSTER_LAST_RESTART
+    with _DAGSTER_RESTART_LOCK:
+        if time.time() - _DAGSTER_LAST_RESTART < _DAGSTER_RESTART_COOLDOWN:
+            return  # a restart already ran inside the cooldown; let it land
+        _DAGSTER_LAST_RESTART = time.time()
+    subprocess.run(
+        ["docker", "restart", "dagster-webserver", "dagster-daemon"],
+        check=False,
+        timeout=180,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            ws = gql("{ workspaceOrError { ... on Workspace { locationEntries { loadStatus } } } }")
+            entries = (ws["workspaceOrError"].get("locationEntries")) or []
+            if entries and all(entry.get("loadStatus") == "LOADED" for entry in entries):
+                return
+        except Exception:
+            pass  # the webserver is still coming up
+        time.sleep(3)
+
+
+_UNREACHABLE_HINT = (
+    "Dagster's code server is unreachable (this happens after the Mac sleeps with the stack up)."
+    " Fix: docker compose restart dagster-webserver dagster-daemon"
+)
+
+_CODE_SERVER_PROBE = (
+    "import glob, socket\n"
+    "alive = 0\n"
+    "for p in glob.glob('/tmp/tmp*'):\n"
+    "    try:\n"
+    "        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+    "        s.settimeout(1)\n"
+    "        s.connect(p)\n"
+    "        s.close()\n"
+    "        alive += 1\n"
+    "    except OSError:\n"
+    "        pass\n"
+    "print(alive)\n"
+)
+
+
+def dagster_health() -> str:
+    """The launch path's view of Dagster health, for the UI's status pill:
+    'unreachable' (webserver down), 'loading' (up, location not ready), 'dead'
+    (the location claims LOADED but the code server's unix socket refuses
+    connections — the post-sleep state), or 'LOADED'. The socket connect probe
+    is the honest check: every read API is served from the webserver's cache,
+    which stays green while the code server is dead. Note this rides on gql(),
+    so a ping during an unreachable window also triggers the auto-heal."""
+    try:
+        ws = gql("{ workspaceOrError { ... on Workspace { locationEntries { loadStatus } } } }")
+        entries = (ws["workspaceOrError"].get("locationEntries")) or []
+        if not entries or any(entry.get("loadStatus") != "LOADED" for entry in entries):
+            return "loading"
+    except Exception:
+        return "unreachable"
+    try:
+        probe = subprocess.run(
+            ["docker", "exec", "dagster-webserver", "python", "-c", _CODE_SERVER_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return "LOADED" if probe.stdout.strip() == "1" else "dead"
+    except Exception:
+        return "unknown"  # probe itself failed — don't cry wolf
+
+
+def gql(query: str, variables: dict | None = None, _retried: bool = False) -> dict:
     req = urllib.request.Request(
         f"{DAGSTER_URL}/graphql",
         json.dumps({"query": query, "variables": variables or {}}).encode(),
@@ -54,18 +150,15 @@ def gql(query: str, variables: dict | None = None) -> dict:
         return json.load(urllib.request.urlopen(req, timeout=60))["data"]
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        # The definitions code server kills itself when heartbeats stop, which
-        # happens whenever the Mac sleeps with the stack up; launches then fail
-        # until the services are restarted. Say so instead of a bare 500.
-        if "user code server" in body or "UserCodeUnreachable" in body:
-            raise RuntimeError(
-                "Dagster's code server is unreachable (this happens after the Mac sleeps with the stack up)."
-                " Fix: docker compose restart dagster-webserver dagster-daemon"
-            ) from e
+        if _dagster_unreachable(body):
+            if not _retried:
+                _restart_dagster()
+                return gql(query, variables, _retried=True)
+            raise RuntimeError(_UNREACHABLE_HINT + " (auto-restart did not recover it)") from e
         raise RuntimeError(f"Dagster GraphQL {e.code}: {body[:300]}") from e
 
 
-def launch(sync: str, action: str, change: str | None, rows: int | None = None) -> dict:
+def launch(sync: str, action: str, change: str | None, rows: int | None = None, _retried: bool = False) -> dict:
     if sync not in SYNCS:
         raise ValueError(f"unknown sync {sync!r}")
     allowed_changes = JOBOTRON_CHANGES if sync == "jobotron" else CHANGES
@@ -105,11 +198,22 @@ def launch(sync: str, action: str, change: str | None, rows: int | None = None) 
         raise ValueError(f"unknown action {action!r}")
     result = gql(
         "mutation($p:ExecutionParams!){launchRun(executionParams:$p)"
-        "{__typename ... on LaunchRunSuccess{run{runId}} ... on PythonError{message} ... on RunConfigValidationInvalid{errors{message}}}}",
+        "{__typename ... on LaunchRunSuccess{run{runId}} ... on PythonError{message} "
+        "... on InvalidSubsetError{message} ... on PipelineNotFoundError{message} "
+        "... on RunConflict{message} ... on RunConfigValidationInvalid{errors{message}}}}",
         {"p": params},
     )["launchRun"]
     if result["__typename"] != "LaunchRunSuccess":
-        raise RuntimeError(result.get("message") or json.dumps(result))
+        # A dead code server surfaces here as InvalidSubsetError wrapping the
+        # UserCodeUnreachable message (the launch needs the live gRPC server, not
+        # the webserver's cached snapshot). Self-heal once, then fail loudly.
+        message = result.get("message") or json.dumps(result)
+        if _dagster_unreachable(message):
+            if not _retried:
+                _restart_dagster()
+                return launch(sync, action, change, rows, _retried=True)
+            raise RuntimeError(_UNREACHABLE_HINT + " (auto-restart did not recover it)")
+        raise RuntimeError(message)
     return {"runId": result["run"]["runId"], "url": f"{DAGSTER_URL}/runs/{result['run']['runId']}"}
 
 
@@ -437,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("not found")
                 return self._send(200, f.read_bytes(), ctype)
             if self.path == "/api/ping":
-                return self._json(200, {"ok": True})
+                return self._json(200, {"ok": True, "dagster": dagster_health()})
             if m := re.fullmatch(r"/api/run/([^/]+)", self.path):
                 return self._json(200, run_status(m.group(1)))
             if m := re.fullmatch(r"/api/check/jobotron/(topics|postgres)", self.path):

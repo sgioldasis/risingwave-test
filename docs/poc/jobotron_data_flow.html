@@ -55,6 +55,8 @@
   .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
   .pill.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
   .pill.ok { color: var(--text); }
+  .pill.warn .dot { background: #e2a336; box-shadow: 0 0 0 3px color-mix(in srgb, #e2a336 20%, transparent); }
+  .pill.warn { color: var(--text); }
   .pill.fail .dot { background: var(--fail); }
 
   /* ── layout: action rail + main ──────────────────────────── */
@@ -390,8 +392,8 @@ document.addEventListener('keydown', e => {
 
 const SYNC = 'jobotron';
 let helper = false, busy = false;
-const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
-const get = url => fetch(url).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
+const get = url => fetch(url).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
 
 function say(text, url, state, r = $('result'), subs = null) {
   r.textContent = '';
@@ -432,7 +434,7 @@ function costText(cost) {
 async function run(label, body, out = $('result'), step = null, edges = null, stages = null) {
   stop(); lock(true);
   clearTimeout(runstateTimer); stagesClear();
-  if (step !== null) { edgesOn(edges || step); stagesRun(stages || step, 'running'); }
+  if (step !== null) { show(step); edgesOn(edges || step); stagesRun(stages || step, 'running'); }
   let started;
   try { started = await post(body); }
   catch (e) { say(label + ' failed to start: ' + e.message, null, 'fail', out); lock(false); edgesOff(); if (step !== null) stagesRun(stages || step, 'fail'); return false; }
@@ -577,15 +579,30 @@ $('do-rebuild').onclick = async () => {
   } finally { edgesOff(); }
 };
 
-fetch('/api/ping').then(r => r.json()).then(() => {
+async function refreshHelperPill() {
+  // Live status light: the helper's ping also reports Dagster health from the
+  // launch path's point of view (the webserver's cached GraphQL stays green
+  // while the code server is dead, so the helper probes its socket instead).
+  let d = null;
+  try { d = await get('/api/ping'); } catch (e) { /* helper down */ }
+  const pill = $('helper-pill');
+  pill.classList.remove('ok', 'warn', 'fail');
+  if (!d || !d.ok) {
+    pill.classList.add('fail');
+    $('helper-text').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh';
+    helper = false;
+    if (!busy) lock(false);
+    return;
+  }
   helper = true;
-  $('helper-pill').classList.add('ok');
-  $('helper-text').textContent = 'helper connected';
-  lock(false);
-}).catch(() => {
-  $('helper-pill').classList.add('fail');
-  $('helper-text').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh';
-});
+  if (d.dagster === 'LOADED') { pill.classList.add('ok'); $('helper-text').textContent = 'helper connected'; }
+  else if (d.dagster === 'dead') { pill.classList.add('warn'); $('helper-text').textContent = 'Dagster down — the next run auto-heals it (~20s)'; }
+  else if (d.dagster === 'loading') { pill.classList.add('warn'); $('helper-text').textContent = 'Dagster loading…'; }
+  else { pill.classList.add('warn'); $('helper-text').textContent = 'Dagster unreachable — the next run auto-heals it'; }
+  if (!busy) lock(false);
+}
+refreshHelperPill();
+setInterval(refreshHelperPill, 10000);
 show(0);
 </script>
 </body>

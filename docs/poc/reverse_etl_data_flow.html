@@ -95,6 +95,7 @@
     border: 0.5px solid var(--card-border); border-radius: 999px; padding: 5px 12px; margin-top: 4px; white-space: nowrap; }
   .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
   .pill.ok .dot { background: #2e9e4f; box-shadow: 0 0 0 3px rgba(46, 158, 79, .18); }
+  .pill.warn .dot { background: #e2a336; box-shadow: 0 0 0 3px rgba(226, 163, 54, .18); }
   .pill.ok { color: var(--text); }
   .pill.fail .dot { background: #d64545; }
   .layout { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 242px minmax(0, 1fr); gap: 20px; align-items: start; }
@@ -367,8 +368,8 @@ document.addEventListener('keydown', e => {
 // Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
 let SYNC = new URLSearchParams(location.search).get('sync') || 'avro';
 let helper = false, busy = false;
-const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
-const get = url => fetch(url).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
+const get = url => fetch(url).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
 
 // The run log lives under the diagram: each action prepends an entry, and an
 // in-flight action UPDATES its own entry in place — the 2s poll must not spam
@@ -765,10 +766,31 @@ syncSelect.onchange = () => {
   $('cost-total').style.display = 'none';
 };
 
-fetch('/api/ping').then(r => r.json()).then(() => { helper = true; $('helper-pill').classList.add('ok'); $('bar-msg').textContent = 'helper connected · sync: ' + SYNC; lock(false); }).catch(() => {
-  $('helper-pill').classList.add('fail');
-  $('bar-msg').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/';
-});
+async function refreshHelperPill() {
+  // Live status light: the helper's ping also reports Dagster health from the
+  // launch path's point of view (the webserver's cached GraphQL stays green
+  // while the code server is dead, so the helper probes its socket instead).
+  let d = null;
+  try { d = await get('/api/ping'); } catch (e) { /* helper down */ }
+  const pill = $('helper-pill');
+  pill.classList.remove('ok', 'warn', 'fail');
+  if (!d || !d.ok) {
+    pill.classList.add('fail');
+    $('bar-msg').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/';
+    helper = false;
+    if (!busy) lock(false);
+    return;
+  }
+  helper = true;
+  const syncLabel = ' · sync: ' + SYNC;
+  if (d.dagster === 'LOADED') { pill.classList.add('ok'); $('bar-msg').textContent = 'helper connected' + syncLabel; }
+  else if (d.dagster === 'dead') { pill.classList.add('warn'); $('bar-msg').textContent = 'Dagster down — the next run auto-heals it (~20s)'; }
+  else if (d.dagster === 'loading') { pill.classList.add('warn'); $('bar-msg').textContent = 'Dagster loading…'; }
+  else { pill.classList.add('warn'); $('bar-msg').textContent = 'Dagster unreachable — the next run auto-heals it'; }
+  if (!busy) lock(false);
+}
+refreshHelperPill();
+setInterval(refreshHelperPill, 10000);
 show(0); setSourceSubtitle(SYNC);
 </script>
 </body>
