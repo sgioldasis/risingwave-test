@@ -26,7 +26,7 @@ dependencies = [
     "uvicorn>=0.34.0",
     "dagster>=1.13.3",
     "dagster-dbt>=0.29.3",
-    "dagster-dg-cli==1.13.26",
+    "dagster-dg-cli>=1.13.26",
     "dagster-webserver>=1.13.3",
     "marimo>=0.10.0",
     # NOTE: Spark version is gated by two jars that must match it:
@@ -52,7 +52,7 @@ dependencies = [
     "pymysql>=1.1.2",
     # reverse-ETL demo, see docs/poc/REVERSE_ETL_DRT_COMPARISON.md
     "drt-core[databricks,postgres]==1.0.0",
-    "dagster-drt==0.4.0",
+    "dagster-drt>=0.5.0,<0.6",
 ]
 
 [tool.dagster]

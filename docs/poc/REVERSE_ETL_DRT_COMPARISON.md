@@ -30,14 +30,14 @@ section 2 says how a label is added.
 | One instance per label | `orchestration/defs/reverse_etl_<label>_drt/defs.yaml`, with `name: <label>` |
 | Dagster asset | `reverse_etl_<label>_drt_to_postgres` (group `reverse_etl_<label>_drt`, built with `dagster-drt`'s `@drt_assets`) |
 | Dagster jobs | `reverse_etl_<label>_drt_setup_job` (creates the target table) and `reverse_etl_<label>_drt_reset_job` (drops it again) |
-| Install | `pyproject.toml`: `drt-core[databricks,postgres]==1.0.0` and `dagster-drt==0.4.0`, locked in `uv.lock` |
+| Install | `pyproject.toml`: `drt-core[databricks,postgres]==1.0.0` and `dagster-drt>=0.5.0,<0.6`, locked in `uv.lock` |
 | Target table | Postgres `reverse_etl_<label>_drt_target` (plus drt's own `_drt_synced_keys`, shared by all drt syncs) |
 
 The names follow `reverse_etl_<label>_<role>`; the drt sync's own name is `reverse_etl_<label>_drt`.
 
 ## 2. How it is installed and run
 
-- drt and the community package [dagster-drt](https://github.com/drt-hub/drt/releases/tag/dagster-drt-v0.4.0)
+- drt and the community package [dagster-drt](https://github.com/drt-hub/drt/releases/tag/dagster-drt-v0.5.0)
   are regular dependencies in `pyproject.toml`, locked in `uv.lock` with the other packages, so the
   Dagster image and the devbox environment get them from the same lockfile and they survive
   container recreation. drt adds seven packages (`databricks-sql-connector`, `drt-core`,
@@ -251,7 +251,7 @@ code, without running it; **[judgement]** my assessment, not a measurement.
 6. **Timezone and type care.** Timestamps lost 3 hours until `PGTZ=UTC` was set (section 3.4); the
    destination column types are ours to define and keep right. [tested]
 7. **Weaker summary.** The "N synced" line does not count deletes (section 3.1). [tested]
-8. **Third-party dependencies.** drt is a v1.0.0 open-source project, and dagster-drt (v0.4.0,
+8. **Third-party dependencies.** drt is a v1.0.0 open-source project, and dagster-drt (v0.5.0,
    classified Alpha, community-maintained) wraps it. Both are installed
    from PyPI, pinned by version and by the hashes in `uv.lock`, and it shares Dagster's environment, so
    its dependencies can clash with Dagster's in a future upgrade. Our Debezium plugin is pinned by sha512 and
