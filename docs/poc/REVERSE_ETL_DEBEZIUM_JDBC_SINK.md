@@ -229,10 +229,16 @@ A `DATE` column also works as the **key** on both encodings (JSON key schemas go
 the key field gets its schema name too; tested 2026-10-25 with scratch syncs: Postgres `date` primary key,
 update and delete applied, RisingWave matching).
 
-**Not covered: the notebook producer.** `notebooks/reverse_etl_cdf_to_kafka.py` still sends dates as plain
-strings, so a `DATE` sync must not use it. It was not changed: it cannot be tested without starting a
-Databricks cluster, and it was already behind the asset (its last change predates the move of the watermark to
-Postgres; it still reads a Delta state table `<sync>_state` that the setup job no longer creates).
+**The notebook producer (not run).** `notebooks/reverse_etl_cdf_to_kafka.py` now maps `DATE` the same way
+(epoch days, `io.debezium.time.Date` in JSON, `logicalType: date` in Avro, key schema through `connect_field`).
+This was written without running it on Databricks (that needs a cluster). What was checked locally, with
+Spark and `dbutils` stubbed: the notebook's JSON key and value come out identical (as parsed JSON) to the
+asset's for a `DATE` key plus `DATE`, string, int and timestamp columns, and its Avro key and value schema
+strings are byte-identical to the asset's. Not checked: the Spark side of the Avro path (`to_avro` on an
+`int` column against the `logicalType: date` schema) and the Kafka write. The notebook is still behind the
+asset in one respect: it keeps its watermark in a Delta state table `<sync>_state` that the setup job no
+longer creates (the asset moved the watermark to Postgres), so it cannot run against a sync set up by the
+current code until that is reconciled.
 
 **Precision (changed 2026-10-05).** Until then timestamps were sent with three fractional digits (the earlier
 examples in this document, such as `...23.009Z` below, show that), although Databricks stores microseconds: the

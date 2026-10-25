@@ -69,6 +69,7 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 # COMMAND ----------
 
+import datetime
 import json
 import struct
 from itertools import zip_longest
@@ -90,13 +91,20 @@ ENVELOPE_SCHEMA_NAME = f"{SYNC_NAME}.{SCHEMA}.{SOURCE_TABLE}"
 CONNECT_TYPE = {
     "TINYINT": "int8", "SMALLINT": "int16", "INT": "int32", "INTEGER": "int32",
     "BIGINT": "int64", "LONG": "int64", "FLOAT": "float", "DOUBLE": "double", "BOOLEAN": "boolean",
-    "TIMESTAMP": "zoned_timestamp",
+    "TIMESTAMP": "zoned_timestamp", "DATE": "date",
 }
 
 # "zoned_timestamp" is not a Connect type: it marks an ISO-8601 string with a timezone whose schema field
 # is named io.debezium.time.ZonedTimestamp, so the Debezium sink creates a timestamptz column.
 ZONED_TIMESTAMP = "zoned_timestamp"
 ZONED_TIMESTAMP_SCHEMA_NAME = "io.debezium.time.ZonedTimestamp"
+
+# "date" is not a Connect type either: it marks a DATE column, carried as days since 1970-01-01 (int32) so the
+# Debezium sink creates a date column (JSON: schema name io.debezium.time.Date; Avro: logicalType date).
+# Spark hands dates over as ISO strings (as_json_friendly); coerce converts them.
+DATE = "date"
+DATE_SCHEMA_NAME = "io.debezium.time.Date"
+EPOCH = datetime.date(1970, 1, 1)
 
 # COMMAND ----------
 
@@ -209,6 +217,8 @@ def coerce(value, connect_type):
         return float(value)
     if connect_type == "boolean":
         return value if isinstance(value, bool) else str(value).lower() == "true"
+    if connect_type == DATE:
+        return (datetime.date.fromisoformat(str(value)[:10]) - EPOCH).days
     return value
 
 
@@ -221,6 +231,8 @@ def coerce_row(row):
 def connect_field(name, connect_type, optional):
     if connect_type == ZONED_TIMESTAMP:
         return {"field": name, "type": "string", "name": ZONED_TIMESTAMP_SCHEMA_NAME, "optional": optional}
+    if connect_type == DATE:
+        return {"field": name, "type": "int32", "name": DATE_SCHEMA_NAME, "optional": optional}
     return {"field": name, "type": connect_type, "optional": optional}
 
 
@@ -242,7 +254,7 @@ def build_message(event):
     key = {
         "schema": {
             "type": "struct", "name": f"{ENVELOPE_SCHEMA_NAME}.Key", "optional": False,
-            "fields": [{"field": c, "type": FIELD_TYPES[c], "optional": False} for c in KEY_COLUMNS],
+            "fields": [connect_field(c, FIELD_TYPES[c], False) for c in KEY_COLUMNS],
         },
         "payload": {c: coerce(row_for_key.get(c), FIELD_TYPES[c]) for c in KEY_COLUMNS},
     }
@@ -281,7 +293,7 @@ def build_message(event):
 
 # Avro (Confluent wire format). The schema matches the Dagster asset's (_avro_schemas in
 # orchestration/assets/reverse_etl_cdf_setup.py): every row column is a nullable union defaulting to
-# null; timestamps stay ZonedTimestamp strings. Spark's registry mode (to_avro with subject=) did not
+# null; timestamps stay ZonedTimestamp strings and dates are ints with logicalType date. Spark's registry mode (to_avro with subject=) did not
 # work on DBR 19.x, so the schema is registered here and the 5-byte header (a zero byte and the schema
 # id) is added by hand. Schemas are registered as compact JSON with the namespace only on the top-level
 # record: the registry matches a schema by its exact string, and the Confluent converter looks the schema
@@ -290,10 +302,11 @@ AVRO_TYPE = {
     "int8": "int", "int16": "int", "int32": "int", "int64": "long", "float": "float",
     "double": "double", "boolean": "boolean", "string": "string",
     ZONED_TIMESTAMP: {"type": "string", "connect.name": ZONED_TIMESTAMP_SCHEMA_NAME},
+    DATE: {"type": "int", "logicalType": "date"},
 }
 SPARK_TYPE = {
     "int8": "tinyint", "int16": "smallint", "int32": "int", "int64": "bigint", "float": "float",
-    "double": "double", "boolean": "boolean", "string": "string", ZONED_TIMESTAMP: "string",
+    "double": "double", "boolean": "boolean", "string": "string", ZONED_TIMESTAMP: "string", DATE: "int",
 }
 
 
