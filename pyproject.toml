@@ -68,12 +68,21 @@ root_module = "orchestration"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=5.0.0",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.17.2",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--strict-markers --strict-config"
+addopts = "--strict-markers --strict-config -m 'not live'"
+# A hung fake (or a retry loop with no fake behind it) fails after this instead of hanging CI.
+timeout = 60
+markers = [
+    "live: needs the running local stack (RisingWave, Kafka, Dagster); skipped by default, run with -m live",
+]
 # Warnings are errors, except these known ones from dependencies and the project's own load_defs call.
 filterwarnings = [
     "error",
@@ -82,3 +91,17 @@ filterwarnings = [
     "ignore:.*`load_defs` is deprecated:DeprecationWarning",
     "ignore:.*`__fields__` attribute is deprecated:DeprecationWarning",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["orchestration/assets"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff.lint]
+# Pyflakes and pycodestyle errors only: unused imports, shadowed names, undefined names.
+select = ["F", "E"]
+# No formatter is enforced, so long lines are not an error.
+ignore = ["E501"]

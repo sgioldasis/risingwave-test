@@ -32,7 +32,6 @@ from .assets.reverse_etl_resources import (
     PostgresResource,
     RisingWaveResource,
 )
-from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
 from .assets.postgres_sink_setup import postgres_funnel_table

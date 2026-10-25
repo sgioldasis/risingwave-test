@@ -82,3 +82,4 @@ __marimo__/
 /version
 # Dagster image build state
 /.dagster_build_hash
+.coverage

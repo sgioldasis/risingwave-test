@@ -136,7 +136,9 @@ class FakeKafka:
         self.recording_producer = RecordingProducer(fail=producer_fails)
 
     def consumer(self, group_id, extra=None):
-        topic_meta = lambda topic: types.SimpleNamespace(topics={topic: types.SimpleNamespace(partitions={0: None})})
+        def topic_meta(topic):
+            return types.SimpleNamespace(topics={topic: types.SimpleNamespace(partitions={0: None})})
+
         return types.SimpleNamespace(
             list_topics=lambda topic, timeout=0: topic_meta(topic),
             committed=lambda partitions, timeout=0: [types.SimpleNamespace(offset=0) for _ in partitions],
