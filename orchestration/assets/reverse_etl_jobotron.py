@@ -392,9 +392,10 @@ def build_publish_asset(cfg: JobotronConfig):
                     f"Scanned {fqn} at version {delta.version()}: {snapshot.num_rows} rows, "
                     f"columns {list(columns)}"
                 )
-        # fetch_arrow_table() materializes the result: duckdb 1.5's .arrow() returns a
-        # RecordBatchReader instead of a Table.
-        result = connection.execute(cfg.query).fetch_arrow_table()
+        # to_arrow_table() materializes the result: duckdb 1.5's .arrow() returns a
+        # RecordBatchReader instead of a Table, and duckdb 2.0 dropped fetch_arrow_table() and warns
+        # when a DB-API result (execute) is converted, so the query goes through sql().
+        result = connection.sql(cfg.query).to_arrow_table()
         connection.close()
         context.log.info(f"Candidate query selected {result.num_rows} customer(s) [scan_engine={cfg.scan_engine}]")
 
@@ -436,7 +437,7 @@ def build_publish_asset(cfg: JobotronConfig):
                 )
             key_serializer, value_serializer = serializers[topic]
             key = {column: row[column] for column in cfg.key_columns}
-            value = {"run_id": context.run_id, "job_type": cfg.job_type, **row}
+            value = {"run_id": context.run.run_id, "job_type": cfg.job_type, **row}
             key_bytes = key_serializer(key, SerializationContext(topic, MessageField.KEY))
             value_bytes = value_serializer(value, SerializationContext(topic, MessageField.VALUE))
             _produce_one(producer, topic, key_bytes, value_bytes, delivery_errors)
