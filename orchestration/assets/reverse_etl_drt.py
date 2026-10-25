@@ -41,11 +41,10 @@ from dagster import (
 )
 from dagster_drt import DagsterDrtResource, DagsterDrtTranslator, drt_assets
 
-from .databricks_optimize import DATABRICKS_HOST, WAREHOUSE_ID, _get_token
-from .postgres_sink_setup import get_postgres_connection
-from .reverse_etl_cdf_setup import _require_databricks_env, get_table_location_cached
+from .databricks_optimize import DATABRICKS_HOST, WAREHOUSE_ID
 from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_resources import DatabricksResource, PostgresResource
 
 PROJECT_SOURCE = Path(__file__).resolve().parent.parent / "drt_demo"
 # drt writes state next to the project and the source mount is read-only, so it runs from a copy.
@@ -153,13 +152,13 @@ def _build_asset(cfg: ReverseEtlSyncConfig, names: DrtNames):
         dagster_drt_translator=_Translator(),
         name=names.asset,
     )
-    def drt_to_postgres(context: AssetExecutionContext, drt: DagsterDrtResource):
-        _require_databricks_env()
+    def drt_to_postgres(context: AssetExecutionContext, drt: DagsterDrtResource, databricks: DatabricksResource):
+        databricks.require_env()
         _check_sync_file(cfg, names)
         WORKDIR.mkdir(parents=True, exist_ok=True)
         shutil.copytree(PROJECT_SOURCE, WORKDIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
         _write_profile(Path.home())
-        os.environ[TOKEN_ENV] = _get_token()
+        os.environ[TOKEN_ENV] = databricks.token()
         os.environ["PGTZ"] = "UTC"
         for event in drt.run(context=context):
             failed = event.metadata["rows_failed"].value if isinstance(event, MaterializeResult) else 0
@@ -176,16 +175,16 @@ def _build_asset(cfg: ReverseEtlSyncConfig, names: DrtNames):
 def _build_setup_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
     # drt never creates or alters its destination, so this job creates it.
     @op(name=f"{names.sync_name}_target_setup")
-    def setup_target(context: OpExecutionContext) -> None:
-        _require_databricks_env()
-        token = _get_token()
+    def setup_target(context: OpExecutionContext, postgres: PostgresResource, databricks: DatabricksResource) -> None:
+        databricks.require_env()
+        token = databricks.token()
         columns = []
-        source_location = get_table_location_cached(token, cfg, cfg.source_fqn)
+        source_location = databricks.table_location_cached(token, cfg, cfg.source_fqn)
         for name, connect_type, _ in get_row_fields(source_location):
             column_type = _POSTGRES_TYPE_BY_CONNECT_TYPE.get(connect_type, "text")
             suffix = " PRIMARY KEY" if name == cfg.key_column else ""
             columns.append(f'"{name}" {column_type}{suffix}')
-        conn = get_postgres_connection()
+        conn = postgres.connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(f'CREATE TABLE IF NOT EXISTS "{names.target_table}" ({", ".join(columns)})')
@@ -210,11 +209,11 @@ def _build_setup_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
 
 def _build_reset_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
     @op(name=f"{names.sync_name}_target_reset")
-    def reset_target(context: OpExecutionContext) -> None:
+    def reset_target(context: OpExecutionContext, postgres: PostgresResource) -> None:
         # Same idea as the allowlist in reverse_etl_reset.py: only drop a table that looks like ours.
         if not names.target_table.startswith(cfg.reset_name_prefixes):
             raise RuntimeError(f"Refusing to reset: {names.target_table} does not start with {cfg.reset_name_prefixes}")
-        conn = get_postgres_connection()
+        conn = postgres.connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{names.target_table}"')

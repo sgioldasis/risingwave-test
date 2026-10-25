@@ -24,6 +24,14 @@ from dagster_dbt import DbtCliResource, DbtProject, dbt_assets, DagsterDbtTransl
 
 from .assets.reverse_etl_drt import drt_resource
 from .assets.reverse_etl_notebook_job import reverse_etl_notebook_sync_job
+from .assets.reverse_etl_resources import (
+    DatabricksResource,
+    HttpResource,
+    KafkaResource,
+    SchemaRegistryResource,
+    PostgresResource,
+    RisingWaveResource,
+)
 from .constants import dbt_PROJECT_PATH
 from .assets.iceberg_countries import iceberg_countries
 from .assets.risingwave_udfs import risingwave_python_udfs
@@ -1032,6 +1040,13 @@ defs = Definitions.merge(
             ),
             "spark": spark_session_resource,
             "drt": drt_resource,
+            # The systems the reverse-ETL jobs and assets reach (tests bind fakes).
+            "postgres": PostgresResource(),
+            "risingwave": RisingWaveResource(),
+            "databricks": DatabricksResource(),
+            "kafka": KafkaResource(),
+            "registry": SchemaRegistryResource(),
+            "http": HttpResource(),
         },
     ),
     # Reverse-ETL syncs, one ReverseEtlCdfSync YAML instance each under

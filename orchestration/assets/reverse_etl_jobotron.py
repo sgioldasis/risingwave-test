@@ -36,10 +36,9 @@ from typing import Any
 
 import duckdb
 import pyarrow as pa
-import requests
-from confluent_kafka import Consumer, TopicPartition
+from confluent_kafka import TopicPartition
 from confluent_kafka.admin import NewTopic
-from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
+from confluent_kafka.schema_registry import Schema
 from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import (
@@ -60,23 +59,21 @@ from dagster import (
 )
 from deltalake import DeltaTable
 
-from .databricks_cost_meter import reset as meter_reset
 from .databricks_cost_meter import snapshot as meter_snapshot
-from .databricks_optimize import _get_token
-from .kafka_topics_setup import _DEFAULT_REPLICATION, _admin_client
-from .postgres_sink_setup import get_postgres_connection
+from .kafka_topics_setup import _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import (
     _avro_schema_string,
     _azure_storage_options,
     _cost_metadata,
-    _kafka_producer,
-    _kafka_producer_config,
-    _require_databricks_env,
     _rows_as_dicts,
-    _run_sql,
     _schema_already_registered,
-    clear_control_plane_cache,
-    get_table_location_cached,
+)
+from .reverse_etl_resources import (
+    DatabricksResource,
+    HttpResource,
+    KafkaResource,
+    PostgresResource,
+    SchemaRegistryResource,
 )
 
 BASE = "reverse_etl_jobotron"
@@ -213,12 +210,12 @@ def build_setup_asset(cfg: JobotronConfig):
             "and seed the demo customers. See docs/poc/REVERSE_ETL_JOBOTRON.md."
         ),
     )
-    def setup(context: AssetExecutionContext):
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def setup(context: AssetExecutionContext, databricks: DatabricksResource, kafka: KafkaResource):
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
 
-        admin = _admin_client()
+        admin = kafka.admin_client()
         existing = admin.list_topics(timeout=20).topics
         missing = [topic for topic in cfg.topics.values() if topic not in existing]
         if missing:
@@ -263,14 +260,14 @@ def build_setup_asset(cfg: JobotronConfig):
             """,
             ),
         ):
-            _run_sql(token, ddl)
+            databricks.run_sql(token, ddl)
             context.log.info(f"{fqn} ready (plain Delta: no CDF, no column mapping)")
 
         # MERGE so "Set up" twice never duplicates the demo rows (same pattern as
         # the CDF syncs' seed_statements). Seed shape: six customers across two
         # operators; the eligible segment (active AND a PENDING KYC case) starts
         # at three -- 1001/gr, 1004+1005/br -- small enough to read off the page.
-        _run_sql(
+        databricks.run_sql(
             token,
             f"""
         MERGE INTO {cfg.customers_fqn} AS target
@@ -287,7 +284,7 @@ def build_setup_asset(cfg: JobotronConfig):
             VALUES (source.customer_id, source.email, source.locale, source.operator, source.is_active)
         """,
         )
-        _run_sql(
+        databricks.run_sql(
             token,
             f"""
         MERGE INTO {cfg.kyc_fqn} AS target
@@ -348,15 +345,20 @@ def build_publish_asset(cfg: JobotronConfig):
             f"Scan engine {cfg.scan_engine} + DuckDB query: no Spark, no JVM, zero Databricks compute."
         ),
     )
-    def publish(context: AssetExecutionContext):
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def publish(
+        context: AssetExecutionContext,
+        databricks: DatabricksResource,
+        kafka: KafkaResource,
+        registry: SchemaRegistryResource,
+    ):
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
         started = time.monotonic()
 
         # 1. Resolve locations (UC REST, cached) -- control-plane reads only, no compute.
         locations: dict[str, str] = {
-            alias: get_table_location_cached(token, cfg, fqn) for alias, (fqn, _columns) in cfg.sources.items()
+            alias: databricks.table_location_cached(token, cfg, fqn) for alias, (fqn, _columns) in cfg.sources.items()
         }
 
         # 2. The scan engine is the per-job YAML knob (§8.6): both branches feed the
@@ -399,7 +401,7 @@ def build_publish_asset(cfg: JobotronConfig):
         # 3. Schemas derived from the result shape (an empty result still carries the
         #    schema), ensured per operator subject before any message uses them.
         key_schema, value_schema = _jobotron_schemas(cfg, result.schema)
-        client = SchemaRegistryClient({"url": cfg.schema_registry_url})
+        client = registry.client(cfg.schema_registry_url)
         for topic in cfg.topics.values():
             for subject, schema in ((f"{topic}-key", key_schema), (f"{topic}-value", value_schema)):
                 if not _schema_already_registered(client, subject, schema):
@@ -420,7 +422,7 @@ def build_publish_asset(cfg: JobotronConfig):
                 AvroSerializer(client, _avro_schema_string(key_schema), conf=conf),
                 AvroSerializer(client, _avro_schema_string(value_schema), conf=conf),
             )
-        producer = _kafka_producer()
+        producer = kafka.producer()
         delivery_errors: list[str] = []
         per_operator: Counter[str] = Counter()
         previews: list[dict] = []
@@ -476,8 +478,14 @@ def build_consume_asset(cfg: JobotronConfig):
             "so a customer that left the segment disappears from its table at the next consume."
         ),
     )
-    def consume(context: AssetExecutionContext):
-        meter_reset()
+    def consume(
+        context: AssetExecutionContext,
+        postgres: PostgresResource,
+        databricks: DatabricksResource,
+        kafka: KafkaResource,
+        registry: SchemaRegistryResource,
+    ):
+        databricks.reset_meter()
         started = time.monotonic()
 
         # Read each operator topic from the beginning. Topics APPEND: a customer
@@ -487,14 +495,9 @@ def build_consume_asset(cfg: JobotronConfig):
         # message (highest offset). Manual partition assign, no commits: the
         # consumer is stateless and re-reads the whole topic per run (demo volumes
         # are a handful of messages; the RFC sizes ~20k/day).
-        deserializer = AvroDeserializer(SchemaRegistryClient({"url": cfg.schema_registry_url}))
-        consumer = Consumer(
-            {
-                **_kafka_producer_config(),
-                "group.id": f"{BASE}-demo-consumer",
-                "auto.offset.reset": "earliest",
-                "enable.auto.commit": "false",
-            }
+        deserializer = AvroDeserializer(registry.client(cfg.schema_registry_url))
+        consumer = kafka.consumer(
+            f"{BASE}-demo-consumer", {"auto.offset.reset": "earliest", "enable.auto.commit": "false"}
         )
         read: dict[str, list[dict]] = {topic: [] for topic in cfg.topics.values()}
         last_run: dict[str, str] = {}
@@ -550,7 +553,7 @@ def build_consume_asset(cfg: JobotronConfig):
         # One Postgres table per operator topic (same name), rebuilt per consume:
         # the table IS the current segment for that operator. The full-set publish
         # makes this safe -- the topic always reflects the last publish's segment.
-        conn = get_postgres_connection()
+        conn = postgres.connect()
         try:
             with conn.cursor() as cur:
                 for topic in cfg.topics.values():
@@ -586,8 +589,8 @@ def build_consume_asset(cfg: JobotronConfig):
 class JobotronChangeConfig(Config):
     change: str = "add_customer"  # add_customer, verify_customer or deactivate_customer
 
-def _scalar(token: str, sql: str) -> Any:
-    rows = _rows_as_dicts(_run_sql(token, sql))
+def _scalar(databricks: DatabricksResource, token: str, sql: str) -> Any:
+    rows = _rows_as_dicts(databricks.run_sql(token, sql))
     return next(iter(rows[0].values()))
 
 
@@ -650,10 +653,10 @@ def build_change_asset(cfg: JobotronConfig):
             f"until {cfg.publish_asset} runs."
         ),
     )
-    def make_change(context: AssetExecutionContext, config: JobotronChangeConfig):
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def make_change(context: AssetExecutionContext, config: JobotronChangeConfig, databricks: DatabricksResource):
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
         statements = _change_statements(cfg, config.change)
 
         # A change with nothing to do is a normal demo condition (the segment can be
@@ -661,6 +664,7 @@ def build_change_asset(cfg: JobotronConfig):
         skip = None
         if config.change == "verify_customer":
             pending = _scalar(
+                databricks,
                 token,
                 f"SELECT count(*) FROM {cfg.kyc_fqn} k JOIN {cfg.customers_fqn} c ON c.customer_id = k.customer_id "
                 "WHERE k.status = 'PENDING' AND c.is_active",
@@ -669,6 +673,7 @@ def build_change_asset(cfg: JobotronConfig):
                 skip = "no active customer with a PENDING KYC case left to verify -- run add_customer first"
         elif config.change == "deactivate_customer":
             eligible = _scalar(
+                databricks,
                 token,
                 f"SELECT count(*) FROM {cfg.customers_fqn} c WHERE c.is_active AND c.customer_id IN "
                 f"(SELECT k.customer_id FROM {cfg.kyc_fqn} k WHERE k.status = 'PENDING')",
@@ -689,7 +694,7 @@ def build_change_asset(cfg: JobotronConfig):
             return
 
         for statement in statements:
-            _run_sql(token, statement)
+            databricks.run_sql(token, statement)
             context.log.info(f"{config.change}: {' '.join(statement.split())}")
         usage = meter_snapshot()
         context.add_output_metadata(
@@ -723,9 +728,9 @@ def _assert_reset_allowed(cfg: JobotronConfig) -> None:
 
 def build_reset_job(cfg: JobotronConfig):
     @op(name=f"{BASE}_delete_topics", ins={"start": In(Nothing)})
-    def delete_topics(context: OpExecutionContext) -> None:
+    def delete_topics(context: OpExecutionContext, kafka: KafkaResource) -> None:
         _assert_reset_allowed(cfg)
-        admin = _admin_client()
+        admin = kafka.admin_client()
         for topic in cfg.topics.values():
             if topic in admin.list_topics(timeout=20).topics:
                 admin.delete_topics([topic], operation_timeout=30)[topic].result()
@@ -745,14 +750,14 @@ def build_reset_job(cfg: JobotronConfig):
         context.log.info("Operator topics are gone")
 
     @op(name=f"{BASE}_delete_registry_subjects", ins={"start": In(Nothing)})
-    def delete_registry_subjects(context: OpExecutionContext) -> None:
+    def delete_registry_subjects(context: OpExecutionContext, http: HttpResource) -> None:
         _assert_reset_allowed(cfg)
         # Soft delete, then permanent (a soft-deleted subject still blocks re-registering).
         for topic in cfg.topics.values():
             for role in ("key", "value"):
                 subject = f"{topic}-{role}"
                 for params in ({}, {"permanent": "true"}):
-                    resp = requests.delete(
+                    resp = http.delete(
                         f"{cfg.schema_registry_url}/subjects/{subject}", params=params, timeout=30
                     )
                     if resp.status_code == 404:
@@ -765,22 +770,22 @@ def build_reset_job(cfg: JobotronConfig):
                         )
 
     @op(name=f"{BASE}_drop_tables", ins={"start": In(Nothing)})
-    def drop_tables(context: OpExecutionContext) -> None:
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def drop_tables(context: OpExecutionContext, databricks: DatabricksResource) -> None:
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
         for fqn in (cfg.customers_fqn, cfg.kyc_fqn):
-            _run_sql(token, f"DROP TABLE IF EXISTS {fqn}")
+            databricks.run_sql(token, f"DROP TABLE IF EXISTS {fqn}")
             context.log.info(f"Dropped {fqn} (if it existed)")
         # Drop + recreate moves the managed tables to new storage locations; the
         # cached locations would then point at dead tables (the CDF syncs hit this).
-        clear_control_plane_cache()
+        databricks.clear_location_cache()
         context.log.info("Cleared the location cache (the tables moved)")
 
     @op(name=f"{BASE}_drop_postgres_tables", ins={"start": In(Nothing)})
-    def drop_postgres_tables(context: OpExecutionContext) -> None:
+    def drop_postgres_tables(context: OpExecutionContext, postgres: PostgresResource) -> None:
         _assert_reset_allowed(cfg)
-        conn = get_postgres_connection()
+        conn = postgres.connect()
         try:
             with conn.cursor() as cur:
                 # The demo consumer's per-operator tables carry the same names as

@@ -14,6 +14,7 @@ import requests
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_resources import HttpResource
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
 
@@ -78,11 +79,11 @@ def _connector_config(cfg: ReverseEtlSyncConfig) -> dict[str, str]:
     return config
 
 
-def _wait_for_connect(timeout_s: int = 120) -> None:
+def _wait_for_connect(http: HttpResource, timeout_s: int = 120) -> None:
     deadline = time.monotonic() + timeout_s
     while True:
         try:
-            if requests.get(f"{CONNECT_URL}/connectors", timeout=5).ok:
+            if http.get(f"{CONNECT_URL}/connectors", timeout=5).ok:
                 return
         except requests.RequestException:
             pass
@@ -92,12 +93,12 @@ def _wait_for_connect(timeout_s: int = 120) -> None:
 
 
 def _wait_for_running(
-    context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, timeout_s: int = 90
+    http: HttpResource, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, timeout_s: int = 90
 ) -> dict[str, Any]:
     name = cfg.connector_name
     deadline = time.monotonic() + timeout_s
     while True:
-        resp = requests.get(f"{CONNECT_URL}/connectors/{name}/status", timeout=10)
+        resp = http.get(f"{CONNECT_URL}/connectors/{name}/status", timeout=10)
         status = resp.json() if resp.ok else {}
         states = [status.get("connector", {}).get("state")] + [t.get("state") for t in status.get("tasks", [])]
         context.log.info(f"{name} states: {states}")
@@ -127,16 +128,16 @@ def build_debezium_sink_asset(cfg: ReverseEtlSyncConfig):
             "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
         ),
     )
-    def debezium_jdbc_sink(context: AssetExecutionContext):
-        _wait_for_connect()
+    def debezium_jdbc_sink(context: AssetExecutionContext, http: HttpResource):
+        _wait_for_connect(http)
 
         name = cfg.connector_name
-        resp = requests.put(f"{CONNECT_URL}/connectors/{name}/config", json=_connector_config(cfg), timeout=30)
+        resp = http.put(f"{CONNECT_URL}/connectors/{name}/config", json=_connector_config(cfg), timeout=30)
         if not resp.ok:
             raise RuntimeError(f"Connect rejected {name} config ({resp.status_code}): {resp.text[:1500]}")
         context.log.info(f"Connector {name} created/updated")
 
-        status = _wait_for_running(context, cfg)
+        status = _wait_for_running(http, context, cfg)
 
         context.add_output_metadata({
             "connector": MetadataValue.text(name),

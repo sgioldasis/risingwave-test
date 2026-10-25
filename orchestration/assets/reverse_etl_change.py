@@ -22,11 +22,10 @@ from dagster import (
     in_process_executor,
 )
 
-from .databricks_cost_meter import reset as meter_reset
 from .databricks_cost_meter import snapshot as meter_snapshot
-from .databricks_optimize import _get_token
-from .reverse_etl_cdf_setup import _require_databricks_env, _rows_as_dicts, _run_sql
+from .reverse_etl_cdf_setup import _rows_as_dicts
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_resources import DatabricksResource
 
 KEY = "id"
 # Per-commit row ceiling for the bulk generator: chunk_versions=1 makes the sync
@@ -192,13 +191,13 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
         name=f"{cfg.sync_name}_make_change",
         description=f"Change {cfg.source_fqn}: insert/update/delete a row, add/rename/drop a column, or bulk-load 1,000,000 rows (delta sync). Not synced until {cfg.sync_asset} runs.",
     )
-    def make_change(context: AssetExecutionContext, config: ChangeConfig):
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def make_change(context: AssetExecutionContext, config: ChangeConfig, databricks: DatabricksResource):
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
         existing = set()
         if config.change in ("add_column", "rename_column", "drop_column"):
-            existing = {r["col_name"] for r in _rows_as_dicts(_run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}
+            existing = {r["col_name"] for r in _rows_as_dicts(databricks.run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}
         try:
             statements = list(change_statements(cfg, config.change, existing, rows=config.rows))
         except DemoChangeSkip as skip:
@@ -215,7 +214,7 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
             return
         for statement in statements:
             try:
-                _run_sql(token, statement)
+                databricks.run_sql(token, statement)
             except RuntimeError as error:
                 if "UNRESOLVED_COLUMN" in str(error):
                     # The change ops build their SQL from the sync's source_columns: a configured

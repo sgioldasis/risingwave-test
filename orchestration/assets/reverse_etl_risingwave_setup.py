@@ -16,17 +16,15 @@ import os
 import psycopg2
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .databricks_optimize import _get_token
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_cdf_setup import (
     DATE,
     ZONED_TIMESTAMP,
     RowField,
     _register_avro_schemas,
-    _require_databricks_env,
-    get_table_location_cached,
 )
 from .reverse_etl_delta_reader import get_row_fields
+from .reverse_etl_resources import DatabricksResource, RisingWaveResource, SchemaRegistryResource
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
 # SMALLINT (RisingWave has no 1-byte integer).
@@ -163,7 +161,9 @@ def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> 
     """
 
 
-def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> list[str]:
+def add_missing_columns(
+    risingwave: RisingWaveResource, registry: SchemaRegistryResource, cfg: ReverseEtlSyncConfig, row_fields: list[RowField]
+) -> list[str]:
     """Add any of `row_fields` the table lacks, with the matching RisingWave
     type; returns the names added. A no-op (returns []) if the table doesn't
     exist yet.
@@ -172,7 +172,7 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
     only fills a column from messages read after it exists, so a row ingested
     earlier keeps NULL. With Avro the new schema version is registered first.
     """
-    conn = _get_risingwave_connection()
+    conn = risingwave.connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -188,7 +188,9 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
                 # RisingWave checks a new column against the registry schema, so the new version comes
                 # first -- and it must keep every column the table still has (a pending rename's old
                 # name, a pending drop), see _registration_fields.
-                _register_avro_schemas(cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing))
+                _register_avro_schemas(
+                    registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing)
+                )
             for field in missing:
                 for column_def in _column_defs(cfg, field):
                     cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {column_def}")
@@ -198,7 +200,9 @@ def add_missing_columns(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -
         conn.close()
 
 
-def drop_columns_from_risingwave(cfg: ReverseEtlSyncConfig, dropped_fields: list[str]) -> list[str]:
+def drop_columns_from_risingwave(
+    risingwave: RisingWaveResource, cfg: ReverseEtlSyncConfig, dropped_fields: list[str]
+) -> list[str]:
     """Drop `dropped_fields` — and their <name>_ts generated companions — from the
     RisingWave table; returns the names actually dropped. A no-op (returns [])
     if the table doesn't exist.
@@ -208,7 +212,7 @@ def drop_columns_from_risingwave(cfg: ReverseEtlSyncConfig, dropped_fields: list
     can never touch a column the source didn't genuinely drop. The companion
     goes first: RisingWave refuses to drop a column a generated column still
     depends on."""
-    conn = _get_risingwave_connection()
+    conn = risingwave.connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -231,7 +235,13 @@ def drop_columns_from_risingwave(cfg: ReverseEtlSyncConfig, dropped_fields: list
         conn.close()
 
 
-def rename_columns_in_risingwave(cfg: ReverseEtlSyncConfig, renames: list[tuple[str, str]], row_fields: list[RowField]) -> list[str]:
+def rename_columns_in_risingwave(
+    risingwave: RisingWaveResource,
+    registry: SchemaRegistryResource,
+    cfg: ReverseEtlSyncConfig,
+    renames: list[tuple[str, str]],
+    row_fields: list[RowField],
+) -> list[str]:
     """Rename columns on the RisingWave target, preserving their data; returns the
     renames applied, as "old -> new".
 
@@ -248,7 +258,7 @@ def rename_columns_in_risingwave(cfg: ReverseEtlSyncConfig, renames: list[tuple[
     add path has already created the new column empty (a rename pending while
     events were produced), the UPDATE copy still runs and fills it before the
     old column goes away."""
-    conn = _get_risingwave_connection()
+    conn = risingwave.connect()
     fields_by_name = {field[0]: field for field in row_fields}
     applied: list[str] = []
 
@@ -269,7 +279,9 @@ def rename_columns_in_risingwave(cfg: ReverseEtlSyncConfig, renames: list[tuple[
                 # RisingWave rebinds the whole table against the registry's latest schema on ADD, so
                 # the registration keeps every column the table still has -- the old names included
                 # (see _registration_fields).
-                _register_avro_schemas(cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing))
+                _register_avro_schemas(
+                    registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing)
+                )
             for old, new in renames:
                 if old not in existing and new in existing:
                     applied.append(f"{old} -> {new}")
@@ -313,14 +325,19 @@ def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
             "columns and types. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
         ),
     )
-    def risingwave_table(context: AssetExecutionContext):
-        _require_databricks_env()
-        token = _get_token()
-        row_fields = get_row_fields(get_table_location_cached(token, cfg, cfg.source_fqn))
+    def risingwave_table(
+        context: AssetExecutionContext,
+        risingwave: RisingWaveResource,
+        databricks: DatabricksResource,
+        registry: SchemaRegistryResource,
+    ):
+        databricks.require_env()
+        token = databricks.token()
+        row_fields = get_row_fields(databricks.table_location_cached(token, cfg, cfg.source_fqn))
         if cfg.encoding == "avro":
-            _register_avro_schemas(cfg, [cfg.key_column], row_fields)
+            _register_avro_schemas(registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], row_fields)
 
-        conn = _get_risingwave_connection()
+        conn = risingwave.connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(_create_table_sql(cfg, row_fields))

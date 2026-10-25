@@ -10,9 +10,9 @@ batch, guarded by cfg.propagate_drops and the evidence rule documented there.
 import os
 
 import psycopg2
-import requests
 
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_resources import HttpResource, PostgresResource
 
 
 def _get_postgres_connection():
@@ -30,7 +30,9 @@ def _get_postgres_connection():
     )
 
 
-def rename_columns_in_postgres(cfg: ReverseEtlSyncConfig, renames: list[tuple[str, str]]) -> list[str]:
+def rename_columns_in_postgres(
+    postgres: PostgresResource, http: HttpResource, cfg: ReverseEtlSyncConfig, renames: list[tuple[str, str]]
+) -> list[str]:
     """Rename columns on the Postgres target with native ALTER TABLE ... RENAME
     COLUMN, preserving their data; returns the renames ensured, as "old -> new".
 
@@ -44,7 +46,7 @@ def rename_columns_in_postgres(cfg: ReverseEtlSyncConfig, renames: list[tuple[st
     behind. When BOTH columns exist — the new one created empty by the sink's
     schema evolution while the rename was pending — the data is copied across
     and the old column dropped, mirroring the RisingWave dance."""
-    conn = _get_postgres_connection()
+    conn = postgres.connect_with_timeout()
     ensured: list[str] = []
     try:
         with conn.cursor() as cur:
@@ -70,24 +72,24 @@ def rename_columns_in_postgres(cfg: ReverseEtlSyncConfig, renames: list[tuple[st
     finally:
         conn.close()
     if ensured:
-        restart_sink_task(cfg)
+        restart_sink_task(http, cfg)
     return ensured
 
 
-def restart_sink_task(cfg: ReverseEtlSyncConfig) -> None:
+def restart_sink_task(http: HttpResource, cfg: ReverseEtlSyncConfig) -> None:
     """POST /connectors/<name>/tasks/0/restart — the recovery the sink doc
     prescribes after manual Postgres schema surgery; here it is part of the
     rename itself, because the sink's in-memory schema cache outlives the
     DDL it did not perform."""
     url = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
-    response = requests.post(f"{url}/connectors/{cfg.connector_name}/tasks/0/restart", timeout=15)
+    response = http.post(f"{url}/connectors/{cfg.connector_name}/tasks/0/restart", timeout=15)
     if response.status_code not in (200, 201, 202, 204):
         raise RuntimeError(
             f"Sink task restart failed: HTTP {response.status_code} — {response.text[:200]}"
         )
 
 
-def drop_absent_columns(cfg: ReverseEtlSyncConfig, source_names: set[str]) -> list[str]:
+def drop_absent_columns(postgres: PostgresResource, cfg: ReverseEtlSyncConfig, source_names: set[str]) -> list[str]:
     """Drop every column of the Postgres target the source no longer mirrors
     (the key column excepted); returns the names actually dropped. A no-op
     (returns []) when the table doesn't exist yet.
@@ -97,7 +99,7 @@ def drop_absent_columns(cfg: ReverseEtlSyncConfig, source_names: set[str]) -> li
     former source column, unlike RisingWave's designed <col>_ts companions —
     and it self-heals a sink replay re-adding a dropped column from an old
     message."""
-    conn = _get_postgres_connection()
+    conn = postgres.connect_with_timeout()
     try:
         with conn.cursor() as cur:
             cur.execute(

@@ -17,13 +17,14 @@ from dagster import (
     in_process_executor,
 )
 
-from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION, _admin_client
+from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import build_seed_asset, build_sync_asset, build_table_setup_asset
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
 from .reverse_etl_change import build_change_asset, build_change_job
 from .reverse_etl_reset import build_reset_job
+from .reverse_etl_resources import KafkaResource
 from .reverse_etl_risingwave_setup import build_risingwave_table_asset
 
 
@@ -33,8 +34,8 @@ def _build_topic_asset(cfg: ReverseEtlSyncConfig):
         group_name=cfg.group_name,
         description=f"Create the {cfg.kafka_topic} Kafka topic if it does not exist.",
     )
-    def kafka_topic(context: AssetExecutionContext):
-        admin = _admin_client()
+    def kafka_topic(context: AssetExecutionContext, kafka: KafkaResource):
+        admin = kafka.admin_client()
         if cfg.kafka_topic in admin.list_topics(timeout=15).topics:
             context.log.info(f"Topic {cfg.kafka_topic} already exists")
             return

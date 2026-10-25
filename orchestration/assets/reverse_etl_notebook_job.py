@@ -16,14 +16,13 @@ import re
 import time
 from pathlib import Path
 
-import requests
 import yaml
 from dagster import Config, MetadataValue, OpExecutionContext, in_process_executor, job, op
 
-from .databricks_optimize import DATABRICKS_HOST, _get_token
-from .reverse_etl_cdf_setup import _require_databricks_env, get_table_location_cached
+from .databricks_optimize import DATABRICKS_HOST
 from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_resources import DatabricksResource, HttpResource, RisingWaveResource, SchemaRegistryResource
 from .reverse_etl_risingwave_setup import add_missing_columns
 
 # Where the ReverseEtlCdfSync instances live (orchestration/defs/<folder>/defs.yaml).
@@ -62,8 +61,8 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _find_job_id(token: str) -> int:
-    resp = requests.get(
+def _find_job_id(http: HttpResource, token: str) -> int:
+    resp = http.get(
         f"{DATABRICKS_HOST}/api/2.1/jobs/list",
         headers=_headers(token),
         params={"name": DATABRICKS_JOB_NAME},
@@ -81,10 +80,10 @@ def _find_job_id(token: str) -> int:
     return jobs[0]["job_id"]
 
 
-def _wait_for_run(token: str, run_id: int, poll_interval: int = 10, max_wait: int = 1800) -> dict:
+def _wait_for_run(http: HttpResource, token: str, run_id: int, poll_interval: int = 10, max_wait: int = 1800) -> dict:
     deadline = time.monotonic() + max_wait
     while time.monotonic() < deadline:
-        resp = requests.get(
+        resp = http.get(
             f"{DATABRICKS_HOST}/api/2.1/jobs/runs/get", headers=_headers(token), params={"run_id": run_id}, timeout=30
         )
         resp.raise_for_status()
@@ -96,26 +95,36 @@ def _wait_for_run(token: str, run_id: int, poll_interval: int = 10, max_wait: in
 
 
 @op(name="reverse_etl_trigger_notebook_sync")
-def trigger_notebook_sync(context: OpExecutionContext, config: TriggerNotebookSyncConfig) -> None:
+def trigger_notebook_sync(
+    context: OpExecutionContext,
+    config: TriggerNotebookSyncConfig,
+    databricks: DatabricksResource,
+    risingwave: RisingWaveResource,
+    registry: SchemaRegistryResource,
+    http: HttpResource,
+) -> None:
     label = config.label.strip()
     if not _LABEL_PATTERN.fullmatch(label):
         raise ValueError(f"Invalid label {label!r}: use lowercase letters, digits and underscores, starting with a letter")
 
-    _require_databricks_env()
-    token = _get_token()
+    databricks.require_env()
+    token = databricks.token()
     sync_config = _load_sync_config(label)
-    job_id = _find_job_id(token)
+    job_id = _find_job_id(http, token)
 
     columns_added: list[str] = []
     if config.add_risingwave_columns:
         # Before the run, so the new column exists when RisingWave reads the first message carrying it.
         columns_added = add_missing_columns(
-            sync_config, get_row_fields(get_table_location_cached(token, sync_config, sync_config.source_fqn))
+            risingwave,
+            registry,
+            sync_config,
+            get_row_fields(databricks.table_location_cached(token, sync_config, sync_config.source_fqn)),
         )
         if columns_added:
             context.log.info(f"Added column(s) to RisingWave table {sync_config.risingwave_table}: {columns_added}")
 
-    resp = requests.post(
+    resp = http.post(
         f"{DATABRICKS_HOST}/api/2.1/jobs/run-now",
         headers=_headers(token),
         json={"job_id": job_id, "job_parameters": {"label": label, "encoding": sync_config.encoding}},
@@ -126,7 +135,7 @@ def trigger_notebook_sync(context: OpExecutionContext, config: TriggerNotebookSy
     run_id = resp.json()["run_id"]
     context.log.info(f"Started {DATABRICKS_JOB_NAME} run {run_id} for label {label}")
 
-    result = _wait_for_run(token, run_id)
+    result = _wait_for_run(http, token, run_id)
     state = result.get("state", {})
     result_state = state.get("result_state", "UNKNOWN")
     context.log.info(f"Run {run_id} finished: {state.get('life_cycle_state')} / {result_state}")

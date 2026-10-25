@@ -9,7 +9,7 @@ stuck. See docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 11.
 """
 
 import requests
-from confluent_kafka import Consumer, TopicPartition
+from confluent_kafka import TopicPartition
 from dagster import (
     AssetCheckExecutionContext,
     AssetCheckResult,
@@ -23,7 +23,7 @@ from dagster import (
     in_process_executor,
 )
 
-from .reverse_etl_cdf_setup import _kafka_producer_config
+from .reverse_etl_resources import HttpResource, KafkaResource
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_debezium_sink import CONNECT_URL
 
@@ -31,10 +31,10 @@ MAX_LAG_MESSAGES = 10_000
 HEALTH_CRON = "*/5 * * * *"
 
 
-def _connector_problems(cfg: ReverseEtlSyncConfig) -> tuple[list[str], dict[str, str]]:
+def _connector_problems(http: HttpResource, cfg: ReverseEtlSyncConfig) -> tuple[list[str], dict[str, str]]:
     """(problems, states) from Connect's status endpoint."""
     try:
-        resp = requests.get(f"{CONNECT_URL}/connectors/{cfg.connector_name}/status", timeout=10)
+        resp = http.get(f"{CONNECT_URL}/connectors/{cfg.connector_name}/status", timeout=10)
     except requests.RequestException as e:
         return [f"Kafka Connect not reachable at {CONNECT_URL}: {e}"], {}
     if resp.status_code == 404:
@@ -52,12 +52,12 @@ def _connector_problems(cfg: ReverseEtlSyncConfig) -> tuple[list[str], dict[str,
     return problems, {label: part["state"] for label, part in parts}
 
 
-def _consumer_lag(cfg: ReverseEtlSyncConfig) -> int:
+def _consumer_lag(kafka: KafkaResource, cfg: ReverseEtlSyncConfig) -> int:
     """Messages in the topic the sink's consumer group has not committed yet. A partition with no commit counts
     from its first offset, which is where the connector starts (auto.offset.reset=earliest). The consumer uses
     the sink's group id only to read its committed offsets: it never subscribes, so it does not join the group or
     disturb the sink. (The admin client's list_consumer_group_offsets timed out on this cluster.)"""
-    consumer = Consumer({**_kafka_producer_config(), "group.id": cfg.consumer_group, "enable.auto.commit": False})
+    consumer = kafka.consumer(cfg.consumer_group)
     try:
         topic = consumer.list_topics(cfg.kafka_topic, timeout=15).topics[cfg.kafka_topic]
         partitions = [TopicPartition(cfg.kafka_topic, p) for p in topic.partitions]
@@ -79,13 +79,13 @@ def build_sink_health_check(cfg: ReverseEtlSyncConfig):
             f"consumer group lag on {cfg.kafka_topic} is at most {MAX_LAG_MESSAGES} messages (warning otherwise)."
         ),
     )
-    def sink_healthy(context: AssetCheckExecutionContext) -> AssetCheckResult:
-        problems, states = _connector_problems(cfg)
+    def sink_healthy(context: AssetCheckExecutionContext, http: HttpResource, kafka: KafkaResource) -> AssetCheckResult:
+        problems, states = _connector_problems(http, cfg)
         context.log.info(f"Connect status: problems={problems} states={states}")
         warnings: list[str] = []
         lag = None
         try:
-            lag = _consumer_lag(cfg)
+            lag = _consumer_lag(kafka, cfg)
             context.log.info(f"consumer group lag: {lag}")
             if lag > MAX_LAG_MESSAGES:
                 warnings.append(f"consumer group lag is {lag} messages (limit {MAX_LAG_MESSAGES})")

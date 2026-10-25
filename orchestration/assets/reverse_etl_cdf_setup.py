@@ -56,9 +56,15 @@ from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 from deltalake import DeltaTable
 
 from .databricks_cost_meter import record as meter_record
-from .databricks_cost_meter import reset as meter_reset
 from .databricks_cost_meter import snapshot as meter_snapshot
-from .postgres_sink_setup import get_postgres_connection
+from .reverse_etl_resources import (
+    DatabricksResource,
+    HttpResource,
+    KafkaResource,
+    PostgresResource,
+    RisingWaveResource,
+    SchemaRegistryResource,
+)
 from .databricks_optimize import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -109,7 +115,9 @@ def _azure_storage_options(location: str) -> dict[str, str]:
     }
 
 
-def precheck_versions(cfg: ReverseEtlSyncConfig, source_location: str) -> tuple[int | None, int, str | None]:
+def precheck_versions(
+    postgres: PostgresResource, cfg: ReverseEtlSyncConfig, source_location: str
+) -> tuple[int | None, int, str | None]:
     """(watermark, source's current version, the state row's last_schema) without
     any warehouse compute: the source's version via a delta-rs log read, the
     watermark via the Postgres state table (reverse_etl_sync_state).
@@ -126,7 +134,7 @@ def precheck_versions(cfg: ReverseEtlSyncConfig, source_location: str) -> tuple[
     importing it here would add ~1.5s to every run's measured window."""
     options = _azure_storage_options(source_location)
     current_version = DeltaTable(source_location, storage_options=options).version()
-    rows = _pg_state_read(cfg.sync_name)
+    rows = _pg_state_read(postgres, cfg.sync_name)
     if not rows:
         return None, current_version, None
     version, last_schema = rows[0]  # freshest row wins (ORDER BY last_commit_version DESC)
@@ -345,10 +353,10 @@ def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:
 STATE_TABLE = "reverse_etl_sync_state"
 
 
-def _pg_state_read(sync_name: str) -> list[tuple[int | None, str | None]]:
+def _pg_state_read(postgres: PostgresResource, sync_name: str) -> list[tuple[int | None, str | None]]:
     """[(last_commit_version, last_schema), ...] freshest first. A missing state
     table means no sync has ever run — the first-run state, not an error."""
-    conn = get_postgres_connection()
+    conn = postgres.connect()
     try:
         with conn.cursor() as cur:
             try:
@@ -365,11 +373,11 @@ def _pg_state_read(sync_name: str) -> list[tuple[int | None, str | None]]:
         conn.close()
 
 
-def _pg_state_write(sync_name: str, version: int, last_schema: str) -> None:
+def _pg_state_write(postgres: PostgresResource, sync_name: str, version: int, last_schema: str) -> None:
     """Append-only watermark advance (freshest-row-wins on read), same protocol
     the Delta state table used — now a Postgres INSERT, the sync's last
     Databricks warehouse touch gone."""
-    conn = get_postgres_connection()
+    conn = postgres.connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -394,23 +402,23 @@ def _pg_state_write(sync_name: str, version: int, last_schema: str) -> None:
         conn.close()
 
 
-def _read_state(cfg: ReverseEtlSyncConfig) -> tuple[int | None, str | None]:
+def _read_state(postgres: PostgresResource, cfg: ReverseEtlSyncConfig) -> tuple[int | None, str | None]:
     """(watermark, last_schema) for this sync's state row. last_schema is the JSON
     list of source column names recorded at the previous sync — the evidence the
     drop-propagation pass needs (a column in last_schema but absent from the
     current read is a drop, not a partial read)."""
-    rows = _pg_state_read(cfg.sync_name)
+    rows = _pg_state_read(postgres, cfg.sync_name)
     if not rows:
         return None, None
     version, last_schema = rows[0]
     return version, last_schema
 
 
-def _write_state(cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
+def _write_state(postgres: PostgresResource, cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
     # Append-only, matching the deleted Spark backend's write_state: read_state takes the freshest
     # row for the sync_name, so history accumulates harmlessly and the write is a
     # cheap single-statement insert.
-    _pg_state_write(cfg.sync_name, version, last_schema)
+    _pg_state_write(postgres, cfg.sync_name, version, last_schema)
 
 
 _MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
@@ -599,6 +607,10 @@ def _last_schema_json(row_fields: list[RowField], column_ids: dict[str, int]) ->
 
 
 def _propagate_column_drops(
+    postgres: PostgresResource,
+    risingwave: RisingWaveResource,
+    http: HttpResource,
+    registry: SchemaRegistryResource,
     cfg: ReverseEtlSyncConfig,
     row_fields: list[RowField],
     last_schema: str | None,
@@ -659,8 +671,8 @@ def _propagate_column_drops(
         from .reverse_etl_risingwave_setup import rename_columns_in_risingwave
 
         result["renamed"] = [f"{old} -> {new}" for old, new in renames]
-        result["dropped"]["risingwave"] += rename_columns_in_risingwave(cfg, renames, row_fields)
-        result["dropped"]["postgres"] += rename_columns_in_postgres(cfg, renames)
+        result["dropped"]["risingwave"] += rename_columns_in_risingwave(risingwave, registry, cfg, renames, row_fields)
+        result["dropped"]["postgres"] += rename_columns_in_postgres(postgres, http, cfg, renames)
     if dropped_fields:
         log.info(f"Source dropped column(s) {dropped_fields} — propagating to the targets")
         from .reverse_etl_postgres_setup import (
@@ -668,8 +680,8 @@ def _propagate_column_drops(
         )
         from .reverse_etl_risingwave_setup import drop_columns_from_risingwave
 
-        result["dropped"]["risingwave"] += drop_columns_from_risingwave(cfg, dropped_fields)
-        result["dropped"]["postgres"] += drop_from_postgres(cfg, current)
+        result["dropped"]["risingwave"] += drop_columns_from_risingwave(risingwave, cfg, dropped_fields)
+        result["dropped"]["postgres"] += drop_from_postgres(postgres, cfg, current)
     return result
 
 
@@ -860,13 +872,12 @@ def _avro_serializers(
     cfg: ReverseEtlSyncConfig,
     key_columns: list[str],
     row_fields: list[RowField],
-    client: SchemaRegistryClient | None = None,
+    client: SchemaRegistryClient,
 ) -> tuple[AvroSerializer, AvroSerializer]:
     """Serializers that write the Confluent wire format. When both schemas are already in the registry (checked
     here, one GET per subject) they point at the latest registered version instead of re-registering on the first
     message -- two fewer round-trips per unchanged sync. When they are not (first run), the serializers register
     them as before."""
-    client = client or SchemaRegistryClient({"url": cfg.schema_registry_url})
     key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
     known = all(
         _schema_already_registered(client, subject, schema)
@@ -895,7 +906,9 @@ def _schema_already_registered(client: SchemaRegistryClient, subject: str, schem
         return False
 
 
-def _register_avro_schemas(cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]) -> None:
+def _register_avro_schemas(
+    client: SchemaRegistryClient, cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]
+) -> None:
     """Register both schemas and make sure the registry's LATEST version is the one
     the sync just built.
 
@@ -923,7 +936,6 @@ def _register_avro_schemas(cfg: ReverseEtlSyncConfig, key_columns: list[str], ro
     version, which is now the latest. Soft delete keeps the content resolvable
     by id, so messages already on the topic still deserialize (verified live:
     ids of the deleted versions still answer GET /schemas/ids/<id>)."""
-    client = SchemaRegistryClient({"url": cfg.schema_registry_url})
     key_schema, value_schema = _avro_schemas(cfg, key_columns, row_fields)
     for subject, schema in ((cfg.key_subject, key_schema), (cfg.value_subject, value_schema)):
         built = _avro_schema_string(schema)
@@ -1020,17 +1032,17 @@ def _kafka_producer() -> Producer:
 
 
 def _produce_to_kafka(
+    producer: Producer,
+    registry_client: SchemaRegistryClient,
     cfg: ReverseEtlSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
     row_fields: list[RowField],
-    producer: Producer | None = None,
     flush: bool = True,
 ) -> list[str]:
     """Serialize + enqueue the events. Returns the delivery-error strings collected
     while enqueueing (the callbacks fire during flush()). With flush=False the
     caller owns the final wait — see _flush_producer."""
-    producer = producer or _kafka_producer()
     # produce() is async (it only enqueues); delivery failures surface later in
     # librdkafka's background threads. Collect them per message via on_delivery
     # and fail the run on the flush -- BEFORE the watermark append that follows
@@ -1038,7 +1050,7 @@ def _produce_to_kafka(
     # skipping events that never reached the topic (broker blip, rotated SASL
     # credentials, recreated topic). Duplicate replays are harmless: the targets
     # upsert by key.
-    serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" else None
+    serializers = _avro_serializers(cfg, key_columns, row_fields, registry_client) if cfg.encoding == "avro" else None
     delivery_errors: list[str] = []
     for event in events:
         if serializers:
@@ -1131,6 +1143,7 @@ RAW_MESSAGE_LIMIT = 3
 
 
 def _raw_messages(
+    registry_client: SchemaRegistryClient,
     cfg: ReverseEtlSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
@@ -1141,7 +1154,7 @@ def _raw_messages(
     `schema` included (_message_previews shows payloads only). Avro messages are shown as hex: the
     Confluent wire format, a zero byte and the 4-byte schema id before the Avro payload."""
     raw = []
-    serializers = _avro_serializers(cfg, key_columns, row_fields) if cfg.encoding == "avro" and events else None
+    serializers = _avro_serializers(cfg, key_columns, row_fields, registry_client) if cfg.encoding == "avro" and events else None
     for event in events[:limit]:
         if serializers:
             key, value = _build_avro_message(cfg, event, key_columns, row_fields, serializers)
@@ -1176,10 +1189,10 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
         ),
     )
-    def table_setup(context: AssetExecutionContext):
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def table_setup(context: AssetExecutionContext, postgres: PostgresResource, databricks: DatabricksResource):
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
 
         columns = ",\n            ".join(
             [f"{cfg.key_column} BIGINT GENERATED ALWAYS AS IDENTITY", *cfg.source_columns]
@@ -1215,7 +1228,7 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             )
             ready = f"{cfg.source_fqn} ready (plain Delta: CDF + column mapping, no UniForm)"
         if cfg.source_columns:
-            _run_sql(
+            databricks.run_sql(
                 token,
                 f"""
         CREATE TABLE IF NOT EXISTS {cfg.source_fqn} (
@@ -1230,7 +1243,7 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         else:
             # No source_columns: an existing table. Never create it from the key alone;
             # the UC lookup raises if it is missing (control plane, no warehouse).
-            get_table_location(token, cfg, cfg.source_fqn)
+            databricks.table_location(token, cfg, cfg.source_fqn)
             context.log.info(f"{cfg.source_fqn} exists; left untouched (no source_columns configured)")
 
         # The sync's watermark state lives in Postgres (reverse_etl_sync_state):
@@ -1240,7 +1253,7 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         # constraint dance the Delta state table forced — no deletion vectors, no
         # column mapping, single-writer v7 nuances — all of it obsolete. Same
         # semantics as the Delta table had: append-only, freshest-row-wins.
-        with get_postgres_connection() as conn:
+        with postgres.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
@@ -1285,16 +1298,25 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             "docs/poc/REVERSE_ETL_DBU_COST_NOTES.md sections 4-5."
         ),
     )
-    def cdf_to_kafka(context: AssetExecutionContext):
-        meter_reset()
+    def cdf_to_kafka(
+        context: AssetExecutionContext,
+        postgres: PostgresResource,
+        risingwave: RisingWaveResource,
+        databricks: DatabricksResource,
+        kafka: KafkaResource,
+        http: HttpResource,
+        registry: SchemaRegistryResource,
+    ):
+        databricks.reset_meter()
+        registry_client = registry.client(cfg.schema_registry_url)
         # The token is control-plane only here: it resolves the tables' storage
         # locations through the UC REST API. No SQL runs against a warehouse.
         # Both come from the disk cache when warm (see _get_token_cached).
-        _require_databricks_env()
-        token = _get_token_cached()
+        databricks.require_env()
+        token = databricks.cached_token()
         producer: Producer | None = None
 
-        source_location = get_table_location_cached(token, cfg, cfg.source_fqn)
+        source_location = databricks.table_location_cached(token, cfg, cfg.source_fqn)
 
         # delta-rs no-op pre-check: read the source's current version and the
         # state table's watermark (no Spark, no warehouse) and end the run when
@@ -1307,7 +1329,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
 
         def _precheck() -> None:
             try:
-                precheck["result"] = precheck_versions(cfg, source_location)
+                precheck["result"] = precheck_versions(postgres, cfg, source_location)
             except Exception as error:  # noqa: BLE001 — fail-open is the design
                 precheck["error"] = error
 
@@ -1357,7 +1379,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         else:
             # The pre-check failed (or hung): the Postgres state read is the only
             # fallback that does not repeat whatever broke the delta-rs read.
-            last_version, last_schema = _read_state(cfg)
+            last_version, last_schema = _read_state(postgres, cfg)
             current_version = None
         chunk_start: int | None = None
 
@@ -1388,7 +1410,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             if backfill_from is not None:
                 # The Kafka TLS/SASL handshake runs in librdkafka's background
                 # threads while the version-diff reads and event building run.
-                producer = _kafka_producer()
+                producer = kafka.producer()
                 chunk_start = backfill_from
                 if current_version is None:
                     current_version = get_current_version(source_location)
@@ -1409,7 +1431,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                 # The Kafka TLS/SASL handshake runs in librdkafka's background
                 # threads while the version-diff read runs. The read is pinned to
                 # current_version so its range matches the watermark exactly.
-                producer = _kafka_producer()
+                producer = kafka.producer()
                 chunk_start = next_version
 
         key_columns = [cfg.key_column]
@@ -1477,7 +1499,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     row_fields = get_row_fields(source_location, version=chunk_to)
                     event_row_fields = row_fields
                     event_fields_version = chunk_to
-                    risingwave_added = add_missing_columns(cfg, row_fields)
+                    risingwave_added = add_missing_columns(risingwave, registry, cfg, row_fields)
                     for added in risingwave_added:
                         if added not in risingwave_columns_added:
                             risingwave_columns_added.append(added)
@@ -1487,7 +1509,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     # version-diff read runs; one bounded flush after the last
                     # chunk (below) is the single delivery checkpoint.
                     delivery_errors.extend(
-                        _produce_to_kafka(cfg, events, key_columns=key_columns, row_fields=row_fields, producer=producer, flush=False)
+                        _produce_to_kafka(producer, registry_client, cfg, events, key_columns=key_columns, row_fields=row_fields, flush=False)
                     )
                     events_synced += len(events)
                     for op, count in _summarize_ops(events).items():
@@ -1499,7 +1521,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     if len(preview_events) < MESSAGE_PREVIEW_LIMIT:
                         preview_events += _message_previews(cfg, events, key_columns, row_fields)[: MESSAGE_PREVIEW_LIMIT - len(preview_events)]
                     if len(raw_preview_events) < RAW_MESSAGE_LIMIT:
-                        raw_preview_events += _raw_messages(cfg, events, key_columns, row_fields)[: RAW_MESSAGE_LIMIT - len(raw_preview_events)]
+                        raw_preview_events += _raw_messages(registry_client, cfg, events, key_columns, row_fields)[: RAW_MESSAGE_LIMIT - len(raw_preview_events)]
                 # Per-chunk heartbeat: the pipeline is bursty by design (read
                 # 100k -> build -> enqueue -> repeat), and without this line a
                 # demo audience just sees the targets plateau every chunk.
@@ -1547,7 +1569,9 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             # turn the next sync's diff into a bogus drop.
             row_fields = get_row_fields(source_location, version=current_version)
             column_ids = get_column_ids(source_location, version=current_version)
-            schema_changes = _propagate_column_drops(cfg, row_fields, last_schema, context.log, column_ids)
+            schema_changes = _propagate_column_drops(
+                postgres, risingwave, http, registry, cfg, row_fields, last_schema, context.log, column_ids
+            )
             columns_dropped = schema_changes["dropped"]
             columns_renamed = schema_changes["renamed"]
             if event_row_fields is not None and event_fields_version is not None:
@@ -1580,7 +1604,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     for name in names:
                         event_recorded = [entry for entry in event_recorded if entry["name"] != name]
                 event_changes = _propagate_column_drops(
-                    cfg, row_fields, json.dumps(event_recorded), context.log, column_ids
+                    postgres, risingwave, http, registry, cfg, row_fields, json.dumps(event_recorded), context.log, column_ids
                 )
                 for target, names in event_changes["dropped"].items():
                     for name in names:
@@ -1589,7 +1613,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                 for pair in event_changes["renamed"]:
                     if pair not in columns_renamed:
                         columns_renamed.append(pair)
-            _write_state(cfg, new_version, _last_schema_json(row_fields, column_ids))
+            _write_state(postgres, cfg, new_version, _last_schema_json(row_fields, column_ids))
             if columns_renamed:
                 context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
             if columns_dropped:
@@ -1633,12 +1657,12 @@ def build_seed_asset(cfg: ReverseEtlSyncConfig):
             f"Not synced until {cfg.sync_asset} runs."
         ),
     )
-    def seed(context: AssetExecutionContext):
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
+    def seed(context: AssetExecutionContext, databricks: DatabricksResource):
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
         for statement in cfg.seed_statements:
-            _run_sql(token, statement.replace("{source_table}", cfg.source_fqn))
+            databricks.run_sql(token, statement.replace("{source_table}", cfg.source_fqn))
         context.log.info(f"Ran {len(cfg.seed_statements)} seed statement(s) against {cfg.source_fqn}")
         context.add_output_metadata({
             "statements": MetadataValue.int(len(cfg.seed_statements)),
