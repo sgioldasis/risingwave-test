@@ -65,6 +65,9 @@ profiles.yml
 # Dagster
 dagster_storage/
 
+# The syncs' local DuckDB state files (state_backend: duckdb)
+sync_state/
+
 # Telemetry and NUX data
 .telemetry/
 .nux/

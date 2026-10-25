@@ -948,6 +948,7 @@ services:
       - "./data:/workspace/data:ro"
       - "./scripts:/workspace/scripts:ro"
       - "dagster-storage:/workspace/dagster_storage"
+      - "./sync_state:/workspace/sync_state"
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
     depends_on:
@@ -1023,6 +1024,7 @@ services:
       - "./data:/workspace/data:ro"
       - "./scripts:/workspace/scripts:ro"
       - "dagster-storage:/workspace/dagster_storage"
+      - "./sync_state:/workspace/sync_state"
       - "./pyproject.toml:/workspace/pyproject.toml:ro"
       - "./uv.lock:/workspace/uv.lock:ro"
     depends_on:
