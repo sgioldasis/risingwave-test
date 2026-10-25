@@ -459,7 +459,7 @@ The only thing the two sides share is what the sync puts on the topic:
 | the topic (`kafka_topic`) | the same topic — its only input |
 | the encoding (`json` / `avro`) | how to decode: Connect JSON with the schema embedded, or the registry's `<topic>-key` / `<topic>-value` subjects |
 | the key column | the message key (and `primary.key.fields` for the sink, the RisingWave primary key) |
-| the envelope (`sync_name` prefix) | inside every message; the downstream never needs it by name |
+| the envelope name (`<sync_name>.<schema>.<source_table>`) | the Avro schemas' namespace: the RisingWave registration must byte-match the sync's schemas, so it receives the name as opaque text (`envelope_schema_name` on the targets config — found live 2026-10-25, when the split made the RW asset's Avro registration fail without it) |
 
 The downstream component therefore needs **no Databricks resource, no source table, no catalog** —
 it cannot know where the events came from. Conversely the sync needs **no connector, no target

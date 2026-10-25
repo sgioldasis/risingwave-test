@@ -20,13 +20,13 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_config import ReverseEtlTargetsConfig
 from .reverse_etl_resources import KafkaResource, SchemaRegistryResource
 
 _DRAIN_ROUNDS = 10
 
 
-def build_duckdb_target_asset(cfg: ReverseEtlSyncConfig):
+def build_duckdb_target_asset(cfg: ReverseEtlTargetsConfig):
     """One asset: the topic's mirror in the DuckDB file at cfg.duckdb_target_path."""
     table = cfg.kafka_topic  # the table mirrors the topic
 

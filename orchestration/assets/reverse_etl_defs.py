@@ -21,7 +21,7 @@ from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import build_sync_asset
 from .reverse_etl_demo_assets import build_seed_asset, build_table_setup_asset
 from .reverse_etl_duckdb_target import build_duckdb_target_asset
-from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_config import ReverseEtlSyncConfig, ReverseEtlTargetsConfig
 from .reverse_etl_demo_hooks import DemoSyncHooks
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
@@ -51,13 +51,37 @@ def _build_topic_asset(cfg: ReverseEtlSyncConfig):
     return kafka_topic
 
 
+def build_target_defs(cfg: ReverseEtlTargetsConfig, source_fqn: str = "") -> Definitions:
+    """The downstream side of the sync/targets seam (decoupling plan section 13): the selected
+    target assets plus the sink health check with its job and schedule (D19: the check watches
+    the connector and the lag, so it lives on the targets side). Takes only the targets config --
+    no field of it names the source -- plus the one composition input `source_fqn`, which the
+    RisingWave builder requires: its CREATE reads the source's columns and types once, the same
+    target-side schema care the demo hooks do inside the sync run."""
+    has_postgres_target = "postgres" in cfg.targets
+    if has_postgres_target:
+        health_check = build_sink_health_check(cfg)
+        health_job, health_schedule = build_sink_health_job_and_schedule(cfg, health_check)
+    return Definitions(
+        assets=[
+            *([build_risingwave_table_asset(cfg, source_fqn)] if "risingwave" in cfg.targets else []),
+            *([build_debezium_sink_asset(cfg)] if "postgres" in cfg.targets else []),
+            *([build_duckdb_target_asset(cfg)] if "duckdb" in cfg.targets else []),
+        ],
+        asset_checks=[health_check] if has_postgres_target else [],
+        jobs=[health_job] if has_postgres_target else [],
+        schedules=[health_schedule] if has_postgres_target else [],
+    )
+
+
 def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     """The demo's builder: the sync asset plus everything the demo needs around it (table setup,
-    topic, the selected targets, seed, make-change, the jobs and the health check). The reusable
-    component builds only the sync asset itself (decoupling plan step 6). The targets are consumers
-    of the sync's topic, selected by cfg.targets (plan section 12, option A): "risingwave" builds
-    the RisingWave table, "postgres" the Debezium JDBC sink with its health check, "duckdb" a local
-    file mirror."""
+    topic, seed, make-change, the setup and reset jobs), composed with the downstream side via
+    build_target_defs on the config's targets half. The reusable component builds only the sync
+    asset itself (decoupling plan step 6). The targets are consumers of the sync's topic,
+    selected by cfg.targets (plan section 12, option A): "risingwave" builds the RisingWave
+    table, "postgres" the Debezium JDBC sink with its health check, "duckdb" a local file
+    mirror."""
     assets = [
         build_table_setup_asset(cfg),
         # The demo's hooks reach RisingWave, Kafka Connect and the Postgres TARGET through
@@ -70,9 +94,6 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
             extra_resource_keys=("risingwave", "http", "postgres"),
             deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
         ),
-        *([build_risingwave_table_asset(cfg)] if "risingwave" in cfg.targets else []),
-        *([build_debezium_sink_asset(cfg)] if "postgres" in cfg.targets else []),
-        *([build_duckdb_target_asset(cfg)] if "duckdb" in cfg.targets else []),
     ]
     if cfg.create_topic_asset:
         assets.append(_build_topic_asset(cfg))
@@ -107,20 +128,16 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         ),
         executor_def=in_process_executor,
     )
-    # The health check watches the Debezium JDBC sink's connector and lag: it exists only with the
-    # postgres target (plan section 12 -- the health check follows the selected targets).
-    has_postgres_target = "postgres" in cfg.targets
-    if has_postgres_target:
-        health_check = build_sink_health_check(cfg)
-        health_job, health_schedule = build_sink_health_job_and_schedule(cfg, health_check)
-    return Definitions(
-        assets=assets,
-        asset_checks=[health_check] if has_postgres_target else [],
-        jobs=[
-            setup_job,
-            build_reset_job(cfg),
-            *([build_change_job(cfg, change_asset)] if change_asset is not None else []),
-            *([health_job] if has_postgres_target else []),
-        ],
-        schedules=[health_schedule] if has_postgres_target else [],
+    return Definitions.merge(
+        Definitions(
+            assets=assets,
+            jobs=[
+                setup_job,
+                build_reset_job(cfg),
+                *([build_change_job(cfg, change_asset)] if change_asset is not None else []),
+            ],
+        ),
+        # The downstream side, on the config's targets half: the source knowledge crosses the
+        # seam only as this explicit composition argument (plan section 13.2).
+        build_target_defs(cfg.targets_config(), source_fqn=cfg.source_fqn),
     )

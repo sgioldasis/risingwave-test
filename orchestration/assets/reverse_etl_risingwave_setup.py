@@ -16,7 +16,7 @@ import os
 import psycopg2
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_config import ReverseEtlTargetsConfig
 from .reverse_etl_cdf_setup import (
     DATE,
     ZONED_TIMESTAMP,
@@ -59,7 +59,7 @@ _CONNECT_TYPE_BY_RW_DATA_TYPE = {
 }
 
 
-def _registration_fields(cfg: ReverseEtlSyncConfig, row_fields: list[RowField], existing: dict[str, str]) -> list[RowField]:
+def _registration_fields(cfg: ReverseEtlTargetsConfig, row_fields: list[RowField], existing: dict[str, str]) -> list[RowField]:
     """row_fields plus every live table column the registration would otherwise shed, as RowFields.
 
     RisingWave rebinds the whole table against the registry's latest schema on every ADD COLUMN and
@@ -99,7 +99,7 @@ def _get_risingwave_connection():
     )
 
 
-def _kafka_connector_options(cfg: ReverseEtlSyncConfig) -> str:
+def _kafka_connector_options(cfg: ReverseEtlTargetsConfig) -> str:
     """WITH (...) clause options for the Kafka connector, matching
     kafka_topics_setup.py's _admin_client() credential convention (same
     OUTPUT_TOPICS-scoped credentials this topic lives under)."""
@@ -126,7 +126,7 @@ def _kafka_connector_options(cfg: ReverseEtlSyncConfig) -> str:
     return ",\n    ".join(options)
 
 
-def _column_defs(cfg: ReverseEtlSyncConfig, field: RowField) -> list[str]:
+def _column_defs(cfg: ReverseEtlTargetsConfig, field: RowField) -> list[str]:
     """Column definition(s) for one field. With Avro, RisingWave cannot read the ZonedTimestamp string as
     TIMESTAMPTZ: it reads it as VARCHAR, plus a generated TIMESTAMPTZ column named <column>_ts (section 14.1
     of the sink doc)."""
@@ -136,7 +136,7 @@ def _column_defs(cfg: ReverseEtlSyncConfig, field: RowField) -> list[str]:
     return [f"{_quote(name)} {_RISINGWAVE_TYPE_BY_CONNECT_TYPE[connect_type]}"]
 
 
-def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> str:
+def _create_table_sql(cfg: ReverseEtlTargetsConfig, row_fields: list[RowField]) -> str:
     """CREATE TABLE with *all* live columns up front. Creating with only a
     few and adding the rest afterwards would race the table's
     scan.startup.mode='earliest' read of the topic: a column added a moment
@@ -162,7 +162,7 @@ def _create_table_sql(cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> 
 
 
 def add_missing_columns(
-    risingwave: RisingWaveResource, registry: SchemaRegistryResource, cfg: ReverseEtlSyncConfig, row_fields: list[RowField]
+    risingwave: RisingWaveResource, registry: SchemaRegistryResource, cfg: ReverseEtlTargetsConfig, row_fields: list[RowField]
 ) -> list[str]:
     """Add any of `row_fields` the table lacks, with the matching RisingWave
     type; returns the names added. A no-op (returns []) if the table doesn't
@@ -201,7 +201,7 @@ def add_missing_columns(
 
 
 def drop_columns_from_risingwave(
-    risingwave: RisingWaveResource, cfg: ReverseEtlSyncConfig, dropped_fields: list[str]
+    risingwave: RisingWaveResource, cfg: ReverseEtlTargetsConfig, dropped_fields: list[str]
 ) -> list[str]:
     """Drop `dropped_fields` — and their <name>_ts generated companions — from the
     RisingWave table; returns the names actually dropped. A no-op (returns [])
@@ -238,7 +238,7 @@ def drop_columns_from_risingwave(
 def rename_columns_in_risingwave(
     risingwave: RisingWaveResource,
     registry: SchemaRegistryResource,
-    cfg: ReverseEtlSyncConfig,
+    cfg: ReverseEtlTargetsConfig,
     renames: list[tuple[str, str]],
     row_fields: list[RowField],
 ) -> list[str]:
@@ -309,7 +309,14 @@ def rename_columns_in_risingwave(
         conn.close()
 
 
-def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
+def build_risingwave_table_asset(cfg: ReverseEtlTargetsConfig, source_fqn: str):
+    """The RisingWave target asset. `source_fqn` is the one composition input the seam allows
+    (decoupling plan section 13): the CREATE reads the source's columns and types once -- the
+    same target-side schema care the demo hooks do inside the sync run. It is an argument, not
+    a config field, so a targets config cannot carry it by accident."""
+    if not source_fqn:
+        raise ValueError("source_fqn is required for the risingwave target: the CREATE reads the source's columns")
+
     @asset(
         name=cfg.risingwave_asset,
         group_name=cfg.group_name,
@@ -333,7 +340,7 @@ def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
     ):
         databricks.require_env()
         token = databricks.token()
-        row_fields = get_row_fields(databricks.table_location_cached(token, cfg, cfg.source_fqn))
+        row_fields = get_row_fields(databricks.table_location_cached(token, cfg, source_fqn))
         if cfg.encoding == "avro":
             _register_avro_schemas(registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], row_fields)
 

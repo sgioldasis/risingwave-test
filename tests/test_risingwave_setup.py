@@ -362,7 +362,9 @@ class TestTableAsset:
     def materialize(self, table, encoding, calls):
         resources = fake_resources(calls, registry=FakeSchemaRegistry(calls))
         resources["risingwave"] = table
-        return dg.materialize([rw.build_risingwave_table_asset(cfg_for(encoding))], resources=resources, raise_on_error=False)
+        return dg.materialize(
+            [rw.build_risingwave_table_asset(cfg_for(encoding), "de_dev.sr_poc.external")], resources=resources, raise_on_error=False
+        )
 
     def test_the_table_is_created_from_the_sources_columns(self):
         table, calls = StatefulRisingWave(count=7), []

@@ -9,6 +9,10 @@ Two frozen dataclasses split the configuration by audience:
 - `ReverseEtlSyncConfig(CdfSyncConfig)` adds everything the demo needs around the
   sync: the tables and connector it creates, the targets, the reset allowlist, the
   seed. The demo's modules take this one; the sync's pure helpers take the base.
+- `ReverseEtlTargetsConfig` is the downstream side of the sync/targets seam
+  (decoupling plan section 13): the seam fields (topic, key column, encoding)
+  plus the target names -- and nothing about the source table, which a target
+  cannot know. `ReverseEtlSyncConfig.targets_config()` derives it.
 
 Both are keyword-only, so the demo fields can carry defaults without ordering
 constraints. The modules in this package take a config as a parameter;
@@ -73,11 +77,11 @@ class CdfSyncConfig:
 
     @property
     def key_subject(self) -> str:
-        return f"{self.kafka_topic}-key"
+        return avro_key_subject(self.kafka_topic)
 
     @property
     def value_subject(self) -> str:
-        return f"{self.kafka_topic}-value"
+        return avro_value_subject(self.kafka_topic)
 
     @property
     def source_fqn(self) -> str:
@@ -106,6 +110,91 @@ def dagster_names(label: str) -> dict:
         "reset_job": f"{base}_reset_job",
         "seed_asset": f"{base}_seed",
     }
+
+
+def connect_consumer_group(connector_name: str) -> str:
+    """Kafka Connect names a sink connector's consumer group connect-<name>."""
+    return f"connect-{connector_name}"
+
+
+def avro_key_subject(kafka_topic: str) -> str:
+    """The registry subject for a topic's key schema."""
+    return f"{kafka_topic}-key"
+
+
+def avro_value_subject(kafka_topic: str) -> str:
+    """The registry subject for a topic's value schema."""
+    return f"{kafka_topic}-value"
+
+
+def _check_targets(targets: tuple[str, ...], duckdb_target_path: str) -> None:
+    """The target selection (plan section 12, option A), validated identically wherever it
+    appears: both the sync config and the targets config carry it."""
+    unknown = set(targets) - {"risingwave", "postgres", "duckdb"}
+    if unknown:
+        raise ValueError(f"unknown target(s) {sorted(unknown)} -- targets may contain 'risingwave', 'postgres', 'duckdb'")
+    if "duckdb" in targets and not duckdb_target_path:
+        raise ValueError("duckdb_target_path is required when the duckdb target is selected")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReverseEtlTargetsConfig:
+    """The downstream side of the sync/targets seam (decoupling plan section 13): everything the
+    targets need to consume the sync's topic, and nothing about the source table — a target
+    cannot know where the events came from. The one source knowledge left is `source_fqn`, an
+    explicit composition argument to the RisingWave builder (its CREATE reads the source's
+    columns and types once), not a field here."""
+
+    # --- the seam (section 13.2): what the sync puts on the topic ---------------
+    sync_name: str
+    # The targets' only input.
+    kafka_topic: str
+    # The message key: the RisingWave primary key and the sink's primary.key.fields.
+    key_column: str
+    # The Debezium envelope's name (<sync_name>.<schema>.<source_table>): the Avro
+    # schemas' namespace, which the RisingWave registration must match exactly to
+    # read the wire. The sync decides it; a target treats it as opaque text.
+    envelope_schema_name: str
+    # How to decode: Connect JSON with the schema embedded in every message, or the
+    # registry's <topic>-key and <topic>-value subjects.
+    encoding: str = "json"
+    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+
+    # --- the Dagster names and the target names (section 11) ---------------------
+    group_name: str
+    # Composition: the target assets are consumers, ordered after the sync's (and the
+    # topic's) assets by name -- the only hold they have on the upstream side.
+    sync_asset: str
+    topic_asset: str
+    risingwave_asset: str
+    sink_asset: str
+    connector_name: str
+    postgres_table: str
+    risingwave_table: str
+
+    # --- the selection (section 12) ----------------------------------------------
+    sink_tasks_max: int = 1
+    targets: tuple[str, ...] = ("risingwave", "postgres")
+    duckdb_target_path: str = ""
+
+    def __post_init__(self) -> None:
+        if self.encoding not in ("json", "avro"):
+            raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+        if self.sink_tasks_max < 1:
+            raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
+        _check_targets(self.targets, self.duckdb_target_path)
+
+    @property
+    def consumer_group(self) -> str:
+        return connect_consumer_group(self.connector_name)
+
+    @property
+    def key_subject(self) -> str:
+        return avro_key_subject(self.kafka_topic)
+
+    @property
+    def value_subject(self) -> str:
+        return avro_value_subject(self.kafka_topic)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -188,11 +277,7 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
         super().__post_init__()
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
-        unknown = set(self.targets) - {"risingwave", "postgres", "duckdb"}
-        if unknown:
-            raise ValueError(f"unknown target(s) {sorted(unknown)} -- targets may contain 'risingwave', 'postgres', 'duckdb'")
-        if "duckdb" in self.targets and not self.duckdb_target_path:
-            raise ValueError("duckdb_target_path is required when the duckdb target is selected")
+        _check_targets(self.targets, self.duckdb_target_path)
 
     @property
     def state_fqn(self) -> str:
@@ -203,8 +288,38 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
 
     @property
     def consumer_group(self) -> str:
-        # Kafka Connect names a sink connector's consumer group connect-<name>.
-        return f"connect-{self.connector_name}"
+        return connect_consumer_group(self.connector_name)
+
+    @property
+    def key_subject(self) -> str:
+        return avro_key_subject(self.kafka_topic)
+
+    @property
+    def value_subject(self) -> str:
+        return avro_value_subject(self.kafka_topic)
+
+    def targets_config(self) -> ReverseEtlTargetsConfig:
+        """The downstream half of this config (plan section 13): the seam fields and the target
+        names, nothing about the source. The demo's builder hands this to build_target_defs."""
+        return ReverseEtlTargetsConfig(
+            sync_name=self.sync_name,
+            kafka_topic=self.kafka_topic,
+            key_column=self.key_column,
+            envelope_schema_name=self.envelope_schema_name,
+            encoding=self.encoding,
+            schema_registry_url=self.schema_registry_url,
+            group_name=self.group_name,
+            sync_asset=self.sync_asset,
+            topic_asset=self.topic_asset,
+            risingwave_asset=self.risingwave_asset,
+            sink_asset=self.sink_asset,
+            connector_name=self.connector_name,
+            postgres_table=self.postgres_table,
+            risingwave_table=self.risingwave_table,
+            sink_tasks_max=self.sink_tasks_max,
+            targets=self.targets,
+            duckdb_target_path=self.duckdb_target_path,
+        )
 
     @classmethod
     def for_name(
