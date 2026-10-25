@@ -20,6 +20,7 @@ out after 60 s, and the order is randomised (`pytest-randomly`), so a test that 
 |---|---|---|
 | Unit | `test_change.py`, `test_reset.py`, `test_sink.py`, `test_table_setup.py`, `test_risingwave_setup.py`, `test_postgres_setup.py`, `test_types.py`, `test_notebook_job.py`, `test_drt.py`, `test_jobotron.py`, `test_control_plane_cache.py`, `test_delta_reader*.py` | One module's behaviour, including its failure and retry paths |
 | Sync asset | `sync_asset/` (shared setup in `support.py`, `conftest.py`) | The whole sync end to end against a real local Delta table: messages, Avro, schema changes, history and chunks |
+| Hook contract | `sync_asset/test_sync_hooks.py` | The demo hooks' ordering (before produce, after flush, before the watermark), what they receive and return, and that a hook-less sync touches neither RisingWave nor Kafka Connect |
 | Golden | `test_wire_format.py`, `golden/` | The exact bytes produced for Connect JSON and Avro. Change them only on purpose |
 | Property | `test_properties.py` | Invariants checked on generated inputs with hypothesis (chunking, watermark, coercion, timestamps) |
 | Parity | `test_notebook_parity.py` | The Databricks notebook builds what the asset builds. Its pure functions are lifted out with `ast` and compared; nothing runs Spark |

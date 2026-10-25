@@ -20,6 +20,7 @@ from dagster import (
 from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import build_seed_asset, build_sync_asset, build_table_setup_asset
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_demo_hooks import DemoSyncHooks
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
 from .reverse_etl_change import build_change_asset, build_change_job
@@ -51,7 +52,7 @@ def _build_topic_asset(cfg: ReverseEtlSyncConfig):
 def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     assets = [
         build_table_setup_asset(cfg),
-        build_sync_asset(cfg),
+        build_sync_asset(cfg, hooks=DemoSyncHooks()),
         build_risingwave_table_asset(cfg),
         build_debezium_sink_asset(cfg),
     ]

@@ -1,7 +1,8 @@
 # Plan: decouple the reverse-ETL component from the demo
 
-*Written 2026-10-25 against `main` after PR #1. **Status: proposal, nothing implemented.** Line numbers refer to
-`orchestration/assets/reverse_etl_cdf_setup.py` as of that date.*
+*Written 2026-10-25 against `main` after PR #1. **Status: steps 1 (config split) and 2 (hooks seam) are
+implemented on `feature/component-decoupling`; the rest is a proposal.** Line numbers refer to
+`orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
 
 ## 1. Goal
 
@@ -91,17 +92,21 @@ and the demo supplies the RisingWave and Postgres behaviour:
 
 ```
 class SyncHooks(Protocol):
-    def before_produce(self, context, row_fields) -> dict:
-        """Called once per event-bearing chunk, before its messages are produced.
-        Demo: add_missing_columns on RisingWave. Returns metadata to add to the run."""
-    def after_delivery(self, context, schema) -> dict:
-        """Called once after the final flush and before the watermark is saved.
-        `schema` carries the final fields and column ids, the previously recorded schema, and the
-        schema the events were produced with (fields, ids, version), which is what the drop and rename
-        diff needs. Demo: the drop/rename propagation and the sink restart. Returns metadata."""
+    def before_produce(self, context, cfg, row_fields) -> dict:
+        """Called once per event-bearing chunk, after the chunk's schema is resolved and before its
+        messages are produced. Demo: add_missing_columns on RisingWave. Returns metadata to add to the
+        run (list values merge across chunks, others overwrite)."""
+    def after_delivery(self, context, cfg, schema) -> dict:
+        """Called once after the final flush succeeded and before the watermark is saved. `schema`
+        carries the final fields and column ids, the previously recorded schema, and the schema the
+        events were produced with (fields, ids, version), which is what the drop and rename diff needs.
+        Demo: the drop/rename propagation and the sink restart. Returns metadata."""
     def idle_metadata(self) -> dict:
         """Metadata keys for a no-op run, so Dagster shows the same columns whether or not anything moved."""
 ```
+
+*(Implemented as written in step 2 — see `SyncHooks` in `reverse_etl_cdf_setup.py` and
+`reverse_etl_demo_hooks.py`; the ordering contract is pinned by `tests/sync_asset/test_sync_hooks.py`.)*
 
 - With no hooks (the reusable component), nothing is called and none of the demo metadata keys
   (`risingwave_columns_added`, `columns_dropped`, `columns_renamed`) are emitted.

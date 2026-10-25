@@ -37,7 +37,7 @@ import psycopg2
 import threading
 import time
 from itertools import zip_longest
-from typing import Any
+from typing import Any, Protocol
 
 import requests
 from confluent_kafka import Producer
@@ -1299,14 +1299,55 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
     return table_setup
 
 
-def build_sync_asset(cfg: ReverseEtlSyncConfig):
+class SyncHooks(Protocol):
+    """The sync's extension points, called by the sync asset at two fixed points. The demo passes
+    DemoSyncHooks (reverse_etl_demo_hooks.py); a sync run without hooks touches only Databricks
+    storage, Kafka and the Postgres state table — that is the reusable component's behaviour.
+
+    Ordering contract (pinned by tests/sync_asset/test_sync_hooks.py):
+
+    - `before_produce` runs once per EVENT-BEARING chunk, after the chunk's schema is resolved and
+      before any of its messages are produced — a target column must exist before the first message
+      that uses it.
+    - `after_delivery` runs once, after the final Kafka flush SUCCEEDED and before the watermark is
+      written — a failing hook fails the run before the watermark moves, so the next run repeats it.
+      Every hook operation must be idempotent, because that replay re-runs it.
+    - Neither hook is called on a run that produces nothing; such a run reports `idle_metadata()`.
+
+    `before_produce` and `after_delivery` return metadata to add to the run: list values are merged
+    across chunks (extended, order kept, duplicates dropped), any other value overwrites. Resources
+    reach the hooks through `context.resources`."""
+
+    def before_produce(self, context, cfg, row_fields: list["RowField"]) -> dict: ...
+
+    def after_delivery(self, context, cfg, schema: dict) -> dict: ...
+
+    def idle_metadata(self) -> dict: ...
+
+
+def _merge_hook_metadata(into: dict, extra: dict) -> dict:
+    """Merge one hook call's metadata into the run's: lists extend (dedup, order kept), the rest overwrite."""
+    for key, value in extra.items():
+        if isinstance(value, list):
+            merged = into.setdefault(key, [])
+            for item in value:
+                if item not in merged:
+                    merged.append(item)
+        else:
+            into[key] = value
+    return into
+
+
+def build_sync_asset(cfg: ReverseEtlSyncConfig, hooks: SyncHooks | None = None):
     """The sync asset: delta-rs version-range reconstruction (see
     reverse_etl_delta_reader.py) -- no CDF read, no Spark, no warehouse anything:
-    reads are delta-rs and the watermark state lives in Postgres."""
-    return _build_sync_asset_delta_rs(cfg)
+    reads are delta-rs and the watermark state lives in Postgres. `hooks` (the
+    demo passes DemoSyncHooks) adds target care at the two points documented on
+    SyncHooks; without them the asset writes only to Kafka and the state table."""
+    return _build_sync_asset_delta_rs(cfg, hooks)
 
 
-def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
+def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig, hooks: SyncHooks | None):
     @asset(
         name=cfg.sync_asset,
         group_name=cfg.group_name,
@@ -1375,9 +1416,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     "op_counts": MetadataValue.json({}),
                     "last_commit_version": MetadataValue.int(last_version_pre),
                     "kafka_topic": MetadataValue.text(cfg.kafka_topic),
-                    "risingwave_columns_added": MetadataValue.json([]),
-                    "columns_dropped": MetadataValue.json({"risingwave": [], "postgres": []}),
-                    "columns_renamed": MetadataValue.json([]),
+                    **(hooks.idle_metadata() if hooks else {}),
                     "kafka_messages": MetadataValue.json([]),
                     "kafka_messages_truncated": MetadataValue.bool(False),
                     "kafka_messages_raw": MetadataValue.json([]),
@@ -1462,7 +1501,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         preview_events: list[dict[str, Any]] = []
         raw_preview_events: list[dict[str, Any]] = []
         delivery_errors: list[str] = []
-        risingwave_columns_added: list[str] = []
+        hook_metadata: dict = {}
         # The schema the last produced events were enveloped with, and its
         # version -- the propagation needs it to catch schema changes landing
         # inside the unsynced window AFTER the last data event (see below).
@@ -1473,7 +1512,6 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         rows_seen = False
 
         if chunk_start is not None:
-            from .reverse_etl_risingwave_setup import add_missing_columns
 
             # Read and produce one version chunk at a time so a backlog of many
             # commits streams through the driver instead of collecting every row
@@ -1505,28 +1543,24 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                 if events:
                     # Resolve the schema PER EVENT-BEARING CHUNK, pinned to the
                     # chunk's top version -- the same commit the data was read
-                    # at -- and make RisingWave ready before any message is
-                    # produced (it only fills a column from messages read after
-                    # the column exists). Set-once-and-reuse is wrong the
+                    # at -- and give the hooks their chance BEFORE any message
+                    # is produced (the demo's hook adds the column to
+                    # RisingWave, which only fills a column from messages read
+                    # after the column exists). Set-once-and-reuse is wrong the
                     # moment the schema changes between chunks: later chunks'
                     # events would be enveloped with the FIRST chunk's column
                     # list, and _coerce_row's projection would silently drop
                     # every value under a column the first chunk predated
                     # (verified live 2026-10-19 -- with the seed backfill in
                     # the same sync, the populate's new-column value was lost
-                    # exactly this way). Imported here because that module
-                    # imports this one. A chunk spanning multiple versions
+                    # exactly this way). A chunk spanning multiple versions
                     # pins to its top, which is why chunks are split at schema
                     # changes (_split_at_schema_changes): one schema per chunk.
                     row_fields = get_row_fields(source_location, version=chunk_to)
                     event_row_fields = row_fields
                     event_fields_version = chunk_to
-                    risingwave_added = add_missing_columns(risingwave, registry, cfg, row_fields)
-                    for added in risingwave_added:
-                        if added not in risingwave_columns_added:
-                            risingwave_columns_added.append(added)
-                    if risingwave_added:
-                        context.log.info(f"Added column(s) to the RisingWave table: {risingwave_added}")
+                    if hooks is not None:
+                        _merge_hook_metadata(hook_metadata, hooks.before_produce(context, cfg, row_fields))
                     # flush=False: the broker transfers while the NEXT chunk's
                     # version-diff read runs; one bounded flush after the last
                     # chunk (below) is the single delivery checkpoint.
@@ -1574,10 +1608,8 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
         # writing the same version costs a full snapshot + commit for nothing.
         # A schema change is always a commit, so an unchanged version cannot
         # hide one.
-        columns_dropped: dict[str, list[str]] = {}
-        columns_renamed: list[str] = []
         if new_version is not None and new_version != last_version:
-            # The propagation diffs the table's FINAL schema -- the version the
+            # The recorded schema is the table's FINAL schema -- the version the
             # watermark advances to -- against last_schema. The chunk loop's
             # row_fields are pinned to the last EVENT-bearing chunk and must
             # not leak here: a RENAME committing after the last data event in
@@ -1591,55 +1623,27 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             # turn the next sync's diff into a bogus drop.
             row_fields = get_row_fields(source_location, version=current_version)
             column_ids = get_column_ids(source_location, version=current_version)
-            schema_changes = _propagate_column_drops(
-                postgres, risingwave, http, registry, cfg, row_fields, last_schema, context.log, column_ids
-            )
-            columns_dropped = schema_changes["dropped"]
-            columns_renamed = schema_changes["renamed"]
-            if event_row_fields is not None and event_fields_version is not None:
-                # The targets were fed events under the EVENT-era schema.
-                # Anything changing between that schema and the final one -- a
-                # RENAME or DROP landing inside the unsynced window, after the
-                # last data event -- is invisible to the last_schema diff (the
-                # state predates those columns) and must be applied here too,
-                # or the targets keep the old name while the source moved on
-                # (verified live 2026-10-19: add + populate + rename in one
-                # unsynced window left the value under new_col_1 in Postgres).
-                # The state diff above already EXECUTED its own changes, so the
-                # event-era schema is adjusted by them first -- otherwise the
-                # same rename would be detected twice and the second ALTER
-                # would fail on the already-renamed column.
-                # The event-era ids come from the event-era version: the final
-                # ids no longer contain the old name, and an id-less recorded
-                # column would read as a drop instead of the rename it was.
-                event_ids = get_column_ids(source_location, version=event_fields_version)
-                event_recorded = [
-                    {"name": field[0], "id": event_ids.get(field[0])}
-                    for field in event_row_fields
-                ]
-                for old_to_new in schema_changes["renamed"]:
-                    old, new = [part.strip() for part in old_to_new.split("->")]
-                    for entry in event_recorded:
-                        if entry["name"] == old:
-                            entry["name"] = new
-                for target, names in schema_changes["dropped"].items():
-                    for name in names:
-                        event_recorded = [entry for entry in event_recorded if entry["name"] != name]
-                event_changes = _propagate_column_drops(
-                    postgres, risingwave, http, registry, cfg, row_fields, json.dumps(event_recorded), context.log, column_ids
+            if hooks is not None:
+                # Here: AFTER the flush above succeeded, BEFORE the watermark
+                # write below -- a failing hook fails the run before the
+                # watermark moves, and the next run replays the same versions
+                # and re-runs it (every hook operation is idempotent).
+                _merge_hook_metadata(
+                    hook_metadata,
+                    hooks.after_delivery(
+                        context,
+                        cfg,
+                        {
+                            "row_fields": row_fields,
+                            "column_ids": column_ids,
+                            "last_schema": last_schema,
+                            "event_row_fields": event_row_fields,
+                            "event_fields_version": event_fields_version,
+                            "source_location": source_location,
+                        },
+                    ),
                 )
-                for target, names in event_changes["dropped"].items():
-                    for name in names:
-                        if name not in columns_dropped[target]:
-                            columns_dropped[target].append(name)
-                for pair in event_changes["renamed"]:
-                    if pair not in columns_renamed:
-                        columns_renamed.append(pair)
             _write_state(postgres, cfg, new_version, _last_schema_json(row_fields, column_ids))
-            if columns_renamed:
-                context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
-            if columns_dropped:
-                context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
 
         context.add_output_metadata({
             "events_synced": MetadataValue.int(events_synced),
@@ -1648,9 +1652,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                 MetadataValue.int(new_version) if new_version is not None else MetadataValue.text("none")
             ),
             "kafka_topic": MetadataValue.text(cfg.kafka_topic),
-            "risingwave_columns_added": MetadataValue.json(risingwave_columns_added),
-            "columns_dropped": MetadataValue.json(columns_dropped),
-            "columns_renamed": MetadataValue.json(columns_renamed),
+            **hook_metadata,
             "kafka_messages": MetadataValue.json(preview_events),
             "kafka_messages_truncated": MetadataValue.bool(events_synced > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(raw_preview_events),

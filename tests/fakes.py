@@ -239,13 +239,14 @@ def fake_resources(
     producer_fails=False,
     table_location="abfss://x",
     registry=None,
+    kafka=None,
     **databricks_errors,
 ) -> dict:
     return {
         "postgres": FakeDatabase(calls, "postgres", postgres_columns, state_rows),
         "risingwave": FakeDatabase(calls, "risingwave", risingwave_columns),
         "databricks": FakeDatabricks(calls, table_location=table_location, **databricks_errors),
-        "kafka": FakeKafka(calls, lag, producer_fails),
+        "kafka": kafka if kafka is not None else FakeKafka(calls, lag, producer_fails),
         "registry": registry or FakeSchemaRegistry(),
         "http": FakeHttp(calls, connector_state),
     }

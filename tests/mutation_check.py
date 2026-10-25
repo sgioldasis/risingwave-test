@@ -263,6 +263,45 @@ MUTATIONS = [
     Mutation("component", "topic asset always built", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.create_topic_asset:\n", "    if True:\n", "tests/components"),
     Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
     Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),
+    # --- the sync's hooks (the demo's extension points) ---
+    Mutation("hooks", "before_produce never called", f"{ASSETS}/reverse_etl_cdf_setup.py", "_merge_hook_metadata(hook_metadata, hooks.before_produce(context, cfg, row_fields))", "pass", "tests/sync_asset/test_sync_hooks.py"),
+    Mutation(
+        "hooks", "after_delivery never called", f"{ASSETS}/reverse_etl_cdf_setup.py",
+        """            if hooks is not None:
+                # Here: AFTER the flush above succeeded, BEFORE the watermark
+                # write below -- a failing hook fails the run before the
+                # watermark moves, and the next run replays the same versions
+                # and re-runs it (every hook operation is idempotent).
+                _merge_hook_metadata(
+                    hook_metadata,
+                    hooks.after_delivery(
+                        context,
+                        cfg,
+                        {
+                            "row_fields": row_fields,
+                            "column_ids": column_ids,
+                            "last_schema": last_schema,
+                            "event_row_fields": event_row_fields,
+                            "event_fields_version": event_fields_version,
+                            "source_location": source_location,
+                        },
+                    ),
+                )
+""",
+        "            pass\n",
+        "tests/sync_asset/test_sync_hooks.py",
+    ),
+    Mutation(
+        "hooks", "watermark written before the hook", f"{ASSETS}/reverse_etl_cdf_setup.py",
+        """            if hooks is not None:
+                # Here: AFTER the flush above succeeded""",
+        """            _write_state(postgres, cfg, new_version, _last_schema_json(row_fields, column_ids))
+            if hooks is not None:
+                # Here: AFTER the flush above succeeded""",
+        "tests/sync_asset/test_sync_hooks.py",
+    ),
+    Mutation("hooks", "idle metadata dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "**(hooks.idle_metadata() if hooks else {}),", "**{},", "tests/sync_asset/test_sync_hooks.py"),
+    Mutation("hooks", "hook metadata dropped from the output", f"{ASSETS}/reverse_etl_cdf_setup.py", "            **hook_metadata,\n", "", "tests/sync_asset/test_sync_hooks.py"),
     # --- the reset job ---
     Mutation("reset", "a missing group is retried", f"{ASSETS}/reverse_etl_reset.py", "GROUP_ID_NOT_FOUND", "NEVER_MATCHES", "tests/test_reset.py"),
     # --- the sync asset ---

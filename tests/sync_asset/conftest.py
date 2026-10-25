@@ -13,6 +13,7 @@ from confluent_kafka.serialization import MessageField, SerializationContext
 
 from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
 from orchestration.assets import reverse_etl_delta_reader as reader
+from orchestration.assets.reverse_etl_demo_hooks import DemoSyncHooks
 from tests.fakes import FakeSchemaRegistry, make_config, use_local_azure, use_local_paths
 from tests.sync_asset.support import (
     ABFS_LOCATION,
@@ -83,7 +84,8 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             None,
         )
 
-    def run(propagate_drops=False, target_columns=("id", "name", "born"), **options):
+    def run(propagate_drops=False, target_columns=("id", "name", "born"), hooks=DemoSyncHooks(), **options):
+        """`hooks=None` runs the bare core (what a team's sync would be); the default is the demo wiring."""
         cfg = make_config(
             source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid",
             propagate_drops=propagate_drops,
@@ -96,7 +98,7 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             registry=registry,
             **options,
         )
-        result = dg.materialize([cdf_setup.build_sync_asset(cfg)], resources=res, raise_on_error=False)
+        result = dg.materialize([cdf_setup.build_sync_asset(cfg, hooks=hooks)], resources=res, raise_on_error=False)
         produced = [decode(*message) for message in res["kafka"].recording_producer.messages]
         return result, res, produced
 
