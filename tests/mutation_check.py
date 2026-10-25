@@ -158,6 +158,31 @@ MUTATIONS = [
         "reader", "a column present on one side counts as drift", f"{ASSETS}/reverse_etl_delta_reader.py", "for name in (set(old_row) | set(new_row)) - skip", "for name in set(old_row) - skip",
         "tests/test_delta_reader.py",
     ),
+    Mutation("reader-dv", "DV tables take the snapshot path", f"{ASSETS}/reverse_etl_delta_reader.py", "use_fast = fast_path or (dv_enabled and azure is not None)", "use_fast = fast_path", "tests/test_delta_reader_dv.py"),
+    Mutation(
+        "reader-dv", "pre-images read through no mask", f"{ASSETS}/reverse_etl_delta_reader.py", "pre_masks = dv_masks_at(version - 1) if dv_enabled and version > 0 else None",
+        "pre_masks = None", "tests/test_delta_reader_dv.py",
+    ),
+    Mutation(
+        "reader-dv", "post-images read through no mask", f"{ASSETS}/reverse_etl_delta_reader.py", "post_masks = dv_masks_at(version) if dv_enabled and added_with_dv else None",
+        "post_masks = None", "tests/test_delta_reader_dv.py",
+    ),
+    Mutation(
+        "reader-dv", "pre-image masks taken from the same version", f"{ASSETS}/reverse_etl_delta_reader.py", "dv_masks_at(version - 1) if dv_enabled and version > 0",
+        "dv_masks_at(version) if dv_enabled and version > 0", "tests/test_delta_reader_dv.py",
+    ),
+    Mutation(
+        "reader-dv", "a DV-only commit read from the file set", f"{ASSETS}/reverse_etl_delta_reader.py", "adds, removes_actions = _commit_actions(azure, log_dir, version)",
+        "adds, removes_actions = [], []", "tests/test_delta_reader_dv.py",
+    ),
+    Mutation(
+        "reader-dv", "partition values not injected", f"{ASSETS}/reverse_etl_delta_reader.py", "added_pv = partition_values_at(version, set(added)) if partition_columns and dv_enabled else None",
+        "added_pv = None", "tests/test_delta_reader_dv.py",
+    ),
+    Mutation(
+        "reader-dv", "removed files' partition values not injected", f"{ASSETS}/reverse_etl_delta_reader.py", "if partition_columns and dv_enabled and removed and version > 0",
+        "if False", "tests/test_delta_reader_dv.py",
+    ),
     # --- the sync asset ---
     Mutation(
         "sync", "chunks not split at schema changes", f"{ASSETS}/reverse_etl_cdf_setup.py",

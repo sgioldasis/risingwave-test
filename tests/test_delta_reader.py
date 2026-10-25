@@ -6,7 +6,8 @@ Two storage modes, as in test_sync_asset.py: `azure` is the production fast path
 local directory, with pyarrow's AzureFileSystem replaced by a local one), `local` is a plain path, which makes the reader
 diff snapshots. Reads that both paths can serve must agree, so those tests run on both.
 
-delta-rs cannot write deletion vectors, so those code paths are covered through their helpers and guards.
+delta-rs cannot write deletion vectors: their helpers and guards are tested here, and the reader's DV path end to end
+in test_delta_reader_dv.py, against tables written once on Databricks.
 
 Run from the repo root:  .venv/bin/python -m pytest
 """
