@@ -59,6 +59,7 @@ dbt parse                # validate configs (required after any tag/config chang
 
 ```bash
 .venv/bin/python -m pytest   # reverse-ETL unit tests, no services needed (fakes in tests/fakes.py)
+.venv/bin/python tests/mutation_check.py [group ...]   # breaks the code in a temp copy; every mutation must fail a test
 ```
 
 ### Connect to RisingWave SQL
