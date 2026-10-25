@@ -69,6 +69,7 @@ _POSTGRES_TYPE_BY_CONNECT_TYPE = {
     "double": "double precision",
     "boolean": "boolean",
     "zoned_timestamp": "timestamptz",
+    "date": "date",
     "string": "text",
 }
 

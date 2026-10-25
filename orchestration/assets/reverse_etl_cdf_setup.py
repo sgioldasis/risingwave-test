@@ -30,6 +30,7 @@ resolution) -- switched to match what's actually deployable. See "Auth for
 the live run" in the design doc.
 """
 
+import datetime
 import json
 import os
 import psycopg2
@@ -543,8 +544,15 @@ def _summarize_ops(events: list[dict[str, Any]]) -> dict[str, int]:
 ZONED_TIMESTAMP = "zoned_timestamp"
 _ZONED_TIMESTAMP_SCHEMA_NAME = "io.debezium.time.ZonedTimestamp"
 
+# Not a Connect type either: marks a DATE column, carried as days since 1970-01-01 (int32) so the
+# Debezium sink creates a date column (JSON: schema name io.debezium.time.Date; Avro: logicalType date).
+# The reader hands dates over as ISO strings; _coerce converts them.
+DATE = "date"
+_DATE_SCHEMA_NAME = "io.debezium.time.Date"
+_EPOCH = datetime.date(1970, 1, 1)
+
 # Databricks SQL type -> Kafka Connect schema type. Anything not listed
-# (STRING, DATE, DECIMAL, ...) is carried as a plain string, exactly as the
+# (STRING, DECIMAL, ...) is carried as a plain string, exactly as the
 # Statement Execution API returned it.
 _CONNECT_TYPE_BY_DATABRICKS_TYPE = {
     "TINYINT": "int8",
@@ -557,6 +565,7 @@ _CONNECT_TYPE_BY_DATABRICKS_TYPE = {
     "DOUBLE": "double",
     "BOOLEAN": "boolean",
     "TIMESTAMP": ZONED_TIMESTAMP,
+    "DATE": DATE,
 }
 
 RowField = tuple[str, str, bool]  # (column name, connect type, optional)
@@ -675,6 +684,8 @@ def _coerce(value: Any, connect_type: str) -> Any:
         return float(value)
     if connect_type == "boolean":
         return value if isinstance(value, bool) else str(value).lower() == "true"
+    if connect_type == DATE:
+        return (datetime.date.fromisoformat(str(value)[:10]) - _EPOCH).days
     return value
 
 
@@ -687,6 +698,8 @@ def _coerce_row(row: dict[str, Any] | None, row_fields: list[RowField]) -> dict[
 def _connect_field(name: str, connect_type: str, optional: bool) -> dict[str, Any]:
     if connect_type == ZONED_TIMESTAMP:
         return {"field": name, "type": "string", "name": _ZONED_TIMESTAMP_SCHEMA_NAME, "optional": optional}
+    if connect_type == DATE:
+        return {"field": name, "type": "int32", "name": _DATE_SCHEMA_NAME, "optional": optional}
     return {"field": name, "type": connect_type, "optional": optional}
 
 
@@ -712,7 +725,7 @@ def _build_connect_json_message(
         "type": "struct",
         "name": f"{cfg.envelope_schema_name}.Key",
         "optional": False,
-        "fields": [{"field": c, "type": field_types[c], "optional": False} for c in key_columns],
+        "fields": [_connect_field(c, field_types[c], False) for c in key_columns],
     }
     key = {"schema": key_schema, "payload": {c: _coerce(row_for_key.get(c), field_types[c]) for c in key_columns}}
 
@@ -776,6 +789,8 @@ _AVRO_TYPE_BY_CONNECT_TYPE = {
 def _avro_value_type(connect_type: str) -> Any:
     if connect_type == ZONED_TIMESTAMP:
         return {"type": "string", "connect.name": _ZONED_TIMESTAMP_SCHEMA_NAME}
+    if connect_type == DATE:
+        return {"type": "int", "logicalType": "date"}
     return _AVRO_TYPE_BY_CONNECT_TYPE[connect_type]
 
 
@@ -1199,9 +1214,10 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
                 "            'delta.enableDeletionVectors' = 'false'"
             )
             ready = f"{cfg.source_fqn} ready (plain Delta: CDF + column mapping, no UniForm)"
-        _run_sql(
-            token,
-            f"""
+        if cfg.source_columns:
+            _run_sql(
+                token,
+                f"""
         CREATE TABLE IF NOT EXISTS {cfg.source_fqn} (
             {columns}
         ) USING DELTA
@@ -1209,8 +1225,13 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             {properties}
         )
         """,
-        )
-        context.log.info(ready)
+            )
+            context.log.info(ready)
+        else:
+            # No source_columns: an existing table. Never create it from the key alone;
+            # the UC lookup raises if it is missing (control plane, no warehouse).
+            get_table_location(token, cfg, cfg.source_fqn)
+            context.log.info(f"{cfg.source_fqn} exists; left untouched (no source_columns configured)")
 
         # The sync's watermark state lives in Postgres (reverse_etl_sync_state):
         # private bookkeeping nothing in Databricks reads, so it moved out of the

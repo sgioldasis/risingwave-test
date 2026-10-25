@@ -58,8 +58,11 @@ def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         assets.append(_build_topic_asset(cfg))
     if cfg.seed_statements:
         assets.append(build_seed_asset(cfg))
-    change_asset = build_change_asset(cfg)
-    assets.append(change_asset)
+    # The demo-change helper builds its SQL from source_columns and the demo key `id`; a sync on an
+    # existing table (no source_columns) has no such shape, so it gets no make_change asset or job.
+    change_asset = build_change_asset(cfg) if cfg.source_columns else None
+    if change_asset is not None:
+        assets.append(change_asset)
 
     # AssetKey selection (not asset objects) so the shared topic asset, which this
     # function does not build, is still part of the job.
@@ -88,6 +91,11 @@ def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     return Definitions(
         assets=assets,
         asset_checks=[health_check],
-        jobs=[setup_job, build_reset_job(cfg), build_change_job(cfg, change_asset), health_job],
+        jobs=[
+            setup_job,
+            build_reset_job(cfg),
+            *([build_change_job(cfg, change_asset)] if change_asset is not None else []),
+            health_job,
+        ],
         schedules=[health_schedule],
     )

@@ -69,6 +69,7 @@ from .reverse_etl_cdf_setup import (
     COMMIT_TIMESTAMP_COLUMN,
     COMMIT_VERSION_COLUMN,
     ReverseEtlSyncConfig,
+    DATE,
     RowField,
     ZONED_TIMESTAMP,
 )
@@ -88,6 +89,7 @@ _CONNECT_TYPE_BY_DELTA_TYPE = {
     "boolean": "boolean",
     "string": "string",
     "timestamp": ZONED_TIMESTAMP,
+    "date": DATE,
 }
 
 _CDF_METADATA_COLUMNS = (CHANGE_TYPE_COLUMN, COMMIT_VERSION_COLUMN, COMMIT_TIMESTAMP_COLUMN)

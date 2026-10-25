@@ -26,8 +26,10 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     catalog: str
     schema_name: str
     # Column DDL besides the key, used only if the setup asset has to create the
-    # source table (for example "id BIGINT NOT NULL", "value STRING").
-    source_columns: list[str]
+    # source table (for example "id BIGINT NOT NULL", "value STRING"). Leave unset
+    # for an existing table: the setup asset then only checks that it exists and
+    # fails if it does not, instead of creating it.
+    source_columns: list[str] | None = None
     key_column: str = "rid"
     # Demo seed: SQL run against the source table as the last step of the setup job.
     # Each statement may use {source_table}. Leave unset for a real table.
@@ -72,7 +74,7 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
             self.name,
             catalog=self.catalog,
             schema=self.schema_name,
-            source_columns=tuple(self.source_columns),
+            source_columns=tuple(self.source_columns or ()),
             key_column=self.key_column,
             seed_statements=tuple(self.seed_statements or ()),
         )

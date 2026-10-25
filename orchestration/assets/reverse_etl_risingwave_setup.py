@@ -19,6 +19,7 @@ from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 from .databricks_optimize import _get_token
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_cdf_setup import (
+    DATE,
     ZONED_TIMESTAMP,
     RowField,
     _register_avro_schemas,
@@ -39,6 +40,7 @@ _RISINGWAVE_TYPE_BY_CONNECT_TYPE = {
     "boolean": "BOOLEAN",
     "string": "VARCHAR",
     ZONED_TIMESTAMP: "TIMESTAMPTZ",
+    DATE: "DATE",
 }
 
 # information_schema.data_type (lowercased) back to the Avro connect type, for columns whose type the
@@ -55,6 +57,7 @@ _CONNECT_TYPE_BY_RW_DATA_TYPE = {
     "double": "double",
     "real": "float",
     "boolean": "boolean",
+    "date": DATE,
 }
 
 
