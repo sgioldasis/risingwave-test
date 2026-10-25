@@ -7,6 +7,8 @@ import dataclasses
 import types
 from unittest import mock
 
+from confluent_kafka.schema_registry import SchemaRegistryClient
+
 from orchestration.assets.reverse_etl_config import ReverseEtlSyncConfig
 
 
@@ -19,18 +21,34 @@ def make_config(source_columns=("description STRING",), key_column="rid", **over
 
 class FakeDatabase:
     """Stands in for PostgresResource and RisingWaveResource: records each statement under `kind`.
-    `columns` is what an information_schema.columns query returns (the table's current columns)."""
+    `columns` is what an information_schema.columns query returns (the table's current columns).
+    `state_rows` is the sync's watermark table, a list of (last_commit_version, last_schema): the sync's state
+    read returns it freshest first and its state write appends to it."""
 
-    def __init__(self, calls: list, kind: str, columns: list | None = None):
+    def __init__(self, calls: list, kind: str, columns: list | None = None, state_rows: list | None = None):
         self.calls, self.kind, self.columns = calls, kind, columns or []
+        self.state_rows = state_rows if state_rows is not None else []
 
     def connect_with_timeout(self):
         return self.connect()
 
     def connect(self):
         cursor = mock.MagicMock()
-        cursor.execute.side_effect = lambda sql, params=None: self.calls.append((self.kind, " ".join(str(sql).split())))
-        cursor.fetchall.side_effect = lambda: [(name, "character varying") for name in self.columns]
+        result: list = []
+
+        def execute(sql, params=None):
+            text = " ".join(str(sql).split())
+            self.calls.append((self.kind, text))
+            result.clear()
+            if text.startswith("SELECT last_commit_version, last_schema FROM reverse_etl_sync_state"):
+                result.extend(sorted(self.state_rows, key=lambda row: -row[0]))
+            elif text.startswith("INSERT INTO reverse_etl_sync_state"):
+                self.state_rows.append((params[1], params[2]))
+            else:
+                result.extend((name, "character varying") for name in self.columns)
+
+        cursor.execute.side_effect = execute
+        cursor.fetchall.side_effect = lambda: list(result)
         connection = mock.MagicMock()
         connection.__enter__.return_value = connection
         connection.cursor.return_value.__enter__.return_value = cursor
@@ -38,8 +56,9 @@ class FakeDatabase:
 
 
 class FakeDatabricks:
-    def __init__(self, calls: list, sql_error=None, location_error=None):
+    def __init__(self, calls: list, sql_error=None, location_error=None, table_location="abfss://x"):
         self.calls, self.sql_error, self.location_error = calls, sql_error, location_error
+        self.location = table_location
 
     def require_env(self):
         self.calls.append(("env", ""))
@@ -62,24 +81,58 @@ class FakeDatabricks:
         if self.location_error:
             raise self.location_error
         self.calls.append(("location", fqn))
-        return "abfss://x"
+        return self.location
 
     def table_location_cached(self, token, cfg, fqn):
         self.calls.append(("location", fqn))
-        return "abfss://x"
+        return self.location
 
     def clear_location_cache(self):
         self.calls.append(("cache", "cleared"))
 
 
 class FakeSchemaRegistry:
+    """An in-memory registry (confluent-kafka's mock client), so Avro serializers and deserializers really work
+    against it. Hand the same instance to several runs to keep its subjects between them. With `calls`, every
+    registration request is recorded as ("registry", subject), in order with the other fakes' calls."""
+
+    def __init__(self, calls: list | None = None):
+        self.mock_client = SchemaRegistryClient.new_client({"url": "mock://reverse-etl-tests"})
+        if calls is not None:
+            register = self.mock_client.register_schema_full_response
+
+            def recording(subject_name, schema, normalize_schemas=False):
+                calls.append(("registry", subject_name))
+                return register(subject_name, schema, normalize_schemas)
+
+            self.mock_client.register_schema_full_response = recording
+
     def client(self, url):
-        return mock.MagicMock()
+        return self.mock_client
+
+
+class RecordingProducer:
+    """A Kafka producer that keeps what it was given. With `fail`, every delivery is reported as rejected."""
+
+    def __init__(self, fail: bool = False):
+        self.fail, self.messages = fail, []
+
+    def produce(self, topic, key, value, on_delivery=None):
+        self.messages.append((topic, key, value))
+        if on_delivery is not None and self.fail:
+            on_delivery("broker unavailable", None)
+
+    def poll(self, timeout=0):
+        return 0
+
+    def flush(self, timeout=None):
+        return 0
 
 
 class FakeKafka:
-    def __init__(self, calls: list, lag: int = 0):
+    def __init__(self, calls: list, lag: int = 0, producer_fails: bool = False):
         self.calls, self.lag = calls, lag
+        self.recording_producer = RecordingProducer(fail=producer_fails)
 
     def consumer(self, group_id, extra=None):
         topic_meta = lambda topic: types.SimpleNamespace(topics={topic: types.SimpleNamespace(partitions={0: None})})
@@ -96,7 +149,7 @@ class FakeKafka:
 
     def producer(self):
         self.calls.append(("kafka", "producer"))
-        return mock.MagicMock()
+        return self.recording_producer
 
 
 class FakeHttp:
@@ -128,14 +181,23 @@ class FakeHttp:
 
 
 def fake_resources(
-    calls: list, connector_state="RUNNING", lag=0, postgres_columns=None, risingwave_columns=None, **databricks_errors
+    calls: list,
+    connector_state="RUNNING",
+    lag=0,
+    postgres_columns=None,
+    risingwave_columns=None,
+    state_rows=None,
+    producer_fails=False,
+    table_location="abfss://x",
+    registry=None,
+    **databricks_errors,
 ) -> dict:
     return {
-        "postgres": FakeDatabase(calls, "postgres", postgres_columns),
+        "postgres": FakeDatabase(calls, "postgres", postgres_columns, state_rows),
         "risingwave": FakeDatabase(calls, "risingwave", risingwave_columns),
-        "databricks": FakeDatabricks(calls, **databricks_errors),
-        "kafka": FakeKafka(calls, lag),
-        "registry": FakeSchemaRegistry(),
+        "databricks": FakeDatabricks(calls, table_location=table_location, **databricks_errors),
+        "kafka": FakeKafka(calls, lag, producer_fails),
+        "registry": registry or FakeSchemaRegistry(),
         "http": FakeHttp(calls, connector_state),
     }
 
