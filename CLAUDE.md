@@ -58,7 +58,7 @@ dbt parse                # validate configs (required after any tag/config chang
 ### Tests
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -t .   # reverse-ETL unit tests, no services needed
+.venv/bin/python -m pytest   # reverse-ETL unit tests, no services needed (fakes in tests/fakes.py)
 ```
 
 ### Connect to RisingWave SQL

@@ -64,3 +64,21 @@ directory_type = "project"
 
 [tool.dg.project]
 root_module = "orchestration"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--strict-markers --strict-config"
+# Warnings are errors, except these known ones from dependencies and the project's own load_defs call.
+filterwarnings = [
+    "error",
+    "ignore:.*sqlglotrs is deprecated:DeprecationWarning",
+    "ignore:.*is currently in beta:Warning",
+    "ignore:.*`load_defs` is deprecated:DeprecationWarning",
+    "ignore:.*`__fields__` attribute is deprecated:DeprecationWarning",
+]
