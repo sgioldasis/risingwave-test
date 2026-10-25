@@ -139,15 +139,13 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
 
     @op(name=f"{prefix}_drop_databricks_tables", ins={"start": In(Nothing)})
     def drop_databricks_tables(context: OpExecutionContext) -> None:
-        _require_databricks_env()
-        token = _get_token()
-        meter_reset()
-        for table in (cfg.source_fqn, cfg.state_fqn):
-            _run_sql(token, f"DROP TABLE IF EXISTS {table}")
-            context.log.info(f"Dropped {table} (if it existed)")
-        # The state table lives in Postgres now (reverse_etl_sync_state); the
-        # cfg.state_fqn DROP above is legacy cleanup for state tables created
-        # before the move. The sync starts from a first-run watermark either way.
+        # Cleared FIRST, before any Databricks call: the drops below can fail (for example a
+        # source table the service principal does not own), and a watermark left behind by a
+        # failed reset stalls the next sync silently once the source is recreated at version 0
+        # (docs/poc/REVERSE_ETL_EXISTING_TABLE.md, "The drop+recreate trap"). A watermark cleared
+        # while the source survives only makes the next sync backfill, which upserts by key.
+        # The state table lives in Postgres now (reverse_etl_sync_state); the cfg.state_fqn DROP
+        # below is legacy cleanup for state tables created before the move.
         # The Postgres state table is SHARED by every sync (keyed by sync_name),
         # so a reset must delete only this sync's rows — dropping the table
         # would wipe every other sync's watermark too (bit us live: a delta
@@ -174,7 +172,13 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         # no-op that silently skips everything until the cache expires). The
         # cache file lives in dagster_storage, shared with the sync's run workers.
         clear_control_plane_cache()
-        context.log.info("Cleared the sync's location cache (the tables moved)")
+        context.log.info("Cleared the sync's location cache (the tables are about to move)")
+        _require_databricks_env()
+        token = _get_token()
+        meter_reset()
+        for table in (cfg.source_fqn, cfg.state_fqn):
+            _run_sql(token, f"DROP TABLE IF EXISTS {table}")
+            context.log.info(f"Dropped {table} (if it existed)")
 
     @job(
         name=cfg.reset_job,
