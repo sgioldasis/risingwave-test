@@ -42,6 +42,9 @@ def _connector_config(cfg: ReverseEtlSyncConfig) -> dict[str, str]:
         "primary.key.fields": cfg.key_column,
         "delete.enabled": "true",
         "schema.evolution": "basic",
+        # Quote identifiers so a mixed-case source column (Company_ID) keeps its case in
+        # Postgres; unquoted, Postgres folds it to lowercase.
+        "quote.identifiers": "true",
         "collection.name.format": cfg.postgres_table,
         "consumer.override.bootstrap.servers": bootstrap,
         "consumer.override.auto.offset.reset": "earliest",
