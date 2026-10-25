@@ -3,7 +3,9 @@
 *Written 2026-10-25 against `main` after PR #1. **Status: steps 1-7 (config split, hooks seam, core signature,
 demo assets moved, preconditions, two components, docs) are implemented and step 9's live verification (demo
 reset+setup, rename-in-backlog live test, company no-op run with its watermark untouched) passed on
-`feature/component-decoupling`; step 8 (module rename) is left optional.** Line numbers refer to
+`feature/component-decoupling`; step 8 (module rename) is left optional. Sections 11-13 (explicit
+infrastructure names, pluggable state and target backends, the sync/downstream split) are designed and
+their decisions D11-D19 accepted as recommended on 2026-10-25; not yet implemented.** Line numbers refer to
 `orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
 
 ## 1. Goal
@@ -236,3 +238,288 @@ production system. Live checks use the DEV demo as before.
 - The Jobotron and drt components, and the Databricks notebook path (it stays part of the demo).
 - Changing what the sync reads or writes (the Delta reader, the message formats, the Avro schemas).
 - Any production system. Everything here is the local stack and the DEV Databricks workspace.
+
+---
+
+## 11. Plan: explicit infrastructure names, label-derived Dagster names (proposal, 2026-10-25, rev. 2)
+
+*Written after steps 1-9 shipped. Revision 2: the label `name` stays, but only for the Dagster
+objects. **D11-D13 accepted as recommended 2026-10-25; not yet implemented.***
+
+### 11.1 Goal
+
+Today a `defs.yaml` gives a short label and the code *assumes* the rest — including the names that
+land in **external systems**: `name: delta` becomes `reverse_etl_delta` in the watermark and the
+Debezium envelope, `reverse_etl_delta_source` in Databricks, `reverse_etl_delta_topic` in Kafka,
+`reverse_etl_delta_sink` in Kafka Connect, `reverse_etl_delta_target` in Postgres and RisingWave.
+Reading the YAML does not tell you which tables, topics and connectors a sync touches, and
+overriding one of them means knowing which others silently stayed derived.
+
+The refactor, split by audience:
+
+- **Infrastructure names — explicit and required in the YAML.** The watermark key, source and
+  state tables, topic, connector and both target tables. These land in real systems, are painful
+  to rename, and a typo in a derivation is only visible at run time.
+- **Dagster object names — keep deriving from the label `name`** (`reverse_etl_<name>_to_kafka`,
+  `_setup_job`, ...), overridable per name exactly as today. They exist only inside Dagster, are
+  trivially renamable, and the label keeps five YAMLs short and uniform.
+
+### 11.2 Inventory
+
+| Name | Kind | Today | After |
+|---|---|---|---|
+| `sync_name` (watermark key, Debezium envelope prefix) | external | `reverse_etl_<name>` | explicit, required |
+| `source_table`, `state_table`, `kafka_topic`, `connector_name`, `postgres_table`, `risingwave_table` | external | derived from the label | explicit, required (already overridable today; becomes required) |
+| `group_name`, `table_setup_asset`, `sync_asset`, `risingwave_asset`, `sink_asset`, `topic_asset`, `seed_asset`, `setup_job`, `reset_job` | Dagster | derived from the label | **unchanged** — still derived from `name`, still overridable per name |
+| make-change asset/job, sink-health job/schedule (`<sync_name>_make_change`, ...) | Dagster | derived from `sync_name` | **unchanged** — Dagster-internal, no new config fields |
+| reset op names (`<sync_name>_delete_connector`, ...) | Dagster op names | derived inside the reset job | **unchanged** — internal to one job, invisible outside Dagster |
+| `reset_name_prefixes`, `reset_schema` | external (what reset may drop) | constant / copied from `schema` | explicit — the YAML states them (already fields today) |
+| `name` (the label) | — | drives everything | **stays**, but now drives only the Dagster object names |
+
+The reusable component mirrors the split with its smaller set: `sync_name` becomes explicit and
+required (the watermark key is the team's); `source_table`, `key_column` and `kafka_topic` are
+already explicit; `group_name` and `sync_asset` keep deriving from `name`, overridable as today.
+
+### 11.3 Steps
+
+Each step is its own commit and leaves the suite, the lint and the mutation script green. No
+effective name changes anywhere — the five YAMLs state exactly today's derived values, so topics,
+connectors, tables and watermark keys do not move.
+
+1. **Demo component.** `to_config()` stops calling `for_name()` for the infrastructure names: the
+   seven external names (`sync_name`, `source_table`, `state_table`, `kafka_topic`,
+   `connector_name`, `postgres_table`, `risingwave_table`) become required pydantic attributes and
+   are mapped straight into the config; the Dagster names keep deriving from `name` exactly as
+   today. A missing external name fails at load with the field named. `for_name()` stays as a
+   **test helper only** — production paths stop deriving.
+2. **The five YAMLs.** Each gains the seven external names written out with today's exact values.
+   A golden-names test pins each file's expected external names, so a typo or an accidental rename
+   fails the suite. The existing no-collision and reset-allowlist YAML tests stay as is.
+3. **Reusable component.** `sync_name` becomes explicit and required alongside the already-explicit
+   `source_table`/`key_column`/`kafka_topic`; `name` stays for the Dagster names. Component tests
+   and the guide's example updated.
+4. **Docs.** Guide, walkthrough and this plan's status line.
+
+### 11.4 Risks and containment
+
+- **A typo in an explicit external name** collides or orphans an object — caught by the
+  golden-names test, the no-collision test and the reset-allowlist check that already run per YAML
+  file.
+- **Two names that must agree** (`name` and `sync_name` may but need not coincide) — the guide
+  states the rule: the label names the Dagster objects, `sync_name` is the watermark key; changing
+  `sync_name` for an existing sync restarts it.
+- **The notebook trigger** still matches instances by `name` — unchanged, since `name` stays.
+- **The demo UI** launches jobs by name and reads nothing component-typed — unaffected; verified
+  after step 2 with one reset+setup cycle (names identical before/after).
+
+### 11.5 Decisions for you
+
+| # | Question | Recommendation |
+|---|---|---|
+| D11 | Split the name space as proposed — external names explicit, Dagster names label-derived? | **Yes** — it puts the YAML's verbosity where the risk is (external systems) and keeps it where the value is (Dagster conventions) |
+| D12 | Should `sync_name` also keep deriving from the label (with an override)? | **No** — the watermark key is the one name a replay silently depends on; write it down |
+| D13 | Keep `name` as a required label? | **Yes, required** — it is what the Dagster names derive from, and the notebook lookup matches on it |
+
+*(Revision 1 of this section proposed full explicitness including the Dagster names, with `name`
+removed; revision 2 keeps the label for the Dagster objects per review.)*
+
+### 11.6 Out of scope
+
+- Renaming any existing object (topics, tables, connectors, watermark keys stay as they are).
+- Composite key columns, the Jobotron and drt components, and anything the earlier plan already
+  leaves out (section 10).
+
+---
+
+## 12. Plan: pluggable state and target backends (proposal, 2026-10-25)
+
+*Extends section 11 — the YAML already states every name; here it also states **where** state and
+targets live. **D14-D16 accepted as recommended 2026-10-25; not yet implemented.***
+
+### 12.1 Goal
+
+Two things are hardwired today that a team may want to choose:
+
+- **The state database.** The watermark lives in Postgres `reverse_etl_sync_state` (D1). The sync's
+  read, write, precondition and the delta-rs pre-check all speak psycopg2 directly. A team without
+  Postgres — or wanting a zero-infra file — has no alternative.
+- **The target.** The component's contract is "writes to Kafka and the state table, and nothing
+  else" — targets are Kafka consumers built by the demo (RisingWave table, Debezium JDBC sink into
+  Postgres). Which target stack to build is not a choice; it is the demo's shape.
+
+### 12.2 The state backend (well-defined, recommend doing)
+
+A small `SyncState` interface replaces the direct psycopg2 calls: `require()` (the precondition,
+with the backend's DDL in the error), `read(sync_name)`, `write(sync_name, version, schema)`, and
+`create()` for the demo's setup. Two implementations:
+
+| | `postgres` (default, today's behaviour) | `duckdb` |
+|---|---|---|
+| Where | the `postgres` resource, explicit `state_table` | a file path (`state_path`), same table/columns as today |
+| Watermark semantics | unchanged: append-only, freshest-row-wins | same |
+| Precondition | `to_regclass` check, DDL in the error | file+table check, `CREATE TABLE` in the error |
+| The `postgres` resource | required | **not required** — the sync's required resources become backend-dependent (computed at build time) |
+| Reset | clears the sync's rows | same |
+| delta-rs pre-check | unchanged | same, through the interface |
+
+`duckdb` is already a project dependency (the Jobotron scans run on it), so the only new code is
+one small implementation. The tests already run against real local Delta tables; the DuckDB state
+tests use a real temp file the same way.
+
+Flat YAML attributes (matching section 11's style — no nesting):
+
+```yaml
+state_backend: duckdb          # default: postgres
+state_table: reverse_etl_sync_state   # postgres only
+state_path: /var/lib/sync/state.duckdb   # duckdb only
+```
+
+### 12.3 The target (one real fork — D14)
+
+**Option A — targets stay consumers of the topic (recommended).** The component keeps its honest
+contract: it produces to Kafka and touches only its state. Which *downstream* stack exists becomes
+a YAML choice in the **demo** component (`targets: ["risingwave", "postgres"]` — the demo builds
+only the selected target assets and their health check), and a DuckDB target arrives as one more
+consumer asset in the demo's pattern (like the Jobotron consume asset: read the topic, upsert by
+key into a `.duckdb` file). Teams bring their own consumer; a local DuckDB file becomes one
+deployable target without the sync growing a write path.
+
+**Option B — the sync writes the target directly.** `target: {backend: duckdb|postgres|none}` on
+the reusable component: after producing, the run upserts the same rows into the target before the
+watermark moves (replay-safe like everything else). One run, one transaction boundary — but the
+component grows a write path per backend, the "writes to Kafka and the state table and nothing
+else" promise dies, and it duplicates what a consumer of the topic already does. The hooks
+(`SyncHooks`) remain the right seam for bespoke target care either way.
+
+Recommendation: **A now, B only if a team actually needs in-run delivery** — the hooks can carry a
+B-style target later without any YAML-shape change (a hooks implementation is already a component
+input in everything but name).
+
+### 12.4 Steps
+
+1. **State interface.** Extract `SyncState` (postgres implementation = today's code moved); the
+   sync asset, pre-check and reset go through it. Postgres-only behaviour, no YAML change yet.
+2. **DuckDB state.** The second implementation; `state_backend`/`state_path` on the config and the
+   reusable component; the demo's `table_setup` creates the chosen backend's state (Postgres table
+   or DuckDB file+table); required resources computed per backend. Tests per backend, and the sync
+   asset suite parameterised over both (it already runs two storage modes and two encodings).
+3. **Target selection (option A).** `targets` on the demo component gates which target assets the
+   demo builds; a `build_duckdb_target_asset` joins the demo's assets; the demo's health check
+   follows the selected targets. The reusable component stays Kafka-only, guide updated.
+4. **Docs.** Guide (state backends, the DuckDB target), walkthrough, plan status.
+
+### 12.5 Risks and containment
+
+- **Two state backends drifting** (different upsert/replay semantics) — the sync-asset suite runs
+  against both; the property tests' invariants (chunking, watermark) are backend-agnostic by
+  construction once the interface lands.
+- **DuckDB single-writer** — the state file must not be shared by two syncs concurrently; the
+  guide states it, and the path is explicit in the YAML so collisions are visible.
+- **Target-selection halves the demo graph** — the demo component's tests assert each selection's
+  exact asset set, the same way the reusable component's one-asset test does.
+
+### 12.6 Decisions for you
+
+| # | Question | Recommendation |
+|---|---|---|
+| D14 | Target as a consumer selection (A) or a direct write in the sync (B)? | **A** — keeps the component's contract, one new consumer asset gives DuckDB |
+| D15 | Should the DuckDB state file be created on first run, or check-only like Postgres (error carries the DDL)? | **Create on first run** — it is a local file, not shared infrastructure; Postgres keeps check-only |
+| D16 | Ship DuckDB state together with the explicit-names refactor (section 11) or after it? | **After** — section 11 touches the same YAML fields; landing 11 first keeps each step reviewable |
+
+---
+
+## 13. Plan: separate the sync from everything downstream (proposal, 2026-10-25)
+
+*Extends sections 11 and 12 — explicit names name the seam; the target backends land on the
+downstream side of it. **D17-D19 accepted as recommended 2026-10-25; not yet implemented.***
+
+### 13.1 What already holds
+
+After steps 1-9 the reusable component is already exactly what this section asks for: it reads
+Databricks and writes Kafka, plus its own state row, and nothing else. Its config
+(`CdfSyncConfig`) has no field for any connector, target table or warehouse; its asset needs only
+the postgres (state), databricks, kafka and registry resources. The 14 references to connectors
+and targets in the config module all live in the demo subclass.
+
+What still mixes the concerns is the **demo layer**: one `ReverseEtlCdfDemo` YAML carries the sync's
+fields *and* the connector's, target tables' and health check's; one builder composes both sides;
+and the target names sit in the same YAML as the source's. The split below is about that layer.
+
+### 13.2 The seam: the message contract
+
+The only thing the two sides share is what the sync puts on the topic:
+
+| The sync decides | The downstream sees |
+|---|---|
+| the topic (`kafka_topic`) | the same topic — its only input |
+| the encoding (`json` / `avro`) | how to decode: Connect JSON with the schema embedded, or the registry's `<topic>-key` / `<topic>-value` subjects |
+| the key column | the message key (and `primary.key.fields` for the sink, the RisingWave primary key) |
+| the envelope (`sync_name` prefix) | inside every message; the downstream never needs it by name |
+
+The downstream component therefore needs **no Databricks resource, no source table, no catalog** —
+it cannot know where the events came from. Conversely the sync needs **no connector, no target
+tables, no warehouse** — it cannot know what happens after the topic. Target-side schema care
+(add missing column before its first message, drop/rename propagation) already runs through the
+demo's hooks inside the sync run, so it stays a *composition* input, not a component feature.
+
+### 13.3 What moves where
+
+| Concern | Owns | Component |
+|---|---|---|
+| The sync | source table, key column, topic, encoding, **its own state** (section 12's state backend), the sync asset | `ReverseEtlCdfSync` — as today |
+| The targets | connector, Postgres target, RisingWave target, sink `tasks.max`, the **sink health check/job/schedule**, and section 12's target backends (a DuckDB target is one more downstream asset) | **new: the targets component** |
+| Demo infrastructure | table setup, topic creation, seed, make-change, reset (reset spans both sides — it drops what the demo created, so it stays an infrastructure concern that owns the full name set) | the demo component, composing the two |
+
+### 13.4 Structure options
+
+**Option A — two `defs.yaml` per sync** (`reverse_etl_delta/` becomes `reverse_etl_delta_sync/` +
+`reverse_etl_delta_targets/`): the truest separation — the targets file cannot even name the
+source table. Costs: ten YAML files where there were five, and the demo's setup/reset jobs and
+shared topic asset need a home (a third, infrastructure-level instance per sync, or the targets
+instance doubling as the demo host).
+
+**Option C — one demo YAML, two config objects** (recommended): `ReverseEtlCdfDemo`'s attributes
+become a `sync:` block and a `targets:` block, each mapping onto its own config object; the demo's
+`build_defs` composes the sync asset (with the demo hooks), the target assets and the demo
+infrastructure as today. The separation is real at the config and builder level — the sync builder
+takes only the sync config, the targets builder only the targets config — while the five YAMLs and
+every job name stay exactly as they are. A team later promotes the `sync:` block to its own
+`ReverseEtlCdfSync` YAML verbatim.
+
+Either way, ordering is explicit: the target assets declare an upstream dep on the sync asset by
+its name (already explicit under section 11), and the setup job sequences infrastructure → sync →
+targets as it does today.
+
+### 13.5 Steps
+
+1. **Targets builder.** Extract the RisingWave, sink and health builders behind
+   `build_target_defs(targets_cfg)` taking only the seam fields plus the target names; the demo's
+   builder calls it with the targets half of its config. No YAML change yet — the demo's existing
+   attributes fill both halves.
+2. **The `sync:` / `targets:` blocks.** The demo component's attributes split into the two blocks
+   (one file, option C); validation errors name the block. The five YAMLs are rewritten into the
+   blocks with today's exact values — no name moves.
+3. **Section 11 lands on the split shape.** The sync block's external names are `sync_name`,
+   `source_table`, `state_table`, `kafka_topic`; the target names (`connector_name`,
+   `postgres_table`, `risingwave_table`) become the targets block's explicit attributes. The
+   golden-names test covers both blocks.
+4. **Docs.** Guide (the seam, and how a team composes targets), walkthrough, plan status.
+
+### 13.6 Risks and containment
+
+- **The seam leaks** (a target field needed "just this once" on the sync side) — the sync builder's
+  signature only accepts the sync config, so a leak cannot compile; the fake-contract tests already
+  pin which resources each asset may touch.
+- **Splitting the YAML breaks the demo jobs** — step 1 keeps every job name and selection identical
+  (verified by the component tests' job assertions and one live reset+setup cycle).
+- **Hooks straddle the seam** (they write to targets inside the sync run) — documented as the
+  demo's composition choice; the reusable component's hook contract already defines the only two
+  points where that is safe.
+
+### 13.7 Decisions for you
+
+| # | Question | Recommendation |
+|---|---|---|
+| D17 | Option C (one demo YAML with `sync:` / `targets:` blocks) or option A (separate YAML per concern)? | **C** — real config separation at half the file count; promoting the sync block later is mechanical |
+| D18 | One targets component (RisingWave + JDBC sink together) or separate per-target components? | **One** for now — they share the seam fields and the health check; splitting per target is easy later if a team wants only one |
+| D19 | Where does the sink health check live? | **The targets side** — it checks the connector and the lag, not the sync; it moves with step 1 |
