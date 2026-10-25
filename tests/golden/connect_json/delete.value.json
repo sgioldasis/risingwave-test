@@ -1,0 +1,182 @@
+{
+  "schema": {
+    "type": "struct",
+    "name": "reverse_etl_unittest.sr_poc_external.reverse_etl_unittest_source.Envelope",
+    "optional": false,
+    "fields": [
+      {
+        "field": "before",
+        "type": "struct",
+        "name": "reverse_etl_unittest.sr_poc_external.reverse_etl_unittest_source.Value",
+        "optional": true,
+        "fields": [
+          {
+            "field": "id",
+            "type": "int64",
+            "optional": false
+          },
+          {
+            "field": "name",
+            "type": "string",
+            "optional": true
+          },
+          {
+            "field": "score",
+            "type": "double",
+            "optional": true
+          },
+          {
+            "field": "ratio",
+            "type": "float",
+            "optional": true
+          },
+          {
+            "field": "flag",
+            "type": "boolean",
+            "optional": true
+          },
+          {
+            "field": "tiny",
+            "type": "int8",
+            "optional": true
+          },
+          {
+            "field": "small",
+            "type": "int16",
+            "optional": true
+          },
+          {
+            "field": "count",
+            "type": "int32",
+            "optional": true
+          },
+          {
+            "field": "born",
+            "type": "int32",
+            "name": "io.debezium.time.Date",
+            "optional": true
+          },
+          {
+            "field": "seen",
+            "type": "string",
+            "name": "io.debezium.time.ZonedTimestamp",
+            "optional": true
+          },
+          {
+            "field": "note",
+            "type": "string",
+            "optional": true
+          }
+        ]
+      },
+      {
+        "field": "after",
+        "type": "struct",
+        "name": "reverse_etl_unittest.sr_poc_external.reverse_etl_unittest_source.Value",
+        "optional": true,
+        "fields": [
+          {
+            "field": "id",
+            "type": "int64",
+            "optional": false
+          },
+          {
+            "field": "name",
+            "type": "string",
+            "optional": true
+          },
+          {
+            "field": "score",
+            "type": "double",
+            "optional": true
+          },
+          {
+            "field": "ratio",
+            "type": "float",
+            "optional": true
+          },
+          {
+            "field": "flag",
+            "type": "boolean",
+            "optional": true
+          },
+          {
+            "field": "tiny",
+            "type": "int8",
+            "optional": true
+          },
+          {
+            "field": "small",
+            "type": "int16",
+            "optional": true
+          },
+          {
+            "field": "count",
+            "type": "int32",
+            "optional": true
+          },
+          {
+            "field": "born",
+            "type": "int32",
+            "name": "io.debezium.time.Date",
+            "optional": true
+          },
+          {
+            "field": "seen",
+            "type": "string",
+            "name": "io.debezium.time.ZonedTimestamp",
+            "optional": true
+          },
+          {
+            "field": "note",
+            "type": "string",
+            "optional": true
+          }
+        ]
+      },
+      {
+        "field": "op",
+        "type": "string",
+        "optional": false
+      },
+      {
+        "field": "source",
+        "type": "struct",
+        "optional": true,
+        "fields": [
+          {
+            "field": "commit_version",
+            "type": "int64",
+            "optional": true
+          },
+          {
+            "field": "commit_timestamp",
+            "type": "string",
+            "optional": true
+          }
+        ]
+      }
+    ]
+  },
+  "payload": {
+    "before": {
+      "id": 1,
+      "name": "b",
+      "score": 3.5,
+      "ratio": 0.25,
+      "flag": true,
+      "tiny": 7,
+      "small": 300,
+      "count": 70000,
+      "born": 15340,
+      "seen": "2026-10-18T17:26:36.779212Z",
+      "note": null
+    },
+    "after": null,
+    "op": "d",
+    "source": {
+      "commit_version": 7,
+      "commit_timestamp": "2026-10-18T17:26:36.779212Z"
+    }
+  }
+}

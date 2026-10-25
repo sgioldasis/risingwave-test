@@ -2,7 +2,7 @@
 dirs: the reconstructed change rows for both read paths, the version functions, the state read and the helpers that
 only deletion-vector, partitioned and column-mapped tables reach.
 
-Two storage modes, as in test_sync_asset.py: `azure` is the production fast path (an abfss:// location backed by a
+Two storage modes, as in tests/sync_asset/support.py: `azure` is the production fast path (an abfss:// location backed by a
 local directory, with pyarrow's AzureFileSystem replaced by a local one), `local` is a plain path, which makes the reader
 diff snapshots. Reads that both paths can serve must agree, so those tests run on both.
 

@@ -67,6 +67,7 @@ root_module = "orchestration"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.9",
     "pytest>=8",
     "pytest-cov>=7.1.0",
     "pytest-randomly>=5.0.0",

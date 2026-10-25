@@ -183,11 +183,44 @@ MUTATIONS = [
         "reader-dv", "removed files' partition values not injected", f"{ASSETS}/reverse_etl_delta_reader.py", "if partition_columns and dv_enabled and removed and version > 0",
         "if False", "tests/test_delta_reader_dv.py",
     ),
+    # --- the wire formats ---
+    Mutation("wire", "Avro schema text no longer compact", f"{ASSETS}/reverse_etl_cdf_setup.py", 'return json.dumps(schema, separators=(",", ":"))', "return json.dumps(schema)", "tests/test_wire_format.py"),
+    Mutation(
+        "wire", "date loses its logical type", f"{ASSETS}/reverse_etl_cdf_setup.py", 'return {"type": "int", "logicalType": "date"}', 'return "int"', "tests/test_wire_format.py",
+    ),
+    Mutation(
+        "wire", "payload fields not nullable in Avro", f"{ASSETS}/reverse_etl_cdf_setup.py", '{"name": n, "type": ["null", _avro_value_type(t)], "default": None} for n, t, _ in row_fields',
+        '{"name": n, "type": _avro_value_type(t)} for n, t, _ in row_fields', "tests/test_wire_format.py",
+    ),
+    Mutation(
+        "wire", "Connect key not sorted", f"{ASSETS}/reverse_etl_cdf_setup.py", "json.dumps(key, default=str, sort_keys=True).encode", "json.dumps(key, default=str).encode", "tests/test_wire_format.py",
+    ),
+    Mutation(
+        "wire", "Connect date loses its name", f"{ASSETS}/reverse_etl_cdf_setup.py", 'return {"field": name, "type": "int32", "name": _DATE_SCHEMA_NAME, "optional": optional}',
+        'return {"field": name, "type": "int32", "optional": optional}', "tests/test_wire_format.py",
+    ),
+    Mutation("wire", "dates not turned into epoch days", f"{ASSETS}/reverse_etl_cdf_setup.py", "return (datetime.date.fromisoformat(str(value)[:10]) - _EPOCH).days", "return str(value)", "tests/test_wire_format.py"),
+    Mutation(
+        "wire", "envelope fields reordered", f"{ASSETS}/reverse_etl_cdf_setup.py", '{"field": "before", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},\n            {"field": "after", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},',
+        '{"field": "after", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},\n            {"field": "before", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},', "tests/test_wire_format.py",
+    ),
+    # --- properties ---
+    Mutation(
+        "props", "chunks one version too long", f"{ASSETS}/reverse_etl_cdf_setup.py", "min(version + size - 1, end)", "min(version + size, end)", "tests/test_properties.py",
+    ),
+    Mutation("props", "split halves overlap", f"{ASSETS}/reverse_etl_cdf_setup.py", "visit(middle + 1, last)", "visit(middle, last)", "tests/test_properties.py"),
+    Mutation("props", "chunks are always split", f"{ASSETS}/reverse_etl_cdf_setup.py", "if first == last or schema_at(first) == schema_at(last):", "if first == last:", "tests/test_properties.py"),
+    Mutation("props", "watermark is the last version seen", f"{ASSETS}/reverse_etl_cdf_setup.py", "    return max(versions)\n", "    return versions[-1]\n", "tests/test_properties.py"),
+    Mutation("props", "updates not paired positionally", f"{ASSETS}/reverse_etl_cdf_setup.py", "for pre, post in zip_longest(preimages, postimages):", "for pre, post in zip(preimages, postimages):", "tests/test_properties.py"),
+    Mutation("props", "dates cut short", f"{ASSETS}/reverse_etl_cdf_setup.py", "str(value)[:10]", "str(value)[:9]", "tests/test_properties.py"),
+    Mutation("props", "booleans read case-sensitively", f"{ASSETS}/reverse_etl_cdf_setup.py", 'str(value).lower() == "true"', 'str(value) == "true"', "tests/test_properties.py"),
+    Mutation("props", "timestamps lose their UTC conversion", f"{ASSETS}/reverse_etl_delta_reader.py", "value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)", "value = value.replace(tzinfo=None)", "tests/test_properties.py"),
+    Mutation("props", "row comparison one-sided", f"{ASSETS}/reverse_etl_delta_reader.py", "for name in (set(old_row) | set(new_row)) - skip", "for name in set(new_row) - skip", "tests/test_properties.py"),
     # --- the sync asset ---
     Mutation(
         "sync", "chunks not split at schema changes", f"{ASSETS}/reverse_etl_cdf_setup.py",
         "            chunks = _split_at_schema_changes(chunks, lambda version: get_row_fields(source_location, version=version))\n", "",
-        "tests/test_sync_asset.py",
+        "tests/sync_asset",
     ),
     Mutation(
         "sync", "watermark moves only for chunks with rows", f"{ASSETS}/reverse_etl_cdf_setup.py",
@@ -195,15 +228,15 @@ MUTATIONS = [
         "                if not rows:\n                    continue\n",
         "                if not rows:\n                    continue\n"
         "                new_version = chunk_watermark if new_version is None else max(new_version, chunk_watermark)\n",
-        "tests/test_sync_asset.py",
+        "tests/sync_asset",
     ),
     Mutation(
         "sync", "producer never flushed", f"{ASSETS}/reverse_etl_cdf_setup.py", "                _flush_producer(cfg, producer, delivery_errors)\n",
-        "                pass\n", "tests/test_sync_asset.py",
+        "                pass\n", "tests/sync_asset",
     ),
     Mutation(
         "sync", "aged-out history not recognised", f"{ASSETS}/reverse_etl_delta_reader.py", "|expired|No files in log segment", "|expired",
-        "tests/test_sync_asset.py",
+        "tests/sync_asset",
     ),
 ]
 
