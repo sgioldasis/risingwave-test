@@ -165,7 +165,7 @@ def get_current_version(location: str) -> int:
 
 
 _VERSION_LOAD_FAILURE = re.compile(
-    "status.*404|does not exist|not found|no valid|Cannot find|cannot load|earliest|truncated|expired",
+    "status.*404|does not exist|not found|no valid|Cannot find|cannot load|earliest|truncated|expired|No files in log segment",
     re.IGNORECASE,
 )
 
