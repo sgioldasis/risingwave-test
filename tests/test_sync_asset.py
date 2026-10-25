@@ -565,6 +565,25 @@ class TestSeveralSchemaChangesInOneWindow:
         assert recorded_schema(state_rows) == [("id", 1), ("title", 2)]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known limitation at the code-default chunk size (10): a chunk spanning several versions is read with the schema "
+        "of its top version, so a row written before a rename in the same chunk is produced with its value dropped "
+        "(title: None). The deployment sets REVERSE_ETL_CDF_CHUNK_VERSIONS=1, where this is covered above."
+    ),
+)
+@pytest.mark.parametrize("storage", [FAST_PATH])
+def test_a_rename_in_the_same_chunk_as_earlier_rows_keeps_their_values(source, sync, monkeypatch, storage):
+    monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", 10)
+    source.create(row(1, "a"))
+    sync(propagate_drops=True)
+    source.insert(row(2, "b"))  # version 1
+    source.rename_column("name", "title")  # version 2, same chunk
+    _, _, produced = sync(propagate_drops=True)
+    assert [p.value["after"].get("title", p.value["after"].get("name")) for p in produced] == ["b"]
+
+
 # --- first run when the log history has aged out ----------------------------------------------------------------------
 
 

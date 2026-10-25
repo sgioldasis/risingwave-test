@@ -56,9 +56,10 @@ class FakeDatabase:
 
 
 class FakeDatabricks:
-    def __init__(self, calls: list, sql_error=None, location_error=None, table_location="abfss://x"):
+    def __init__(self, calls: list, sql_error=None, location_error=None, table_location="abfss://x", table_columns=()):
         self.calls, self.sql_error, self.location_error = calls, sql_error, location_error
         self.location = table_location
+        self.table_columns = table_columns  # what DESCRIBE TABLE reports
 
     def require_env(self):
         self.calls.append(("env", ""))
@@ -76,6 +77,12 @@ class FakeDatabricks:
         self.calls.append(("databricks", " ".join(statement.split())))
         if self.sql_error:
             raise self.sql_error
+        if statement.startswith("DESCRIBE TABLE"):
+            return {
+                "manifest": {"schema": {"columns": [{"name": "col_name"}]}},
+                "result": {"data_array": [[name] for name in self.table_columns]},
+            }
+        return {}
 
     def table_location(self, token, cfg, fqn):
         if self.location_error:
