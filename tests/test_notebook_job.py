@@ -173,5 +173,5 @@ class TestLoadingTheSyncConfig:
         assert notebook._load_sync_config("cdf").sync_name == "reverse_etl_cdf"
 
     def test_an_unknown_label_lists_the_known_ones(self):
-        with pytest.raises(ValueError, match="No ReverseEtlCdfSync instance named 'nope'.*known labels: .*'cdf'"):
+        with pytest.raises(ValueError, match="No ReverseEtlCdfDemo instance named 'nope'.*known labels: .*'cdf'"):
             notebook._load_sync_config("nope")

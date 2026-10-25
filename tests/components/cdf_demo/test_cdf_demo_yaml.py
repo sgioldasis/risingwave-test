@@ -1,4 +1,4 @@
-"""The defs.yaml files that use ReverseEtlCdfSync, the real inputs the component is deployed with.
+"""The defs.yaml files that use ReverseEtlCdfDemo, the real inputs the component is deployed with.
 
 Each one is read the way Dagster reads it (the `attributes` block goes to the component), so a typo in a field name, a
 wrong type or an invalid value fails here instead of when the code location loads. Together they must not collide on
@@ -14,29 +14,29 @@ import pytest
 import yaml
 
 from orchestration.assets import reverse_etl_reset
-from orchestration.components.reverse_etl_cdf_sync import ReverseEtlCdfSync
+from orchestration.components.reverse_etl_cdf_demo import ReverseEtlCdfDemo
 
 DEFS = Path(__file__).resolve().parents[3] / "orchestration" / "defs"
-TYPE = "orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync"
+TYPE = "orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo"
 
 
-def cdf_sync_files() -> list[Path]:
+def cdf_demo_files() -> list[Path]:
     return sorted(path for path in DEFS.glob("*/defs.yaml") if yaml.safe_load(path.read_text()).get("type") == TYPE)
 
 
-FILES = cdf_sync_files()
+FILES = cdf_demo_files()
 IDS = [path.parent.name for path in FILES]
 
 
-def load(path: Path) -> ReverseEtlCdfSync:
-    return ReverseEtlCdfSync.from_attributes_dict(attributes=yaml.safe_load(path.read_text())["attributes"])
+def load(path: Path) -> ReverseEtlCdfDemo:
+    return ReverseEtlCdfDemo.from_attributes_dict(attributes=yaml.safe_load(path.read_text())["attributes"])
 
 
 def build(path: Path) -> dg.Definitions:
     return load(path).build_defs(dg.ComponentTree.for_test().load_context)
 
 
-def test_the_cdf_sync_files_are_found():
+def test_the_cdf_demo_files_are_found():
     """If the glob or the type string stops matching, the tests below would silently check nothing."""
     assert len(FILES) >= 5, f"found only {IDS}"
 

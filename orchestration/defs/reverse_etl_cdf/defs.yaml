@@ -5,7 +5,7 @@
 # No `encoding` field -- the component's default is JSON with the schema
 # embedded in every message (the avro and delta syncs opt into the registry's
 # Avro).
-type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 
 attributes:
   # The sync label every other name derives from: reverse_etl_cdf_source /

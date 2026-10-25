@@ -40,21 +40,21 @@ class TriggerNotebookSyncConfig(Config):
 
 
 def _load_sync_config(label: str) -> ReverseEtlSyncConfig:
-    """The config of the ReverseEtlCdfSync instance whose `name` is `label`, read from its
+    """The config of the ReverseEtlCdfDemo instance whose `name` is `label`, read from its
     defs.yaml so overrides in it are honoured."""
     # Imported here: the component module imports the asset modules, not the other way round.
-    from ..components.reverse_etl_cdf_sync import ReverseEtlCdfSync
+    from ..components.reverse_etl_cdf_demo import ReverseEtlCdfDemo
 
     known = []
     for path in sorted(_DEFS_DIR.glob("*/defs.yaml")):
         doc = yaml.safe_load(path.read_text()) or {}
-        if not str(doc.get("type", "")).endswith(".ReverseEtlCdfSync"):
+        if not str(doc.get("type", "")).endswith(".ReverseEtlCdfDemo"):
             continue
         attributes = doc.get("attributes", {})
         known.append(attributes.get("name"))
         if attributes.get("name") == label:
-            return ReverseEtlCdfSync(**attributes).to_config()
-    raise ValueError(f"No ReverseEtlCdfSync instance named {label!r} under {_DEFS_DIR}; known labels: {known}")
+            return ReverseEtlCdfDemo(**attributes).to_config()
+    raise ValueError(f"No ReverseEtlCdfDemo instance named {label!r} under {_DEFS_DIR}; known labels: {known}")
 
 
 def _headers(token: str) -> dict[str, str]:

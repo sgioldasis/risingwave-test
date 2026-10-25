@@ -6,7 +6,7 @@
 # `reverse_etl_delta_source` does NOT appear in the databricks_uc catalog there,
 # because that reads tables through UniForm's Iceberg metadata. See
 # docs/poc/REVERSE_ETL_CODE_WALKTHROUGH.md and docs/poc/REVERSE_ETL_DBU_COST_NOTES.md.
-type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 
 attributes:
   # The sync label every other name derives from: reverse_etl_delta_source /

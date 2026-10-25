@@ -2,7 +2,7 @@
 # schemas in the shared staging registry) instead of JSON with the schema embedded. Own source table
 # (reverse_etl_avro_source), topic, connector and target tables, so it can be compared side by side with cdf.
 # See docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.1.
-type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 
 attributes:
   # The sync label every other name derives from: reverse_etl_avro_source /

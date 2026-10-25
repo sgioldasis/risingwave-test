@@ -1,114 +1,71 @@
-from dataclasses import replace
+import dataclasses
 
 import dagster as dg
 
-from ..assets.reverse_etl_config import ReverseEtlSyncConfig
-from ..assets.reverse_etl_defs import build_demo_defs
+from ..assets.reverse_etl_cdf_setup import build_sync_asset
+from ..assets.reverse_etl_config import CdfSyncConfig
 
 
 class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
-    """One Databricks Delta table synced to Kafka, then to Postgres and RisingWave.
+    """One Databricks Delta table's changes, read and written to Kafka as Debezium-style events.
 
-    Builds the sync's assets (source table setup, CDF to Kafka, RisingWave table,
-    Debezium JDBC sink), a setup job and a reset job. `name` is a short label such as
-    "orders"; every name is derived from it as reverse_etl_<name>_<role> (see
-    ReverseEtlSyncConfig.for_name), so syncs do not collide. See
-    docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.4.
+    The reusable reverse-ETL component (docs/poc/REVERSE_ETL_COMPONENT_DECOUPLING_PLAN.md, section
+    3.2): it builds exactly one Dagster asset, the sync. The sync reads an existing Delta table with
+    delta-rs (no Spark, no Databricks compute), keeps its watermark in the Postgres table
+    reverse_etl_sync_state, and produces Debezium-style events to an existing Kafka topic in Connect
+    JSON or Confluent Avro.
 
-    The reset job drops the source table, so `schema_name` must be a scratch schema,
-    and every name it drops must start with one of `reset_name_prefixes`.
+    It creates nothing: the topic and the state table must already exist (a missing one fails the
+    sync with what to create), and the asset touches only the postgres, databricks, kafka and
+    registry resources. Schema changes on the target side — column adds, drop/rename propagation —
+    are the demo's hooks (ReverseEtlCdfDemo); this component runs without them.
 
-    The optional fields override a derived name, for example to point `source_table` at
-    an existing table; leave them unset otherwise.
+    `name` is a short label deriving the sync name (the watermark key and the Debezium envelope
+    prefix) and the default asset and group names, as reverse_etl_<name>_<...>.
     """
 
     name: str
     catalog: str
     schema_name: str
-    # Column DDL besides the key, used only if the setup asset has to create the
-    # source table (for example "id BIGINT NOT NULL", "value STRING"). Leave unset
-    # for an existing table: the setup asset then only checks that it exists and
-    # fails if it does not, instead of creating it.
-    source_columns: list[str] | None = None
-    key_column: str = "rid"
-    # Demo seed: SQL run against the source table as the last step of the setup job.
-    # Each statement may use {source_table}. Leave unset for a real table.
-    seed_statements: list[str] | None = None
+    # The existing table. The component never creates it.
+    source_table: str
+    # The column that identifies a row downstream. No default: the demo's surrogate
+    # key `rid` means nothing for a real table.
+    key_column: str
+    # The topic to produce to. It must already exist; the sync never creates one.
+    kafka_topic: str
 
-    # Overrides. sync_name is the watermark key and the Debezium envelope prefix:
-    # changing it for an existing sync restarts that sync from the beginning.
-    sync_name: str | None = None
-    source_table: str | None = None
-    state_table: str | None = None
-    kafka_topic: str | None = None
-    connector_name: str | None = None
-    postgres_table: str | None = None
-    risingwave_table: str | None = None
-    group_name: str | None = None
-    table_setup_asset: str | None = None
-    sync_asset: str | None = None
-    risingwave_asset: str | None = None
-    sink_asset: str | None = None
-    # Asset that makes sure the topic exists. Set create_topic_asset to false when it is
-    # built elsewhere (the POC uses the shared kafka_output_topics_setup).
-    topic_asset: str | None = None
-    create_topic_asset: bool | None = None
-    setup_job: str | None = None
-    reset_job: str | None = None
-    reset_name_prefixes: list[str] | None = None
-    reset_schema: str | None = None
-    # tasks.max of the Debezium JDBC sink (default 1, enough for a daily load); raise it for a backfill.
-    sink_tasks_max: int | None = None
-    # False creates the source table as plain Delta (Change Data Feed only, no
-    # UniForm/Iceberg) — see the delta sync's defs.yaml.
-    uniform: bool | None = None
-    # True propagates source column drops to RisingWave and Postgres at the next
-    # sync (evidence-gated via the state table's last_schema).
-    propagate_drops: bool | None = None
-    # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
+    # "json" (default: Kafka Connect JSON with the schema embedded in every message) or "avro"
+    # (Confluent wire format, schemas in the registry under <topic>-key and <topic>-value).
     encoding: str | None = None
     schema_registry_url: str | None = None
 
-    def to_config(self) -> ReverseEtlSyncConfig:
-        config = ReverseEtlSyncConfig.for_name(
-            self.name,
+    # Overrides for the derived Dagster names.
+    group_name: str | None = None
+    sync_asset: str | None = None
+
+    # Upstream asset keys, so a team can order the sync after its own pipeline's assets.
+    deps: list[str] | None = None
+
+    def to_config(self) -> CdfSyncConfig:
+        base = f"reverse_etl_{self.name}"
+        config = CdfSyncConfig(
+            sync_name=base,
             catalog=self.catalog,
             schema=self.schema_name,
-            source_columns=tuple(self.source_columns or ()),
+            source_table=self.source_table,
             key_column=self.key_column,
-            seed_statements=tuple(self.seed_statements or ()),
+            kafka_topic=self.kafka_topic,
+            group_name=self.group_name or base,
+            sync_asset=self.sync_asset or f"{base}_to_kafka",
         )
         overrides = {
             field: getattr(self, field)
-            for field in (
-                "sync_name",
-                "source_table",
-                "state_table",
-                "kafka_topic",
-                "connector_name",
-                "postgres_table",
-                "risingwave_table",
-                "group_name",
-                "table_setup_asset",
-                "sync_asset",
-                "risingwave_asset",
-                "sink_asset",
-                "topic_asset",
-                "create_topic_asset",
-                "setup_job",
-                "reset_job",
-                "reset_schema",
-                "sink_tasks_max",
-                "uniform",
-                "propagate_drops",
-                "encoding",
-                "schema_registry_url",
-            )
+            for field in ("encoding", "schema_registry_url")
             if getattr(self, field) is not None
         }
-        if self.reset_name_prefixes is not None:
-            overrides["reset_name_prefixes"] = tuple(self.reset_name_prefixes)
-        return replace(config, **overrides)
+        return dataclasses.replace(config, **overrides)
 
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
-        return build_demo_defs(self.to_config())
+        deps = tuple(dg.AssetKey(dep) for dep in self.deps or ())
+        return dg.Definitions(assets=[build_sync_asset(self.to_config(), deps=deps)])
