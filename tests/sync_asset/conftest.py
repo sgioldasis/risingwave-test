@@ -86,12 +86,13 @@ def sync(source, calls, resources, state_rows, registry, encoding):
 
     def run(
         propagate_drops=False, target_columns=("id", "name", "born"), hooks=DemoSyncHooks(),
-        state_backend="postgres", state_path="", **options,
+        state_backend="postgres", state_path="", targets=("risingwave", "postgres"), duckdb_target_path="", **options,
     ):
         """`hooks=None` runs the bare core (what a team's sync would be); the default is the demo wiring."""
         cfg = make_config(
             source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid",
             propagate_drops=propagate_drops, state_backend=state_backend, state_path=state_path,
+            targets=targets, duckdb_target_path=duckdb_target_path,
         )
         # Mirror the demo's wiring (reverse_etl_defs.py): the demo hooks reach risingwave/http and
         # the Postgres target, so those must be declared required; the bare core and test hooks

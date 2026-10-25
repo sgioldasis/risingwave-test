@@ -271,6 +271,18 @@ MUTATIONS = [
     # duckdb-state sync needs only its file, so the core must not require postgres unconditionally.
     Mutation("component", "the postgres resource is required even for duckdb", f"{ASSETS}/reverse_etl_cdf_setup.py", '| ({"postgres"} if cfg.state_backend == "postgres" else set())', '| {"postgres"}', "tests/components"),
     Mutation("component", "the demo's upstream deps are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "deps=list(deps) or None,", "deps=None,", "tests/components"),
+    # --- the target selection (plan section 12, option A): each gate is pinned by a selection's exact asset set ---
+    Mutation("targets", "the RisingWave target is built anyway", f"{ASSETS}/reverse_etl_defs.py", '*([build_risingwave_table_asset(cfg)] if "risingwave" in cfg.targets else []),', "*([build_risingwave_table_asset(cfg)]),", "tests/components"),
+    Mutation("targets", "the JDBC sink is built anyway", f"{ASSETS}/reverse_etl_defs.py", '*([build_debezium_sink_asset(cfg)] if "postgres" in cfg.targets else []),', "*([build_debezium_sink_asset(cfg)]),", "tests/components"),
+    Mutation("targets", "the DuckDB mirror is built anyway", f"{ASSETS}/reverse_etl_defs.py", '*([build_duckdb_target_asset(cfg)] if "duckdb" in cfg.targets else []),', "*([build_duckdb_target_asset(cfg)]),", "tests/components"),
+    Mutation("targets", "the RisingWave target joins the setup job anyway", f"{ASSETS}/reverse_etl_defs.py", '*([cfg.risingwave_asset] if "risingwave" in cfg.targets else []),', "*([cfg.risingwave_asset]),", "tests/components"),
+    Mutation("targets", "the DuckDB mirror joins the setup job anyway", f"{ASSETS}/reverse_etl_defs.py", '*([f"{cfg.sync_name}_duckdb_target"] if "duckdb" in cfg.targets else []),', "*([f\"{cfg.sync_name}_duckdb_target\"]),", "tests/components"),
+    Mutation("targets", "the health check follows no target", f"{ASSETS}/reverse_etl_defs.py", 'has_postgres_target = "postgres" in cfg.targets', "has_postgres_target = True", "tests/components"),
+    Mutation("targets", "before_produce feeds an unselected RisingWave", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if "risingwave" not in cfg.targets:', "if False:", "tests/sync_asset"),
+    Mutation("targets", "after_delivery touches targets it was not given", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if "risingwave" not in cfg.targets and "postgres" not in cfg.targets:', "if False:", "tests/sync_asset"),
+    Mutation("targets", "propagate_drops accepts a half selection", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if cfg.propagate_drops and not {"risingwave", "postgres"} <= set(cfg.targets):', "if False:", "tests/sync_asset"),
+    Mutation("targets", "tombstones keep the key", f"{ASSETS}/reverse_etl_duckdb_target.py", 'if envelope["op"] == "d":', "if False:", "tests/test_duckdb_target.py"),
+    Mutation("targets", "unknown targets pass the config", f"{ASSETS}/reverse_etl_config.py", 'unknown = set(self.targets) - {"risingwave", "postgres", "duckdb"}', "unknown = set()", "tests/components"),
     # --- the core's preconditions: the topic and the state table are the team's (D1, D5) ---
     Mutation("preconditions", "the topic check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "if topic not in kafka.admin_client().list_topics(timeout=15).topics:", "if False:", "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),

@@ -77,6 +77,12 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
     # `state_table`) or "duckdb" (a local file at `state_path`, created on first run).
     state_backend: str | None = None
     state_path: str | None = None
+    # Which target stacks to build, as consumers of the topic (plan section 12, option A):
+    # any of "risingwave", "postgres", "duckdb". Default: risingwave and postgres, the
+    # demo's shape so far. The Debezium sink's health check follows the postgres target.
+    targets: list[str] | None = None
+    # The DuckDB target's file (required when "duckdb" is selected); one target per file.
+    duckdb_target_path: str | None = None
 
     def to_config(self) -> ReverseEtlSyncConfig:
         """The infrastructure names are the YAML's (required attributes above); the Dagster object
@@ -118,9 +124,12 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
                 "schema_registry_url",
                 "state_backend",
                 "state_path",
+                "duckdb_target_path",
             )
             if getattr(self, field) is not None
         }
+        if self.targets is not None:
+            overrides["targets"] = tuple(self.targets)
         if self.reset_name_prefixes is not None:
             overrides["reset_name_prefixes"] = tuple(self.reset_name_prefixes)
         return replace(config, **overrides)

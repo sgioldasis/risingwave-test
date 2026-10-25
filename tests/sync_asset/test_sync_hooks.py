@@ -11,6 +11,7 @@ Run from the repo root:  .venv/bin/python -m pytest
 import pytest
 
 from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
+from orchestration.assets.reverse_etl_demo_hooks import DemoSyncHooks
 import json
 
 import dagster as dg
@@ -162,6 +163,29 @@ class TestFailure:
         result, _, produced = sync(hooks=RecordingHooks(calls, fail_in="after_delivery"))
         assert not result.success and len(produced) == 1 and state_rows == []
         assert "after_delivery fails on purpose" in error_text(result)
+
+
+class TestTargetSelection:
+    """The demo hooks' target care follows the sync's target selection (plan section 12, option A): a
+    sync whose targets exclude the warehouse tables touches neither, and propagate_drops — which cares
+    for BOTH targets — refuses a half selection instead of half-propagating a schema change."""
+
+    def test_a_duckdb_only_sync_touches_neither_risingwave_nor_the_postgres_targets(self, sync, source, calls, tmp_path):
+        source.create(row(1, "a"))
+        result, _, produced = sync(
+            hooks=DemoSyncHooks(), targets=("duckdb",), state_backend="duckdb",
+            state_path=str(tmp_path / "state.duckdb"), duckdb_target_path=str(tmp_path / "mirror.duckdb"),
+        )
+        assert result.success and len(produced) == 1
+        assert "risingwave" not in kinds(calls) and "http" not in kinds(calls) and "postgres" not in kinds(calls)
+        assert metadata(result, "risingwave_columns_added") == []
+        assert metadata(result, "columns_dropped") == {} and metadata(result, "columns_renamed") == []
+
+    def test_propagate_drops_with_a_half_selection_fails_loudly(self, sync, source, calls):
+        source.create(row(1, "a"))
+        result, _, _ = sync(hooks=DemoSyncHooks(), propagate_drops=True, targets=("risingwave",))
+        assert not result.success
+        assert "propagate_drops needs both the risingwave and postgres targets" in error_text(result)
 
 
 class TestEmptyRun:

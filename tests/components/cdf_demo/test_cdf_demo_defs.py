@@ -155,6 +155,49 @@ class TestSetupJobSelection:
         assert self.selected(defs, resources, "reverse_etl_unittest_setup_job") == BASE
 
 
+class TestTargets:
+    """The demo's target selection (plan section 12, option A): each selection's exact asset set,
+    the same way the reusable component's one-asset test pins its shape."""
+
+    DUCKDB_ONLY = BASE - {"reverse_etl_unittest_risingwave_target", "reverse_etl_unittest_jdbc_sink"}
+
+    def test_duckdb_only_builds_the_mirror_instead_of_the_warehouse_targets(self):
+        defs = build(targets=["duckdb"], duckdb_target_path="/tmp/unittest/target.duckdb")
+        assert asset_names(defs) == self.DUCKDB_ONLY | {"reverse_etl_unittest_duckdb_target"}
+
+    def test_the_duckdb_target_runs_in_the_setup_job_after_the_sync(self, resources):
+        defs = build(targets=["duckdb"], duckdb_target_path="/tmp/unittest/target.duckdb")
+        resolved = with_fakes(defs, resources).resolve_job_def("reverse_etl_unittest_setup_job")
+        selected = {key.to_user_string() for key in resolved.asset_layer.executable_asset_keys}
+        assert "reverse_etl_unittest_duckdb_target" in selected
+        assert "reverse_etl_unittest_risingwave_target" not in selected
+        sync = next(asset for asset in defs.assets if "reverse_etl_unittest_to_kafka" in {k.to_user_string() for k in asset.keys})
+        (spec,) = sync.specs
+        duckdb_target = next(asset for asset in defs.assets if "reverse_etl_unittest_duckdb_target" in {k.to_user_string() for k in asset.keys})
+        (target_spec,) = duckdb_target.specs
+        assert {dep.asset_key.to_user_string() for dep in target_spec.deps} == {"reverse_etl_unittest_to_kafka"}
+        assert "reverse_etl_unittest_to_kafka" in {k.to_user_string() for k in resolved.asset_layer.executable_asset_keys}
+
+    def test_no_postgres_target_removes_the_health_check_job_and_schedule(self):
+        defs = build(targets=["risingwave"])
+        assert len(defs.asset_checks) == 0
+        assert len(defs.schedules) == 0
+        assert job_names(defs) == {"reverse_etl_unittest_setup_job", "reverse_etl_unittest_reset_job"}
+
+    def test_the_default_builds_both_warehouse_targets_and_the_health_check(self):
+        defs = build()
+        assert {"reverse_etl_unittest_risingwave_target", "reverse_etl_unittest_jdbc_sink"} <= asset_names(defs)
+        assert len(defs.schedules) == 1
+
+    def test_an_unknown_target_fails_at_load(self):
+        with pytest.raises(ValueError, match="unknown target"):
+            build(targets=["elasticsearch"])
+
+    def test_the_duckdb_target_needs_a_path(self):
+        with pytest.raises(ValueError, match="duckdb_target_path is required"):
+            build(targets=["duckdb"])
+
+
 class TestLoadable:
     @pytest.mark.parametrize(
         "attributes",
@@ -164,8 +207,9 @@ class TestLoadable:
             {"source_columns": COLUMNS, "seed_statements": ["SELECT 1"]},
             {"encoding": "avro"},
             {"create_topic_asset": False},
+            {"targets": ["duckdb"], "duckdb_target_path": "/tmp/unittest/target.duckdb"},
         ],
-        ids=["existing-table", "demo-table", "demo-table-seeded", "avro", "shared-topic"],
+        ids=["existing-table", "demo-table", "demo-table-seeded", "avro", "shared-topic", "duckdb-target"],
     )
     def test_the_definitions_validate_and_every_job_resolves(self, resources, attributes):
         defs = build(**attributes)

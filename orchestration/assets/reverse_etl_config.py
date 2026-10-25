@@ -173,10 +173,26 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
     # drop-propagation section).
     propagate_drops: bool = False
 
+    # --- target selection (plan section 12, option A) ----------------------------
+    # Which target stacks the demo builds, as consumers of the sync's Kafka topic:
+    # "risingwave" (the RisingWave table), "postgres" (the Debezium JDBC sink and its
+    # health check) and "duckdb" (a local DuckDB file mirror at duckdb_target_path).
+    # Default: both warehouse targets, the demo's shape so far. The sync itself is
+    # untouched by this -- it produces to Kafka and its state, and nothing else.
+    targets: tuple[str, ...] = ("risingwave", "postgres")
+    # The DuckDB target's file. Explicit like every infrastructure name: it lands in
+    # a real system. Local file, one target per file (DuckDB allows one writer).
+    duckdb_target_path: str = ""
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
+        unknown = set(self.targets) - {"risingwave", "postgres", "duckdb"}
+        if unknown:
+            raise ValueError(f"unknown target(s) {sorted(unknown)} -- targets may contain 'risingwave', 'postgres', 'duckdb'")
+        if "duckdb" in self.targets and not self.duckdb_target_path:
+            raise ValueError("duckdb_target_path is required when the duckdb target is selected")
 
     @property
     def state_fqn(self) -> str:

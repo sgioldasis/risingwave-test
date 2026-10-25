@@ -20,6 +20,7 @@ from dagster import (
 from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import build_sync_asset
 from .reverse_etl_demo_assets import build_seed_asset, build_table_setup_asset
+from .reverse_etl_duckdb_target import build_duckdb_target_asset
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_demo_hooks import DemoSyncHooks
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
@@ -52,8 +53,11 @@ def _build_topic_asset(cfg: ReverseEtlSyncConfig):
 
 def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     """The demo's builder: the sync asset plus everything the demo needs around it (table setup,
-    topic, RisingWave target, JDBC sink, seed, make-change, the jobs and the health check). The
-    reusable component builds only the sync asset itself (decoupling plan step 6)."""
+    topic, the selected targets, seed, make-change, the jobs and the health check). The reusable
+    component builds only the sync asset itself (decoupling plan step 6). The targets are consumers
+    of the sync's topic, selected by cfg.targets (plan section 12, option A): "risingwave" builds
+    the RisingWave table, "postgres" the Debezium JDBC sink with its health check, "duckdb" a local
+    file mirror."""
     assets = [
         build_table_setup_asset(cfg),
         # The demo's hooks reach RisingWave, Kafka Connect and the Postgres TARGET through
@@ -66,8 +70,9 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
             extra_resource_keys=("risingwave", "http", "postgres"),
             deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
         ),
-        build_risingwave_table_asset(cfg),
-        build_debezium_sink_asset(cfg),
+        *([build_risingwave_table_asset(cfg)] if "risingwave" in cfg.targets else []),
+        *([build_debezium_sink_asset(cfg)] if "postgres" in cfg.targets else []),
+        *([build_duckdb_target_asset(cfg)] if "duckdb" in cfg.targets else []),
     ]
     if cfg.create_topic_asset:
         assets.append(_build_topic_asset(cfg))
@@ -85,8 +90,9 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         cfg.table_setup_asset,
         cfg.topic_asset,
         cfg.sync_asset,
-        cfg.risingwave_asset,
-        cfg.sink_asset,
+        *([cfg.risingwave_asset] if "risingwave" in cfg.targets else []),
+        *([cfg.sink_asset] if "postgres" in cfg.targets else []),
+        *([f"{cfg.sync_name}_duckdb_target"] if "duckdb" in cfg.targets else []),
     ]
     if cfg.seed_statements:
         job_assets.append(cfg.seed_asset)
@@ -96,21 +102,25 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         selection=selection,
         description=(
             f"Create {cfg.sync_name}'s Databricks tables and Kafka topic, run the first sync, then "
-            "create the RisingWave table and the Debezium JDBC sink, and last seed the demo rows if the "
-            "sync has seed statements."
+            "build the selected targets (RisingWave table, Debezium JDBC sink, DuckDB mirror), and last "
+            "seed the demo rows if the sync has seed statements."
         ),
         executor_def=in_process_executor,
     )
-    health_check = build_sink_health_check(cfg)
-    health_job, health_schedule = build_sink_health_job_and_schedule(cfg, health_check)
+    # The health check watches the Debezium JDBC sink's connector and lag: it exists only with the
+    # postgres target (plan section 12 -- the health check follows the selected targets).
+    has_postgres_target = "postgres" in cfg.targets
+    if has_postgres_target:
+        health_check = build_sink_health_check(cfg)
+        health_job, health_schedule = build_sink_health_job_and_schedule(cfg, health_check)
     return Definitions(
         assets=assets,
-        asset_checks=[health_check],
+        asset_checks=[health_check] if has_postgres_target else [],
         jobs=[
             setup_job,
             build_reset_job(cfg),
             *([build_change_job(cfg, change_asset)] if change_asset is not None else []),
-            health_job,
+            *([health_job] if has_postgres_target else []),
         ],
-        schedules=[health_schedule],
+        schedules=[health_schedule] if has_postgres_target else [],
     )

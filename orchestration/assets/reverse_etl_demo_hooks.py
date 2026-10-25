@@ -25,12 +25,25 @@ class DemoSyncHooks(SyncHooks):
     propagation to both targets, and the sink restart that goes with it."""
 
     def before_produce(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> dict:
+        if "risingwave" not in cfg.targets:
+            # The RisingWave table is a target (plan section 12, option A): unselected, there is
+            # no table to keep ahead of the messages.
+            return {"risingwave_columns_added": []}
         added = add_missing_columns(context.resources.risingwave, context.resources.registry, cfg, row_fields)
         if added:
             context.log.info(f"Added column(s) to the RisingWave table: {added}")
         return {"risingwave_columns_added": added}
 
     def after_delivery(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, schema: dict) -> dict:
+        if "risingwave" not in cfg.targets and "postgres" not in cfg.targets:
+            return {"columns_dropped": {}, "columns_renamed": []}
+        if cfg.propagate_drops and not {"risingwave", "postgres"} <= set(cfg.targets):
+            # _propagate_column_drops cares for BOTH targets and restarts the sink: with one of
+            # them unselected there is no table or connector to change, so the combination fails
+            # loudly instead of half-propagating a schema change.
+            raise RuntimeError(
+                f"propagate_drops needs both the risingwave and postgres targets selected, got {list(cfg.targets)}"
+            )
         columns_dropped: dict[str, list[str]] = {}
         columns_renamed: list[str] = []
         schema_changes = _propagate_column_drops(

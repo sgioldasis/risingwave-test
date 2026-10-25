@@ -135,6 +135,10 @@ OVERRIDES = {
     # pins the default; the duckdb selection is covered in tests/sync_asset/test_state_backends.py.
     "state_backend": "postgres",
     "state_path": "/tmp/demo/state.duckdb",
+    # "duckdb" would need its duckdb_target_path alongside, so the row selects the risingwave
+    # target; the duckdb-only shape is covered in tests/components/cdf_demo/test_cdf_demo_defs.py.
+    "targets": ("risingwave",),
+    "duckdb_target_path": "/tmp/demo/target.duckdb",
 }
 
 
@@ -174,3 +178,11 @@ class TestInvalidCombinations:
     def test_only_json_and_avro_are_encodings(self):
         with pytest.raises(ValueError, match="encoding must be 'json' or 'avro'"):
             component(encoding="xml").to_config()
+
+    def test_only_risingwave_postgres_and_duckdb_are_targets(self):
+        with pytest.raises(ValueError, match="unknown target"):
+            component(targets=["elasticsearch"]).to_config()
+
+    def test_the_duckdb_target_needs_a_path(self):
+        with pytest.raises(ValueError, match="duckdb_target_path is required"):
+            component(targets=["duckdb"]).to_config()
