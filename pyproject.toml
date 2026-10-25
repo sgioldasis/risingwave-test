@@ -51,7 +51,7 @@ dependencies = [
     "pyarrow>=24.0.0",
     "pymysql>=1.1.2",
     # reverse-ETL demo, see docs/poc/REVERSE_ETL_DRT_COMPARISON.md
-    "drt-core[databricks,postgres]==1.0.0",
+    "drt-core[databricks,postgres]==1.2.0",
     "dagster-drt>=0.5.0,<0.6",
 ]
 
