@@ -64,7 +64,7 @@ class ReverseEtlSyncConfig:
                               # lives in Postgres (reverse_etl_sync_state); this
                               # name remains only for the reset's cleanup drop
     key_column: str           # "rid" (identity column, see below)
-    source_columns: tuple[str, ...]
+    source_columns: tuple[str, ...]  # empty for an existing table: the setup then only checks it exists
     kafka_topic: str          # "reverse_etl_avro_topic"
     connector_name: str       # "reverse_etl_avro_sink"
     postgres_table: str       # "reverse_etl_avro_target"

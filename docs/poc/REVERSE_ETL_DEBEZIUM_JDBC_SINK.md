@@ -175,7 +175,8 @@ Databricks type to Connect type mapping (`_CONNECT_TYPE_BY_DATABRICKS_TYPE`):
 | `DOUBLE` | `double` | `double precision` |
 | `BOOLEAN` | `boolean` | `boolean` |
 | `TIMESTAMP` | `string` with schema name `io.debezium.time.ZonedTimestamp` (ISO-8601 with timezone) | `timestamp with time zone` |
-| anything else (`STRING`, `DATE`, `DECIMAL`, ...) | `string` | `text` |
+| `DATE` | `int32` with schema name `io.debezium.time.Date` (days since 1970-01-01); Avro `logicalType: date` | `date` (verified 2026-10-25, JSON and Avro) |
+| anything else (`STRING`, `DECIMAL`, ...) | `string` | `text` |
 
 Kafka Connect's JSON schema type names are `float` and `double`, not `float32` / `float64`. An earlier draft of
 the mapping used the latter and the converter rejected the message (`Unknown schema type: float64`); this was
@@ -194,6 +195,7 @@ RisingWave reads the same messages, so its table uses real types too. Connect ty
 | `boolean` | `BOOLEAN` | yes |
 | `string` | `VARCHAR` | yes |
 | `string` named `io.debezium.time.ZonedTimestamp` (internal marker `zoned_timestamp`) | `TIMESTAMPTZ` | yes |
+| `int32` named `io.debezium.time.Date` / Avro `logicalType: date` (internal marker `date`) | `DATE` | Avro: yes (2026-10-25 probe) |
 
 The Statement Execution API returns every value as a string, so values are cast to the declared Connect type
 (`_coerce()`) before they are written into the payload. Row payloads contain exactly the schema's fields, in
@@ -206,9 +208,31 @@ the schema field carries the name `io.debezium.time.ZonedTimestamp`, which the D
 `timestamp with time zone`. The RisingWave column is `TIMESTAMPTZ`. Verified live on 2026-10-03 after reset and
 setup: both targets have `timestamp with time zone` and hold identical instants (displayed in each session's
 timezone). Earlier versions sent `updated_at` as a plain string, giving `text` / `VARCHAR`; switching needed the
-tables recreated. `TIMESTAMP_NTZ` and `DATE` are still carried as plain strings (not tested as typed).
+tables recreated. `TIMESTAMP_NTZ` is still carried as a plain string (not tested as typed).
 In the code the marker is `ZONED_TIMESTAMP`; `_connect_field()` (and its copy in the notebook) turns it into the
 named schema field.
+
+**`DATE` columns (2026-10-25).** A `DATE` column is carried as days since 1970-01-01 (`int32`), so both targets
+get a real date: the JSON schema field is named `io.debezium.time.Date`, the Avro field is
+`{"type": "int", "logicalType": "date"}`. The delta-rs reader hands dates over as ISO strings and `_coerce()`
+converts them. Before this, `DATE` was a plain string (`text` / `VARCHAR`), so changing it needs the sync's
+targets recreated. Tested with throwaway Avro and JSON syncs (insert, update, delete), 2026-10-25: Postgres
+`date` and RisingWave `date` in both encodings, updates and deletes applied, and then on the real
+`reverse_etl_company` sync (32 rows, reset and rebuilt end to end). The JSON path needs no extra handling:
+RisingWave reads `io.debezium.time.Date` natively. The drt path maps `date` to a Postgres `date` column too
+(`_POSTGRES_TYPE_BY_CONNECT_TYPE`); drt binds values client-side through psycopg2, and the same
+`INSERT ... ON CONFLICT` shape accepts ISO strings, Python dates and nulls into a `date` column (checked on a
+temp table). Verified end to end on the `company` drt sync (`reverse_etl_company_drt_to_postgres`, mirror
+mode): 32 rows with real `date` values, identical to the Debezium target.
+
+A `DATE` column also works as the **key** on both encodings (JSON key schemas go through `_connect_field`, so
+the key field gets its schema name too; tested 2026-10-25 with scratch syncs: Postgres `date` primary key,
+update and delete applied, RisingWave matching).
+
+**Not covered: the notebook producer.** `notebooks/reverse_etl_cdf_to_kafka.py` still sends dates as plain
+strings, so a `DATE` sync must not use it. It was not changed: it cannot be tested without starting a
+Databricks cluster, and it was already behind the asset (its last change predates the move of the watermark to
+Postgres; it still reads a Delta state table `<sync>_state` that the setup job no longer creates).
 
 **Precision (changed 2026-10-05).** Until then timestamps were sent with three fractional digits (the earlier
 examples in this document, such as `...23.009Z` below, show that), although Databricks stores microseconds: the
@@ -384,6 +408,7 @@ Behaviour:
 | `primary.key.mode` | `record_key` | Key struct supplies the primary key. |
 | `primary.key.fields` | `rid` | The surrogate identity column (section 4.6), not the business `id`. |
 | `delete.enabled` | `true` | `op = "d"` becomes a `DELETE`. |
+| `quote.identifiers` | `true` (since 2026-10-25) | Quotes table and column names so mixed-case source columns (`Company_ID`) keep their case in Postgres. The sink's default is `false`, which folds unquoted names to lowercase. Lowercase syncs are unaffected. |
 | `schema.evolution` | `basic` | The sink creates the table (with the primary key) on first use and adds columns if the schema grows. No separate table-creation asset is needed. |
 | `collection.name.format` | `reverse_etl_cdf_target` | Target table name. Without it the table would be named after the topic. |
 | `key.converter` / `value.converter` | `org.apache.kafka.connect.json.JsonConverter` (default); `io.confluent.connect.avro.AvroConverter` when the sync has `encoding: avro` (section 14.1.1) | |
@@ -835,8 +860,8 @@ depends on the table; during the rebuild the table is briefly empty or partial.
 The second sync, `orders`, was added this way (see 14.4 for the names it gets):
 
 1. Create `orchestration/defs/reverse_etl_<label>/defs.yaml` with a `ReverseEtlCdfSync` instance: `name` (the
-   label), `catalog`, `schema_name` (a scratch schema), `source_columns` (used only if the setup creates the
-   table), and optional `seed_statements` (SQL using `{source_table}`). Add `encoding: avro` for Avro messages
+   label), `catalog`, `schema_name` (a scratch schema), `source_columns` (optional: only needed if the setup
+   creates the table; leave it unset for an existing table, see step 2 of [REVERSE_ETL_VIEW_COPY.md](REVERSE_ETL_VIEW_COPY.md)), and optional `seed_statements` (SQL using `{source_table}`). Add `encoding: avro` for Avro messages
    (default `json`; section 14.1.1).
 2. Reload the Dagster code location (no restart needed; the containers mount `./orchestration`). The group
    `reverse_etl_<label>`, its assets and `reverse_etl_<label>_setup_job` / `_reset_job` appear.
@@ -848,8 +873,10 @@ To start over, run `reverse_etl_<label>_reset_job`, then the setup job. To remov
 then delete its folder; deleting the folder alone leaves the objects behind. One notebook serves every
 sync: set its `label` widget (section 10.3). Verified for `orders` on 2026-10-04 (below).
 For a real, existing table: the setup only creates a table that does not exist, and the table needs a `rid`
-identity column from creation (section 13). `source_columns` is still a required field in the YAML even then; it is
-unused when the table exists (making it optional is not done).
+identity column from creation (section 13). `source_columns` is optional (since 2026-10-25): leave it unset and the setup only
+checks that the table exists, failing if it does not instead of creating it. A table made by hand also needs
+`MANAGE` granted to the service principal or the reset job's drop is refused
+([REVERSE_ETL_VIEW_COPY.md](REVERSE_ETL_VIEW_COPY.md)).
 
 ### 10.6 Triggering the notebook from Dagster, for any sync
 
@@ -1007,7 +1034,7 @@ Notes and limits:
   RisingWave. Treat added columns as permanent, use a new column name for repeated demos, and use the reset and
   setup jobs to return to the original schema.
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
-  else (`DATE`, `TIMESTAMP_NTZ`, `DECIMAL`, ...) arrives as `text`. `TINYINT`, `SMALLINT` and `FLOAT` mappings
+  else (`TIMESTAMP_NTZ`, `DECIMAL`, ...) arrives as `text`; `DATE` is typed since 2026-10-25. `TINYINT`, `SMALLINT` and `FLOAT` mappings
   were not exercised end to end.
 - **Key column is fixed.** `key_column` (default `"rid"`, a component attribute) is
   the key for the Kafka message, the RisingWave primary key and the connector's `primary.key.fields`; the
@@ -1287,6 +1314,11 @@ because it destroys state instead of materializing it. It runs these steps in or
 5. For an Avro sync, delete its two registry subjects (soft, then permanent).
 6. Drop the Databricks source and watermark tables (`reverse_etl_cdf_source`, `reverse_etl_cdf_state`).
 
+The last step first clears this sync's watermark row in the shared Postgres state table and the location cache,
+and only then drops the Databricks tables (changed 2026-10-25). Before, a failed Databricks drop (for example a
+table the service principal does not own) left the old watermark behind, and the next sync after the source was
+recreated at version 0 silently loaded nothing.
+
 Dropping the Databricks tables, rather than only resetting the watermark, is what removes columns added during
 a demo: `reverse_etl_cdf_table_setup` recreates them with `CREATE TABLE IF NOT EXISTS` and the original
 columns. Every step tolerates a missing object, so a half-finished reset can be run again. A guard refuses to
@@ -1314,7 +1346,8 @@ group and both target tables were all absent, as expected.
   the targets cannot follow (Postgres can widen in place, RisingWave cannot change a column type), and it is a
   one-way table upgrade. Column mapping *is* now included on every table the setup creates (2026-10-17): it is
   what lets Delta take `DROP COLUMN`, which the pipeline follows since drop propagation landed.
-- **Typed `DATE` / `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3).
+- **Typed `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3). `DATE` is typed since
+  2026-10-25.
 - **A Dagster component for the whole pipeline** (built; all four syncs run through it). `ReverseEtlCdfSync`
   (`orchestration/components/reverse_etl_cdf_sync.py`) is a regular `Component`, not state-backed, because the
   columns are read at run time. One instance per sync under `orchestration/defs/<folder>/defs.yaml`:

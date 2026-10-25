@@ -287,8 +287,9 @@ code, without running it; **[judgement]** my assessment, not a measurement.
    history can age out of retention (see 4.2 item 4) [source].
 4. **Schema evolution is additive only** in practice; drops and type changes need a careful order,
    and the two targets can disagree afterwards. [tested]
-5. **Type coverage is limited**; types outside the mapping table (for example `DECIMAL`, `DATE`)
-   arrive as `text`. [source: sink doc section 13]
+5. **Type coverage is limited**; types outside the mapping table (for example `DECIMAL`) arrive as
+   `text`. `DATE` is typed (`date` column) since 2026-10-25, verified on the `company` sync. [source: sink doc
+   section 13]
 6. **Manual trigger and shared watermark.** No schedule or sensor, and the notebook, asset and
    Dagster job must not be mixed for one change. [tested]
 7. **The notebook job lives outside git** and depends on one person's access and cluster. [tested]

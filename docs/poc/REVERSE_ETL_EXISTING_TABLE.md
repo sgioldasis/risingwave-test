@@ -134,6 +134,9 @@ attributes:
   propagate_drops: false        # true only if the source has column mapping
   sink_tasks_max: 4             # raise for the initial backfill
   # NO seed_statements — leave unset for a real table (component docstring)
+  # NO source_columns — optional; unset means "existing table": the setup asset
+  # only checks it exists (and fails if it does not) instead of creating it, and the
+  # sync gets no make_change asset or job (that helper needs source_columns and an `id` key)
 ```
 
 `source_table` is a bare table name within `catalog.schema` (the config builds
@@ -422,6 +425,13 @@ wins, the low fallback watermark the empty run writes never beats the stale
 high row. **The sync stalls silently until the new source accumulates more
 versions than the old watermark ever reached, and versions below it are never
 synced.**
+
+The reset job clears the watermark before it drops anything in Databricks (since
+2026-10-25), so a reset that fails on a Databricks error no longer leaves this trap behind. A
+hand-made table also needs `MANAGE` granted to the service principal, or the reset's drop is refused
+([REVERSE_ETL_VIEW_COPY.md](REVERSE_ETL_VIEW_COPY.md)). The state now lives in Postgres
+(`reverse_etl_sync_state`); the SQL below is the legacy Delta form, and the Postgres equivalent is
+`DELETE FROM reverse_etl_sync_state WHERE sync_name = '<sync_name>'`.
 
 Re-baseline by clearing the state (the next sync then backfills from v0 —
 safe, the targets upsert by key):

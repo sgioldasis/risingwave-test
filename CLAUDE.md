@@ -55,6 +55,12 @@ dbt run -s <model_name>  # single model
 dbt parse                # validate configs (required after any tag/config change)
 ```
 
+### Tests
+
+```bash
+.venv/bin/python -m unittest discover -s tests -t .   # reverse-ETL unit tests, no services needed
+```
+
 ### Connect to RisingWave SQL
 
 ```bash
