@@ -405,7 +405,7 @@ Behaviour:
 | Key | Value | Notes |
 |---|---|---|
 | `connector.class` | `io.debezium.connector.jdbc.JdbcSinkConnector` | |
-| `tasks.max` | `1` (the config's `sink_tasks_max`; a component attribute) | One task is enough for a daily load; raise it for a backfill (see section 13, "Single task"). |
+| `tasks.max` | `1` (the config's `sink_tasks_max`; a `ReverseEtlCdfDemo` attribute) | One task is enough for a daily load; raise it for a backfill (see section 13, "Single task"). |
 | `topics` | `reverse_etl_cdf_topic` | |
 | `connection.url` | `HOST_POSTGRES_URL`, default `jdbc:postgresql://host.docker.internal:5432/postgres` | Same default as the existing dbt Postgres sink. |
 | `connection.username` | `POSTGRES_USER`, default `postgres` | |
@@ -865,7 +865,7 @@ depends on the table; during the rebuild the table is briefly empty or partial.
 
 The second sync, `orders`, was added this way (see 14.4 for the names it gets):
 
-1. Create `orchestration/defs/reverse_etl_<label>/defs.yaml` with a `ReverseEtlCdfSync` instance: `name` (the
+1. Create `orchestration/defs/reverse_etl_<label>/defs.yaml` with a `ReverseEtlCdfDemo` instance: `name` (the
    label), `catalog`, `schema_name` (a scratch schema), `source_columns` (optional: only needed if the setup
    creates the table; leave it unset for an existing table, see step 2 of [REVERSE_ETL_VIEW_COPY.md](REVERSE_ETL_VIEW_COPY.md)), and optional `seed_statements` (SQL using `{source_table}`). Add `encoding: avro` for Avro messages
    (default `json`; section 14.1.1).
@@ -1042,7 +1042,7 @@ Notes and limits:
 - **Type coverage.** Only the types in the mapping table (section 4.3) become typed Postgres columns; anything
   else (`TIMESTAMP_NTZ`, `DECIMAL`, ...) arrives as `text`; `DATE` is typed since 2026-10-25. `TINYINT`, `SMALLINT` and `FLOAT` mappings
   were not exercised end to end.
-- **Key column is fixed.** `key_column` (default `"rid"`, a component attribute) is
+- **Key column is fixed.** `key_column` (default `"rid"`, a `ReverseEtlCdfDemo` attribute) is
   the key for the Kafka message, the RisingWave primary key and the connector's `primary.key.fields`; the
   notebook repeats it as `KEY_COLUMNS`. A different key means changing the config and the notebook and
   recreating the source table.
@@ -1069,7 +1069,7 @@ Notes and limits:
   Apicurio. RisingWave does not follow schema changes and rejects `ADD COLUMN` until the registry has the column.
   Throughput, a backfill, column drops and type changes were not run with Avro.
 - **Single task, and it is enough.** `tasks.max` defaults to 1 and is now a per-sync setting
-  (`sink_tasks_max` on the component, default 1, rejected below 1). A local throughput test on 2026-10-05 (300,000
+  (`sink_tasks_max` on the demo component, default 1, rejected below 1). A local throughput test on 2026-10-05 (300,000
   insert messages of about 1.7 KB, 12 partitions, local Redpanda and Postgres, scratch topic, connector and
   table) drained at roughly 35,000 to 40,000 rows a second with one task, about 92,000 with four, and
   `dialect.postgres.unnest.insert.enabled` and larger batches (`batch.size` and `max.poll.records` 2000) did not
@@ -1214,7 +1214,7 @@ registry on this laptop; see the notebook-side results below), message size and 
 A sync labelled `avro` carries the `cdf` data (own source table, topic, connector and target tables) with
 `encoding: avro` in `orchestration/defs/reverse_etl_avro/defs.yaml`. `encoding` (default `json`) and
 `schema_registry_url` (default the staging Apicurio's `/apis/ccompat/v7`) are fields of the sync config and the
-component; `cdf` and `orders` are unchanged.
+demo component; `cdf` and `orders` are unchanged.
 
 - **What it changes.** The asset builds the key and envelope schemas from the live columns
   (`_avro_schemas`) and serializes with confluent-kafka's `AvroSerializer`; the notebook does the same in Spark
@@ -1354,12 +1354,14 @@ group and both target tables were all absent, as expected.
   what lets Delta take `DROP COLUMN`, which the pipeline follows since drop propagation landed.
 - **Typed `TIMESTAMP_NTZ` columns** (still sent as plain strings, see section 4.3). `DATE` is typed since
   2026-10-25.
-- **A Dagster component for the whole pipeline** (built; all four syncs run through it). `ReverseEtlCdfSync`
-  (`orchestration/components/reverse_etl_cdf_sync.py`) is a regular `Component`, not state-backed, because the
-  columns are read at run time. One instance per sync under `orchestration/defs/<folder>/defs.yaml`:
+- **A Dagster component for the whole pipeline** (built; all four syncs run through it). Since the 2026-10-25
+  split (docs/poc/REVERSE_ETL_COMPONENT_DECOUPLING_PLAN.md) the demo deploys `ReverseEtlCdfDemo`
+  (`orchestration/components/reverse_etl_cdf_demo.py`), a regular `Component`, not state-backed, because the
+  columns are read at run time; the reusable `ReverseEtlCdfSync` builds only the sync asset
+  (docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md). One instance per sync under `orchestration/defs/<folder>/defs.yaml`:
 
   ```yaml
-  type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+  type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
   attributes:
     name: orders            # the label; every name below is derived from it
     catalog: de_dev
