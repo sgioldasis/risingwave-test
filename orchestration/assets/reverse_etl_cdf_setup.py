@@ -74,7 +74,7 @@ from .databricks_optimize import (
     _poll,
     _submit,
 )
-from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_config import CdfSyncConfig, ReverseEtlSyncConfig
 
 # Every function below takes the sync's ReverseEtlSyncConfig; the names live in reverse_etl_config.
 
@@ -82,7 +82,7 @@ from .reverse_etl_config import ReverseEtlSyncConfig
 CHANGE_TYPE_COLUMN = "_change_type"
 
 
-def get_table_location(token: str, cfg: ReverseEtlSyncConfig, fqn: str) -> str:
+def get_table_location(token: str, cfg: CdfSyncConfig, fqn: str) -> str:
     """The table's abfss storage location, from the Unity Catalog REST API.
 
     Control-plane call — no compute, no DBUs. Replaces the DESCRIBE DETAIL the
@@ -116,7 +116,7 @@ def _azure_storage_options(location: str) -> dict[str, str]:
 
 
 def precheck_versions(
-    postgres: PostgresResource, cfg: ReverseEtlSyncConfig, source_location: str
+    postgres: PostgresResource, cfg: CdfSyncConfig, source_location: str
 ) -> tuple[int | None, int, str | None]:
     """(watermark, source's current version, the state row's last_schema) without
     any warehouse compute: the source's version via a delta-rs log read, the
@@ -228,7 +228,7 @@ def clear_control_plane_cache() -> None:
         pass  # nothing cached (or already gone) — a fresh fetch is the fallback
 
 
-def get_table_location_cached(token: str, cfg: ReverseEtlSyncConfig, fqn: str) -> str:
+def get_table_location_cached(token: str, cfg: CdfSyncConfig, fqn: str) -> str:
     """get_table_location() with a 10-minute disk cache. Managed tables' storage
     locations only move when the table is dropped and recreated — the reset job
     does exactly that and clears this cache when it does (see
@@ -402,7 +402,7 @@ def _pg_state_write(postgres: PostgresResource, sync_name: str, version: int, la
         conn.close()
 
 
-def _read_state(postgres: PostgresResource, cfg: ReverseEtlSyncConfig) -> tuple[int | None, str | None]:
+def _read_state(postgres: PostgresResource, cfg: CdfSyncConfig) -> tuple[int | None, str | None]:
     """(watermark, last_schema) for this sync's state row. last_schema is the JSON
     list of source column names recorded at the previous sync — the evidence the
     drop-propagation pass needs (a column in last_schema but absent from the
@@ -414,7 +414,7 @@ def _read_state(postgres: PostgresResource, cfg: ReverseEtlSyncConfig) -> tuple[
     return version, last_schema
 
 
-def _write_state(postgres: PostgresResource, cfg: ReverseEtlSyncConfig, version: int, last_schema: str) -> None:
+def _write_state(postgres: PostgresResource, cfg: CdfSyncConfig, version: int, last_schema: str) -> None:
     # Append-only, matching the deleted Spark backend's write_state: read_state takes the freshest
     # row for the sync_name, so history accumulates harmlessly and the write is a
     # cheap single-statement insert.
@@ -737,7 +737,7 @@ def _connect_field(name: str, connect_type: str, optional: bool) -> dict[str, An
     return {"field": name, "type": connect_type, "optional": optional}
 
 
-def _connect_row_schema(cfg: ReverseEtlSyncConfig, optional: bool, row_fields: list[RowField]) -> dict[str, Any]:
+def _connect_row_schema(cfg: CdfSyncConfig, optional: bool, row_fields: list[RowField]) -> dict[str, Any]:
     return {
         "type": "struct",
         "name": f"{cfg.envelope_schema_name}.Value",
@@ -747,7 +747,7 @@ def _connect_row_schema(cfg: ReverseEtlSyncConfig, optional: bool, row_fields: l
 
 
 def _build_connect_json_message(
-    cfg: ReverseEtlSyncConfig, event: dict[str, Any], key_columns: list[str], row_fields: list[RowField]
+    cfg: CdfSyncConfig, event: dict[str, Any], key_columns: list[str], row_fields: list[RowField]
 ) -> tuple[bytes, bytes]:
     """Build the (key, value) pair for one event as Kafka Connect JSON with
     embedded schemas (`{"schema": ..., "payload": ...}`), for the Debezium
@@ -829,7 +829,7 @@ def _avro_value_type(connect_type: str) -> Any:
 
 
 def _avro_schemas(
-    cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]
+    cfg: CdfSyncConfig, key_columns: list[str], row_fields: list[RowField]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """(key schema, value schema); the value schema is the Debezium envelope."""
     namespace = cfg.envelope_schema_name
@@ -891,7 +891,7 @@ def _avro_payloads(
 
 
 def _avro_serializers(
-    cfg: ReverseEtlSyncConfig,
+    cfg: CdfSyncConfig,
     key_columns: list[str],
     row_fields: list[RowField],
     client: SchemaRegistryClient,
@@ -929,7 +929,7 @@ def _schema_already_registered(client: SchemaRegistryClient, subject: str, schem
 
 
 def _register_avro_schemas(
-    client: SchemaRegistryClient, cfg: ReverseEtlSyncConfig, key_columns: list[str], row_fields: list[RowField]
+    client: SchemaRegistryClient, cfg: CdfSyncConfig, key_columns: list[str], row_fields: list[RowField]
 ) -> None:
     """Register both schemas and make sure the registry's LATEST version is the one
     the sync just built.
@@ -989,7 +989,7 @@ def _register_avro_schemas(
 
 
 def _build_avro_message(
-    cfg: ReverseEtlSyncConfig,
+    cfg: CdfSyncConfig,
     event: dict[str, Any],
     key_columns: list[str],
     row_fields: list[RowField],
@@ -1056,7 +1056,7 @@ def _kafka_producer() -> Producer:
 def _produce_to_kafka(
     producer: Producer,
     registry_client: SchemaRegistryClient,
-    cfg: ReverseEtlSyncConfig,
+    cfg: CdfSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
     row_fields: list[RowField],
@@ -1109,7 +1109,7 @@ def _produce_to_kafka(
     return delivery_errors
 
 
-def _flush_producer(cfg: ReverseEtlSyncConfig, producer: Producer, delivery_errors: list[str]) -> None:
+def _flush_producer(cfg: CdfSyncConfig, producer: Producer, delivery_errors: list[str]) -> None:
     """Wait for everything enqueued so far to reach the broker, then fail the run
     if any delivery was rejected. Called once per produce site — the chunked read
     loop flushes only after the LAST chunk, so the broker transfers while the next
@@ -1137,7 +1137,7 @@ _CDF_CHUNK_VERSIONS = int(os.environ.get("REVERSE_ETL_CDF_CHUNK_VERSIONS", "10")
 
 
 def _message_previews(
-    cfg: ReverseEtlSyncConfig,
+    cfg: CdfSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
     row_fields: list[RowField],
@@ -1166,7 +1166,7 @@ RAW_MESSAGE_LIMIT = 3
 
 def _raw_messages(
     registry_client: SchemaRegistryClient,
-    cfg: ReverseEtlSyncConfig,
+    cfg: CdfSyncConfig,
     events: list[dict[str, Any]],
     key_columns: list[str],
     row_fields: list[RowField],

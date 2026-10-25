@@ -68,7 +68,7 @@ from .reverse_etl_cdf_setup import (
     CHANGE_TYPE_COLUMN,
     COMMIT_TIMESTAMP_COLUMN,
     COMMIT_VERSION_COLUMN,
-    ReverseEtlSyncConfig,
+    CdfSyncConfig,
     DATE,
     RowField,
     ZONED_TIMESTAMP,
@@ -145,7 +145,7 @@ def get_row_fields(location: str, version: int | None = None) -> list[RowField]:
     return row_fields
 
 
-def read_state(cfg: ReverseEtlSyncConfig, state_location: str) -> tuple[int | None, str | None]:
+def read_state(cfg: CdfSyncConfig, state_location: str) -> tuple[int | None, str | None]:
     """(watermark, last_schema) for this sync's state row -- the delta-rs read
     precheck_versions() does for the no-op case, as the full path's fallback when
     the pre-check thread failed. The table can carry duplicate rows for one
@@ -415,7 +415,7 @@ def _emit_row(change_type: str, row: dict[str, Any], version: int, commit_timest
 
 
 def read_changes(
-    cfg: ReverseEtlSyncConfig,
+    cfg: CdfSyncConfig,
     location: str,
     since_version: int,
     until_version: int | None = None,
