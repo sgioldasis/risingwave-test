@@ -36,7 +36,7 @@ dependencies = [
     #   docs/poc/REVERSE_ETL_DBU_COST_NOTES.md).
     # - Iceberg publishes a Spark-4.0 runtime jar: iceberg-spark-runtime-4.0_2.13,
     #   staged in Dockerfile.dagster and loaded by the compaction job.
-    "pyspark>=4.0.0,<4.1.0",
+    "pyspark>=4.0.0,<4.3.0",
     # delta-rs (no JVM): the reverse-ETL syncs read the change feed, the source's
     # current version and the state table's watermark with it, in-process.
     "deltalake>=1.6.0",
