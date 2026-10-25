@@ -1,8 +1,9 @@
 # Plan: decouple the reverse-ETL component from the demo
 
 *Written 2026-10-25 against `main` after PR #1. **Status: steps 1-7 (config split, hooks seam, core signature,
-demo assets moved, preconditions, two components, docs) are implemented on `feature/component-decoupling`; the
-rest is a proposal.** Line numbers refer to
+demo assets moved, preconditions, two components, docs) are implemented and step 9's live verification (demo
+reset+setup, rename-in-backlog live test, company no-op run with its watermark untouched) passed on
+`feature/component-decoupling`; step 8 (module rename) is left optional.** Line numbers refer to
 `orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
 
 ## 1. Goal
