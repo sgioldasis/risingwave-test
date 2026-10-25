@@ -166,9 +166,8 @@ class TestHelpersOnRealCommits:
         }[kind]
         assert masks == expected
 
-    def test_a_dv_only_commit_is_visible_in_the_log_but_not_in_the_file_set(self, tmp_path, table_path, kind):
-        if kind != "plain":
-            pytest.skip("only the unpartitioned table has a DV-only commit")
+    @pytest.mark.parametrize("kind", ["plain"], indirect=True)  # only the unpartitioned table has a DV-only commit
+    def test_a_dv_only_commit_is_visible_in_the_log_but_not_in_the_file_set(self, tmp_path, table_path):
         filesystem = pafs.SubTreeFileSystem(str(tmp_path), pafs.LocalFileSystem())
         adds, removes = reader._commit_actions(filesystem, "testcontainer/table/_delta_log", 2)
         assert [a["path"] for a in adds] == [r["path"] for r in removes]  # the same data file is removed and re-added
@@ -181,9 +180,8 @@ class TestHelpersOnRealCommits:
         adds, removes = reader._commit_actions(filesystem, "testcontainer/table/_delta_log", 3)
         assert len(removes) >= 1 and sorted(bool(a.get("deletionVector")) for a in adds) == [False, True]
 
-    def test_partition_values_are_restored_from_the_add_actions_by_logical_name(self, table_path, kind):
-        if kind != "part":
-            pytest.skip("only the partitioned table has partition values")
+    @pytest.mark.parametrize("kind", ["part"], indirect=True)  # only the partitioned table has partition values
+    def test_partition_values_are_restored_from_the_add_actions_by_logical_name(self, table_path):
         values = reader._partition_values(DeltaTable(str(table_path), version=1), "root")
         assert sorted(v["operator"] for v in values.values()) == ["br", "gr"]
 
