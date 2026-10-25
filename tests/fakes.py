@@ -139,9 +139,46 @@ class RecordingProducer:
         return 0
 
 
+class FakeAdmin:
+    """A Kafka admin client with topics and consumer groups. `group_failures` is used up one per attempt to delete a
+    consumer group (an exception to raise, or None to succeed); once it runs out, deletes succeed. With
+    `topics_linger`, a deleted topic stays listed, as one still being removed on the broker does."""
+
+    def __init__(self, topics=(), group_failures=(), topics_linger=False):
+        self.topics, self.topics_linger = set(topics), topics_linger
+        self.created, self.deleted = [], []
+        self.group_failures, self.group_attempts = list(group_failures), 0
+
+    def list_topics(self, timeout=0):
+        return types.SimpleNamespace(topics={topic: None for topic in self.topics})
+
+    def create_topics(self, new_topics):
+        self.created += [new_topic.topic for new_topic in new_topics]
+        self.topics |= {new_topic.topic for new_topic in new_topics}
+        return {}
+
+    def delete_topics(self, topics, operation_timeout=0):
+        self.deleted += topics
+        if not self.topics_linger:
+            self.topics -= set(topics)
+        return {topic: types.SimpleNamespace(result=lambda: None) for topic in topics}
+
+    def delete_consumer_groups(self, groups):
+        self.group_attempts += 1
+        failure = self.group_failures.pop(0) if self.group_failures else None
+
+        def result():
+            if failure is not None:
+                raise failure
+
+        return {group: types.SimpleNamespace(result=result) for group in groups}
+
+
 class FakeKafka:
-    def __init__(self, calls: list, lag: int = 0, producer_fails: bool = False):
-        self.calls, self.lag = calls, lag
+    """With `admin`, admin_client() returns it; without, a mock that finds no group and no topic."""
+
+    def __init__(self, calls: list, lag: int = 0, producer_fails: bool = False, admin: FakeAdmin | None = None):
+        self.calls, self.lag, self.admin = calls, lag, admin
         self.recording_producer = RecordingProducer(fail=producer_fails)
 
     def consumer(self, group_id, extra=None):
@@ -157,7 +194,7 @@ class FakeKafka:
 
     def admin_client(self):
         self.calls.append(("kafka", "admin"))
-        return mock.MagicMock()  # no group, no topic listed: nothing to wait for
+        return self.admin if self.admin is not None else mock.MagicMock()  # no group, no topic listed
 
     def producer(self):
         self.calls.append(("kafka", "producer"))

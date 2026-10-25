@@ -5,7 +5,7 @@ tests that should catch it. A mutation the tests do NOT catch "survives": that i
 mutation turns out to change nothing, a mutation to rewrite. A mutation whose text no longer occurs exactly once is
 reported as stale (the code moved on): update it.
 
-The mutants run in a temporary copy of orchestration/ and tests/, so the working tree is never edited.
+The mutants run in a temporary copy of orchestration/, notebooks/ and tests/, so the working tree is never edited.
 
 Run from the repo root:  .venv/bin/python tests/mutation_check.py            (all)
                          .venv/bin/python tests/mutation_check.py drt change  (those groups)
@@ -216,6 +216,44 @@ MUTATIONS = [
     Mutation("props", "booleans read case-sensitively", f"{ASSETS}/reverse_etl_cdf_setup.py", 'str(value).lower() == "true"', 'str(value) == "true"', "tests/test_properties.py"),
     Mutation("props", "timestamps lose their UTC conversion", f"{ASSETS}/reverse_etl_delta_reader.py", "value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)", "value = value.replace(tzinfo=None)", "tests/test_properties.py"),
     Mutation("props", "row comparison one-sided", f"{ASSETS}/reverse_etl_delta_reader.py", "for name in (set(old_row) | set(new_row)) - skip", "for name in set(new_row) - skip", "tests/test_properties.py"),
+    # --- the notebook must stay in step with the asset ---
+    Mutation("notebook-parity", "notebook Avro schema text not compact", "notebooks/reverse_etl_cdf_to_kafka.py", 'return json.dumps(schema, separators=(",", ":"))', "return json.dumps(schema)", "tests/test_notebook_parity.py"),
+    Mutation("notebook-parity", "notebook maps TINYINT differently", "notebooks/reverse_etl_cdf_to_kafka.py", '"TINYINT": "int8"', '"TINYINT": "int16"', "tests/test_notebook_parity.py"),
+    Mutation("notebook-parity", "notebook date loses its logical type", "notebooks/reverse_etl_cdf_to_kafka.py", 'DATE: {"type": "int", "logicalType": "date"},', 'DATE: "int",', "tests/test_notebook_parity.py"),
+    Mutation("notebook-parity", "notebook key not sorted", "notebooks/reverse_etl_cdf_to_kafka.py", "json.dumps(key, default=str, sort_keys=True)", "json.dumps(key, default=str)", "tests/test_notebook_parity.py"),
+    Mutation("notebook-parity", "notebook reads booleans case-sensitively", "notebooks/reverse_etl_cdf_to_kafka.py", 'str(value).lower() == "true"', 'str(value) == "true"', "tests/test_notebook_parity.py"),
+    Mutation(
+        "notebook-parity", "notebook pairs updates by truncating", "notebooks/reverse_etl_cdf_to_kafka.py", 'for pre, post in zip_longest(group.get("update_preimage", []), group.get("update_postimage", [])):',
+        'for pre, post in zip(group.get("update_preimage", []), group.get("update_postimage", [])):', "tests/test_notebook_parity.py",
+    ),
+    Mutation(
+        "notebook-parity", "notebook date field loses its name", "notebooks/reverse_etl_cdf_to_kafka.py", '{"field": name, "type": "int32", "name": DATE_SCHEMA_NAME, "optional": optional}',
+        '{"field": name, "type": "int32", "optional": optional}', "tests/test_notebook_parity.py",
+    ),
+    Mutation(
+        "notebook-parity", "notebook row fields nullable without a default", "notebooks/reverse_etl_cdf_to_kafka.py", '{"name": n, "type": ["null", AVRO_TYPE[t]], "default": None} for n, t, _ in ROW_FIELDS',
+        '{"name": n, "type": ["null", AVRO_TYPE[t]]} for n, t, _ in ROW_FIELDS', "tests/test_notebook_parity.py",
+    ),
+    # --- the RisingWave target ---
+    Mutation("risingwave", "drop may remove the key column", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if column in existing and column != cfg.key_column:", "if column in existing:", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "rename may remove the key column", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if gone in existing and gone != cfg.key_column:", "if gone in existing:", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "avro schema not registered before ADD", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'if missing and cfg.encoding == "avro":', "if False:", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "rename drops the column before its companion", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'for gone in (f"{old}_ts", old):', 'for gone in (old, f"{old}_ts"):', "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "rename not idempotent", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if old not in existing and new in existing:", "if False:", "tests/test_risingwave_setup.py"),
+    Mutation(
+        "risingwave", "rename does not copy the data", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'cur.execute(f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = {_quote(old)}")', "pass", "tests/test_risingwave_setup.py",
+    ),
+    Mutation("risingwave", "companions registered as columns", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'if name in known or name.endswith("_ts"):', "if name in known:", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "connect timeout changed", f"{ASSETS}/reverse_etl_risingwave_setup.py", "connect_timeout=10,", "connect_timeout=60,", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "topic read from the end", f"{ASSETS}/reverse_etl_risingwave_setup.py", "\"scan.startup.mode = 'earliest'\",", "\"scan.startup.mode = 'latest'\",", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "missing bootstrap accepted", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if not bootstrap:", "if False:", "tests/test_risingwave_setup.py"),
+    # --- the Postgres setup ---
+    Mutation("postgres", "rename with both columns skips the copy", f"{ASSETS}/reverse_etl_postgres_setup.py", 'cur.execute(f\'UPDATE {cfg.postgres_table} SET "{new}" = "{old}"\')', "pass", "tests/test_postgres_setup.py"),
+    Mutation("postgres", "sink not restarted after a rename", f"{ASSETS}/reverse_etl_postgres_setup.py", "    if ensured:\n        restart_sink_task(http, cfg)\n", "    pass\n", "tests/test_postgres_setup.py"),
+    Mutation("postgres", "drop may remove the key column", f"{ASSETS}/reverse_etl_postgres_setup.py", "- {cfg.key_column})", ")", "tests/test_postgres_setup.py"),
+    Mutation("postgres", "failed restart accepted", f"{ASSETS}/reverse_etl_postgres_setup.py", "(200, 201, 202, 204)", "(200, 201, 202, 204, 500)", "tests/test_postgres_setup.py"),
+    # --- the reset job ---
+    Mutation("reset", "a missing group is retried", f"{ASSETS}/reverse_etl_reset.py", "GROUP_ID_NOT_FOUND", "NEVER_MATCHES", "tests/test_reset.py"),
     # --- the sync asset ---
     Mutation(
         "sync", "chunks not split at schema changes", f"{ASSETS}/reverse_etl_cdf_setup.py",
@@ -260,7 +298,7 @@ def main(groups: list[str]) -> int:
     survived, stale = [], []
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        for folder in ("orchestration", "tests"):
+        for folder in ("orchestration", "tests", "notebooks"):
             shutil.copytree(ROOT / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         shutil.copy(ROOT / "pyproject.toml", work / "pyproject.toml")
         # Without this a copy that cannot run its tests would make every mutation look caught.

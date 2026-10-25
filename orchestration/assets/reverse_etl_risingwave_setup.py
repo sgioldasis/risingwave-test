@@ -350,10 +350,12 @@ def build_risingwave_table_asset(cfg: ReverseEtlSyncConfig):
         finally:
             conn.close()
 
-        return {
-            "table": MetadataValue.text(cfg.risingwave_table),
-            "kafka_topic": MetadataValue.text(cfg.kafka_topic),
-            "row_count_at_setup_time": MetadataValue.int(count),
-        }
+        context.add_output_metadata(
+            {
+                "table": MetadataValue.text(cfg.risingwave_table),
+                "kafka_topic": MetadataValue.text(cfg.kafka_topic),
+                "row_count_at_setup_time": MetadataValue.int(count),
+            }
+        )
 
     return risingwave_table

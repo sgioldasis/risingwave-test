@@ -19,7 +19,7 @@ from deltalake import write_deltalake
 
 from orchestration.assets import reverse_etl_jobotron as jobotron
 from orchestration.components.reverse_etl_jobotron import JobotronProducer
-from tests.fakes import FakeDatabricks, FakeHttp, FakeKafka, FakeSchemaRegistry, error_text, fake_resources
+from tests.fakes import FakeAdmin, FakeDatabricks, FakeHttp, FakeKafka, FakeSchemaRegistry, error_text, fake_resources
 
 DEFS = Path(__file__).resolve().parent.parent / "orchestration" / "defs" / "reverse_etl_jobotron" / "defs.yaml"
 
@@ -48,24 +48,6 @@ class LakeDatabricks(FakeDatabricks):
         if statement.lstrip().startswith("SELECT count"):
             return {"manifest": {"schema": {"columns": [{"name": "n"}]}}, "result": {"data_array": [[self.count]]}}
         return {}
-
-
-class FakeAdmin:
-    def __init__(self, topics=()):
-        self.topics, self.created, self.deleted = set(topics), [], []
-
-    def list_topics(self, timeout=0):
-        return types.SimpleNamespace(topics={topic: None for topic in self.topics})
-
-    def create_topics(self, new_topics):
-        self.created += [new_topic.topic for new_topic in new_topics]
-        self.topics |= {new_topic.topic for new_topic in new_topics}
-        return {}
-
-    def delete_topics(self, topics, operation_timeout=0):
-        self.deleted += topics
-        self.topics -= set(topics)
-        return {topic: types.SimpleNamespace(result=lambda: None) for topic in topics}
 
 
 class FakeConsumer:
@@ -107,11 +89,8 @@ class JobotronKafka(FakeKafka):
     """The producer's messages are what the consumer reads back."""
 
     def __init__(self, calls, topics=(), quiet_first=False, **options):
-        super().__init__(calls, **options)
-        self.admin, self.quiet_first, self.extra = FakeAdmin(topics), quiet_first, []
-
-    def admin_client(self):
-        return self.admin
+        super().__init__(calls, admin=FakeAdmin(topics), **options)
+        self.quiet_first, self.extra = quiet_first, []
 
     def consumer(self, group_id, extra=None):
         messages = [(topic, value) for topic, _, value in self.recording_producer.messages] + self.extra
