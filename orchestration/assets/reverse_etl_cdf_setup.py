@@ -436,6 +436,28 @@ def _version_chunks(start: int, end: int, size: int) -> list[tuple[int, int]]:
     return [(version, min(version + size - 1, end)) for version in range(start, end + 1, size)]
 
 
+def _split_at_schema_changes(chunks: list[tuple[int, int]], schema_at) -> list[tuple[int, int]]:
+    """Split every chunk whose columns differ between its first and last version, so each chunk has one schema.
+
+    A chunk spanning versions is read and enveloped with the schema of its top version: a row written before a
+    rename in the same chunk would be produced under the new name with its value dropped. `schema_at(version)` is
+    the table's columns at that version; a chunk is bisected until both ends agree, which costs two schema reads per
+    multi-version chunk and a few more only where a schema really changed. Single-version chunks need no check."""
+    split: list[tuple[int, int]] = []
+
+    def visit(first: int, last: int) -> None:
+        if first == last or schema_at(first) == schema_at(last):
+            split.append((first, last))
+            return
+        middle = (first + last) // 2
+        visit(first, middle)
+        visit(middle + 1, last)
+
+    for first, last in chunks:
+        visit(first, last)
+    return split
+
+
 def _next_watermark(rows: list[dict[str, Any]], current_version: int | None) -> int | None:
     """Highest `_commit_version` observed this run, or current_version if no rows.
 
@@ -1463,6 +1485,7 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
             # overlap that DOES pay is flush=False's: the broker transfers while
             # the next chunk's Spark read runs (GIL-free there).
             chunks = _version_chunks(chunk_start, current_version, _CDF_CHUNK_VERSIONS)
+            chunks = _split_at_schema_changes(chunks, lambda version: get_row_fields(source_location, version=version))
             for index, (chunk_from, chunk_to) in enumerate(chunks):
                 rows = read_changes(cfg, source_location, chunk_from, chunk_to)
                 # The watermark advances for EVERY chunk -- including 0-row
@@ -1492,10 +1515,9 @@ def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig):
                     # (verified live 2026-10-19 -- with the seed backfill in
                     # the same sync, the populate's new-column value was lost
                     # exactly this way). Imported here because that module
-                    # imports this one. A chunk spanning multiple versions only
-                    # pins to its top; this deployment sets single-version
-                    # chunks (REVERSE_ETL_CDF_CHUNK_VERSIONS=1) -- the code
-                    # default is 10.
+                    # imports this one. A chunk spanning multiple versions
+                    # pins to its top, which is why chunks are split at schema
+                    # changes (_split_at_schema_changes): one schema per chunk.
                     row_fields = get_row_fields(source_location, version=chunk_to)
                     event_row_fields = row_fields
                     event_fields_version = chunk_to

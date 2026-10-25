@@ -486,9 +486,10 @@ class TestSchemaChangesOnAColumnMappedTable:
 # these was a bug found live on 2026-10-19 (see the comments in the sync asset).
 
 
-@pytest.fixture
-def one_version_per_chunk(monkeypatch):
-    monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", 1)
+@pytest.fixture(params=[1, 10], ids=["chunk1", "chunk10"])
+def one_version_per_chunk(request, monkeypatch):
+    """Despite the name, also run at the code default of 10: chunks are split at schema changes, so both agree."""
+    monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", request.param)
 
 
 def recorded_schema(state_rows) -> list:
@@ -565,16 +566,8 @@ class TestSeveralSchemaChangesInOneWindow:
         assert recorded_schema(state_rows) == [("id", 1), ("title", 2)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known limitation at the code-default chunk size (10): a chunk spanning several versions is read with the schema "
-        "of its top version, so a row written before a rename in the same chunk is produced with its value dropped "
-        "(title: None). The deployment sets REVERSE_ETL_CDF_CHUNK_VERSIONS=1, where this is covered above."
-    ),
-)
 @pytest.mark.parametrize("storage", [FAST_PATH])
-def test_a_rename_in_the_same_chunk_as_earlier_rows_keeps_their_values(source, sync, monkeypatch, storage):
+def test_a_rename_in_the_same_chunk_as_earlier_rows_keeps_their_values_at_the_default_chunk_size(source, sync, monkeypatch, storage):
     monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", 10)
     source.create(row(1, "a"))
     sync(propagate_drops=True)
