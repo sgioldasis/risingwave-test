@@ -14,6 +14,7 @@ The other docs cover behaviour and evidence; this one covers structure:
 - The Debezium JDBC sink and message encodings: [`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md)
 - Databricks cost of every piece (measured): [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)
 - Live demo and operating notes: [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md)
+- Using the reusable component on your own table: [`REVERSE_ETL_COMPONENT_GUIDE.md`](REVERSE_ETL_COMPONENT_GUIDE.md)
 - Tool choices (drt/dlt/SaaS/OSS): [`REVERSE_ETL_TOOL_EVALUATION.md`](REVERSE_ETL_TOOL_EVALUATION.md)
 - The notebook (option B) internals: the notebook at
   `/Users/s.gioldasis-si@devkaizengaming.com/reverse_etl_cdf_to_kafka` in the DEV workspace
@@ -25,7 +26,8 @@ The other docs cover behaviour and evidence; this one covers structure:
 | File | Role |
 |---|---|
 | `orchestration/defs/<label>/defs.yaml` | One small YAML per sync — the only thing you write to add a sync |
-| `orchestration/components/reverse_etl_cdf_sync.py` | The Dagster component: reads the YAML, builds the config |
+| `orchestration/components/reverse_etl_cdf_sync.py` | The reusable component: reads the YAML, builds exactly one asset — the sync (docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md) |
+| `orchestration/components/reverse_etl_cdf_demo.py` | The demo component: the full demo attribute set; builds the sync plus every demo asset and job |
 | `orchestration/assets/reverse_etl_config.py` | `ReverseEtlSyncConfig` — every name a sync needs, derived from a label |
 | `orchestration/assets/reverse_etl_defs.py` | The demo's builder (`build_demo_defs`): turns one config into assets, jobs, checks and schedules |
 | `orchestration/assets/reverse_etl_demo_assets.py` | The demo's own assets: table setup and seed — they create infrastructure, so they are not part of the reusable sync |
@@ -94,16 +96,23 @@ Three deliberate details:
 - The config imports nothing from the asset modules — every asset module imports
   the config — so there is no cycle at this level.
 
-### The YAML and the component
+### The YAML and the components
 
-You never build the dataclass by hand. `ReverseEtlCdfSync`
-(`orchestration/components/reverse_etl_cdf_sync.py`) is a Dagster component
-(`dg.Component, dg.Model, dg.Resolvable`): one `defs.yaml` per sync under
-`orchestration/defs/<label>/` becomes one config. The avro sync's file is the
-shortest complete example:
+You never build the dataclass by hand. Two Dagster components
+(`dg.Component, dg.Model, dg.Resolvable`) read one `defs.yaml` per sync under
+`orchestration/defs/<label>/`:
+
+- **`ReverseEtlCdfSync`** (`orchestration/components/reverse_etl_cdf_sync.py`) is the
+  reusable one: it takes the table, the key column and the topic as given, builds exactly one
+  asset — the sync — and needs only the postgres, databricks, kafka and registry resources. It
+  creates nothing. Teams use it directly; docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md is its guide.
+- **`ReverseEtlCdfDemo`** (`orchestration/components/reverse_etl_cdf_demo.py`) is what this PoC
+  deploys: the demo's full attribute set, building the sync (through the demo hooks) plus the
+  table setup, topic, RisingWave target, JDBC sink, seed, make-change, and the setup/reset/health
+  jobs. The avro sync's file is the shortest complete example:
 
 ```yaml
-type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 attributes:
   name: avro
   encoding: avro             # Confluent wire format + staging registry
@@ -113,7 +122,7 @@ attributes:
   seed_statements: [...]     # optional demo rows (MERGE/UPDATE/DELETE)
 ```
 
-Every attribute has a derived default; the optional overrides exist for pointing
+Every demo attribute has a derived default; the optional overrides exist for pointing
 a sync at a table that already exists. `sync_name` is the watermark key and the
 Debezium envelope prefix — changing it for an existing sync restarts that sync
 from the beginning.
