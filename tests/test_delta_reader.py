@@ -23,7 +23,7 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 from orchestration.assets import reverse_etl_delta_reader as reader
-from tests.fakes import make_config
+from tests.fakes import make_config, use_local_azure, use_local_paths
 
 ABFS_ROOT = "abfss://testcontainer@testaccount.dfs.core.windows.net/table"
 SCHEMA = pa.schema(
@@ -80,22 +80,15 @@ def storage(request):
 def make_lake(tmp_path, storage, monkeypatch):
     """Builds a Lake in the chosen storage mode, with the reader pointed at it."""
     if storage == "local":
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
+        use_local_paths(monkeypatch, (reader,))
 
         def build(**options):
             return Lake(tmp_path / "table", str(tmp_path / "table"), **options)
 
         return build
 
-    credentials = {"account_name": "testaccount", "client_id": "id", "tenant_id": "tenant", "client_secret": "secret"}
-
-    def local_table(location, storage_options=None, version=None):
-        return DeltaTable(str(tmp_path / "testcontainer" / location.split(".dfs.core.windows.net/", 1)[1]), version=version)
-
-    monkeypatch.setattr(reader, "DeltaTable", local_table)
-    monkeypatch.setattr(reader, "_azure_storage_options", lambda location: credentials)
-    monkeypatch.setattr(pafs, "AzureFileSystem", lambda **options: pafs.SubTreeFileSystem(str(tmp_path), pafs.LocalFileSystem()))
     (tmp_path / "testcontainer").mkdir()
+    use_local_azure(monkeypatch, tmp_path, (reader,))
 
     def build_azure(**options):
         return Lake(tmp_path / "testcontainer" / "table", ABFS_ROOT, **options)

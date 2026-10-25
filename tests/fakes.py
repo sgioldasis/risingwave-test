@@ -7,7 +7,9 @@ import dataclasses
 import types
 from unittest import mock
 
+import pyarrow.fs as pafs
 from confluent_kafka.schema_registry import SchemaRegistryClient
+from deltalake import DeltaTable
 
 from orchestration.assets.reverse_etl_config import ReverseEtlSyncConfig
 
@@ -219,3 +221,29 @@ def kinds(calls: list) -> list:
 def error_text(result) -> str:
     """The text of every step failure of a Dagster run result (including the causes)."""
     return " ".join(str(event.step_failure_data.error) for event in result.get_step_failure_events())
+
+
+# --- Delta storage ----------------------------------------------------------------------------------------------------
+
+AZURE_CREDENTIALS = {"account_name": "testaccount", "client_id": "id", "tenant_id": "tenant", "client_secret": "secret"}
+
+
+def use_local_paths(monkeypatch, modules) -> None:
+    """Read Delta tables from plain local paths: no storage options, so the reader finds no Azure filesystem and takes
+    its snapshot-diff fallback."""
+    for module in modules:
+        monkeypatch.setattr(module, "_azure_storage_options", lambda location: {})
+
+
+def use_local_azure(monkeypatch, root, modules) -> None:
+    """Make abfss:// locations resolve to `root`/testcontainer/<path> on local disk, with fake credentials and a local
+    stand-in for pyarrow's AzureFileSystem: the reader's production fast path, without Azure. The caller creates the
+    `testcontainer` directory under `root`."""
+
+    def local_table(location, storage_options=None, version=None):
+        return DeltaTable(str(root / "testcontainer" / location.split(".dfs.core.windows.net/", 1)[1]), version=version)
+
+    for module in modules:
+        monkeypatch.setattr(module, "DeltaTable", local_table)
+        monkeypatch.setattr(module, "_azure_storage_options", lambda location: AZURE_CREDENTIALS)
+    monkeypatch.setattr(pafs, "AzureFileSystem", lambda **options: pafs.SubTreeFileSystem(str(root), pafs.LocalFileSystem()))

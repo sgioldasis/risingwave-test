@@ -29,7 +29,6 @@ from typing import NamedTuple
 
 import dagster as dg
 import pyarrow as pa
-import pyarrow.fs as pafs
 import pytest
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
@@ -37,7 +36,7 @@ from deltalake import DeltaTable, write_deltalake
 
 from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
 from orchestration.assets import reverse_etl_delta_reader as reader
-from tests.fakes import FakeSchemaRegistry, error_text, make_config
+from tests.fakes import FakeSchemaRegistry, error_text, make_config, use_local_azure, use_local_paths
 
 FAST_PATH, SNAPSHOT_DIFF = "azure_fast_path", "snapshot_diff"
 SCHEMA = pa.schema(
@@ -180,22 +179,13 @@ def source(tmp_path, storage, monkeypatch) -> SourceTable:
     """The source table, with the reader pointed at it: a local path, or an abfss:// location backed by a local
     directory."""
     if storage == SNAPSHOT_DIFF:
-        monkeypatch.setattr(cdf_setup, "_azure_storage_options", lambda location: {})
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
+        use_local_paths(monkeypatch, (cdf_setup, reader))
         path = tmp_path / "source_table"
         return SourceTable(path, str(path), column_mapping=False)
 
     path = tmp_path / "testcontainer" / "table"
     path.parent.mkdir()
-    credentials = {"account_name": "testaccount", "client_id": "id", "tenant_id": "tenant", "client_secret": "secret"}
-
-    def local_table(location, storage_options=None, version=None):
-        return DeltaTable(str(tmp_path / "testcontainer" / location.split(".dfs.core.windows.net/", 1)[1]), version=version)
-
-    for module in (cdf_setup, reader):
-        monkeypatch.setattr(module, "DeltaTable", local_table)
-        monkeypatch.setattr(module, "_azure_storage_options", lambda location: credentials)
-    monkeypatch.setattr(pafs, "AzureFileSystem", lambda **options: pafs.SubTreeFileSystem(str(tmp_path), pafs.LocalFileSystem()))
+    use_local_azure(monkeypatch, tmp_path, (cdf_setup, reader))
     return SourceTable(path, ABFS_LOCATION, column_mapping=True)
 
 
