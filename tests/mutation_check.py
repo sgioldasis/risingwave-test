@@ -252,6 +252,17 @@ MUTATIONS = [
     Mutation("postgres", "sink not restarted after a rename", f"{ASSETS}/reverse_etl_postgres_setup.py", "    if ensured:\n        restart_sink_task(http, cfg)\n", "    pass\n", "tests/test_postgres_setup.py"),
     Mutation("postgres", "drop may remove the key column", f"{ASSETS}/reverse_etl_postgres_setup.py", "- {cfg.key_column})", ")", "tests/test_postgres_setup.py"),
     Mutation("postgres", "failed restart accepted", f"{ASSETS}/reverse_etl_postgres_setup.py", "(200, 201, 202, 204)", "(200, 201, 202, 204, 500)", "tests/test_postgres_setup.py"),
+    # --- the CDF sync component ---
+    Mutation("component", "an override is ignored", "orchestration/components/reverse_etl_cdf_sync.py", '                "propagate_drops",\n', "", "tests/components"),
+    Mutation("component", "a false override is ignored", "orchestration/components/reverse_etl_cdf_sync.py", "if getattr(self, field) is not None", "if getattr(self, field)", "tests/components"),
+    Mutation("component", "reset prefixes left as a list", "orchestration/components/reverse_etl_cdf_sync.py", 'overrides["reset_name_prefixes"] = tuple(self.reset_name_prefixes)', 'overrides["reset_name_prefixes"] = self.reset_name_prefixes', "tests/components"),
+    Mutation("component", "key column not passed", "orchestration/components/reverse_etl_cdf_sync.py", "key_column=self.key_column,\n            seed_statements", "seed_statements", "tests/components"),
+    Mutation("component", "seed statements not passed", "orchestration/components/reverse_etl_cdf_sync.py", "seed_statements=tuple(self.seed_statements or ()),", "seed_statements=(),", "tests/components"),
+    Mutation("component", "schema taken from the catalog", "orchestration/components/reverse_etl_cdf_sync.py", "schema=self.schema_name,", "schema=self.catalog,", "tests/components"),
+    Mutation("component", "build_defs ignores the overrides", "orchestration/components/reverse_etl_cdf_sync.py", "return build_reverse_etl_defs(self.to_config())", "return build_reverse_etl_defs(ReverseEtlSyncConfig.for_name(self.name, catalog=self.catalog, schema=self.schema_name, source_columns=tuple(self.source_columns or ())))", "tests/components"),
+    Mutation("component", "topic asset always built", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.create_topic_asset:\n", "    if True:\n", "tests/components"),
+    Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
+    Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),
     # --- the reset job ---
     Mutation("reset", "a missing group is retried", f"{ASSETS}/reverse_etl_reset.py", "GROUP_ID_NOT_FOUND", "NEVER_MATCHES", "tests/test_reset.py"),
     # --- the sync asset ---

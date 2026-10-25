@@ -24,7 +24,8 @@ out after 60 s, and the order is randomised (`pytest-randomly`), so a test that 
 | Property | `test_properties.py` | Invariants checked on generated inputs with hypothesis (chunking, watermark, coercion, timestamps) |
 | Parity | `test_notebook_parity.py` | The Databricks notebook builds what the asset builds. Its pure functions are lifted out with `ast` and compared; nothing runs Spark |
 | Fake contract | `test_fakes_contract.py` | Every public method of a real resource exists on its fake with the same parameters |
-| Definitions | `test_definitions.py` | Dagster definitions load and validate. Skipped when the dbt manifests are missing, which includes CI: `dbt parse` here runs SQL against a live RisingWave |
+| Components | `components/<component>/` (so far `cdf_sync/`: attributes, built definitions, and the real `defs.yaml` files) | Each Dagster component on its own: required and unknown attributes, defaults, overrides, the assets, jobs, check and schedule it builds, and that every `defs.yaml` using it validates, loads and collides with no other. Runs in CI, no dbt manifests needed |
+| Project definitions | `test_definitions.py` | The whole project's definitions register every resource the code asks for. Skipped when the dbt manifests are missing, which includes CI: `dbt parse` here runs SQL against a live RisingWave |
 | Live | `test_live.py` (marker `live`) | Jobotron and a rename in a backlog against the running local stack |
 | Mutation | `mutation_check.py` | Whether the tests notice a broken line (below) |
 
