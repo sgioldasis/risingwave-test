@@ -131,6 +131,14 @@ class SourceTable:
     def drop_column(self, name: str):
         self._schema_commit("DROP COLUMN", lambda fields: fields.__setitem__(slice(None), [f for f in fields if f["name"] != name]))
 
+    def expire_history(self):
+        """What log retention does: a checkpoint at the current version, then the older commit files are gone, so
+        only the current version can still be loaded."""
+        table = DeltaTable(self.path)
+        table.create_checkpoint()
+        for version in range(table.version()):
+            os.remove(os.path.join(self.path, "_delta_log", f"{version:020d}.json"))
+
     def insert_with_new_column(self, column: str, *rows):
         """Add a column to the table, then append rows that carry it (two commits)."""
         if self.column_mapping:
@@ -470,3 +478,145 @@ class TestSchemaChangesOnAColumnMappedTable:
         sync(propagate_drops=True)
         latest = registry.mock_client.get_latest_version(f"{TOPIC}-value").schema.schema_str
         assert "title" in latest and '"name"' in latest
+
+
+# --- several schema changes inside one unsynced window ---------------------------------------------------------------
+#
+# The deployment reads one version per chunk (REVERSE_ETL_CDF_CHUNK_VERSIONS=1); the code default is 10. Each of
+# these was a bug found live on 2026-10-19 (see the comments in the sync asset).
+
+
+@pytest.fixture
+def one_version_per_chunk(monkeypatch):
+    monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", 1)
+
+
+def recorded_schema(state_rows) -> list:
+    """(name, mapping id) per column in the newest watermark row: the schema the next sync diffs against."""
+    return [(column["name"], column["id"]) for column in json.loads(state_rows[-1][1])]
+
+
+@pytest.mark.usefixtures("one_version_per_chunk")
+@pytest.mark.parametrize("storage", [FAST_PATH])
+class TestSeveralSchemaChangesInOneWindow:
+    WITH_EMAIL = ("id", "name", "born", "email")
+
+    def test_a_column_added_populated_and_renamed_in_one_window_keeps_its_value_and_is_renamed(
+        self, source, sync, calls, state_rows, storage
+    ):
+        source.create(row(1, "a"))
+        sync(propagate_drops=True, target_columns=self.WITH_EMAIL)
+        source.add_column("email")  # version 1
+        source.insert(row(5, "e", email="e@example.com"))  # version 2
+        source.rename_column("email", "contact")  # version 3
+        result, _, produced = sync(propagate_drops=True, target_columns=self.WITH_EMAIL)
+        assert result.success
+        assert [(p.key["id"], p.value["after"]["email"]) for p in produced] == [(5, "e@example.com")]  # not lost
+        assert metadata(result, "columns_renamed") == ["email -> contact"]
+        assert [s for s in statements(calls, "postgres") if 'RENAME COLUMN "email" TO "contact"' in s]
+        assert state_rows[-1][0] == 3
+        assert recorded_schema(state_rows) == [("id", 1), ("name", 2), ("born", 3), ("contact", 4)]
+
+    def test_a_rename_after_the_last_data_event_still_reaches_the_targets(self, source, sync, calls, state_rows, storage):
+        source.create(row(1, "a"))
+        sync(propagate_drops=True)
+        source.insert(row(2, "b"))  # version 1: the last data event
+        source.rename_column("name", "title")  # version 2: after it
+        result, _, produced = sync(propagate_drops=True)
+        assert result.success
+        assert [(p.key["id"], p.value["after"]["name"]) for p in produced] == [(2, "b")]
+        assert metadata(result, "columns_renamed") == ["name -> title"]
+        assert [s for s in statements(calls, "postgres") if 'RENAME COLUMN "name" TO "title"' in s]
+        assert state_rows[-1][0] == 2
+
+    def test_the_recorded_schema_pairs_names_and_ids_from_the_same_commit(self, source, sync, state_rows, storage):
+        """An id of None next to a name would read as a drop at the next sync."""
+        source.create(row(1, "a"))
+        sync(propagate_drops=True)
+        source.insert(row(2, "b"))
+        source.rename_column("name", "title")
+        sync(propagate_drops=True)
+        assert recorded_schema(state_rows) == [("id", 1), ("title", 2), ("born", 3)]
+
+    def test_a_column_added_and_dropped_inside_one_window_leaves_the_targets_alone(
+        self, source, sync, calls, state_rows, storage
+    ):
+        source.create(row(1, "a"))
+        sync(propagate_drops=True)
+        source.add_column("scratch")  # version 1
+        source.drop_column("scratch")  # version 2
+        result, _, produced = sync(propagate_drops=True)
+        assert result.success
+        assert produced == []
+        assert not [s for s in statements(calls, "postgres") + statements(calls, "risingwave") if "DROP COLUMN" in s or "RENAME" in s]
+        assert state_rows[-1][0] == 2
+
+    def test_a_rename_and_a_drop_in_one_window_both_reach_the_targets(self, source, sync, calls, state_rows, storage):
+        source.create(row(1, "a", DAY))
+        sync(propagate_drops=True)
+        source.rename_column("name", "title")  # version 1
+        source.drop_column("born")  # version 2
+        result, _, _ = sync(propagate_drops=True)
+        assert result.success
+        assert metadata(result, "columns_renamed") == ["name -> title"]
+        assert [s for s in statements(calls, "postgres") if 'RENAME COLUMN "name" TO "title"' in s]
+        assert [s for s in statements(calls, "postgres") if 'DROP COLUMN "born"' in s]
+        assert [s for s in statements(calls, "risingwave") if "DROP COLUMN" in s and "born" in s]
+        assert recorded_schema(state_rows) == [("id", 1), ("title", 2)]
+
+
+# --- first run when the log history has aged out ----------------------------------------------------------------------
+
+
+def test_a_first_run_after_the_history_aged_out_baselines_instead_of_backfilling(source, sync, calls, state_rows):
+    source.create(row(1, "a"))  # version 0
+    source.insert(row(2, "b"))  # version 1
+    source.insert(row(3, "c"))  # version 2
+    source.expire_history()  # only version 2 can still be loaded
+    result, _, produced = sync()
+    assert result.success
+    assert produced == []  # a silently incomplete picture is never backfilled
+    assert ("kafka", "producer") not in calls
+    assert [version for version, _ in state_rows] == [2]
+
+    source.insert(row(4, "d"))  # version 3
+    result, _, produced = sync()
+    assert result.success
+    assert events(produced) == [("c", 4, None, "d", 3)]
+
+
+# --- reading a backlog in chunks ----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("chunk_versions", [1, 2, 3, 10])
+def test_a_backlog_is_sent_in_commit_order_whatever_the_chunk_size_and_flushed_once(
+    source, sync, state_rows, monkeypatch, chunk_versions
+):
+    monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", chunk_versions)
+    source.create(row(1, "a"))
+    sync()
+    for row_id in range(2, 7):  # versions 1 to 5
+        source.insert(row(row_id, f"n{row_id}"))
+    result, res, produced = sync()
+    assert result.success
+    assert events(produced) == [("c", row_id, None, f"n{row_id}", row_id - 1) for row_id in range(2, 7)]
+    assert res["kafka"].recording_producer.flushes == 1  # one delivery checkpoint for the whole backlog
+    assert state_rows[-1][0] == 5
+    assert metadata(result, "op_counts") == {"c": 5}
+
+
+@pytest.mark.parametrize("storage", [FAST_PATH])
+@pytest.mark.parametrize("chunk_versions", [1, 2])
+def test_a_schema_only_chunk_at_the_end_still_advances_the_watermark(source, sync, calls, state_rows, monkeypatch, storage, chunk_versions):
+    monkeypatch.setattr(cdf_setup, "_CDF_CHUNK_VERSIONS", chunk_versions)
+    source.create(row(1, "a"))
+    sync(propagate_drops=True)
+    source.insert(row(2, "b"))  # version 1
+    source.insert(row(3, "c"))  # version 2
+    source.rename_column("name", "title")  # version 3: a chunk with no rows at all
+    result, _, produced = sync(propagate_drops=True)
+    assert result.success
+    assert [p.key["id"] for p in produced] == [2, 3]
+    assert state_rows[-1][0] == 3  # not stranded on the last chunk that had events
+    assert metadata(result, "columns_renamed") == ["name -> title"]
+    assert [s for s in statements(calls, "postgres") if 'RENAME COLUMN "name" TO "title"' in s]

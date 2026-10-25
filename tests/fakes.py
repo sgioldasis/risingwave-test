@@ -115,7 +115,7 @@ class RecordingProducer:
     """A Kafka producer that keeps what it was given. With `fail`, every delivery is reported as rejected."""
 
     def __init__(self, fail: bool = False):
-        self.fail, self.messages = fail, []
+        self.fail, self.messages, self.flushes = fail, [], 0
 
     def produce(self, topic, key, value, on_delivery=None):
         self.messages.append((topic, key, value))
@@ -126,6 +126,7 @@ class RecordingProducer:
         return 0
 
     def flush(self, timeout=None):
+        self.flushes += 1
         return 0
 
 
