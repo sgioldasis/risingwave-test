@@ -93,6 +93,9 @@ def sync(source, calls, resources, state_rows, registry, encoding):
         # Mirror the demo's wiring (reverse_etl_defs.py): the demo hooks reach risingwave/http, so they
         # must be declared required; the bare core and test hooks touch neither and run without them.
         extra = ("risingwave", "http") if isinstance(hooks, DemoSyncHooks) else ()
+        # The sync's precondition asks the admin for the sync's topic; a test overrides
+        # kafka_admin_topics=() to get the missing-topic failure.
+        options.setdefault("kafka_admin_topics", (cfg.kafka_topic,))
         res = resources(
             table_location=source.location,
             state_rows=state_rows,

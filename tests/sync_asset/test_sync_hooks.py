@@ -16,7 +16,7 @@ import json
 import dagster as dg
 
 from tests.fakes import FakeKafka, error_text, kinds, make_config
-from tests.sync_asset.support import metadata, row
+from tests.sync_asset.support import TOPIC, metadata, row
 
 
 class RecordingHooks:
@@ -86,7 +86,7 @@ class TestOrdering:
     ):
         source.create(row(1, "a"))
         hooks = RecordingHooks(calls)
-        result, _, produced = sync(hooks=hooks, kafka=CallsKafka(calls))
+        result, _, produced = sync(hooks=hooks, kafka=CallsKafka(calls, admin_topics=(TOPIC,)))
         assert result.success and len(produced) == 1
         before = position(calls, "hook", "before_produce")
         produce = position(calls, "kafka", "produce")
@@ -102,7 +102,7 @@ class TestOrdering:
         source.insert(row(2, "b"))  # version 1: its own chunk
         source.insert(row(3, "c"))  # version 2: its own chunk
         hooks = RecordingHooks(calls)
-        _, _, produced = sync(hooks=hooks, kafka=CallsKafka(calls))
+        _, _, produced = sync(hooks=hooks, kafka=CallsKafka(calls, admin_topics=(TOPIC,)))
         assert hooks.before_chunks == [["id", "name", "born"], ["id", "name", "born"]]
         before, produce = positions(calls, "hook", "before_produce"), positions(calls, "kafka", "produce")
         assert before[0] < produce[0] < before[1] < produce[1]  # each chunk's hook precedes its own produce
@@ -189,7 +189,7 @@ class TestWithoutHooks:
     def test_the_core_runs_without_the_demo_resources(self, source, calls, resources, state_rows, registry, encoding):
         source.create(row(1, "a"))
         cfg = make_config(source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid")
-        res = resources(table_location=source.location, state_rows=state_rows, registry=registry)
+        res = resources(table_location=source.location, state_rows=state_rows, registry=registry, kafka_admin_topics=(TOPIC,))
         result = dg.materialize(
             [cdf_setup.build_sync_asset(cfg)],
             resources={k: v for k, v in res.items() if k not in ("risingwave", "http")},

@@ -351,6 +351,14 @@ def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:
 
 
 STATE_TABLE = "reverse_etl_sync_state"
+# The demo's table_setup runs this DDL; the sync's precondition error carries the same
+# statements, so a team without the demo can create the table from the failure alone.
+STATE_TABLE_DDL = f"""CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
+    sync_name TEXT NOT NULL,
+    last_commit_version BIGINT NOT NULL,
+    last_schema TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)"""
 
 
 def _pg_state_read(postgres: PostgresResource, sync_name: str) -> list[tuple[int | None, str | None]]:
@@ -376,23 +384,13 @@ def _pg_state_read(postgres: PostgresResource, sync_name: str) -> list[tuple[int
 def _pg_state_write(postgres: PostgresResource, sync_name: str, version: int, last_schema: str) -> None:
     """Append-only watermark advance (freshest-row-wins on read), same protocol
     the Delta state table used — now a Postgres INSERT, the sync's last
-    Databricks warehouse touch gone."""
+    Databricks warehouse touch gone. The state table is the team's (D1): the
+    precondition at the top of the run checked it, so an INSERT here never
+    creates it — a table dropped mid-run fails the run with the watermark
+    unmoved, and the next run replays the same versions."""
     conn = postgres.connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO {STATE_TABLE} (sync_name, last_commit_version, last_schema) VALUES (%s, %s, %s)",
-                (sync_name, version, last_schema),
-            )
-        conn.commit()
-    except psycopg2.errors.UndefinedTable:
-        conn.rollback()
-        with conn.cursor() as cur:
-            cur.execute(
-                f"CREATE TABLE IF NOT EXISTS {STATE_TABLE} ("
-                "sync_name TEXT NOT NULL, last_commit_version BIGINT NOT NULL, "
-                "last_schema TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-            )
             cur.execute(
                 f"INSERT INTO {STATE_TABLE} (sync_name, last_commit_version, last_schema) VALUES (%s, %s, %s)",
                 (sync_name, version, last_schema),
@@ -419,6 +417,30 @@ def _write_state(postgres: PostgresResource, cfg: CdfSyncConfig, version: int, l
     # row for the sync_name, so history accumulates harmlessly and the write is a
     # cheap single-statement insert.
     _pg_state_write(postgres, cfg.sync_name, version, last_schema)
+
+
+def _require_topic(kafka: KafkaResource, topic: str) -> None:
+    """The topic is the team's to create (D5): the core checks it and fails fast if it is
+    absent. It never creates one -- the demo's topic asset runs before the sync."""
+    if topic not in kafka.admin_client().list_topics(timeout=15).topics:
+        raise RuntimeError(f"Kafka topic {topic!r} does not exist -- create it before running the sync")
+
+
+def _require_state_table(postgres: PostgresResource) -> None:
+    """The state table is the team's to create (D1): the core checks it and fails with the
+    DDL if it is absent. It never creates it -- the demo's table_setup asset does."""
+    conn = postgres.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT to_regclass('{STATE_TABLE}')")
+            present = cur.fetchall()[0][0] is not None
+    finally:
+        conn.close()
+    if not present:
+        raise RuntimeError(
+            f"The watermark state table {STATE_TABLE} does not exist -- create it before running the sync:\n"
+            f"{STATE_TABLE_DDL}"
+        )
 
 
 _MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
@@ -1252,7 +1274,10 @@ def build_sync_asset(
     needs only the postgres, databricks, kafka and registry resources, which it
     reaches through context.resources (Dagster forbids decorator-declared resource
     requirements alongside resource parameters, so the signature is just the
-    context); it writes to Kafka and the state table, and nothing else.
+    context); it writes to Kafka and the state table, and nothing else. The Kafka
+    topic and the state table must already exist: both are checked before anything
+    else runs, and a missing one fails with what to create (D1, D5) — the core
+    never creates either.
 
     `hooks` (the demo passes DemoSyncHooks) adds target care at the two points documented on
     SyncHooks — the hooks reach any further resources through context.resources, and
@@ -1286,6 +1311,10 @@ def _build_sync_asset_delta_rs(
         databricks: DatabricksResource = context.resources.databricks
         kafka: KafkaResource = context.resources.kafka
         registry: SchemaRegistryResource = context.resources.registry
+        # The topic and the state table are the team's to provide (D1, D5): both are checked
+        # before anything else runs, and neither is ever created here.
+        _require_topic(kafka, cfg.kafka_topic)
+        _require_state_table(postgres)
         databricks.reset_meter()
         registry_client = registry.client(cfg.schema_registry_url)
         # The token is control-plane only here: it resolves the tables' storage

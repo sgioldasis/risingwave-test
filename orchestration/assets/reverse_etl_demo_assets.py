@@ -7,7 +7,7 @@ existing table brings their own table and their own state, and gets neither asse
 
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .reverse_etl_cdf_setup import STATE_TABLE, _cost_metadata
+from .reverse_etl_cdf_setup import STATE_TABLE, STATE_TABLE_DDL, _cost_metadata
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_resources import DatabricksResource, PostgresResource
 
@@ -88,16 +88,9 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         # semantics as the Delta table had: append-only, freshest-row-wins.
         with postgres.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
-                        sync_name TEXT NOT NULL,
-                        last_commit_version BIGINT NOT NULL,
-                        last_schema TEXT,
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                """
-                )
+                # The same DDL the sync's precondition error carries, so the demo and a
+                # team without the demo create exactly the same table.
+                cur.execute(STATE_TABLE_DDL)
             conn.commit()
         context.log.info(f"{STATE_TABLE} ready (Postgres: watermark + last_schema per sync)")
 

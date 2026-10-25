@@ -25,11 +25,17 @@ class FakeDatabase:
     """Stands in for PostgresResource and RisingWaveResource: records each statement under `kind`.
     `columns` is what an information_schema.columns query returns (the table's current columns).
     `state_rows` is the sync's watermark table, a list of (last_commit_version, last_schema): the sync's state
-    read returns it freshest first and its state write appends to it."""
+    read returns it freshest first and its state write appends to it. `state_table_exists` is what the
+    sync's to_regclass precondition sees (the core never creates the table, so a test turns it off to
+    get the precondition failure)."""
 
-    def __init__(self, calls: list, kind: str, columns: list | None = None, state_rows: list | None = None):
+    def __init__(
+        self, calls: list, kind: str, columns: list | None = None, state_rows: list | None = None,
+        state_table_exists: bool = True,
+    ):
         self.calls, self.kind, self.columns = calls, kind, columns or []
         self.state_rows = state_rows if state_rows is not None else []
+        self.state_table_exists = state_table_exists
 
     def connect_with_timeout(self):
         return self.connect()
@@ -44,6 +50,9 @@ class FakeDatabase:
             result.clear()
             if text.startswith("SELECT last_commit_version, last_schema FROM reverse_etl_sync_state"):
                 result.extend(sorted(self.state_rows, key=lambda row: -row[0]))
+            elif text.startswith("SELECT to_regclass("):
+                # to_regclass returns one row whose value is NULL for a missing relation
+                result.extend([("reverse_etl_sync_state",)] if self.state_table_exists else [(None,)])
             elif text.startswith("INSERT INTO reverse_etl_sync_state"):
                 self.state_rows.append((params[1], params[2]))
             else:
@@ -175,10 +184,14 @@ class FakeAdmin:
 
 
 class FakeKafka:
-    """With `admin`, admin_client() returns it; without, a mock that finds no group and no topic."""
+    """With `admin`, admin_client() returns it; without, a FakeAdmin listing `admin_topics` (the
+    sync's precondition asks it for the sync's topic, so tests that run the sync pass it)."""
 
-    def __init__(self, calls: list, lag: int = 0, producer_fails: bool = False, admin: FakeAdmin | None = None):
-        self.calls, self.lag, self.admin = calls, lag, admin
+    def __init__(
+        self, calls: list, lag: int = 0, producer_fails: bool = False, admin: FakeAdmin | None = None,
+        admin_topics: tuple = (),
+    ):
+        self.calls, self.lag, self.admin, self.admin_topics = calls, lag, admin, tuple(admin_topics)
         self.recording_producer = RecordingProducer(fail=producer_fails)
 
     def consumer(self, group_id, extra=None):
@@ -194,7 +207,7 @@ class FakeKafka:
 
     def admin_client(self):
         self.calls.append(("kafka", "admin"))
-        return self.admin if self.admin is not None else mock.MagicMock()  # no group, no topic listed
+        return self.admin if self.admin is not None else FakeAdmin(topics=self.admin_topics)
 
     def producer(self):
         self.calls.append(("kafka", "producer"))
@@ -236,17 +249,21 @@ def fake_resources(
     postgres_columns=None,
     risingwave_columns=None,
     state_rows=None,
+    state_table_exists=True,
     producer_fails=False,
     table_location="abfss://x",
     registry=None,
     kafka=None,
+    kafka_admin_topics=None,
     **databricks_errors,
 ) -> dict:
     return {
-        "postgres": FakeDatabase(calls, "postgres", postgres_columns, state_rows),
+        "postgres": FakeDatabase(calls, "postgres", postgres_columns, state_rows, state_table_exists),
         "risingwave": FakeDatabase(calls, "risingwave", risingwave_columns),
         "databricks": FakeDatabricks(calls, table_location=table_location, **databricks_errors),
-        "kafka": kafka if kafka is not None else FakeKafka(calls, lag, producer_fails),
+        "kafka": (
+            kafka if kafka is not None else FakeKafka(calls, lag, producer_fails, admin_topics=kafka_admin_topics or ())
+        ),
         "registry": registry or FakeSchemaRegistry(),
         "http": FakeHttp(calls, connector_state),
     }
