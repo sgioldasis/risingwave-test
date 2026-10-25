@@ -12,50 +12,59 @@ type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 attributes:
   # The label the Dagster object names derive from (reverse_etl_orders_to_kafka, the
   # orders_setup_job / _reset_job, ...). The watermark key and the Debezium envelope prefix
-  # are `sync_name` below -- changing that for an existing sync restarts it from the beginning.
+  # are `sync_name` in the sync block -- changing that for an existing sync restarts it
+  # from the beginning.
   name: orders
 
-  # The infrastructure names, explicit (plan section 11): the watermark key, the tables,
-  # the topic and the connector this sync touches. Nothing is derived from `name` -- `name`
-  # only derives the Dagster object names.
-  sync_name: reverse_etl_orders
-  source_table: reverse_etl_orders_source
-  state_table: reverse_etl_orders_state
-  kafka_topic: reverse_etl_orders_topic
-  connector_name: reverse_etl_orders_sink
-  postgres_table: reverse_etl_orders_target
-  risingwave_table: reverse_etl_orders_target
-  # Same drop propagation as avro (see that defs.yaml).
-  propagate_drops: true
-  # The Databricks catalog and scratch schema where the setup creates the source
-  # and the watermark state table; the reset job only drops reverse_etl_* names
-  # here.
-  catalog: de_dev
-  schema_name: sr_poc_external
-  # Column DDL the setup asset creates the source table with (the component adds
-  # the identity key `rid` itself -- the key everywhere downstream). Used only
-  # when the table has to be created; never applied to an existing table.
-  source_columns:
-    - "id BIGINT NOT NULL"
-    - "description STRING"
-    - "total DOUBLE"
-    - "updated_at TIMESTAMP"
-  # Demo seed, run as the LAST step of the setup job -- after the setup's own
-  # baseline sync, so the watermark starts at the pre-seed version and it is the
-  # chain's first data sync that lands these rows on the targets. {source_table}
-  # is substituted with the source table name. The MERGE keeps re-runs
-  # idempotent, and the trailing update + delete give every fresh setup its
-  # first update and delete events.
-  seed_statements:
-    - |
-      MERGE INTO {source_table} AS target
-      USING (
-        SELECT 1 AS id, 'first order' AS description, 9.5 AS total, current_timestamp() AS updated_at
-        UNION ALL SELECT 2, 'second order', 20.0, current_timestamp()
-        UNION ALL SELECT 3, 'third order', 7.25, current_timestamp()
-      ) AS source
-      ON target.id = source.id
-      WHEN MATCHED THEN UPDATE SET target.description = source.description, target.total = source.total, target.updated_at = source.updated_at
-      WHEN NOT MATCHED THEN INSERT (id, description, total, updated_at) VALUES (source.id, source.description, source.total, source.updated_at)
-    - "UPDATE {source_table} SET description = 'second order (updated)', total = 21.0, updated_at = current_timestamp() WHERE id = 2"
-    - "DELETE FROM {source_table} WHERE id = 3"
+  # The sync's own side of the seam (plan section 13): the source's location, the external
+  # names of what the sync touches, and the sync's behavior. The field names are the reusable
+  # component's, so this block promotes verbatim into a team's YAML.
+  sync:
+    # The infrastructure names, explicit (plan section 11): the watermark key, the tables
+    # and the topic this sync touches. Nothing is derived from `name` -- `name`
+    # only derives the Dagster object names.
+    sync_name: reverse_etl_orders
+    source_table: reverse_etl_orders_source
+    state_table: reverse_etl_orders_state
+    kafka_topic: reverse_etl_orders_topic
+    # Same drop propagation as avro (see that defs.yaml).
+    propagate_drops: true
+    # The Databricks catalog and scratch schema where the setup creates the source
+    # and the watermark state table; the reset job only drops reverse_etl_* names
+    # here.
+    catalog: de_dev
+    schema_name: sr_poc_external
+    # Column DDL the setup asset creates the source table with (the component adds
+    # the identity key `rid` itself -- the key everywhere downstream). Used only
+    # when the table has to be created; never applied to an existing table.
+    source_columns:
+      - "id BIGINT NOT NULL"
+      - "description STRING"
+      - "total DOUBLE"
+      - "updated_at TIMESTAMP"
+    # Demo seed, run as the LAST step of the setup job -- after the setup's own
+    # baseline sync, so the watermark starts at the pre-seed version and it is the
+    # chain's first data sync that lands these rows on the targets. {source_table}
+    # is substituted with the source table name. The MERGE keeps re-runs
+    # idempotent, and the trailing update + delete give every fresh setup its
+    # first update and delete events.
+    seed_statements:
+      - |
+        MERGE INTO {source_table} AS target
+        USING (
+          SELECT 1 AS id, 'first order' AS description, 9.5 AS total, current_timestamp() AS updated_at
+          UNION ALL SELECT 2, 'second order', 20.0, current_timestamp()
+          UNION ALL SELECT 3, 'third order', 7.25, current_timestamp()
+        ) AS source
+        ON target.id = source.id
+        WHEN MATCHED THEN UPDATE SET target.description = source.description, target.total = source.total, target.updated_at = source.updated_at
+        WHEN NOT MATCHED THEN INSERT (id, description, total, updated_at) VALUES (source.id, source.description, source.total, source.updated_at)
+      - "UPDATE {source_table} SET description = 'second order (updated)', total = 21.0, updated_at = current_timestamp() WHERE id = 2"
+      - "DELETE FROM {source_table} WHERE id = 3"
+
+  # The downstream side of the seam: the target names and the selection. The targets are
+  # consumers of the sync's topic; the sync itself knows nothing of them.
+  targets:
+    connector_name: reverse_etl_orders_sink
+    postgres_table: reverse_etl_orders_target
+    risingwave_table: reverse_etl_orders_target

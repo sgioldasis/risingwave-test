@@ -29,17 +29,22 @@ IDS = [path.parent.name for path in FILES]
 
 
 # The infrastructure names each file must state, pinned so a rename or a typo fails here (plan
-# section 11): these are the objects that exist in Databricks, Kafka, Kafka Connect, Postgres and
-# RisingWave -- none of them may move silently.
+# section 11, block split per section 13): these are the objects that exist in Databricks, Kafka,
+# Kafka Connect, Postgres and RisingWave -- none of them may move silently. The sync block names
+# what the sync touches; the targets block names the downstream.
 GOLDEN_INFRA_NAMES = {
     folder: {
-        "sync_name": f"reverse_etl_{label}",
-        "source_table": f"reverse_etl_{label}_source",
-        "state_table": f"reverse_etl_{label}_state",
-        "kafka_topic": f"reverse_etl_{label}_topic",
-        "connector_name": f"reverse_etl_{label}_sink",
-        "postgres_table": f"reverse_etl_{label}_target",
-        "risingwave_table": f"reverse_etl_{label}_target",
+        "sync": {
+            "sync_name": f"reverse_etl_{label}",
+            "source_table": f"reverse_etl_{label}_source",
+            "state_table": f"reverse_etl_{label}_state",
+            "kafka_topic": f"reverse_etl_{label}_topic",
+        },
+        "targets": {
+            "connector_name": f"reverse_etl_{label}_sink",
+            "postgres_table": f"reverse_etl_{label}_target",
+            "risingwave_table": f"reverse_etl_{label}_target",
+        },
     }
     for folder, label in (
         ("reverse_etl_avro", "avro"),
@@ -107,4 +112,5 @@ class TestTheInfrastructureNamesAreExplicit:
     def test_each_file_states_its_golden_infrastructure_names(self, path):
         attributes = yaml.safe_load(path.read_text())["attributes"]
         expected = GOLDEN_INFRA_NAMES[path.parent.name]
-        assert {field: attributes[field] for field in expected} == expected
+        for block, names in expected.items():
+            assert {field: attributes[block][field] for field in names} == names

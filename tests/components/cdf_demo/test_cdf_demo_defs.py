@@ -4,6 +4,8 @@ The definitions come from the component's own build_defs(), the call Dagster mak
 services needed. Run from the repo root:  .venv/bin/python -m pytest
 """
 
+import copy
+
 import dagster as dg
 import pytest
 
@@ -11,23 +13,34 @@ from orchestration.components.reverse_etl_cdf_demo import ReverseEtlCdfDemo
 
 COLUMNS = ["id BIGINT NOT NULL", "value STRING"]
 
+REQUIRED = {
+    "name": "unittest",
+    "sync": {
+        "catalog": "de_dev",
+        "schema_name": "sr_poc_external",
+        "sync_name": "reverse_etl_unittest",
+        "source_table": "reverse_etl_unittest_source",
+        "state_table": "reverse_etl_unittest_state",
+        "kafka_topic": "reverse_etl_unittest_topic",
+    },
+    "targets": {
+        "connector_name": "reverse_etl_unittest_sink",
+        "postgres_table": "reverse_etl_unittest_target",
+        "risingwave_table": "reverse_etl_unittest_target",
+    },
+}
+
 
 def build(**attributes) -> dg.Definitions:
-    component = ReverseEtlCdfDemo.from_attributes_dict(
-        attributes={
-            "name": "unittest",
-            "catalog": "de_dev",
-            "schema_name": "sr_poc_external",
-            "sync_name": "reverse_etl_unittest",
-            "source_table": "reverse_etl_unittest_source",
-            "state_table": "reverse_etl_unittest_state",
-            "kafka_topic": "reverse_etl_unittest_topic",
-            "connector_name": "reverse_etl_unittest_sink",
-            "postgres_table": "reverse_etl_unittest_target",
-            "risingwave_table": "reverse_etl_unittest_target",
-            **attributes,
-        }
-    )
+    """A double-underscore keyword (`sync__key=value`) sets a field inside a block."""
+    out = copy.deepcopy(REQUIRED)
+    for dotted, value in attributes.items():
+        block, _, key = dotted.partition("__")
+        if key:
+            out[block][key] = value
+        else:
+            out[dotted] = value
+    component = ReverseEtlCdfDemo.from_attributes_dict(attributes=out)
     return component.build_defs(dg.ComponentTree.for_test().load_context)
 
 
@@ -57,10 +70,12 @@ class TestAssets:
         assert asset_names(build()) == BASE
 
     def test_source_columns_add_the_make_change_asset(self):
-        assert asset_names(build(source_columns=COLUMNS)) == BASE | {"reverse_etl_unittest_make_change"}
+        assert asset_names(build(sync__source_columns=COLUMNS)) == BASE | {"reverse_etl_unittest_make_change"}
 
     def test_seed_statements_add_the_seed_asset(self):
-        assert asset_names(build(seed_statements=["INSERT INTO {source_table} VALUES (1)"])) == BASE | {"reverse_etl_unittest_seed"}
+        assert asset_names(build(sync__seed_statements=["INSERT INTO {source_table} VALUES (1)"])) == BASE | {
+            "reverse_etl_unittest_seed"
+        }
 
     def test_a_shared_topic_asset_is_not_built_a_second_time(self):
         assert asset_names(build(create_topic_asset=False)) == BASE - {"reverse_etl_unittest_topic_setup"}
@@ -69,7 +84,7 @@ class TestAssets:
         return {spec.key.to_user_string(): spec.group_name for asset in defs.assets for spec in asset.specs}
 
     def test_the_pipeline_seed_and_topic_assets_are_in_the_syncs_group(self):
-        groups = self.groups(build(seed_statements=["SELECT 1"]))
+        groups = self.groups(build(sync__seed_statements=["SELECT 1"]))
         assert set(groups) == BASE | {"reverse_etl_unittest_seed"}
         assert set(groups.values()) == {"reverse_etl_unittest"}
 
@@ -82,7 +97,7 @@ class TestAssets:
         ),
     )
     def test_the_make_change_asset_is_in_the_syncs_group_too(self):
-        groups = self.groups(build(source_columns=COLUMNS))
+        groups = self.groups(build(sync__source_columns=COLUMNS))
         assert groups["reverse_etl_unittest_make_change"] == "reverse_etl_unittest"
 
     def test_the_group_can_be_overridden(self):
@@ -101,7 +116,7 @@ class TestJobs:
         assert len(names) == 3
 
     def test_source_columns_add_the_make_change_job(self):
-        assert "reverse_etl_unittest_make_change_job" in job_names(build(source_columns=COLUMNS))
+        assert "reverse_etl_unittest_make_change_job" in job_names(build(sync__source_columns=COLUMNS))
 
     def test_a_sync_without_source_columns_gets_no_make_change_job_or_asset(self):
         defs = build()
@@ -139,11 +154,11 @@ class TestSetupJobSelection:
         assert self.selected(build(), resources, "reverse_etl_unittest_setup_job") == BASE
 
     def test_seed_runs_in_the_setup_job_too(self, resources):
-        defs = build(seed_statements=["SELECT 1"])
+        defs = build(sync__seed_statements=["SELECT 1"])
         assert self.selected(defs, resources, "reverse_etl_unittest_setup_job") == BASE | {"reverse_etl_unittest_seed"}
 
     def test_make_change_is_not_part_of_the_setup_job(self, resources):
-        defs = build(source_columns=COLUMNS)
+        defs = build(sync__source_columns=COLUMNS)
         assert "reverse_etl_unittest_make_change" not in self.selected(defs, resources, "reverse_etl_unittest_setup_job")
 
     def test_a_shared_topic_asset_defined_elsewhere_is_still_part_of_the_job(self, resources):
@@ -162,11 +177,11 @@ class TestTargets:
     DUCKDB_ONLY = BASE - {"reverse_etl_unittest_risingwave_target", "reverse_etl_unittest_jdbc_sink"}
 
     def test_duckdb_only_builds_the_mirror_instead_of_the_warehouse_targets(self):
-        defs = build(targets=["duckdb"], duckdb_target_path="/tmp/unittest/target.duckdb")
+        defs = build(targets__targets=["duckdb"], targets__duckdb_target_path="/tmp/unittest/target.duckdb")
         assert asset_names(defs) == self.DUCKDB_ONLY | {"reverse_etl_unittest_duckdb_target"}
 
     def test_the_duckdb_target_runs_in_the_setup_job_after_the_sync(self, resources):
-        defs = build(targets=["duckdb"], duckdb_target_path="/tmp/unittest/target.duckdb")
+        defs = build(targets__targets=["duckdb"], targets__duckdb_target_path="/tmp/unittest/target.duckdb")
         resolved = with_fakes(defs, resources).resolve_job_def("reverse_etl_unittest_setup_job")
         selected = {key.to_user_string() for key in resolved.asset_layer.executable_asset_keys}
         assert "reverse_etl_unittest_duckdb_target" in selected
@@ -179,7 +194,7 @@ class TestTargets:
         assert "reverse_etl_unittest_to_kafka" in {k.to_user_string() for k in resolved.asset_layer.executable_asset_keys}
 
     def test_no_postgres_target_removes_the_health_check_job_and_schedule(self):
-        defs = build(targets=["risingwave"])
+        defs = build(targets__targets=["risingwave"])
         assert len(defs.asset_checks) == 0
         assert len(defs.schedules) == 0
         assert job_names(defs) == {"reverse_etl_unittest_setup_job", "reverse_etl_unittest_reset_job"}
@@ -191,11 +206,11 @@ class TestTargets:
 
     def test_an_unknown_target_fails_at_load(self):
         with pytest.raises(ValueError, match="unknown target"):
-            build(targets=["elasticsearch"])
+            build(targets__targets=["elasticsearch"])
 
     def test_the_duckdb_target_needs_a_path(self):
         with pytest.raises(ValueError, match="duckdb_target_path is required"):
-            build(targets=["duckdb"])
+            build(targets__targets=["duckdb"])
 
 
 class TestLoadable:
@@ -203,11 +218,11 @@ class TestLoadable:
         "attributes",
         [
             {},
-            {"source_columns": COLUMNS},
-            {"source_columns": COLUMNS, "seed_statements": ["SELECT 1"]},
-            {"encoding": "avro"},
+            {"sync__source_columns": COLUMNS},
+            {"sync__source_columns": COLUMNS, "sync__seed_statements": ["SELECT 1"]},
+            {"sync__encoding": "avro"},
             {"create_topic_asset": False},
-            {"targets": ["duckdb"], "duckdb_target_path": "/tmp/unittest/target.duckdb"},
+            {"targets__targets": ["duckdb"], "targets__duckdb_target_path": "/tmp/unittest/target.duckdb"},
         ],
         ids=["existing-table", "demo-table", "demo-table-seeded", "avro", "shared-topic", "duckdb-target"],
     )
@@ -229,7 +244,7 @@ class TestLoadable:
         # The health job derives from sync_name, so two real syncs differ there too -- the
         # explicit sync_name is what must differ, and the no-collision yaml test pins that.
         merged = dg.Definitions.merge(
-            build(name="one", sync_name="reverse_etl_one"), build(name="two", sync_name="reverse_etl_two")
+            build(name="one", sync__sync_name="reverse_etl_one"), build(name="two", sync__sync_name="reverse_etl_two")
         )
         assert len(asset_names(merged)) == 2 * len(BASE)
         assert len(job_names(merged)) == 6

@@ -113,29 +113,35 @@ You never build the dataclass by hand. Two Dagster components
   asset — the sync — and needs only the postgres, databricks, kafka and registry resources. It
   creates nothing. Teams use it directly; docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md is its guide.
 - **`ReverseEtlCdfDemo`** (`orchestration/components/reverse_etl_cdf_demo.py`) is what this PoC
-  deploys: the demo's full attribute set, building the sync (through the demo hooks) plus the
-  table setup, topic, the selected targets (`targets`: the RisingWave table, the JDBC sink with
-  its health check, and/or a DuckDB file mirror), seed, make-change, and the setup/reset/health
-  jobs. The avro sync's file is the shortest complete example:
+  deploys: the demo's full attribute set, split at the sync/targets seam (plan section 13, option
+  C) into a `sync:` block — the reusable component's fields verbatim — and a `targets:` block (the
+  target names and the selection), with the Dagster naming and the reset at the top level. It
+  builds the sync (through the demo hooks) plus the table setup, topic, the selected targets (the
+  RisingWave table, the JDBC sink with its health check, and/or a DuckDB file mirror), seed,
+  make-change, and the setup/reset/health jobs. The company sync's file is the shortest complete
+  example:
 
 ```yaml
 type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 attributes:
   name: avro                 # the label; derives the Dagster object names
-  # The infrastructure names, explicit -- the YAML reads as the inventory of
-  # what the sync touches in every system:
-  sync_name: reverse_etl_avro          # the watermark key + Debezium envelope prefix
-  source_table: reverse_etl_avro_source
-  state_table: reverse_etl_avro_state
-  kafka_topic: reverse_etl_avro_topic
-  connector_name: reverse_etl_avro_sink
-  postgres_table: reverse_etl_avro_target
-  risingwave_table: reverse_etl_avro_target
-  encoding: avro             # Confluent wire format + staging registry
-  catalog: de_dev
-  schema_name: sr_poc_external
-  source_columns: ["id BIGINT NOT NULL", "value STRING", "updated_at TIMESTAMP"]
-  seed_statements: [...]     # optional demo rows (MERGE/UPDATE/DELETE)
+  # The sync's own side of the seam -- the infrastructure names, explicit, so the
+  # YAML reads as the inventory of what the sync touches in every system:
+  sync:
+    sync_name: reverse_etl_avro          # the watermark key + Debezium envelope prefix
+    source_table: reverse_etl_avro_source
+    state_table: reverse_etl_avro_state
+    kafka_topic: reverse_etl_avro_topic
+    encoding: avro             # Confluent wire format + staging registry
+    catalog: de_dev
+    schema_name: sr_poc_external
+    source_columns: ["id BIGINT NOT NULL", "value STRING", "updated_at TIMESTAMP"]
+    seed_statements: [...]     # optional demo rows (MERGE/UPDATE/DELETE)
+  # The downstream side of the seam: the target names and the selection.
+  targets:
+    connector_name: reverse_etl_avro_sink
+    postgres_table: reverse_etl_avro_target
+    risingwave_table: reverse_etl_avro_target
 ```
 
 The infrastructure names are explicit required attributes (plan section 11); only the

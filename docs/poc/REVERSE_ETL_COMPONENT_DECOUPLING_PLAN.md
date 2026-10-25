@@ -9,7 +9,10 @@ their decisions D11-D19 accepted as recommended on 2026-10-25: section 11 is imp
 section 12 is implemented (steps 1-2, the state interface and DuckDB backend, live-verified on 2026-10-25 —
 the company sync ran on a host-visible DuckDB state file, browsed from DBeaver, then moved back to
 Postgres; step 3, the target selection with the DuckDB mirror, in commit 5cef099; step 4, docs);
-section 13 is not yet implemented.** Line
+section 13 is implemented (steps 1-2, the targets builder and the `sync:`/`targets:` blocks, with the
+section 11 names landing on the split shape and docs; live-verified on 2026-10-25 with company and
+delta setup runs on the split YAMLs — the delta run also caught the envelope-name seam leak, fixed
+as a seam field, see 13.2).** Line
 numbers refer to `orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
 
 ## 1. Goal
@@ -436,7 +439,8 @@ input in everything but name).
 ## 13. Plan: separate the sync from everything downstream (proposal, 2026-10-25)
 
 *Extends sections 11 and 12 — explicit names name the seam; the target backends land on the
-downstream side of it. **D17-D19 accepted as recommended 2026-10-25; not yet implemented.***
+downstream side of it. **D17-D19 accepted as recommended 2026-10-25; implemented same day
+(live-verified, see the status header).***
 
 ### 13.1 What already holds
 

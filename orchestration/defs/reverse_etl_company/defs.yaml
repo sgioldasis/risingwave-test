@@ -6,18 +6,26 @@ type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 attributes:
   name: company
 
-  # The infrastructure names, explicit (plan section 11): the watermark key, the tables,
-  # the topic and the connector this sync touches. Nothing is derived from `name` -- `name`
-  # only derives the Dagster object names.
-  sync_name: reverse_etl_company
-  source_table: reverse_etl_company_source
-  state_table: reverse_etl_company_state
-  kafka_topic: reverse_etl_company_topic
-  connector_name: reverse_etl_company_sink
-  postgres_table: reverse_etl_company_target
-  risingwave_table: reverse_etl_company_target
-  catalog: de_dev
-  schema_name: sr_poc_external
-  key_column: Company_ID
-  encoding: avro
-  propagate_drops: false
+  # The sync's own side of the seam (plan section 13): the source's location, the external
+  # names of what the sync touches, and the sync's behavior. The field names are the reusable
+  # component's, so this block promotes verbatim into a team's YAML.
+  sync:
+    # The infrastructure names, explicit (plan section 11): the watermark key, the tables
+    # and the topic this sync touches. Nothing is derived from `name` -- `name`
+    # only derives the Dagster object names.
+    sync_name: reverse_etl_company
+    source_table: reverse_etl_company_source
+    state_table: reverse_etl_company_state
+    kafka_topic: reverse_etl_company_topic
+    catalog: de_dev
+    schema_name: sr_poc_external
+    key_column: Company_ID
+    encoding: avro
+    propagate_drops: false
+
+  # The downstream side of the seam: the target names and the selection. The targets are
+  # consumers of the sync's topic; the sync itself knows nothing of them.
+  targets:
+    connector_name: reverse_etl_company_sink
+    postgres_table: reverse_etl_company_target
+    risingwave_table: reverse_etl_company_target

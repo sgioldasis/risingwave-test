@@ -127,6 +127,39 @@ after the topic, its columns are the union of the fields the events carried (a f
 seen yet is added when one arrives), all `VARCHAR` — a JSON event carries no types. Like the
 DuckDB state backend it allows one writer: one mirror per file, external readers read-only.
 
+## The seam (how the two sides meet)
+
+The demo YAML splits at the sync/targets seam (decoupling plan section 13, option C): the `sync:`
+block is the sync's own configuration, the `targets:` block the downstream's, and the top level
+keeps what spans both sides — the `name` label the Dagster object names derive from, their
+overrides, and the reset.
+
+```yaml
+type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
+attributes:
+  name: company
+  sync:                       # promotes verbatim into a team's ReverseEtlCdfSync YAML
+    sync_name: reverse_etl_company
+    source_table: reverse_etl_company_source
+    state_table: reverse_etl_company_state
+    kafka_topic: reverse_etl_company_topic
+    catalog: de_dev
+    schema_name: sr_poc_external
+    key_column: Company_ID
+    encoding: avro
+  targets:
+    connector_name: reverse_etl_company_sink
+    postgres_table: reverse_etl_company_target
+    risingwave_table: reverse_etl_company_target
+```
+
+The seam is the message contract and nothing else: the targets see the topic, the encoding, the
+key column and the envelope name — never the source table (a target cannot know where the events
+came from; the RisingWave table's one schema read is an explicit composition argument, not a
+config field). For your own pipeline the same rule applies: your `ReverseEtlCdfSync` YAML is the
+`sync:` block verbatim, and your targets are your own assets consuming the topic — declare them
+downstream of the sync asset by its name and decode per the contract above.
+
 ## What it does not do
 
 - Create or alter any table, topic, connector, or anything else in Databricks, Kafka or Postgres.
