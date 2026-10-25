@@ -342,7 +342,8 @@ removed; revision 2 keeps the label for the Dagster objects per review.)*
 ## 12. Plan: pluggable state and target backends (proposal, 2026-10-25)
 
 *Extends section 11 — the YAML already states every name; here it also states **where** state and
-targets live. **D14-D16 accepted as recommended 2026-10-25; not yet implemented.***
+targets live. **D14-D16 accepted as recommended 2026-10-25; implemented same day
+(live-verified, see the status header).***
 
 ### 12.1 Goal
 
