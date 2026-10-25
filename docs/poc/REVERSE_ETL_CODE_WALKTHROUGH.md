@@ -32,10 +32,12 @@ The other docs cover behaviour and evidence; this one covers structure:
 | `orchestration/assets/reverse_etl_defs.py` | The demo's builder (`build_demo_defs`): turns one config into assets, jobs, checks and schedules |
 | `orchestration/assets/reverse_etl_demo_assets.py` | The demo's own assets: table setup and seed — they create infrastructure, so they are not part of the reusable sync |
 | `orchestration/assets/reverse_etl_cdf_setup.py` | The heart: the sync asset, event building, Kafka production, the watermark state |
+| `orchestration/assets/reverse_etl_state.py` | The watermark's storage interface: Postgres (default) or a local DuckDB file, behind one small protocol |
 | `orchestration/assets/reverse_etl_delta_reader.py` | The delta-rs backend: per-commit-version snapshot diffs reconstruct the change feed — no Spark, no CDF read, no Databricks compute |
 | `orchestration/assets/reverse_etl_change.py` | Demo changes (insert / update / delete / add column) |
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave target table + schema evolution |
 | `orchestration/assets/reverse_etl_debezium_sink.py` | The Kafka Connect Debezium JDBC sink (Postgres) |
+| `orchestration/assets/reverse_etl_duckdb_target.py` | The DuckDB file mirror: a stateless consumer that drains the topic and upserts the latest event per key |
 | `orchestration/assets/reverse_etl_health.py` | `sink_healthy` asset check + its 5-minute schedule |
 | `orchestration/assets/reverse_etl_reset.py` | The reset job (drops everything, with a name allowlist) |
 | `orchestration/assets/reverse_etl_notebook_job.py` | Option B: triggers the Databricks notebook job |
@@ -63,9 +65,9 @@ class ReverseEtlSyncConfig:
     catalog: str
     schema: str
     source_table: str         # "reverse_etl_avro_source"
-    state_table: str          # "reverse_etl_avro_state" — legacy FQN: the watermark
-                              # lives in Postgres (reverse_etl_sync_state); this
-                              # name remains only for the reset's cleanup drop
+    state_table: str          # "reverse_etl_avro_state" — this sync's own watermark table
+                              # (Postgres backend); explicit per sync since the
+                              # explicit-names refactor (decoupling plan §11)
     key_column: str           # "rid" (identity column, see below)
     source_columns: tuple[str, ...]  # empty for an existing table: the setup then only checks it exists
     kafka_topic: str          # "reverse_etl_avro_topic"
@@ -74,6 +76,10 @@ class ReverseEtlSyncConfig:
     risingwave_table: str     # "reverse_etl_avro_target"
     ...
     encoding: str = "avro"          # or "json"
+    state_backend: str = "postgres" # or "duckdb": the watermark lives in a local file at
+                                    # state_path instead (reverse_etl_state.py, plan §12)
+    targets: tuple = ("risingwave", "postgres")  # which target assets the demo builds;
+                                    # "duckdb" adds a local file mirror (needs duckdb_target_path)
 ```
 
 `ReverseEtlSyncConfig.for_name("avro", ...)` derives **every** name from the
@@ -108,7 +114,8 @@ You never build the dataclass by hand. Two Dagster components
   creates nothing. Teams use it directly; docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md is its guide.
 - **`ReverseEtlCdfDemo`** (`orchestration/components/reverse_etl_cdf_demo.py`) is what this PoC
   deploys: the demo's full attribute set, building the sync (through the demo hooks) plus the
-  table setup, topic, RisingWave target, JDBC sink, seed, make-change, and the setup/reset/health
+  table setup, topic, the selected targets (`targets`: the RisingWave table, the JDBC sink with
+  its health check, and/or a DuckDB file mirror), seed, make-change, and the setup/reset/health
   jobs. The avro sync's file is the shortest complete example:
 
 ```yaml
@@ -163,7 +170,7 @@ The asset skeleton:
 
 0. **Spark-free no-op pre-check**: before anything heavy, the sync reads the
    source's current version with delta-rs (no JVM, service-principal auth) and
-   the watermark from the Postgres state table (`precheck_versions`), and ends
+   the watermark from the state backend (`precheck_versions`), and ends
    the run when they are equal: a schema change is always a commit, so an
    unchanged version cannot hide one. A no-op sync costs ~8s instead of ~17s,
    whose floor was the Spark session start. The token and the storage location
@@ -174,8 +181,10 @@ The asset skeleton:
    green no-op that silently skips everything; bit us live). The check is
    bounded by a 5s watchdog and fails open — any problem with it simply runs
    the full sync.
-1. **Read the watermark** from the Postgres state table (`reverse_etl_sync_state`,
-   `last_commit_version` for this `sync_name`). `None` means first run. The state
+1. **Read the watermark** from the state backend (`reverse_etl_state.py`: the
+   Postgres table `cfg.state_table` by default, or a local DuckDB file with
+   `state_backend: duckdb` — both keep one append-only row per run and read the
+   freshest). `last_commit_version` for this `sync_name`. `None` means first run. The state
    is **append-only**: every
    sync appends one row (a cheap single-commit insert — the read-modify-write
    `MERGE` this replaced cost ~2s per real sync), and the read takes the *freshest*
@@ -405,10 +414,13 @@ Function contract, mirroring the deleted Spark module:
   version so the read range matches the watermark exactly. Every `TIMESTAMP`
   column is rendered into a microsecond UTC string before comparison, so a
   datetime-vs-formatted-string mismatch can never read as a change.
-- `read_state` — the Postgres state read (watermark + `last_schema`, freshest row
-  wins), only the fail-open fallback when the delta-rs pre-check could not run.
-  The watermark WRITE is a small Postgres INSERT, `_write_state()` in
-  `reverse_etl_cdf_setup.py`: the state moved out of Databricks entirely
+- `read_state` — the state read through the `SyncState` backend
+  (`reverse_etl_state.py`: Postgres by default, a local DuckDB file with
+  `state_backend: duckdb` — plan §12; same append-only rows, freshest wins),
+  watermark + `last_schema`, only the fail-open fallback when the delta-rs
+  pre-check could not run. The watermark WRITE goes through the same backend, a
+  small INSERT (`_write_state()` in `reverse_etl_cdf_setup.py`): the state moved
+  out of Databricks entirely
   (2026-10-22 — it used to be a **plain Delta** table, option A in
   [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5, with a
   writer-protocol story: this Databricks runtime creates every warehouse-written
