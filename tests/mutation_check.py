@@ -263,6 +263,10 @@ MUTATIONS = [
     Mutation("component", "topic asset always built", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.create_topic_asset:\n", "    if True:\n", "tests/components"),
     Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
     Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),
+    # --- the core signature: resources are decorator-declared, the demo wires the extras in ---
+    Mutation("component", "the core requires the demo resources", f"{ASSETS}/reverse_etl_cdf_setup.py", 'required_resource_keys={"postgres", "databricks", "kafka", "registry"} | set(extra_resource_keys),', 'required_resource_keys={"postgres", "databricks", "kafka", "registry", "risingwave", "http"},', "tests/sync_asset"),
+    Mutation("component", "the demo's extra resources are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", '{"postgres", "databricks", "kafka", "registry"} | set(extra_resource_keys)', '{"postgres", "databricks", "kafka", "registry"}', "tests/components"),
+    Mutation("component", "the demo's upstream deps are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "deps=list(deps) or None,", "deps=None,", "tests/components"),
     # --- the sync's hooks (the demo's extension points) ---
     Mutation("hooks", "before_produce never called", f"{ASSETS}/reverse_etl_cdf_setup.py", "_merge_hook_metadata(hook_metadata, hooks.before_produce(context, cfg, row_fields))", "pass", "tests/sync_asset/test_sync_hooks.py"),
     Mutation(

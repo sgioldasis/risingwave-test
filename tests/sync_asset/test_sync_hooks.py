@@ -13,7 +13,9 @@ import pytest
 from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
 import json
 
-from tests.fakes import FakeKafka, error_text, kinds
+import dagster as dg
+
+from tests.fakes import FakeKafka, error_text, kinds, make_config
 from tests.sync_asset.support import metadata, row
 
 
@@ -183,6 +185,23 @@ class TestWithoutHooks:
             metadata(result, "columns_dropped")
         with pytest.raises(KeyError):
             metadata(result, "risingwave_columns_added")
+
+    def test_the_core_runs_without_the_demo_resources(self, source, calls, resources, state_rows, registry, encoding):
+        source.create(row(1, "a"))
+        cfg = make_config(source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid")
+        res = resources(table_location=source.location, state_rows=state_rows, registry=registry)
+        result = dg.materialize(
+            [cdf_setup.build_sync_asset(cfg)],
+            resources={k: v for k, v in res.items() if k not in ("risingwave", "http")},
+            raise_on_error=False,
+        )
+        assert result.success
+
+    def test_the_bare_core_declares_no_upstream_assets_and_no_extra_resources(self):
+        asset = cdf_setup.build_sync_asset(make_config(source_columns=(), key_column="id"))
+        (spec,) = asset.specs
+        assert {dep.asset_key.to_user_string() for dep in spec.deps} == set()
+        assert {"risingwave", "http"} & set(asset.required_resource_keys) == set()
 
     def test_the_core_still_writes_its_watermark_and_schema(self, sync, source, calls, state_rows):
         source.create(row(1, "a"))

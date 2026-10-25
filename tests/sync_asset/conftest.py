@@ -90,6 +90,9 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid",
             propagate_drops=propagate_drops,
         )
+        # Mirror the demo's wiring (reverse_etl_defs.py): the demo hooks reach risingwave/http, so they
+        # must be declared required; the bare core and test hooks touch neither and run without them.
+        extra = ("risingwave", "http") if isinstance(hooks, DemoSyncHooks) else ()
         res = resources(
             table_location=source.location,
             state_rows=state_rows,
@@ -98,7 +101,9 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             registry=registry,
             **options,
         )
-        result = dg.materialize([cdf_setup.build_sync_asset(cfg, hooks=hooks)], resources=res, raise_on_error=False)
+        result = dg.materialize(
+            [cdf_setup.build_sync_asset(cfg, hooks=hooks, extra_resource_keys=extra)], resources=res, raise_on_error=False
+        )
         produced = [decode(*message) for message in res["kafka"].recording_producer.messages]
         return result, res, produced
 

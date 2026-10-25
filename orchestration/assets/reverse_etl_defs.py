@@ -52,7 +52,14 @@ def _build_topic_asset(cfg: ReverseEtlSyncConfig):
 def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     assets = [
         build_table_setup_asset(cfg),
-        build_sync_asset(cfg, hooks=DemoSyncHooks()),
+        # The demo's hooks reach RisingWave and Kafka Connect through context.resources, so they are
+        # declared as required; the setup and topic assets are wired in as upstream deps.
+        build_sync_asset(
+            cfg,
+            hooks=DemoSyncHooks(),
+            extra_resource_keys=("risingwave", "http"),
+            deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
+        ),
         build_risingwave_table_asset(cfg),
         build_debezium_sink_asset(cfg),
     ]

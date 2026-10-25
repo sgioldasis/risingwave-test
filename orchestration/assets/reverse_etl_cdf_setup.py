@@ -1338,38 +1338,52 @@ def _merge_hook_metadata(into: dict, extra: dict) -> dict:
     return into
 
 
-def build_sync_asset(cfg: ReverseEtlSyncConfig, hooks: SyncHooks | None = None):
+def build_sync_asset(
+    cfg: ReverseEtlSyncConfig,
+    hooks: SyncHooks | None = None,
+    extra_resource_keys: tuple[str, ...] = (),
+    deps: tuple[AssetKey, ...] = (),
+):
     """The sync asset: delta-rs version-range reconstruction (see
     reverse_etl_delta_reader.py) -- no CDF read, no Spark, no warehouse anything:
-    reads are delta-rs and the watermark state lives in Postgres. `hooks` (the
-    demo passes DemoSyncHooks) adds target care at the two points documented on
-    SyncHooks; without them the asset writes only to Kafka and the state table."""
-    return _build_sync_asset_delta_rs(cfg, hooks)
+    reads are delta-rs and the watermark state lives in Postgres. The asset itself
+    needs only the postgres, databricks, kafka and registry resources, which it
+    reaches through context.resources (Dagster forbids decorator-declared resource
+    requirements alongside resource parameters, so the signature is just the
+    context); it writes to Kafka and the state table, and nothing else.
+
+    `hooks` (the demo passes DemoSyncHooks) adds target care at the two points documented on
+    SyncHooks — the hooks reach any further resources through context.resources, and
+    `extra_resource_keys` declares them as required so a definitions build without them fails
+    validation. `deps` declares upstream assets (the demo wires its table-setup and topic assets
+    in; the bare core declares none)."""
+    return _build_sync_asset_delta_rs(cfg, hooks, extra_resource_keys, deps)
 
 
-def _build_sync_asset_delta_rs(cfg: ReverseEtlSyncConfig, hooks: SyncHooks | None):
+def _build_sync_asset_delta_rs(
+    cfg: ReverseEtlSyncConfig, hooks: SyncHooks | None, extra_resource_keys: tuple[str, ...], deps: tuple[AssetKey, ...]
+):
     @asset(
         name=cfg.sync_asset,
         group_name=cfg.group_name,
-        deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
+        deps=list(deps) or None,
+        # All resources are declared here rather than as function parameters:
+        # Dagster forbids the two together, and the hook-reachable keys are only
+        # known at build time (extra_resource_keys).
+        required_resource_keys={"postgres", "databricks", "kafka", "registry"} | set(extra_resource_keys),
         description=(
             f"Batch-read new/changed/deleted rows from {cfg.source_fqn}'s Change "
-            "Data Feed since the last watermark, and produce them as Debezium-style "
-            f"since the last watermark (delta-rs version-range reconstruction -- no CDF "
-            f"read, no Spark, no warehouse scans), and produce them as Debezium-style "
-            "— no Databricks compute, no DBUs. See "
-            "docs/poc/REVERSE_ETL_DBU_COST_NOTES.md sections 4-5."
+            "Data Feed since the last watermark (delta-rs version-range "
+            "reconstruction -- no CDF read, no Spark, no warehouse scans), and "
+            "produce them as Debezium-style events — no Databricks compute, "
+            "no DBUs. See docs/poc/REVERSE_ETL_DBU_COST_NOTES.md sections 4-5."
         ),
     )
-    def cdf_to_kafka(
-        context: AssetExecutionContext,
-        postgres: PostgresResource,
-        risingwave: RisingWaveResource,
-        databricks: DatabricksResource,
-        kafka: KafkaResource,
-        http: HttpResource,
-        registry: SchemaRegistryResource,
-    ):
+    def cdf_to_kafka(context: AssetExecutionContext):
+        postgres: PostgresResource = context.resources.postgres
+        databricks: DatabricksResource = context.resources.databricks
+        kafka: KafkaResource = context.resources.kafka
+        registry: SchemaRegistryResource = context.resources.registry
         databricks.reset_meter()
         registry_client = registry.client(cfg.schema_registry_url)
         # The token is control-plane only here: it resolves the tables' storage

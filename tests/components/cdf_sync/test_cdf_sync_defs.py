@@ -111,6 +111,18 @@ class TestSetupJobSelection:
         resolved = with_fakes(defs, resources).resolve_job_def(job)
         return {key.to_user_string() for key in resolved.asset_layer.executable_asset_keys}
 
+    def test_the_sync_asset_depends_on_the_demo_setup_and_topic_assets(self):
+        """The bare core declares no deps; the demo wires its own assets in as upstream ones."""
+        sync = next(
+            asset for asset in build().assets if "reverse_etl_unittest_to_kafka" in {k.to_user_string() for k in asset.keys}
+        )
+        (spec,) = sync.specs
+        assert {dep.asset_key.to_user_string() for dep in spec.deps} == {
+            "reverse_etl_unittest_table_setup",
+            "reverse_etl_unittest_topic_setup",
+        }
+        assert {"risingwave", "http"} <= set(sync.required_resource_keys)
+
     def test_the_setup_job_runs_the_pipeline_assets_and_the_topic_asset(self, resources):
         assert self.selected(build(), resources, "reverse_etl_unittest_setup_job") == BASE
 
