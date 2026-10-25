@@ -114,7 +114,16 @@ You never build the dataclass by hand. Two Dagster components
 ```yaml
 type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 attributes:
-  name: avro
+  name: avro                 # the label; derives the Dagster object names
+  # The infrastructure names, explicit -- the YAML reads as the inventory of
+  # what the sync touches in every system:
+  sync_name: reverse_etl_avro          # the watermark key + Debezium envelope prefix
+  source_table: reverse_etl_avro_source
+  state_table: reverse_etl_avro_state
+  kafka_topic: reverse_etl_avro_topic
+  connector_name: reverse_etl_avro_sink
+  postgres_table: reverse_etl_avro_target
+  risingwave_table: reverse_etl_avro_target
   encoding: avro             # Confluent wire format + staging registry
   catalog: de_dev
   schema_name: sr_poc_external
@@ -122,9 +131,9 @@ attributes:
   seed_statements: [...]     # optional demo rows (MERGE/UPDATE/DELETE)
 ```
 
-Every demo attribute has a derived default; the optional overrides exist for pointing
-a sync at a table that already exists. `sync_name` is the watermark key and the
-Debezium envelope prefix — changing it for an existing sync restarts that sync
+The infrastructure names are explicit required attributes (plan section 11); only the
+Dagster object names derive from the label, each overridable. `sync_name` is the watermark
+key and the Debezium envelope prefix — changing it for an existing sync restarts that sync
 from the beginning.
 
 ## 2. From YAML to Dagster definitions

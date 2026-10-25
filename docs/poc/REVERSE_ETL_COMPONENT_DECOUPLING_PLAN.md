@@ -244,7 +244,8 @@ production system. Live checks use the DEV demo as before.
 ## 11. Plan: explicit infrastructure names, label-derived Dagster names (proposal, 2026-10-25, rev. 2)
 
 *Written after steps 1-9 shipped. Revision 2: the label `name` stays, but only for the Dagster
-objects. **D11-D13 accepted as recommended 2026-10-25; not yet implemented.***
+objects. **D11-D13 accepted as recommended; implemented 2026-10-25 (five YAMLs, golden-names test,
+live reset+setup verified with identical names).***
 
 ### 11.1 Goal
 

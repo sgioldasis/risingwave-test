@@ -9,7 +9,19 @@ from pydantic import ValidationError
 
 from orchestration.components.reverse_etl_cdf_demo import ReverseEtlCdfDemo
 
-REQUIRED = {"name": "orders", "catalog": "de_dev", "schema_name": "sr_poc_external"}
+REQUIRED = {
+    "name": "orders",
+    "catalog": "de_dev",
+    "schema_name": "sr_poc_external",
+    # The infrastructure names are the YAML's: nothing derives them.
+    "sync_name": "reverse_etl_orders",
+    "source_table": "reverse_etl_orders_source",
+    "state_table": "reverse_etl_orders_state",
+    "kafka_topic": "reverse_etl_orders_topic",
+    "connector_name": "reverse_etl_orders_sink",
+    "postgres_table": "reverse_etl_orders_target",
+    "risingwave_table": "reverse_etl_orders_target",
+}
 
 
 def component(**attributes) -> ReverseEtlCdfDemo:
@@ -37,6 +49,7 @@ class TestRequiredAndUnknownAttributes:
 class TestDefaults:
     def test_a_sync_with_only_the_required_attributes_gets_the_documented_defaults(self):
         cfg = component().to_config()
+        assert cfg.sync_name == REQUIRED["sync_name"]  # explicit, not derived from the label
         assert cfg.key_column == "rid"
         assert cfg.source_columns == () and cfg.seed_statements == ()
         assert cfg.sink_tasks_max == 1
@@ -48,16 +61,9 @@ class TestDefaults:
         cfg = component(catalog="other_catalog", schema_name="scratch").to_config()
         assert (cfg.catalog, cfg.schema, cfg.reset_schema) == ("other_catalog", "scratch", "scratch")
 
-    def test_every_name_is_derived_from_the_label(self):
+    def test_the_dagster_names_derive_from_the_label_and_the_infrastructure_names_do_not(self):
         cfg = component().to_config()
-        assert cfg.sync_name == "reverse_etl_orders"
         assert {
-            "source_table": cfg.source_table,
-            "state_table": cfg.state_table,
-            "kafka_topic": cfg.kafka_topic,
-            "connector_name": cfg.connector_name,
-            "postgres_table": cfg.postgres_table,
-            "risingwave_table": cfg.risingwave_table,
             "group_name": cfg.group_name,
             "table_setup_asset": cfg.table_setup_asset,
             "sync_asset": cfg.sync_asset,
@@ -67,12 +73,6 @@ class TestDefaults:
             "setup_job": cfg.setup_job,
             "reset_job": cfg.reset_job,
         } == {
-            "source_table": "reverse_etl_orders_source",
-            "state_table": "reverse_etl_orders_state",
-            "kafka_topic": "reverse_etl_orders_topic",
-            "connector_name": "reverse_etl_orders_sink",
-            "postgres_table": "reverse_etl_orders_target",
-            "risingwave_table": "reverse_etl_orders_target",
             "group_name": "reverse_etl_orders",
             "table_setup_asset": "reverse_etl_orders_table_setup",
             "sync_asset": "reverse_etl_orders_to_kafka",
@@ -82,12 +82,21 @@ class TestDefaults:
             "setup_job": "reverse_etl_orders_setup_job",
             "reset_job": "reverse_etl_orders_reset_job",
         }
+        # The infrastructure names are the YAML's, whatever the label says.
+        assert (cfg.sync_name, cfg.source_table, cfg.kafka_topic) == (
+            "reverse_etl_orders",
+            "reverse_etl_orders_source",
+            "reverse_etl_orders_topic",
+        )
+        cfg_other = component(name="other", **{k: v for k, v in REQUIRED.items() if k != "name"}).to_config()
+        assert cfg_other.sync_name == cfg.sync_name  # unchanged: explicit
+        assert cfg_other.sync_asset == "reverse_etl_other_to_kafka"  # derived: follows the label
 
-    def test_two_labels_never_share_a_name(self):
+    def test_two_labels_never_share_a_dagster_name(self):
         first, second = component(name="a").to_config(), component(name="b").to_config()
         shared = {
             field
-            for field in ("source_table", "kafka_topic", "connector_name", "postgres_table", "risingwave_table", "setup_job", "reset_job")
+            for field in ("group_name", "table_setup_asset", "sync_asset", "risingwave_asset", "sink_asset", "topic_asset", "setup_job", "reset_job")
             if getattr(first, field) == getattr(second, field)
         }
         assert shared == set()
@@ -107,13 +116,6 @@ class TestSourceColumnsAndSeed:
 
 
 OVERRIDES = {
-    "sync_name": "legacy_sync",
-    "source_table": "existing_table",
-    "state_table": "existing_state",
-    "kafka_topic": "shared_topic",
-    "connector_name": "shared_connector",
-    "postgres_table": "pg_target",
-    "risingwave_table": "rw_target",
     "group_name": "a_group",
     "table_setup_asset": "my_table_setup",
     "sync_asset": "my_sync",

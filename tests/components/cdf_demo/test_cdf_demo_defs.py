@@ -14,7 +14,19 @@ COLUMNS = ["id BIGINT NOT NULL", "value STRING"]
 
 def build(**attributes) -> dg.Definitions:
     component = ReverseEtlCdfDemo.from_attributes_dict(
-        attributes={"name": "unittest", "catalog": "de_dev", "schema_name": "sr_poc_external", **attributes}
+        attributes={
+            "name": "unittest",
+            "catalog": "de_dev",
+            "schema_name": "sr_poc_external",
+            "sync_name": "reverse_etl_unittest",
+            "source_table": "reverse_etl_unittest_source",
+            "state_table": "reverse_etl_unittest_state",
+            "kafka_topic": "reverse_etl_unittest_topic",
+            "connector_name": "reverse_etl_unittest_sink",
+            "postgres_table": "reverse_etl_unittest_target",
+            "risingwave_table": "reverse_etl_unittest_target",
+            **attributes,
+        }
     )
     return component.build_defs(dg.ComponentTree.for_test().load_context)
 
@@ -170,6 +182,10 @@ class TestLoadable:
             assert loaded.resolve_job_def(job.name) is not None
 
     def test_two_syncs_with_different_labels_merge_without_a_name_clash(self):
-        merged = dg.Definitions.merge(build(name="one"), build(name="two"))
+        # The health job derives from sync_name, so two real syncs differ there too -- the
+        # explicit sync_name is what must differ, and the no-collision yaml test pins that.
+        merged = dg.Definitions.merge(
+            build(name="one", sync_name="reverse_etl_one"), build(name="two", sync_name="reverse_etl_two")
+        )
         assert len(asset_names(merged)) == 2 * len(BASE)
         assert len(job_names(merged)) == 6

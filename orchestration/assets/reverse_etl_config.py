@@ -76,6 +76,24 @@ class CdfSyncConfig:
         return f"{self.sync_name}.{self.schema}.{self.source_table}"
 
 
+def dagster_names(label: str) -> dict:
+    """The Dagster object names for a sync labelled `label` (reverse_etl_<label>_<role>): the
+    asset group and names, and the job names. The demo component derives these from its `name`
+    attribute. The infrastructure names are never derived — they are explicit in the YAML."""
+    base = f"reverse_etl_{label}"
+    return {
+        "group_name": base,
+        "table_setup_asset": f"{base}_table_setup",
+        "sync_asset": f"{base}_to_kafka",
+        "risingwave_asset": f"{base}_risingwave_target",
+        "sink_asset": f"{base}_jdbc_sink",
+        "topic_asset": f"{base}_topic_setup",
+        "setup_job": f"{base}_setup_job",
+        "reset_job": f"{base}_reset_job",
+        "seed_asset": f"{base}_seed",
+    }
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReverseEtlSyncConfig(CdfSyncConfig):
     """The demo's configuration: `CdfSyncConfig` plus everything the PoC creates
@@ -171,34 +189,25 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
         seed_statements: tuple[str, ...] = (),
         uniform: bool = True,
     ) -> "ReverseEtlSyncConfig":
-        """A config for a sync labelled `name` (for example "cdf" or "orders"): every
-        name is reverse_etl_<name>_<role>, so syncs never collide and the label shows
-        in every system (Databricks, Kafka, Connect, Postgres, RisingWave, Dagster)."""
-        base = f"reverse_etl_{name}"
+        """A test helper: a config for a sync labelled `name` (for example "cdf" or "orders") with
+        every name derived as reverse_etl_<name>_<role>. Production paths keep the infrastructure
+        names explicit (the components' YAML); only the tests derive them, to stay short."""
         return cls(
-            sync_name=base,
+            sync_name=f"reverse_etl_{name}",
             catalog=catalog,
             schema=schema,
-            source_table=f"{base}_source",
-            state_table=f"{base}_state",
+            source_table=f"reverse_etl_{name}_source",
+            state_table=f"reverse_etl_{name}_state",
             key_column=key_column,
             source_columns=source_columns,
-            kafka_topic=f"{base}_topic",
-            connector_name=f"{base}_sink",
-            postgres_table=f"{base}_target",
-            risingwave_table=f"{base}_target",
-            group_name=base,
-            table_setup_asset=f"{base}_table_setup",
-            sync_asset=f"{base}_to_kafka",
-            risingwave_asset=f"{base}_risingwave_target",
-            sink_asset=f"{base}_jdbc_sink",
-            topic_asset=f"{base}_topic_setup",
+            kafka_topic=f"reverse_etl_{name}_topic",
+            connector_name=f"reverse_etl_{name}_sink",
+            postgres_table=f"reverse_etl_{name}_target",
+            risingwave_table=f"reverse_etl_{name}_target",
             create_topic_asset=True,
-            setup_job=f"{base}_setup_job",
-            reset_job=f"{base}_reset_job",
             reset_name_prefixes=("reverse_etl_",),
             reset_schema=schema,
-            seed_asset=f"{base}_seed",
             seed_statements=seed_statements,
             uniform=uniform,
+            **dagster_names(name),
         )

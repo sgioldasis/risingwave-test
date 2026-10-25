@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS reverse_etl_sync_state (
 
 ## The attributes
 
-Required: `name`, `catalog`, `schema_name`, `source_table`, `key_column`, `kafka_topic`.
+Required: `name`, `catalog`, `schema_name`, `sync_name`, `source_table`, `key_column`, `kafka_topic`.
 
 Optional:
 
@@ -60,10 +60,11 @@ Optional:
 | `group_name` | `reverse_etl_<name>` | the asset's Dagster group |
 | `sync_asset` | `reverse_etl_<name>_to_kafka` | the asset's name |
 | `deps` | none | upstream asset keys, so the sync can be ordered after your own pipeline's assets |
+| `group_name`, `sync_asset` | derived from `name` | the Dagster object names, overridable |
 
-`name` derives the sync name — the watermark key and the Debezium envelope prefix — and the default
-Dagster names as `reverse_etl_<name>_<...>`. Changing the label of an existing sync restarts it
-from the beginning.
+`name` derives the default Dagster object names as `reverse_etl_<name>_<...>` (overridable
+per name). `sync_name` is explicit and is the watermark key — the one name a replay silently
+depends on; changing it for an existing sync restarts that sync from the beginning.
 
 ## Example
 
@@ -75,6 +76,7 @@ attributes:
   name: company_changes
   catalog: de_dev
   schema_name: my_schema
+  sync_name: company_changes          # the watermark key and Debezium envelope prefix
   source_table: dim_company
   key_column: company_id
   kafka_topic: company_changes_cdc

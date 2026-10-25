@@ -15,6 +15,7 @@ REQUIRED = {
     "source_table": "existing_table",
     "key_column": "id",
     "kafka_topic": "orders_cdc",
+    "sync_name": "orders_watermark",
 }
 
 

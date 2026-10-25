@@ -10,12 +10,21 @@
 type: orchestration.components.reverse_etl_cdf_demo.ReverseEtlCdfDemo
 
 attributes:
-  # The sync label every other name derives from: reverse_etl_orders_source /
-  # _state / _topic / _sink, the orders_setup_job / _reset_job / make-change
-  # job, and the Postgres + RisingWave target tables. It is also the watermark
-  # key and the Debezium envelope prefix -- changing it on an existing sync
-  # restarts that sync from the beginning.
+  # The label the Dagster object names derive from (reverse_etl_orders_to_kafka, the
+  # orders_setup_job / _reset_job, ...). The watermark key and the Debezium envelope prefix
+  # are `sync_name` below -- changing that for an existing sync restarts it from the beginning.
   name: orders
+
+  # The infrastructure names, explicit (plan section 11): the watermark key, the tables,
+  # the topic and the connector this sync touches. Nothing is derived from `name` -- `name`
+  # only derives the Dagster object names.
+  sync_name: reverse_etl_orders
+  source_table: reverse_etl_orders_source
+  state_table: reverse_etl_orders_state
+  kafka_topic: reverse_etl_orders_topic
+  connector_name: reverse_etl_orders_sink
+  postgres_table: reverse_etl_orders_target
+  risingwave_table: reverse_etl_orders_target
   # Same drop propagation as avro (see that defs.yaml).
   propagate_drops: true
   # The Databricks catalog and scratch schema where the setup creates the source

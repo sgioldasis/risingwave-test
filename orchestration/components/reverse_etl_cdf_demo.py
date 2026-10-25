@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import dagster as dg
 
-from ..assets.reverse_etl_config import ReverseEtlSyncConfig
+from ..assets.reverse_etl_config import ReverseEtlSyncConfig, dagster_names
 from ..assets.reverse_etl_defs import build_demo_defs
 
 
@@ -11,21 +11,32 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
     RisingWave. The reusable sync (ReverseEtlCdfSync) plus everything the PoC creates around it.
 
     Builds the demo's assets (source table setup, CDF to Kafka through the demo hooks, RisingWave
-    table, Debezium JDBC sink), a setup job and a reset job. `name` is a short label such as
-    "orders"; every name is derived from it as reverse_etl_<name>_<role> (see
-    ReverseEtlSyncConfig.for_name), so syncs do not collide. See
-    docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.4.
+    table, Debezium JDBC sink), a setup job and a reset job. The infrastructure names — the
+    watermark key, the source and state tables, the topic, the connector and both target tables —
+    are explicit required attributes, so the YAML reads as the inventory of what the sync touches.
+    `name` is a short label such as "orders" that derives the Dagster object names as
+    reverse_etl_<name>_<role>. See docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.4.
 
     The reset job drops the source table, so `schema_name` must be a scratch schema,
     and every name it drops must start with one of `reset_name_prefixes`.
 
-    The optional fields override a derived name, for example to point `source_table` at
-    an existing table; leave them unset otherwise.
+    The optional fields override a derived Dagster name; leave them unset otherwise.
     """
 
     name: str
     catalog: str
     schema_name: str
+    # --- the infrastructure names, explicit (plan section 11): nothing here is derived, so the
+    # YAML reads as the inventory of what this sync touches in every system. sync_name is the
+    # watermark key and the Debezium envelope prefix: changing it for an existing sync restarts
+    # that sync from the beginning.
+    sync_name: str
+    source_table: str
+    state_table: str
+    kafka_topic: str
+    connector_name: str
+    postgres_table: str
+    risingwave_table: str
     # Column DDL besides the key, used only if the setup asset has to create the
     # source table (for example "id BIGINT NOT NULL", "value STRING"). Leave unset
     # for an existing table: the setup asset then only checks that it exists and
@@ -36,15 +47,8 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
     # Each statement may use {source_table}. Leave unset for a real table.
     seed_statements: list[str] | None = None
 
-    # Overrides. sync_name is the watermark key and the Debezium envelope prefix:
-    # changing it for an existing sync restarts that sync from the beginning.
-    sync_name: str | None = None
-    source_table: str | None = None
-    state_table: str | None = None
-    kafka_topic: str | None = None
-    connector_name: str | None = None
-    postgres_table: str | None = None
-    risingwave_table: str | None = None
+    # --- the Dagster object names, derived from the label `name` (reverse_etl_<name>_<role>),
+    # each overridable.
     group_name: str | None = None
     table_setup_asset: str | None = None
     sync_asset: str | None = None
@@ -71,24 +75,29 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
     schema_registry_url: str | None = None
 
     def to_config(self) -> ReverseEtlSyncConfig:
-        config = ReverseEtlSyncConfig.for_name(
-            self.name,
+        """The infrastructure names are the YAML's (required attributes above); the Dagster object
+        names derive from the label, each overridable."""
+        config = ReverseEtlSyncConfig(
+            sync_name=self.sync_name,
             catalog=self.catalog,
             schema=self.schema_name,
-            source_columns=tuple(self.source_columns or ()),
+            source_table=self.source_table,
+            state_table=self.state_table,
             key_column=self.key_column,
             seed_statements=tuple(self.seed_statements or ()),
+            source_columns=tuple(self.source_columns or ()),
+            kafka_topic=self.kafka_topic,
+            connector_name=self.connector_name,
+            postgres_table=self.postgres_table,
+            risingwave_table=self.risingwave_table,
+            reset_name_prefixes=("reverse_etl_",),
+            reset_schema=self.reset_schema or self.schema_name,
+            create_topic_asset=True,
+            **dagster_names(self.name),
         )
         overrides = {
             field: getattr(self, field)
             for field in (
-                "sync_name",
-                "source_table",
-                "state_table",
-                "kafka_topic",
-                "connector_name",
-                "postgres_table",
-                "risingwave_table",
                 "group_name",
                 "table_setup_asset",
                 "sync_asset",
@@ -98,7 +107,6 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
                 "create_topic_asset",
                 "setup_job",
                 "reset_job",
-                "reset_schema",
                 "sink_tasks_max",
                 "uniform",
                 "propagate_drops",

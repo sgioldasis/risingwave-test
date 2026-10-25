@@ -17,6 +17,7 @@ REQUIRED = {
     "source_table": "existing_table",
     "key_column": "id",
     "kafka_topic": "orders_cdc",
+    "sync_name": "orders_watermark",
 }
 
 
@@ -49,32 +50,28 @@ class TestDefaults:
     def test_a_sync_with_only_the_required_attributes_gets_the_documented_defaults(self):
         cfg = component().to_config()
         assert cfg.encoding == "json"
-        assert cfg.sync_name == "reverse_etl_orders"
-        assert cfg.group_name == "reverse_etl_orders"
+        assert cfg.sync_name == REQUIRED["sync_name"]  # the watermark key is explicit
+        assert cfg.group_name == "reverse_etl_orders"  # the Dagster names derive from the label
         assert cfg.sync_asset == "reverse_etl_orders_to_kafka"
         assert (cfg.catalog, cfg.schema, cfg.source_table) == ("de_dev", "sr_poc_external", "existing_table")
         assert (cfg.key_column, cfg.kafka_topic) == ("id", "orders_cdc")
 
-    def test_the_source_table_and_topic_are_taken_as_given_not_derived(self):
-        cfg = component(name="company", source_table="dim_company", kafka_topic="company_cdc").to_config()
-        assert (cfg.sync_name, cfg.source_table, cfg.kafka_topic) == (
-            "reverse_etl_company",
-            "dim_company",
-            "company_cdc",
-        )
+    def test_the_watermark_key_and_the_table_and_topic_are_taken_as_given_not_derived(self):
+        cfg = component(
+            name="company", sync_name="company_watermark", source_table="dim_company", kafka_topic="company_cdc"
+        ).to_config()
+        assert (cfg.sync_name, cfg.source_table, cfg.kafka_topic) == ("company_watermark", "dim_company", "company_cdc")
 
-    def test_two_labels_never_share_a_name(self):
+    def test_two_labels_never_share_a_dagster_name(self):
         first, second = component(name="a").to_config(), component(name="b").to_config()
-        assert {first.sync_name, first.sync_asset, first.group_name}.isdisjoint(
-            {second.sync_name, second.sync_asset, second.group_name}
-        )
+        assert {first.sync_asset, first.group_name}.isdisjoint({second.sync_asset, second.group_name})
 
 
 class TestOverrides:
     def test_the_group_and_asset_names_can_be_overridden(self):
         cfg = component(group_name="team_group", sync_asset="team_sync").to_config()
         assert (cfg.group_name, cfg.sync_asset) == ("team_group", "team_sync")
-        assert cfg.sync_name == "reverse_etl_orders"  # the watermark key stays the label's
+        assert cfg.sync_name == REQUIRED["sync_name"]  # the watermark key is the YAML's, not the label's
 
     @pytest.mark.parametrize(
         "attribute, value",

@@ -28,6 +28,29 @@ FILES = cdf_demo_files()
 IDS = [path.parent.name for path in FILES]
 
 
+# The infrastructure names each file must state, pinned so a rename or a typo fails here (plan
+# section 11): these are the objects that exist in Databricks, Kafka, Kafka Connect, Postgres and
+# RisingWave -- none of them may move silently.
+GOLDEN_INFRA_NAMES = {
+    folder: {
+        "sync_name": f"reverse_etl_{label}",
+        "source_table": f"reverse_etl_{label}_source",
+        "state_table": f"reverse_etl_{label}_state",
+        "kafka_topic": f"reverse_etl_{label}_topic",
+        "connector_name": f"reverse_etl_{label}_sink",
+        "postgres_table": f"reverse_etl_{label}_target",
+        "risingwave_table": f"reverse_etl_{label}_target",
+    }
+    for folder, label in (
+        ("reverse_etl_avro", "avro"),
+        ("reverse_etl_cdf", "cdf"),
+        ("reverse_etl_company", "company"),
+        ("reverse_etl_delta", "delta"),
+        ("reverse_etl_orders", "orders"),
+    )
+}
+
+
 def load(path: Path) -> ReverseEtlCdfDemo:
     return ReverseEtlCdfDemo.from_attributes_dict(attributes=yaml.safe_load(path.read_text())["attributes"])
 
@@ -77,3 +100,11 @@ class TestNoCollisions:
     def test_all_the_syncs_merge_into_one_loadable_set_of_definitions(self, resources):
         merged = dg.Definitions.merge(*[build(path) for path in FILES], dg.Definitions(resources=resources()))
         dg.Definitions.validate_loadable(merged)
+
+
+class TestTheInfrastructureNamesAreExplicit:
+    @pytest.mark.parametrize("path", FILES, ids=IDS)
+    def test_each_file_states_its_golden_infrastructure_names(self, path):
+        attributes = yaml.safe_load(path.read_text())["attributes"]
+        expected = GOLDEN_INFRA_NAMES[path.parent.name]
+        assert {field: attributes[field] for field in expected} == expected
