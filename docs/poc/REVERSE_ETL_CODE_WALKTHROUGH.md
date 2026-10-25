@@ -27,8 +27,9 @@ The other docs cover behaviour and evidence; this one covers structure:
 | `orchestration/defs/<label>/defs.yaml` | One small YAML per sync — the only thing you write to add a sync |
 | `orchestration/components/reverse_etl_cdf_sync.py` | The Dagster component: reads the YAML, builds the config |
 | `orchestration/assets/reverse_etl_config.py` | `ReverseEtlSyncConfig` — every name a sync needs, derived from a label |
-| `orchestration/assets/reverse_etl_defs.py` | Turns one config into assets, jobs, checks and schedules |
-| `orchestration/assets/reverse_etl_cdf_setup.py` | The heart: table setup, seed, the sync asset, event building, Kafka production |
+| `orchestration/assets/reverse_etl_defs.py` | The demo's builder (`build_demo_defs`): turns one config into assets, jobs, checks and schedules |
+| `orchestration/assets/reverse_etl_demo_assets.py` | The demo's own assets: table setup and seed — they create infrastructure, so they are not part of the reusable sync |
+| `orchestration/assets/reverse_etl_cdf_setup.py` | The heart: the sync asset, event building, Kafka production, the watermark state |
 | `orchestration/assets/reverse_etl_delta_reader.py` | The delta-rs backend: per-commit-version snapshot diffs reconstruct the change feed — no Spark, no CDF read, no Databricks compute |
 | `orchestration/assets/reverse_etl_change.py` | Demo changes (insert / update / delete / add column) |
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave target table + schema evolution |
@@ -119,7 +120,7 @@ from the beginning.
 
 ## 2. From YAML to Dagster definitions
 
-`build_reverse_etl_defs(cfg)` (`reverse_etl_defs.py`, ~90 lines) is the assembly
+`build_demo_defs(cfg)` (`reverse_etl_defs.py`) is the demo's assembly
 point. Per sync it builds:
 
 - **assets**: `table_setup`, `sync` (via `build_sync_asset`, §3), `risingwave_target`,
@@ -447,7 +448,7 @@ result. `_rows_as_dicts` flattens a response into plain dicts.
 
 All factories take the config and return Dagster objects; all names come from it.
 
-- **`build_table_setup_asset`** — creates the source table if absent, with the
+- **`build_table_setup_asset`** (`reverse_etl_demo_assets.py`) — creates the source table if absent, with the
   properties the whole design rests on: `delta.enableChangeDataFeed`, column
   mapping, deletion vectors off, UniForm/iceberg compat — plus the identity key —
   and the Postgres state table (`reverse_etl_sync_state`, created via

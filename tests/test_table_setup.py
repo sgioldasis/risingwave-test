@@ -5,13 +5,13 @@ Runs through Dagster (materialize) with fake resources. Run from the repo root: 
 
 import dagster as dg
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
+from orchestration.assets import reverse_etl_demo_assets as demo_assets
 from tests.fakes import error_text, make_config
 
 
 def run_setup(cfg, resources, **options):
     return dg.materialize(
-        [cdf_setup.build_table_setup_asset(cfg)], resources=resources(**options), raise_on_error=False
+        [demo_assets.build_table_setup_asset(cfg)], resources=resources(**options), raise_on_error=False
     )
 
 

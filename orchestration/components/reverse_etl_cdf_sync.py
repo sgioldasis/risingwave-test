@@ -3,7 +3,7 @@ from dataclasses import replace
 import dagster as dg
 
 from ..assets.reverse_etl_config import ReverseEtlSyncConfig
-from ..assets.reverse_etl_defs import build_reverse_etl_defs
+from ..assets.reverse_etl_defs import build_demo_defs
 
 
 class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
@@ -111,4 +111,4 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
         return replace(config, **overrides)
 
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
-        return build_reverse_etl_defs(self.to_config())
+        return build_demo_defs(self.to_config())

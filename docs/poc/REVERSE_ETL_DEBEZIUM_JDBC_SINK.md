@@ -1368,7 +1368,7 @@ group and both target tables were all absent, as expected.
     # key_column: rid   (default); seed_statements: see defs/reverse_etl_orders/defs.yaml
   ```
 
-  It calls `build_reverse_etl_defs(ReverseEtlSyncConfig.for_name(...))`. Every name is `reverse_etl_<label>_<role>`,
+  It calls `build_demo_defs(ReverseEtlSyncConfig.for_name(...))`. Every name is `reverse_etl_<label>_<role>`,
   shown here for the two JSON syncs (`cdf` is the POC, `orders` the second; `avro` follows the same rule):
 
   | Object | `cdf` | `orders` |

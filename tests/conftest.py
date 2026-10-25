@@ -8,7 +8,7 @@ and assets need them to resolve).
 import dagster as dg
 import pytest
 
-from orchestration.assets.reverse_etl_defs import build_reverse_etl_defs
+from orchestration.assets.reverse_etl_defs import build_demo_defs
 from tests.fakes import fake_resources
 
 
@@ -37,6 +37,6 @@ def resources(calls):
 @pytest.fixture
 def defs_with_fakes(resources):
     def build(cfg, **options) -> dg.Definitions:
-        return dg.Definitions.merge(build_reverse_etl_defs(cfg), dg.Definitions(resources=resources(**options)))
+        return dg.Definitions.merge(build_demo_defs(cfg), dg.Definitions(resources=resources(**options)))
 
     return build

@@ -12,7 +12,7 @@ Two frozen dataclasses split the configuration by audience:
 
 Both are keyword-only, so the demo fields can carry defaults without ordering
 constraints. The modules in this package take a config as a parameter;
-reverse_etl_defs.build_reverse_etl_defs turns one into Definitions. Build the demo
+reverse_etl_defs.build_demo_defs (the demo's builder) turns one into Definitions. Build the demo
 config with ReverseEtlSyncConfig.for_name(), which derives every name from a short
 label; the ReverseEtlCdfSync component does so from YAML.
 

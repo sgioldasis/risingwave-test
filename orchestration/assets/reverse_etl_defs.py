@@ -3,7 +3,7 @@ table setup, CDF -> Kafka, RisingWave table, Debezium JDBC sink), a setup job th
 materializes them in order, a reset job, and a sink health check with its job and schedule. Optionally also an asset that creates
 the sync's Kafka topic (config.create_topic_asset).
 
-    defs = Definitions.merge(base_defs, build_reverse_etl_defs(config))
+    defs = Definitions.merge(base_defs, build_demo_defs(config))
 """
 
 from confluent_kafka.admin import NewTopic
@@ -18,7 +18,8 @@ from dagster import (
 )
 
 from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
-from .reverse_etl_cdf_setup import build_seed_asset, build_sync_asset, build_table_setup_asset
+from .reverse_etl_cdf_setup import build_sync_asset
+from .reverse_etl_demo_assets import build_seed_asset, build_table_setup_asset
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_demo_hooks import DemoSyncHooks
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
@@ -49,7 +50,10 @@ def _build_topic_asset(cfg: ReverseEtlSyncConfig):
     return kafka_topic
 
 
-def build_reverse_etl_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
+def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
+    """The demo's builder: the sync asset plus everything the demo needs around it (table setup,
+    topic, RisingWave target, JDBC sink, seed, make-change, the jobs and the health check). The
+    reusable component builds only the sync asset itself (decoupling plan step 6)."""
     assets = [
         build_table_setup_asset(cfg),
         # The demo's hooks reach RisingWave and Kafka Connect through context.resources, so they are
