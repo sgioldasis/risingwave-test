@@ -80,6 +80,13 @@ class TestOverrides:
     def test_the_optional_encoding_fields_pass_through(self, attribute, value):
         assert getattr(component(**{attribute: value}).to_config(), attribute) == value
 
+    def test_the_state_fields_pass_through(self):
+        """The state backend is the team's choice (plan section 12): the table name for postgres,
+        the file path for duckdb. duckdb alone is invalid until the path is given (covered in
+        tests/sync_asset/test_state_backends.py)."""
+        cfg = component(state_backend="postgres", state_table="team_state", state_path="/tmp/sync/state.duckdb").to_config()
+        assert (cfg.state_backend, cfg.state_table, cfg.state_path) == ("postgres", "team_state", "/tmp/sync/state.duckdb")
+
     def test_only_json_and_avro_are_encodings(self):
         with pytest.raises(ValueError, match="encoding must be 'json' or 'avro'"):
             component(encoding="xml").to_config()
@@ -90,4 +97,7 @@ class TestOverrides:
     def test_every_optional_attribute_the_component_offers_is_covered_here(self):
         """A new optional attribute must get a test above, or this fails and says which."""
         optional = {name for name, field in ReverseEtlCdfSync.model_fields.items() if field.default is None}
-        assert optional == {"encoding", "schema_registry_url", "group_name", "sync_asset", "deps"}
+        assert optional == {
+            "encoding", "schema_registry_url", "group_name", "sync_asset", "deps",
+            "state_backend", "state_table", "state_path",
+        }

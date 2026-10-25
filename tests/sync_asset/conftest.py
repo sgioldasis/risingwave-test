@@ -84,15 +84,19 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             None,
         )
 
-    def run(propagate_drops=False, target_columns=("id", "name", "born"), hooks=DemoSyncHooks(), **options):
+    def run(
+        propagate_drops=False, target_columns=("id", "name", "born"), hooks=DemoSyncHooks(),
+        state_backend="postgres", state_path="", **options,
+    ):
         """`hooks=None` runs the bare core (what a team's sync would be); the default is the demo wiring."""
         cfg = make_config(
             source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid",
-            propagate_drops=propagate_drops,
+            propagate_drops=propagate_drops, state_backend=state_backend, state_path=state_path,
         )
-        # Mirror the demo's wiring (reverse_etl_defs.py): the demo hooks reach risingwave/http, so they
-        # must be declared required; the bare core and test hooks touch neither and run without them.
-        extra = ("risingwave", "http") if isinstance(hooks, DemoSyncHooks) else ()
+        # Mirror the demo's wiring (reverse_etl_defs.py): the demo hooks reach risingwave/http and
+        # the Postgres target, so those must be declared required; the bare core and test hooks
+        # touch none of them and run without them.
+        extra = ("risingwave", "http", "postgres") if isinstance(hooks, DemoSyncHooks) else ()
         # The sync's precondition asks the admin for the sync's topic; a test overrides
         # kafka_admin_topics=() to get the missing-topic failure.
         options.setdefault("kafka_admin_topics", (cfg.kafka_topic,))

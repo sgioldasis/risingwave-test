@@ -5,8 +5,11 @@ demo assets moved, preconditions, two components, docs) are implemented and step
 reset+setup, rename-in-backlog live test, company no-op run with its watermark untouched) passed on
 `feature/component-decoupling`; step 8 (module rename) is left optional. Sections 11-13 (explicit
 infrastructure names, pluggable state and target backends, the sync/downstream split) are designed and
-their decisions D11-D19 accepted as recommended on 2026-10-25; not yet implemented.** Line numbers refer to
-`orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
+their decisions D11-D19 accepted as recommended on 2026-10-25: section 11 is implemented (commit bf223a6);
+section 12's steps 1-2 (state interface, DuckDB backend) are implemented and live-verified on 2026-10-25
+(the company sync ran on a host-visible DuckDB state file, browsed from DBeaver, then moved back to
+Postgres); section 12's steps 3-4 (target selection, docs) and section 13 are not yet implemented.** Line
+numbers refer to `orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
 
 ## 1. Goal
 
@@ -524,3 +527,23 @@ targets as it does today.
 | D17 | Option C (one demo YAML with `sync:` / `targets:` blocks) or option A (separate YAML per concern)? | **C** — real config separation at half the file count; promoting the sync block later is mechanical |
 | D18 | One targets component (RisingWave + JDBC sink together) or separate per-target components? | **One** for now — they share the seam fields and the health check; splitting per target is easy later if a team wants only one |
 | D19 | Where does the sink health check live? | **The targets side** — it checks the connector and the lag, not the sync; it moves with step 1 |
+
+---
+
+## 14. Follow-up (not scheduled): make the first-run replay cheaper
+
+*Observed 2026-10-25: the company sync's migration replay (fresh state table) processed its 9 source
+versions as 9 chunks at ~10 s each — ~90 s of fixed per-chunk I/O (a delta-rs ADLS read, the demo hook's
+RisingWave call, Avro registry + Kafka produce/flush) for 1-2 rows per chunk. Normal incremental runs pay
+the fixed cost once: one chunk, a few seconds.*
+
+The per-version chunking is the correctness mechanism (schema evolution replays in order), so treat both
+options below as design changes, not cleanups:
+
+- **Batch consecutive schema-stable versions** into one chunk on backfill — keeps the replay order and
+  every rename/drop, collapses only the runs where the schema did not change.
+- **Baseline on first run** (like the aged-out-history path already does) — one chunk, but the replay no
+  longer carries the source's rename/drop history to the targets.
+
+If replays become routine (state migrations, backend switches), plan this properly before anyone touches
+the chunk loop.

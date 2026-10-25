@@ -45,6 +45,16 @@ class CdfSyncConfig:
     group_name: str
     sync_asset: str
 
+    # --- the watermark state (reverse_etl_state.py) -----------------------------
+    # "postgres" (default): the postgres resource and the shared table `state_table`
+    # (keyed by sync_name), which the team creates -- the sync's precondition fails with
+    # the DDL when it is absent. "duckdb": a local file at `state_path`, one sync per
+    # file (DuckDB allows one writer), created on first run (D15). The watermark
+    # semantics are identical either way: append-only, freshest-row-wins.
+    state_backend: str = "postgres"
+    state_table: str = "reverse_etl_sync_state"
+    state_path: str = ""
+
     # --- message encoding ------------------------------------------------------
     # "json": Kafka Connect JSON with the schema embedded in every message (the default).
     # "avro": Confluent wire format, schemas in the registry under <topic>-key and <topic>-value
@@ -56,6 +66,10 @@ class CdfSyncConfig:
     def __post_init__(self) -> None:
         if self.encoding not in ("json", "avro"):
             raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+        if self.state_backend not in ("postgres", "duckdb"):
+            raise ValueError(f"state_backend must be 'postgres' or 'duckdb', got {self.state_backend!r}")
+        if self.state_backend == "duckdb" and not self.state_path:
+            raise ValueError("state_path is required for the duckdb state backend")
 
     @property
     def key_subject(self) -> str:
@@ -99,7 +113,6 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
     """The demo's configuration: `CdfSyncConfig` plus everything the PoC creates
     around the sync (source and state tables, connector, targets, reset, seed)."""
 
-    state_table: str
     # Column DDL for the source table besides the key, used only when the setup
     # asset creates the table (the demo does; a real table already exists).
     source_columns: tuple[str, ...]
@@ -190,14 +203,14 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
         uniform: bool = True,
     ) -> "ReverseEtlSyncConfig":
         """A test helper: a config for a sync labelled `name` (for example "cdf" or "orders") with
-        every name derived as reverse_etl_<name>_<role>. Production paths keep the infrastructure
-        names explicit (the components' YAML); only the tests derive them, to stay short."""
+        every name derived as reverse_etl_<name>_<role> and the default state backend. Production
+        paths keep the infrastructure names explicit (the components' YAML); only the tests derive
+        them, to stay short."""
         return cls(
             sync_name=f"reverse_etl_{name}",
             catalog=catalog,
             schema=schema,
             source_table=f"reverse_etl_{name}_source",
-            state_table=f"reverse_etl_{name}_state",
             key_column=key_column,
             source_columns=source_columns,
             kafka_topic=f"reverse_etl_{name}_topic",

@@ -56,12 +56,14 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     reusable component builds only the sync asset itself (decoupling plan step 6)."""
     assets = [
         build_table_setup_asset(cfg),
-        # The demo's hooks reach RisingWave and Kafka Connect through context.resources, so they are
-        # declared as required; the setup and topic assets are wired in as upstream deps.
+        # The demo's hooks reach RisingWave, Kafka Connect and the Postgres TARGET through
+        # context.resources, so those are declared as required (postgres is needed by the hooks
+        # whatever the state backend is -- the state's own postgres need is the core's, per
+        # cfg.state_backend); the setup and topic assets are wired in as upstream deps.
         build_sync_asset(
             cfg,
             hooks=DemoSyncHooks(),
-            extra_resource_keys=("risingwave", "http"),
+            extra_resource_keys=("risingwave", "http", "postgres"),
             deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
         ),
         build_risingwave_table_asset(cfg),

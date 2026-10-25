@@ -58,6 +58,13 @@ class TestOneAsset:
         assert {"postgres", "databricks", "kafka", "registry"} <= required
         assert {"risingwave", "http"} & required == set()
 
+    def test_a_duckdb_state_sync_does_not_need_the_postgres_resource(self):
+        """The postgres resource belongs to the postgres state backend (plan section 12): a
+        duckdb-state sync needs nothing but its file path."""
+        (asset,) = build(state_backend="duckdb", state_path="/tmp/orders/state.duckdb").assets
+        assert "postgres" not in set(asset.required_resource_keys)
+        assert {"databricks", "kafka", "registry"} <= set(asset.required_resource_keys)
+
     def test_the_definitions_load_with_only_the_four_fakes(self, resources):
         four = {k: v for k, v in resources().items() if k not in ("risingwave", "http")}
         dg.Definitions.validate_loadable(dg.Definitions.merge(build(), dg.Definitions(resources=four)))

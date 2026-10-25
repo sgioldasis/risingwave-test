@@ -39,6 +39,12 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     # The watermark key and the Debezium envelope prefix. Explicit on purpose: a
     # replay depends on it silently.
     sync_name: str
+    # The watermark state (reverse_etl_state.py): "postgres" (default; `state_table`, the
+    # shared table, which must exist -- the sync fails with the DDL otherwise) or "duckdb"
+    # (a local file at `state_path`, created on first run, needing no postgres resource).
+    state_backend: str | None = None
+    state_table: str | None = None
+    state_path: str | None = None
 
     # "json" (default: Kafka Connect JSON with the schema embedded in every message) or "avro"
     # (Confluent wire format, schemas in the registry under <topic>-key and <topic>-value).
@@ -66,7 +72,10 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
         )
         overrides = {
             field: getattr(self, field)
-            for field in ("encoding", "schema_registry_url", "group_name", "sync_asset")
+            for field in (
+                "encoding", "schema_registry_url", "group_name", "sync_asset",
+                "state_backend", "state_table", "state_path",
+            )
             if getattr(self, field) is not None
         }
         return dataclasses.replace(config, **overrides)

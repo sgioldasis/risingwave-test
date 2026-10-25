@@ -33,7 +33,6 @@ the live run" in the design doc.
 import datetime
 import json
 import os
-import psycopg2
 import threading
 import time
 from itertools import zip_longest
@@ -75,6 +74,7 @@ from .databricks_optimize import (
     _submit,
 )
 from .reverse_etl_config import CdfSyncConfig, ReverseEtlSyncConfig
+from .reverse_etl_state import SyncState, build_sync_state
 
 # Every function below takes the sync's ReverseEtlSyncConfig; the names live in reverse_etl_config.
 
@@ -116,11 +116,11 @@ def _azure_storage_options(location: str) -> dict[str, str]:
 
 
 def precheck_versions(
-    postgres: PostgresResource, cfg: CdfSyncConfig, source_location: str
+    state, cfg: CdfSyncConfig, source_location: str
 ) -> tuple[int | None, int, str | None]:
     """(watermark, source's current version, the state row's last_schema) without
     any warehouse compute: the source's version via a delta-rs log read, the
-    watermark via the Postgres state table (reverse_etl_sync_state).
+    watermark via the state backend (reverse_etl_state.py).
 
     Powers the sync's no-op pre-check: when the source's version equals
     the watermark there is nothing to sync — a schema change is always a commit,
@@ -134,7 +134,7 @@ def precheck_versions(
     importing it here would add ~1.5s to every run's measured window."""
     options = _azure_storage_options(source_location)
     current_version = DeltaTable(source_location, storage_options=options).version()
-    rows = _pg_state_read(postgres, cfg.sync_name)
+    rows = state.read(cfg.sync_name)
     if not rows:
         return None, current_version, None
     version, last_schema = rows[0]  # freshest row wins (ORDER BY last_commit_version DESC)
@@ -350,73 +350,23 @@ def _rows_as_dicts(response: dict) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in data_array]
 
 
-STATE_TABLE = "reverse_etl_sync_state"
-# The demo's table_setup runs this DDL; the sync's precondition error carries the same
-# statements, so a team without the demo can create the table from the failure alone.
-STATE_TABLE_DDL = f"""CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
-    sync_name TEXT NOT NULL,
-    last_commit_version BIGINT NOT NULL,
-    last_schema TEXT,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)"""
-
-
-def _pg_state_read(postgres: PostgresResource, sync_name: str) -> list[tuple[int | None, str | None]]:
-    """[(last_commit_version, last_schema), ...] freshest first. A missing state
-    table means no sync has ever run — the first-run state, not an error."""
-    conn = postgres.connect()
-    try:
-        with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    f"SELECT last_commit_version, last_schema FROM {STATE_TABLE} "
-                    "WHERE sync_name = %s ORDER BY last_commit_version DESC",
-                    (sync_name,),
-                )
-            except psycopg2.errors.UndefinedTable:
-                conn.rollback()
-                return []
-            return [(int(v) if v is not None else None, s) for v, s in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def _pg_state_write(postgres: PostgresResource, sync_name: str, version: int, last_schema: str) -> None:
-    """Append-only watermark advance (freshest-row-wins on read), same protocol
-    the Delta state table used — now a Postgres INSERT, the sync's last
-    Databricks warehouse touch gone. The state table is the team's (D1): the
-    precondition at the top of the run checked it, so an INSERT here never
-    creates it — a table dropped mid-run fails the run with the watermark
-    unmoved, and the next run replays the same versions."""
-    conn = postgres.connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO {STATE_TABLE} (sync_name, last_commit_version, last_schema) VALUES (%s, %s, %s)",
-                (sync_name, version, last_schema),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _read_state(postgres: PostgresResource, cfg: CdfSyncConfig) -> tuple[int | None, str | None]:
+def _read_state(state, cfg: CdfSyncConfig) -> tuple[int | None, str | None]:
     """(watermark, last_schema) for this sync's state row. last_schema is the JSON
     list of source column names recorded at the previous sync — the evidence the
     drop-propagation pass needs (a column in last_schema but absent from the
     current read is a drop, not a partial read)."""
-    rows = _pg_state_read(postgres, cfg.sync_name)
+    rows = state.read(cfg.sync_name)
     if not rows:
         return None, None
     version, last_schema = rows[0]
     return version, last_schema
 
 
-def _write_state(postgres: PostgresResource, cfg: CdfSyncConfig, version: int, last_schema: str) -> None:
+def _write_state(state, cfg: CdfSyncConfig, version: int, last_schema: str) -> None:
     # Append-only, matching the deleted Spark backend's write_state: read_state takes the freshest
     # row for the sync_name, so history accumulates harmlessly and the write is a
     # cheap single-statement insert.
-    _pg_state_write(postgres, cfg.sync_name, version, last_schema)
+    state.write(cfg.sync_name, version, last_schema)
 
 
 def _require_topic(kafka: KafkaResource, topic: str) -> None:
@@ -424,23 +374,6 @@ def _require_topic(kafka: KafkaResource, topic: str) -> None:
     absent. It never creates one -- the demo's topic asset runs before the sync."""
     if topic not in kafka.admin_client().list_topics(timeout=15).topics:
         raise RuntimeError(f"Kafka topic {topic!r} does not exist -- create it before running the sync")
-
-
-def _require_state_table(postgres: PostgresResource) -> None:
-    """The state table is the team's to create (D1): the core checks it and fails with the
-    DDL if it is absent. It never creates it -- the demo's table_setup asset does."""
-    conn = postgres.connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT to_regclass('{STATE_TABLE}')")
-            present = cur.fetchall()[0][0] is not None
-    finally:
-        conn.close()
-    if not present:
-        raise RuntimeError(
-            f"The watermark state table {STATE_TABLE} does not exist -- create it before running the sync:\n"
-            f"{STATE_TABLE_DDL}"
-        )
 
 
 _MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
@@ -1270,11 +1203,12 @@ def build_sync_asset(
 ):
     """The sync asset: delta-rs version-range reconstruction (see
     reverse_etl_delta_reader.py) -- no CDF read, no Spark, no warehouse anything:
-    reads are delta-rs and the watermark state lives in Postgres. The asset itself
-    needs only the postgres, databricks, kafka and registry resources, which it
-    reaches through context.resources (Dagster forbids decorator-declared resource
-    requirements alongside resource parameters, so the signature is just the
-    context); it writes to Kafka and the state table, and nothing else. The Kafka
+    reads are delta-rs and the watermark state lives in the backend the config chose
+    (reverse_etl_state.py). The asset needs only the databricks, kafka and registry
+    resources, plus postgres when the state backend is postgres -- a DuckDB state file
+    needs nothing but its path. Resources are reached through context.resources (Dagster
+    forbids decorator-declared resource requirements alongside resource parameters, so the
+    signature is just the context); the asset writes to Kafka and its state, and nothing else. The Kafka
     topic and the state table must already exist: both are checked before anything
     else runs, and a missing one fails with what to create (D1, D5) — the core
     never creates either.
@@ -1297,7 +1231,11 @@ def _build_sync_asset_delta_rs(
         # All resources are declared here rather than as function parameters:
         # Dagster forbids the two together, and the hook-reachable keys are only
         # known at build time (extra_resource_keys).
-        required_resource_keys={"postgres", "databricks", "kafka", "registry"} | set(extra_resource_keys),
+        # The postgres resource is required only by the postgres state backend; a DuckDB
+        # state file needs nothing but its path (reverse_etl_state.py).
+        required_resource_keys={"databricks", "kafka", "registry"}
+        | ({"postgres"} if cfg.state_backend == "postgres" else set())
+        | set(extra_resource_keys),
         description=(
             f"Batch-read new/changed/deleted rows from {cfg.source_fqn}'s Change "
             "Data Feed since the last watermark (delta-rs version-range "
@@ -1307,14 +1245,17 @@ def _build_sync_asset_delta_rs(
         ),
     )
     def cdf_to_kafka(context: AssetExecutionContext):
-        postgres: PostgresResource = context.resources.postgres
         databricks: DatabricksResource = context.resources.databricks
         kafka: KafkaResource = context.resources.kafka
         registry: SchemaRegistryResource = context.resources.registry
-        # The topic and the state table are the team's to provide (D1, D5): both are checked
-        # before anything else runs, and neither is ever created here.
+        state: SyncState = build_sync_state(
+            cfg, context.resources.postgres if cfg.state_backend == "postgres" else None
+        )
+        # The topic and the state store are the team's to provide (D1, D5): both are checked
+        # before anything else runs. Neither is ever created here -- except the DuckDB file,
+        # which is local and appears on first run (D15).
         _require_topic(kafka, cfg.kafka_topic)
-        _require_state_table(postgres)
+        state.require()
         databricks.reset_meter()
         registry_client = registry.client(cfg.schema_registry_url)
         # The token is control-plane only here: it resolves the tables' storage
@@ -1337,7 +1278,7 @@ def _build_sync_asset_delta_rs(
 
         def _precheck() -> None:
             try:
-                precheck["result"] = precheck_versions(postgres, cfg, source_location)
+                precheck["result"] = precheck_versions(state, cfg, source_location)
             except Exception as error:  # noqa: BLE001 — fail-open is the design
                 precheck["error"] = error
 
@@ -1385,7 +1326,7 @@ def _build_sync_asset_delta_rs(
         else:
             # The pre-check failed (or hung): the Postgres state read is the only
             # fallback that does not repeat whatever broke the delta-rs read.
-            last_version, last_schema = _read_state(postgres, cfg)
+            last_version, last_schema = _read_state(state, cfg)
             current_version = None
         chunk_start: int | None = None
 
@@ -1588,7 +1529,7 @@ def _build_sync_asset_delta_rs(
                         },
                     ),
                 )
-            _write_state(postgres, cfg, new_version, _last_schema_json(row_fields, column_ids))
+            _write_state(state, cfg, new_version, _last_schema_json(row_fields, column_ids))
 
         context.add_output_metadata({
             "events_synced": MetadataValue.int(events_synced),

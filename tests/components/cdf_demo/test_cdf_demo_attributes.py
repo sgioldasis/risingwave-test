@@ -131,6 +131,10 @@ OVERRIDES = {
     "propagate_drops": True,
     "encoding": "avro",
     "schema_registry_url": "http://registry.invalid/apis/ccompat/v7",
+    # "duckdb" would need its state_path alongside (one override at a time here), so the row
+    # pins the default; the duckdb selection is covered in tests/sync_asset/test_state_backends.py.
+    "state_backend": "postgres",
+    "state_path": "/tmp/demo/state.duckdb",
 }
 
 

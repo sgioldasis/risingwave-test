@@ -12,10 +12,10 @@ reset_name_prefixes allowlist and reset_schema.
 
 import time
 
-import psycopg2
 from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, op
 
 from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_state import build_sync_state
 from .reverse_etl_debezium_sink import CONNECT_URL
 from .reverse_etl_resources import (
     DatabricksResource,
@@ -148,22 +148,7 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         # so a reset must delete only this sync's rows — dropping the table
         # would wipe every other sync's watermark too (bit us live: a delta
         # reset erased the avro rows).
-        with postgres.connect() as conn:
-            with conn.cursor() as cur:
-                try:
-                    cur.execute(
-                        "DELETE FROM reverse_etl_sync_state WHERE sync_name = %s",
-                        (cfg.sync_name,),
-                    )
-                except psycopg2.errors.UndefinedTable:
-                    conn.rollback()
-                    context.log.info("reverse_etl_sync_state does not exist — nothing to clear")
-                else:
-                    conn.commit()
-        context.log.info(
-            f"Cleared {cfg.sync_name}'s watermark rows from reverse_etl_sync_state "
-            "(other syncs' watermarks untouched)"
-        )
+        context.log.info(build_sync_state(cfg, postgres).clear(cfg.sync_name))
         # Dropping + recreating moves the managed tables to new storage locations,
         # so any cached location now points at the DEAD tables — a sync right
         # after this reset would pre-check "no new commits" against them (a green

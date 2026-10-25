@@ -1,6 +1,6 @@
 """Dbt project configuration for Dagster."""
 from dagster_dbt import DbtProject
-from .constants import dbt_PROJECT_PATH, dbt_MANIFEST_PATH
+from .constants import dbt_PROJECT_PATH
 
 dbt_project = DbtProject(
     project_dir=dbt_PROJECT_PATH,

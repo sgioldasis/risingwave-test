@@ -73,6 +73,10 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
     # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
     encoding: str | None = None
     schema_registry_url: str | None = None
+    # The watermark state (reverse_etl_state.py): "postgres" (default, the shared table
+    # `state_table`) or "duckdb" (a local file at `state_path`, created on first run).
+    state_backend: str | None = None
+    state_path: str | None = None
 
     def to_config(self) -> ReverseEtlSyncConfig:
         """The infrastructure names are the YAML's (required attributes above); the Dagster object
@@ -112,6 +116,8 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
                 "propagate_drops",
                 "encoding",
                 "schema_registry_url",
+                "state_backend",
+                "state_path",
             )
             if getattr(self, field) is not None
         }

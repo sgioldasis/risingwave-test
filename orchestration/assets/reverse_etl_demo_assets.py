@@ -7,7 +7,8 @@ existing table brings their own table and their own state, and gets neither asse
 
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .reverse_etl_cdf_setup import STATE_TABLE, STATE_TABLE_DDL, _cost_metadata
+from .reverse_etl_cdf_setup import _cost_metadata
+from .reverse_etl_state import DuckDBSyncState, PostgresSyncState
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_resources import DatabricksResource, PostgresResource
 
@@ -79,24 +80,22 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             databricks.table_location(token, cfg, cfg.source_fqn)
             context.log.info(f"{cfg.source_fqn} exists; left untouched (no source_columns configured)")
 
-        # The sync's watermark state lives in Postgres (reverse_etl_sync_state):
-        # private bookkeeping nothing in Databricks reads, so it moved out of the
-        # lakehouse entirely. That deletes the sync's LAST warehouse touch (the
-        # state read + the watermark INSERT) and, with it, the whole plain-Delta
-        # constraint dance the Delta state table forced — no deletion vectors, no
-        # column mapping, single-writer v7 nuances — all of it obsolete. Same
-        # semantics as the Delta table had: append-only, freshest-row-wins.
-        with postgres.connect() as conn:
-            with conn.cursor() as cur:
-                # The same DDL the sync's precondition error carries, so the demo and a
-                # team without the demo create exactly the same table.
-                cur.execute(STATE_TABLE_DDL)
-            conn.commit()
-        context.log.info(f"{STATE_TABLE} ready (Postgres: watermark + last_schema per sync)")
+        # The sync's watermark state lives outside the lakehouse (private bookkeeping
+        # nothing in Databricks reads), in the backend the config chose: the shared
+        # Postgres table (the team creates it in production; the demo setup creates it
+        # here) or a local DuckDB file, which appears on first run (D15). Same columns
+        # and semantics either way: append-only, freshest-row-wins.
+        if cfg.state_backend == "duckdb":
+            DuckDBSyncState(cfg.state_path).create()
+            state_desc = f"{cfg.state_path} (DuckDB)"
+        else:
+            PostgresSyncState(postgres, cfg.state_table).create()
+            state_desc = f"{cfg.state_table} (Postgres)"
+        context.log.info(f"{state_desc} ready (watermark + last_schema per sync)")
 
         context.add_output_metadata({
             "source_table": MetadataValue.text(cfg.source_fqn),
-            "state_table": MetadataValue.text(f"{STATE_TABLE} (Postgres)"),
+            "state_table": MetadataValue.text(state_desc),
             **_cost_metadata(),
         })
 

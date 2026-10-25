@@ -265,13 +265,17 @@ MUTATIONS = [
     Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
     Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),
     # --- the core signature: resources are decorator-declared, the demo wires the extras in ---
-    Mutation("component", "the core requires the demo resources", f"{ASSETS}/reverse_etl_cdf_setup.py", 'required_resource_keys={"postgres", "databricks", "kafka", "registry"} | set(extra_resource_keys),', 'required_resource_keys={"postgres", "databricks", "kafka", "registry", "risingwave", "http"},', "tests/sync_asset"),
-    Mutation("component", "the demo's extra resources are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", '{"postgres", "databricks", "kafka", "registry"} | set(extra_resource_keys)', '{"postgres", "databricks", "kafka", "registry"}', "tests/components"),
+    Mutation("component", "the core requires the demo resources", f"{ASSETS}/reverse_etl_cdf_setup.py", 'required_resource_keys={"databricks", "kafka", "registry"}', 'required_resource_keys={"databricks", "kafka", "registry", "risingwave", "http"}', "tests/sync_asset"),
+    Mutation("component", "the demo's extra resources are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", '| set(extra_resource_keys),', '| set(),', "tests/components"),
+    # The postgres resource belongs to the postgres state backend (reverse_etl_state.py): a
+    # duckdb-state sync needs only its file, so the core must not require postgres unconditionally.
+    Mutation("component", "the postgres resource is required even for duckdb", f"{ASSETS}/reverse_etl_cdf_setup.py", '| ({"postgres"} if cfg.state_backend == "postgres" else set())', '| {"postgres"}', "tests/components"),
     Mutation("component", "the demo's upstream deps are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "deps=list(deps) or None,", "deps=None,", "tests/components"),
     # --- the core's preconditions: the topic and the state table are the team's (D1, D5) ---
     Mutation("preconditions", "the topic check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "if topic not in kafka.admin_client().list_topics(timeout=15).topics:", "if False:", "tests/sync_asset/test_preconditions.py"),
-    Mutation("preconditions", "the state-table check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        _require_state_table(postgres)", "        pass", "tests/sync_asset/test_preconditions.py"),
-    Mutation("preconditions", "the DDL is dropped from the error", f"{ASSETS}/reverse_etl_cdf_setup.py", '            f"{STATE_TABLE_DDL}"', '            ""', "tests/sync_asset/test_preconditions.py"),
+    Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),
+    Mutation("preconditions", "the DDL is dropped from the error", f"{ASSETS}/reverse_etl_state.py", 'f"{self.ddl()}"', '""', "tests/sync_asset/test_preconditions.py"),
+    Mutation("preconditions", "the duckdb backend is ignored", f"{ASSETS}/reverse_etl_state.py", '    if cfg.state_backend == "duckdb":\n        return DuckDBSyncState(cfg.state_path)', "    if False:", "tests/sync_asset/test_state_backends.py"),
     # --- the sync's hooks (the demo's extension points) ---
     Mutation("hooks", "before_produce never called", f"{ASSETS}/reverse_etl_cdf_setup.py", "_merge_hook_metadata(hook_metadata, hooks.before_produce(context, cfg, row_fields))", "pass", "tests/sync_asset/test_sync_hooks.py"),
     Mutation(

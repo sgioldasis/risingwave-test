@@ -40,7 +40,7 @@ def risingwave_python_udfs(context: AssetExecutionContext) -> str:
         sql_file = Path("sql/create_udfs.sql")
     
     if not sql_file.exists():
-        raise FileNotFoundError(f"Could not find sql/create_udfs.sql")
+        raise FileNotFoundError("Could not find sql/create_udfs.sql")
     
     sql_content = sql_file.read_text()
     context.log.info(f"Loaded SQL from: {sql_file}")
