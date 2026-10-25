@@ -1,0 +1,34 @@
+slice_name: "Wallet Transactions \u2014 Flagged via Partial Update [status-only writer,\
+  \ no RisingWave]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 7__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - transaction_id
+  - account_id
+  - type
+  - amount
+  - status
+  - event_time
+  adhoc_filters:
+  - clause: WHERE
+    subject: status
+    operator: ==
+    comparator: flagged
+    expressionType: SIMPLE
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["event_time", false]'
+  time_range: No filter
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 7b0091f3-a82d-4ddd-8ab3-bb688d18578c
+version: 1.0.0
+dataset_uuid: 61741470-522e-470b-aaf0-e7908aa8ffa5

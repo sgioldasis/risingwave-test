@@ -1,0 +1,33 @@
+slice_name: "Total Amount per Type \u2014 AGGREGATE KEY"
+description: null
+certified_by: null
+certification_details: null
+viz_type: dist_bar
+params:
+  datasource: 9__table
+  viz_type: dist_bar
+  groupby:
+  - type
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: total_amount
+    aggregate: SUM
+    label: sum__amount
+    d3format: ',.2f'
+  adhoc_filters: []
+  row_limit: 100
+  time_range: No filter
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_bar_value: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: c299212a-437e-454e-8df4-9915dcb6fd54
+version: 1.0.0
+dataset_uuid: 6f9b1d86-a6cb-4b2f-8c3f-79e4ab346ef3

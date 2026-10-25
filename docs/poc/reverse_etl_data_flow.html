@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reverse-ETL data flow</title>
+<style>
+  :root {
+    --bg: #ffffff; --text: #1f1e1d; --muted: #5f5e5a; --line: #b4b2a9; --card: #f5f4ee; --card-border: #d3d1c7; --active: #ef9f27;
+    --coral-f: #faece7; --coral-s: #993c1d; --coral-t: #712b13; --coral-u: #993c1d;
+    --purple-f: #eeedfe; --purple-s: #534ab7; --purple-t: #3c3489; --purple-u: #534ab7;
+    --teal-f: #e1f5ee; --teal-s: #0f6e56; --teal-t: #085041; --teal-u: #0f6e56;
+    --blue-f: #f1f7fd; --blue-s: #8fbbe6; --blue-t: #2a65a0; --blue-u: #4a84bb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1e1d; --text: #f1efe8; --muted: #b4b2a9; --line: #5f5e5a; --card: #2c2c2a; --card-border: #444441;
+      --coral-f: #712b13; --coral-s: #f0997b; --coral-t: #faece7; --coral-u: #f5c4b3;
+      --purple-f: #3c3489; --purple-s: #afa9ec; --purple-t: #eeedfe; --purple-u: #cecbf6;
+      --teal-f: #085041; --teal-s: #5dcaa5; --teal-t: #e1f5ee; --teal-u: #9fe1cb;
+      --blue-f: #0c447c; --blue-s: #85b7eb; --blue-t: #e6f1fb; --blue-u: #b5d4f4;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
+  .wrap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 8px; align-items: start; max-width: 1200px; }
+  .wrap > :first-child { grid-column: span 2; }
+  @media (max-width: 1150px) { .wrap { grid-template-columns: minmax(0, 1fr); } .wrap > :first-child { grid-column: auto; } }
+  .side { position: sticky; top: 16px; }
+  @media (max-width: 1150px) { .side { position: static; } }
+  .caption { background: var(--card); border-radius: 12px; padding: 14px 16px; margin: 0 0 12px; min-height: 200px; }
+  .caption .ct { font-size: 18px; font-weight: 500; margin: 0 0 8px; }
+  .caption .cd { font-size: 15px; color: var(--muted); line-height: 1.65; margin: 0; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: inherit; fill: var(--text); }
+  .th { font-size: 14px; font-weight: 500; }
+  .ts { font-size: 12px; }
+  .coral rect { fill: var(--coral-f); stroke: var(--coral-s); } .coral .th { fill: var(--coral-t); } .coral .ts { fill: var(--coral-u); }
+  .purple rect { fill: var(--purple-f); stroke: var(--purple-s); } .purple .th { fill: var(--purple-t); } .purple .ts { fill: var(--purple-u); }
+  .teal rect { fill: var(--teal-f); stroke: var(--teal-s); } .teal .th { fill: var(--teal-t); } .teal .ts { fill: var(--teal-u); }
+  .blue rect { fill: var(--blue-f); stroke: var(--blue-s); } .blue .th { fill: var(--blue-t); } .blue .ts { fill: var(--blue-u); }
+  .node { transition: opacity .3s; }
+  .edge { stroke: var(--line); stroke-width: 1.5; opacity: .35; transition: opacity .3s; }
+  .edge.on { stroke: var(--active); stroke-width: 2.5; opacity: 1; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  button { font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0.5px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+  button:hover { background: var(--card); }
+  button:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  button:disabled, select:disabled, input:disabled { opacity: .45; cursor: not-allowed; }
+  .result { font-size: 13px; color: var(--muted); margin: 8px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+  .runbox { background: var(--card); border-radius: 12px; padding: 12px 16px 10px; margin: 12px 0 0; }
+  .runbox-title { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+  .runbox .result { margin: 4px 0 0; }
+  .runbox .result:empty::before { content: "No runs yet — the rail on the left starts everything."; font-size: 12.5px; }
+  .rentry { padding: 7px 0; border-bottom: 0.5px solid var(--card-border); }
+  .rentry:last-child { border-bottom: 0; padding-bottom: 2px; }
+  .rentry .rsub { margin-top: 4px; overflow-wrap: anywhere; }
+  .rentry .rsub.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
+  .rentry .rsub.strong { color: var(--text); font-weight: 600; }
+  .caprun { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--active); margin: 6px 0 0; }
+  .caprun .icon.run { width: 11px; height: 11px; margin-right: 0; }
+  .caprun .phase { color: var(--muted); font-weight: 400; }
+  .icon { display: inline-block; width: 1.1em; margin-right: 6px; text-align: center; font-weight: 700; }
+  .icon.ok { color: #2e9e4f; } .icon.fail { color: #d64545; }
+  .failline { color: #d64545; font-size: 13px; line-height: 1.4; }
+  .icon.run { width: 12px; height: 12px; vertical-align: -1px; border: 2px solid var(--line); border-top-color: var(--active); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .result a { color: var(--blue-t); }
+  .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
+  ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1200px; }
+  li { display: grid; grid-template-columns: 28px 1fr; gap: 10px 10px; align-content: start; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
+  li:hover { opacity: .9; }
+  li.on { opacity: 1; background: var(--card); border-color: var(--active); border-width: 1.5px; }
+  .num { grid-row: 1 / span 2; width: 24px; height: 24px; border-radius: 50%; border: 0.5px solid var(--line); font-size: 12px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  li.on .num { background: var(--active); border-color: var(--active); color: #412402; font-weight: 500; }
+  .t { font-size: 15px; font-weight: 500; }
+  .d { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+  .notes { max-width: 1200px; margin-top: 32px; padding-top: 20px; border-top: 0.5px solid var(--card-border); }
+  .notes h2 { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
+  .notes .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 1000px) { .notes .grid { grid-template-columns: minmax(0, 1fr); } }
+  .notes ul { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.6; color: var(--muted); }
+  .notes ul li { display: list-item; padding: 0; margin-bottom: 8px; border: 0; opacity: 1; cursor: auto; }
+  .notes b { color: var(--text); font-weight: 500; }
+  .notes p, .notes li { overflow-wrap: anywhere; }
+  .notes code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
+  .notes pre { margin: 0 0 16px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55; overflow-x: auto; }
+  .notes .label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
+  /* ── layout: action rail + main (mirrors the Jobotron page's rail) ── */
+  .topbar { max-width: 1200px; margin: 0 auto 18px; display: flex; align-items: flex-start; gap: 14px; }
+  .topbar .titles { margin-right: auto; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--card);
+    border: 0.5px solid var(--card-border); border-radius: 999px; padding: 5px 12px; margin-top: 4px; white-space: nowrap; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+  .pill.ok .dot { background: #2e9e4f; box-shadow: 0 0 0 3px rgba(46, 158, 79, .18); }
+  .pill.warn .dot { background: #e2a336; box-shadow: 0 0 0 3px rgba(226, 163, 54, .18); }
+  .pill.ok { color: var(--text); }
+  .pill.fail .dot { background: #d64545; }
+  .layout { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 242px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .rail { position: sticky; top: 16px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 12px;
+    padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .sgroup { display: flex; flex-direction: column; gap: 6px; }
+  .sgroup + .sgroup { border-top: 0.5px solid var(--card-border); padding-top: 12px; }
+  .slabel { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .rail button { width: 100%; text-align: left; padding: 7px 11px; font-size: 13px; }
+  .rail button.running::before { content: ""; display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line);
+    border-top-color: var(--active); border-radius: 50%; margin-right: 7px; vertical-align: -2px; animation: spin .8s linear infinite; }
+  .rail select, .rail input { font: inherit; font-size: 13px; color: var(--text); background: transparent;
+    border: 0.5px solid var(--line); border-radius: 8px; padding: 5px 8px; width: 100%; }
+  .rail .hint { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 2px 0 0; overflow-wrap: anywhere; }
+  .rail button.danger { color: #d64545; border-color: #d64545; }
+  .maincol { min-width: 0; }
+  /* run activity: pulsing components, flowing dashes on the arrows in play,
+     and a badge (spinner / ✓ / ✗) pinned to each component's corner */
+  .node.active { animation: nodepulse 1.5s ease-in-out infinite; }
+  @keyframes nodepulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  /* The comet: a bright pill sweeping each lit arrow while an action runs,
+     the Jobotron page's comet adapted to SVG. The base edge dims to a faint
+     track; the overlay (a cloned line) carries the moving dash. Only runs
+     light the overlays — browsing a step shows the static lit arrow. */
+  .edge.on.live { stroke: color-mix(in srgb, var(--active) 40%, var(--line)); }
+  .edge-flow { stroke: #ffedd0; stroke-width: 3; stroke-linecap: round; opacity: 0; pointer-events: none; }
+  .edge-flow.on { opacity: 1; stroke-dasharray: 18 var(--len, 300); animation: comet 1.4s linear infinite;
+    filter: drop-shadow(0 0 6px rgba(239, 159, 39, .8)); }
+  @keyframes comet { from { stroke-dashoffset: 18px; } to { stroke-dashoffset: calc(-1 * var(--len, 300)); } }
+  .badge circle { fill: var(--card); stroke: var(--card-border); stroke-width: 0.5; }
+  .badge .arc { fill: none; stroke: var(--active); stroke-width: 2.2; stroke-dasharray: 21.2 7.1; animation: spindash .8s linear infinite; }
+  @keyframes spindash { to { stroke-dashoffset: -28.3; } }
+  .badge text { font-size: 11px; font-weight: 700; }
+  .badge.done text { fill: #2e9e4f; } .badge.fail text { fill: #d64545; }
+  .badge { transition: opacity .5s; }
+  .badge.fading { opacity: 0; }
+  @media (max-width: 1150px) {
+    .layout { grid-template-columns: 1fr; }
+    .rail { position: static; flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+    .sgroup { flex: 1 1 200px; }
+    .sgroup + .sgroup { border-top: 0; padding-top: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .node, .edge, li { transition: none; } .icon.run { animation-duration: 3s; }
+    .node.active, .rail button.running::before, .badge .arc { animation: none; } .edge-flow.on { display: none; } }</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="titles">
+    <h1>Reverse-ETL data flow</h1>
+    <p class="sub">Syncs changes from the Databricks source table to Postgres and RisingWave through Kafka. Use the rail, click a step, or press the left and right arrow keys.</p>
+  </div>
+  <div class="pill" id="helper-pill"><span class="dot"></span><span id="bar-msg">checking helper…</span></div>
+</header>
+
+<div class="layout">
+  <aside class="rail" id="rail" aria-label="Demo actions">
+    <div class="sgroup">
+      <div class="slabel">Source table</div>
+      <select id="sync-select" aria-label="Choose the sync's source table"></select>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Changes · Databricks</div>
+      <select id="change-select">
+        <option value="insert">insert a row</option>
+        <option value="update">update a row</option>
+        <option value="delete">delete a row</option>
+        <option value="add_column">add a column</option>
+        <option value="rename_column">rename a column</option>
+        <option value="drop_column">drop a column</option>
+        <option value="bulk_1m">bulk insert rows (delta)</option>
+      </select>
+      <input id="bulk-rows" type="number" min="1" max="10000000" step="1000" value="1000000" title="Total rows for the bulk insert (delta only)" style="display:none">
+      <button id="act-change">Make change in Databricks</button>
+      <p class="hint">One change = one new table version. Run a sync afterwards to flow it downstream.</p>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Pipeline</div>
+      <button id="act-sync">Run sync (steps 2.1 – 2.5)</button>
+      <p class="hint">delta-rs reads the versions after the watermark — no Spark, no warehouse scans — produces the events, then moves the watermark with a plain Postgres write.</p>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Inspect</div>
+      <button id="act-schema">Schemas in Apicurio</button>
+      <button id="act-readers">Check readers</button>
+      <button id="act-postgres">Show Postgres rows</button>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Demo</div>
+      <button id="do-rebuild" class="danger">Reset and set up</button>
+      <p class="hint">Drops the source table (and any legacy state table), clears this sync's watermark rows, drops the topic, the connector and both targets, then recreates them and runs the first sync. Other syncs' watermarks are untouched — the Postgres state table is shared and keyed by sync name.</p>
+    </div>
+    <div class="sgroup">
+      <div class="slabel">Session cost</div>
+      <p class="hint" id="cost-total" style="display: none"></p>
+    </div>
+  </aside>
+
+  <main class="maincol">
+    <div class="wrap">
+  <div>
+    <svg viewBox="0 0 770 350" role="img" aria-label="Databricks source table and the Postgres state table feed a sync, which writes schemas to a registry and messages to Kafka; Kafka Connect writes Postgres and RisingWave reads the topic directly.">
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+      <line id="e1" class="edge" x1="85" y1="76" x2="85" y2="130" marker-end="url(#arrow)"/>
+      <line id="e2" class="edge" x1="65" y1="240" x2="65" y2="186" marker-end="url(#arrow)"/>
+      <line id="e8" class="edge" x1="105" y1="186" x2="105" y2="240" marker-end="url(#arrow)"/>
+      <line id="e3" class="edge" x1="160" y1="130" x2="410" y2="48" marker-end="url(#arrow)"/>
+      <line id="e4" class="edge" x1="160" y1="186" x2="410" y2="268" marker-end="url(#arrow)"/>
+      <line id="e5" class="edge" x1="485" y1="240" x2="485" y2="186" marker-end="url(#arrow)"/>
+      <line id="e6" class="edge" x1="410" y1="158" x2="360" y2="158" marker-end="url(#arrow)"/>
+      <line id="e7" class="edge" x1="560" y1="268" x2="660" y2="186" marker-end="url(#arrow)"/>
+      <line id="e9" class="edge" x1="485" y1="76" x2="485" y2="130" marker-end="url(#arrow)"/>
+      <line id="e10" class="edge" x1="560" y1="48" x2="660" y2="130" marker-end="url(#arrow)"/>
+
+      <g id="n-src" class="node coral"><rect x="10" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="41" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" id="src-sub" x="85" y="60" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
+      <g id="n-state" class="node blue"><rect x="10" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="261" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" x="85" y="280" text-anchor="middle" dominant-baseline="central">Watermark · Postgres</text></g>
+      <g id="n-sync" class="node purple"><rect x="10" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="151" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="85" y="170" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
+      <g id="n-reg" class="node teal"><rect x="410" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="485" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
+      <g id="n-kafka" class="node teal"><rect x="410" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="261" text-anchor="middle" dominant-baseline="central">Kafka topic</text><text class="ts" x="485" y="280" text-anchor="middle" dominant-baseline="central">Debezium change events</text></g>
+      <g id="n-connect" class="node teal"><rect x="410" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="151" text-anchor="middle" dominant-baseline="central">Kafka Connect</text><text class="ts" x="485" y="170" text-anchor="middle" dominant-baseline="central">Debezium JDBC sink</text></g>
+      <g id="n-pg" class="node blue"><rect x="210" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="285" y="151" text-anchor="middle" dominant-baseline="central">Postgres</text><text class="ts" x="285" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+      <g id="n-rw" class="node blue"><rect x="610" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="685" y="151" text-anchor="middle" dominant-baseline="central">RisingWave</text><text class="ts" x="685" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+
+      <g id="badges"></g>
+
+      <g class="coral"><rect x="30" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="46" y="327" dominant-baseline="central">Databricks</text></g>
+      <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster</text></g>
+      <g class="teal"><rect x="236" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="252" y="327" dominant-baseline="central">Kafka side</text></g>
+      <g class="blue"><rect x="336" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="352" y="327" dominant-baseline="central">Postgres (targets + state)</text></g>
+    </svg>
+    <div class="runbox">
+      <p class="runbox-title">Run status</p>
+      <p class="result" id="result"></p>
+    </div>
+  </div>
+  <div class="side">
+    <div class="caption"><p class="ct" id="cap-t"></p><p class="caprun" id="cap-run" style="display:none"></p><p class="cd" id="cap-d"></p></div>
+    <div class="controls">
+      <button id="prev" aria-label="Previous step">&larr; Back</button>
+      <button id="play">Play</button>
+      <button id="next" aria-label="Next step">Next &rarr;</button>
+      <span id="pos" class="pos"></span>
+    </div>
+  </div>
+</div>
+<ol id="steps"></ol>
+  </main>
+</div>
+
+<section class="notes">
+  <h2>The Databricks source table</h2>
+  <p class="sub">What the table behind step 1 needs, and how to define it. The setup job creates it for you from <code>orchestration/defs/reverse_etl_avro/defs.yaml</code>; this is the DDL it runs.</p>
+  <div class="grid">
+    <div>
+      <ul>
+        <li><b>A Delta table with Change Data Feed on</b> (the three UniForm syncs create it readable as Iceberg; the delta sync creates it plain Delta with column mapping — the dropdown shows which). The sync itself does <b>not</b> read the Change Data Feed: it reconstructs the changes from snapshot diffs with delta-rs (no Spark, no warehouse scans), so it only needs the table's Delta log. Keeping <code>delta.enableChangeDataFeed</code> on costs nothing and keeps the table compatible with the notebook comparison path, which does read <code>table_changes()</code>.</li>
+        <li><b>A key column that never repeats and never changes.</b> Here it is <code>rid</code>, an identity column Databricks fills in on insert. Every target is keyed on it. The business <code>id</code> is not used as the key: Unity Catalog primary keys are informational, so two rows can share an <code>id</code>, and deleting one removed the other downstream.</li>
+        <li><b>The key must exist from creation.</b> An identity column cannot be added to an existing table, so adding it later means the reset job, then the setup job.</li>
+        <li><b>UniForm (optional; on for the avro/cdf/orders sources, off for the delta source).</b> The extra properties let Iceberg readers query the same table. They need column mapping on and deletion vectors off, and must be set at creation, because turning them on later is a schema commit — harmless for the sync (the reconstruction diffs snapshots and handles schema changes natively), but a metadata-generation event for the Iceberg side. The Iceberg side is read-only.</li>
+        <li><b>Your own columns</b> go in <code>source_columns</code> in the sync's YAML (here <code>id</code>, <code>value</code>, <code>updated_at</code>).</li>
+        <li><b>Inserts must list their columns</b>, as in <code>INSERT INTO t (id, value) VALUES (...)</code>. A column-less insert fails on a table with an identity column.</li>
+        <li><b>Schema changes:</b> adding a column is carried to the targets, and so is dropping one (drop propagation is on for every sync): the sync diffs the source schema against the state table's recorded <code>last_schema</code> (a Postgres row) and drops the vanished column from RisingWave and Postgres too — RisingWave fills <code>&lt;col&gt;_ts</code> companions in first, Postgres follows the broader rule and also re-drops anything a sink replay re-added. Renames propagate as renames now: the state records each column's <code>delta.columnMapping.id</code> (stable across a rename), so the sync can tell the two apart — RisingWave gets add + update-copy + drop (no <code>RENAME COLUMN</code> there, but the data survives), Postgres a native rename plus an automatic sink task restart, because the JDBC sink's in-memory schema cache would fail the next message otherwise. Every source table is created with column mapping, so Delta accepts <code>DROP COLUMN</code> and <code>RENAME COLUMN</code> everywhere; type changes are still refused by Delta and stay out of scope.</li>
+      </ul>
+    </div>
+    <div>
+      <p class="label">Source table</p>
+<pre>CREATE TABLE IF NOT EXISTS
+  de_dev.sr_poc_external.reverse_etl_avro_source (
+  rid BIGINT GENERATED ALWAYS AS IDENTITY,
+  id BIGINT NOT NULL,
+  value STRING,
+  updated_at TIMESTAMP
+) USING DELTA
+TBLPROPERTIES (
+  'delta.enableChangeDataFeed' = 'true',
+  'delta.columnMapping.mode' = 'name',
+  'delta.enableDeletionVectors' = 'false',
+  'delta.enableIcebergCompatV2' = 'true',
+  'delta.universalFormat.enabledFormats' = 'iceberg'
+);</pre>
+      <p class="label">State table (the watermark, steps 2.1 and 2.5) — Postgres</p>
+<pre>CREATE TABLE IF NOT EXISTS
+  reverse_etl_sync_state (
+  sync_name TEXT NOT NULL,
+  last_commit_version BIGINT NOT NULL,
+  last_schema TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- private bookkeeping, so it left Databricks entirely: the sync's
+-- last warehouse touch (the watermark write) is gone — every run
+-- meters 0.0 Databricks seconds. Append-only, freshest row wins.</pre>
+    </div>
+  </div>
+</section>
+
+<section class="notes">
+  <h2>Components and jobs</h2>
+  <p class="sub">The same flow as a component map: where everything runs, and the sink-health checks. The sync asset (option A) is the demo's sync path — it reads the change feed with OSS Delta and keeps its watermark in Postgres, so every run meters <b>0.0</b> Databricks seconds, shown above as the Databricks cost line. Option B (the Databricks notebook) is legacy: it still expects the dropped Delta state table. Full picture: <code>docs/poc/REVERSE_ETL_LIVE_DEMO.md</code>.</p>
+  <details style="margin-top: 12px">
+    <summary style="cursor: pointer; font-size: 15px; font-weight: 500">Show the architecture diagram</summary>
+    <img src="img/reverse_etl_components.svg" alt="Reverse-ETL components: the Databricks source table, the Postgres state table and targets, Dagster jobs and the sync asset, the Kafka topic and registry" style="width: 100%; max-width: 1200px; margin-top: 12px; border: 0.5px solid var(--card-border); border-radius: 12px; background: white">
+  </details>
+</section>
+
+<script>
+const S = [
+  { num: '1', t: 'A row changes in Databricks', a: 'change', d: 'Each commit creates one new version of the Databricks table, however many rows it changes. Adding, renaming or dropping a column is a commit too. The source keeps Change Data Feed on for the notebook comparison path, but the sync itself does not read the feed — it reconstructs the changes from the table\'s snapshots, so nothing has to be recorded beforehand.', n: ['src'], e: [] },
+  { num: '2.1', t: 'The sync reads the watermark', a: 'sync', d: 'The sync is always triggered from Dagster, but the processing can run in Dagster (as an asset) or in Databricks (as a notebook, started by a Dagster job). The steps are the same. It asks the state table — a Postgres row since 2026-10-22, when the watermark left Databricks — which table version was already synced. On the first run that is 0. Option B (the notebook) is legacy: it still expects the dropped Delta state table, so it cannot run against the current stack.', n: ['state', 'sync'], e: ['e2'] },
+  { num: '2.2', t: 'The sync reads the changes', a: 'sync', d: 'The Dagster backend reconstructs the change feed itself with delta-rs, reading the table straight from storage — no Spark, no Databricks compute, no warehouse scans, and no CDF read. Per commit version since the watermark: an append-only commit reads only its new files; a rewrite commit diffs just the file pairs the commit rewrote — the removed files are the pre-image, the added ones the post-image — so memory and I/O are sized by the change, not the table. Deletion vectors are read too: each touched file\'s rows are filtered through its per-version keep-mask (a DV-only commit re-adds the same file and is picked up from the commit\'s own log entry), and partitioned DV tables get their partition columns injected from the add actions. Partitioned tables without DVs fall back to a full-snapshot diff. Each changed row comes back with its change type and commit version. An update comes back as two rows, the old and the new, and the sync joins them into one event with before, after and op. The schema naming the events is pinned to the version being synced, so a column added since the last run is included automatically — and a rename committing mid-run cannot null values.', n: ['src', 'sync'], e: ['e1'] },
+  { num: '2.3', t: 'Schemas go to the registry', a: 'schema', d: 'Both Avro schemas (key and value) are checked against the registry on every run, and only registered when they are new or changed — unchanged schemas cost one lookup each. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
+  { num: '2.4', t: 'Events go to Kafka', a: 'sync', d: 'The sync produces one Avro message per change, in the Debezium format: before, after, op and source. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
+  { num: '2.5', t: 'The watermark moves', a: 'sync', d: 'Only after the messages are produced does the sync write the new version to the Postgres state table — a plain INSERT, no Databricks compute. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] },
+  { num: '3', t: 'Two readers take the topic', a: 'readers', d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Each message carries only a schema id; both readers fetch that schema from the registry to decode it. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE AVRO), so it applies each change to its table here, with no connector. For a new column, the sync first adds it to the RisingWave table, after the new schema version is registered, because RisingWave only fills a column from messages read after the column exists.', n: ['kafka', 'reg', 'connect', 'rw'], e: ['e5', 'e7', 'e9', 'e10'] },
+  { num: '4', t: 'Postgres applies the change', a: 'postgres', d: 'The Debezium JDBC sink (an open-source Kafka Connect connector, Apache 2.0, running in a local container) reads the topic and upserts or deletes the row in Postgres, keyed on rid. Postgres is only the target of this demo: the sink writes through JDBC, so the target can be SQL Server, which the connector supports, or another supported database. A new column is added to the Postgres table by the sink itself (schema evolution). Both targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] }
+];
+const NODES = ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'];
+const EDGES = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'e10'];
+const $ = id => document.getElementById(id);
+let i = 0, timer = null;
+
+// Comet overlays, one per arrow: a cloned line carrying the bright sweeping
+// dash (the Jobotron page's comet, adapted to SVG). Each line's length feeds
+// the dash math via --len; the overlays only animate during action runs.
+const flowEls = {};
+EDGES.forEach(e => {
+  const l = $(e);
+  const len = Math.hypot(+l.getAttribute('x2') - +l.getAttribute('x1'), +l.getAttribute('y2') - +l.getAttribute('y1'));
+  l.style.setProperty('--len', len + 'px');
+  const flow = l.cloneNode();
+  flow.setAttribute('class', 'edge-flow');
+  flow.removeAttribute('id');
+  flow.removeAttribute('marker-end');
+  flow.style.setProperty('--len', len + 'px');
+  l.parentNode.appendChild(flow);
+  flowEls[e] = flow;
+});
+
+const list = $('steps');
+S.forEach((s, k) => {
+  const li = document.createElement('li');
+  li.innerHTML = '<span class="num">' + s.num + '</span><span class="t"></span><span class="d"></span>';
+  li.querySelector('.t').textContent = s.t;
+  li.querySelector('.d').textContent = s.d;
+  li.onclick = () => { stop(); show(k); };
+  list.appendChild(li);
+});
+
+function show(k) {
+  i = (k + S.length) % S.length;
+  const s = S[i];
+  NODES.forEach(n => { $('n-' + n).style.opacity = s.n.includes(n) ? 1 : 0.4; });
+  EDGES.forEach(e => $(e).classList.toggle('on', s.e.includes(e)));
+  [...list.children].forEach((li, n) => li.classList.toggle('on', n === i));
+  $('cap-t').textContent = s.num + '. ' + s.t;
+  $('cap-d').textContent = s.d;
+  $('pos').textContent = 'Step ' + s.num + ' of ' + S.length;
+}
+function start() { stop(); timer = setInterval(() => show(i + 1), 4500); $('play').textContent = 'Pause'; }
+function stop() { if (timer) { clearInterval(timer); timer = null; } $('play').textContent = 'Play'; }
+
+$('prev').onclick = () => { stop(); show(i - 1); };
+$('next').onclick = () => { stop(); show(i + 1); };
+$('play').onclick = () => (timer ? stop() : start());
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') { stop(); show(i + 1); }
+  if (e.key === 'ArrowLeft') { stop(); show(i - 1); }
+});
+
+// Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
+let SYNC = new URLSearchParams(location.search).get('sync') || 'avro';
+let helper = false, busy = false;
+const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
+const get = url => fetch(url).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
+
+// The run log lives under the diagram: each action prepends an entry, and an
+// in-flight action UPDATES its own entry in place — the 2s poll must not spam
+// the log with "RUNNING (2s)", "RUNNING (4s)" lines. The log keeps the last
+// few entries for reference.
+const RUNLOG_MAX = 6;
+function say(text, url, state, r = $('result'), subs = null, entry = null) {
+  const e = entry || document.createElement('div');
+  if (!entry) {
+    e.className = 'rentry';
+    r.prepend(e);
+    while (r.children.length > RUNLOG_MAX) r.lastChild.remove();
+  }
+  e.innerHTML = '';
+  if (state) {
+    const ic = document.createElement('span');
+    ic.className = 'icon ' + state;
+    ic.textContent = { ok: '\u2713', fail: '\u2717' }[state] || '';
+    e.append(ic);
+  }
+  e.append(text);
+  if (url) { e.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; e.append(a); }
+  if (subs) for (const s of subs) {
+    const d = document.createElement('div');
+    d.className = 'rsub' + (s.mono ? ' mono' : '') + (s.strong ? ' strong' : '');
+    d.textContent = s.text;
+    e.append(d);
+  }
+  return e;
+}
+function lock(on) { busy = on; document.querySelectorAll('#rail button, #rail select, #rail input').forEach(b => { b.disabled = on || !helper; }); }
+
+// ── run activity: badges on the components in play, comets sweeping the
+// arrows in play. Browsing a step lights it statically; a RUNNING action adds
+// the pulsing nodes, the sweeping comets and the corner badges
+// (spinner while in flight, ✓ / ✗ fading a few seconds after it ends).
+const NS = 'http://www.w3.org/2000/svg';
+let phaseTimer = null, badgeTimer = null;
+function edgesLive(on) {
+  EDGES.forEach(e => {
+    flowEls[e].classList.toggle('on', !!on && $(e).classList.contains('on'));
+  });
+}
+function stagesClear() { $('badges').innerHTML = ''; NODES.forEach(n => $('n-' + n).classList.remove('active')); }
+function stagesRun(names, state) {
+  $('badges').innerHTML = '';
+  for (const n of names) {
+    const g = $('n-' + n); if (!g) continue;
+    const rect = g.querySelector('rect');
+    const cx = +rect.getAttribute('x') + +rect.getAttribute('width') - 9;
+    const cy = +rect.getAttribute('y') + 9;
+    const b = document.createElementNS(NS, 'g');
+    b.setAttribute('class', 'badge ' + state);
+    const ring = document.createElementNS(NS, 'circle');
+    ring.setAttribute('cx', cx); ring.setAttribute('cy', cy); ring.setAttribute('r', 7.5);
+    b.appendChild(ring);
+    if (state === 'running') {
+      const arc = document.createElementNS(NS, 'circle');
+      arc.setAttribute('class', 'arc');
+      arc.setAttribute('cx', cx); arc.setAttribute('cy', cy); arc.setAttribute('r', 4.5);
+      b.appendChild(arc);
+    } else {
+      const t = document.createElementNS(NS, 'text');
+      t.setAttribute('x', cx); t.setAttribute('y', cy);
+      t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
+      t.textContent = state === 'done' ? '\u2713' : '\u2717';
+      b.appendChild(t);
+    }
+    $('badges').appendChild(b);
+  }
+  NODES.forEach(n => $('n-' + n).classList.toggle('active', state === 'running' && names.includes(n)));
+}
+function stagesFade() {
+  document.querySelectorAll('.badge').forEach(b => b.classList.add('fading'));
+  NODES.forEach(n => $('n-' + n).classList.remove('active'));
+  badgeTimer = setTimeout(stagesClear, 700);
+}
+// The step card right of the diagram is the run's home surface: while an
+// action runs it carries a live chip (spinner + what is happening), so the
+// eye stays on the card, not on the browsable step grid at the bottom.
+function capRun(text) {
+  const el = $('cap-run');
+  if (!text) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'flex';
+  el.innerHTML = '';
+  const ic = document.createElement('span');
+  ic.className = 'icon run';
+  el.append(ic, text);
+}
+
+// Databricks cost meter: the runs report what they used via run metadata
+// (orchestration/assets/databricks_cost_meter.py), the helper returns it from
+// /api/run, and the page shows a per-run chip plus a session total.
+const costSession = { warehouse: 0, cluster: 0 };
+// Float sums like 21.509999999999998 must never reach the page: round at display.
+const fmtSeconds = s => (Math.round(s * 100) / 100) + 's';
+function costText(cost) {
+  if (!cost) return '';
+  costSession.warehouse += cost.warehouse_seconds || 0;
+  costSession.cluster += cost.cluster_seconds || 0;
+  const bits = [];
+  if (cost.warehouse_seconds) bits.push(fmtSeconds(cost.warehouse_seconds) + ' (Serverless SQL Warehouse)');
+  if (cost.cluster_seconds) bits.push(fmtSeconds(cost.cluster_seconds) + ' (All-purpose cluster)');
+  const session = [];
+  if (costSession.warehouse) session.push(fmtSeconds(costSession.warehouse) + ' (Serverless SQL Warehouse)');
+  if (costSession.cluster) session.push(fmtSeconds(costSession.cluster) + ' (All-purpose cluster)');
+  const el = $('cost-total');
+  // The per-run cost already shows under each run entry ("Databricks cost: …");
+  // this header line only tracks the page-session total, so it says nothing
+  // about the current run — mixing the two read like a contradiction.
+  el.textContent = 'Session cost so far: ' + (session.length ? session.join(' + ') : 'nothing yet');
+  el.style.display = 'block';
+  return bits.length ? 'Databricks cost: ' + bits.join(' + ') : 'Databricks cost: none (no Databricks compute)';
+}
+
+// Each action maps to the step it belongs to and the components it touches,
+// so while it runs the page shows that step, pulses those nodes, dashes their
+// arrows and spins their badges. A sync walks its own path — watermark read →
+// change read → schemas → Kafka — and lands on the watermark move (2.5) when
+// the run ends; Dagster reports only run status, so the walk is the page's
+// narration of the run, not per-phase telemetry.
+const SYNC_PLAN = {
+  // While the run is pending: the sync's own path, walked slowly (4s per
+  // phase) and looped. Dagster reports only run status, so the walk is the
+  // page's narration, not per-phase telemetry.
+  phases: [
+    { step: 1, nodes: ['state', 'sync'] },
+    { step: 2, nodes: ['src', 'sync'] },
+    { step: 3, nodes: ['sync', 'reg'] },
+    { step: 4, nodes: ['sync', 'kafka'] },
+  ],
+  loopFrom: 1,
+  // On success: walk the downstream steps so the animation covers the whole
+  // pipeline — the watermark move, then the readers (Kafka Connect and
+  // RisingWave take the topic), then Postgres — before the done badges land.
+  // The readers consume asynchronously, so this is narration too: they catch
+  // up within seconds of the produce.
+  doneWalk: [
+    { step: 5, nodes: ['sync', 'state'] },
+    { step: 6, nodes: ['kafka', 'connect', 'rw'] },
+    { step: 7, nodes: ['connect', 'pg', 'rw'] },
+  ],
+  doneNodes: ['sync', 'connect', 'pg', 'rw'],
+  failStep: 5,
+  failNodes: ['sync', 'state'],
+};
+const CHANGE_PLAN = { phases: [{ step: 0, nodes: ['src'] }] };
+const SETUP_PLAN = { phases: [{ step: 0, nodes: ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'] }] };
+
+async function run(label, body, out = $('result'), plan = null, btn = null) {
+  stop(); lock(true);
+  clearTimeout(badgeTimer); clearInterval(phaseTimer); stagesClear();
+  if (btn) btn.classList.add('running');
+  const phases = plan ? plan.phases : null;
+  let idx = -1;
+  let realProgress = false;
+  const advance = () => {
+    idx = idx < 0 ? 0 : (idx + 1 >= phases.length ? (plan.loopFrom ?? 0) : idx + 1);
+    const ph = phases[idx];
+    show(ph.step);
+    stagesRun(ph.nodes, 'running');
+    edgesLive(true);
+    // The timed walk stays until real telemetry arrives (the helper returns
+    // the sync's chunk heartbeats) — then the chip shows the real progress
+    // and the walk stops touching it.
+    if (!realProgress) capRun('running' + (phases.length > 1 ? ' — phase ' + (idx + 1) + '/' + phases.length : ''));
+  };
+  if (phases) {
+    advance();
+    if (phases.length > 1) phaseTimer = setInterval(advance, 4000);
+  }
+  const entry = say(label + ': starting…', null, 'run', out);
+  let started;
+  try { started = await post(body); }
+  catch (e) { say(label + ' failed to start: ' + e.message, null, 'fail', out, null, entry); clearInterval(phaseTimer); edgesLive(false); stagesClear(); capRun(null); if (btn) btn.classList.remove('running'); lock(false); return false; }
+  if (started.error || !started.runId) {
+    say(label + ' failed to start: ' + (started.error || 'no run id'), null, 'fail', out, null, entry);
+    clearInterval(phaseTimer); edgesLive(false); stagesClear(); capRun(null);
+    if (btn) btn.classList.remove('running');
+    lock(false); return false;
+  }
+  let pollsFailed = 0;
+  for (;;) {
+    let s;
+    try {
+      s = await get('/api/run/' + started.runId);
+      pollsFailed = 0;
+    } catch (e) {
+      // A server hiccup must never swallow the run's outcome: keep polling, and
+      // only give up (loudly, in red) after several consecutive failures.
+      if (++pollsFailed >= 5) {
+        say(label + ': status polling failed (' + e.message + ') — check the run in Dagster', started.url, 'fail', out, null, entry);
+        clearInterval(phaseTimer); edgesLive(false); capRun(null);
+        if (btn) btn.classList.remove('running');
+        lock(false); return false;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
+    const done = ['SUCCESS', 'FAILURE', 'CANCELED'].includes(s.status);
+    const subs = [];
+    if (done) {
+      const cost = costText(s.cost);
+      if (cost) subs.push({ text: cost });
+      if (s.error) subs.push({ text: s.error, cls: 'failline' });
+      if (s.change) {
+        if (s.change.skipped) {
+          subs.push({ text: 'Skipped — ' + s.change.skipped });
+        } else if (s.change.sql && s.change.sql.length) {
+          for (const stmt of s.change.sql) subs.push({ text: stmt, mono: true });
+        } else {
+          subs.push({ text: 'No statement ran — nothing to change' });
+        }
+      }
+    } else if (Array.isArray(s.log_tail)) {
+      // Real telemetry while the run is live: the sync's own heartbeat lines.
+      // The chip and the log entry show the latest chunk (versions, rows,
+      // events) and any phase evidence the step has logged so far.
+      let progress = null;
+      for (const line of s.log_tail) {
+        if (/^Chunk \d+\/\d+:/.test(line)) progress = line;
+        else if (/^Added column\(s\)|^Source renamed column\(s\)|^Produced \d+ event\(s\)/.test(line)) subs.push({ text: line, mono: true });
+      }
+      if (progress) {
+        realProgress = true;
+        subs.push({ text: progress, mono: true, strong: true });
+        const m = progress.match(/Chunk (\d+)\/(\d+):.*?, (\d+) rows?, (\d+) events? \(total (\d+)\)/);
+        if (m) capRun(`running — chunk ${m[1]}/${m[2]} · row events so far ${m[5]}`);
+      }
+    }
+    say(label + ': ' + s.status + ' (' + s.seconds + 's)', started.url, done ? (s.status === 'SUCCESS' ? 'ok' : 'fail') : 'run', out, done ? subs : (subs.length ? subs : null), entry);
+    if (done) {
+      clearInterval(phaseTimer); edgesLive(false); capRun(null);
+      const ok = s.status === 'SUCCESS';
+      if (btn) btn.classList.remove('running');
+      lock(false);
+      if (phases && ok && plan.doneWalk) {
+        // Completion walk: the run produced — now walk the downstream steps
+        // (watermark move → readers → Postgres) so the animation covers the
+        // whole pipeline, comets riding each step's arrows, then land the
+        // done badges. A new action cancels the walk (it clears the timer).
+        let k = 0;
+        const walkStep = () => {
+          if (k < plan.doneWalk.length) {
+            const ph = plan.doneWalk[k];
+            show(ph.step); stagesRun(ph.nodes, 'running'); edgesLive(true);
+            k += 1;
+            phaseTimer = setTimeout(walkStep, 2400);
+          } else {
+            edgesLive(false);
+            stagesRun(plan.doneNodes || plan.doneWalk[plan.doneWalk.length - 1].nodes, 'done');
+            badgeTimer = setTimeout(stagesFade, 4500);
+          }
+        };
+        walkStep();
+      } else if (phases) {
+        if (!ok && plan.failStep !== undefined) show(plan.failStep);
+        stagesRun(
+          ok ? (plan.doneNodes || phases[phases.length - 1].nodes) : (plan.failNodes || phases[phases.length - 1].nodes),
+          ok ? 'done' : 'fail'
+        );
+        badgeTimer = setTimeout(stagesFade, 4500);
+      }
+      return ok;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+async function check(path, format, step, nodes) {
+  stop(); lock(true);
+  show(step); stagesRun(nodes, 'running'); capRun('checking…');
+  const entry = say('Checking...', null, 'run');
+  let d;
+  try { d = await get('/api/check/' + SYNC + '/' + path); }
+  catch (e) {
+    say('Check failed: ' + e.message, null, 'fail', $('result'), null, entry);
+    stagesRun(nodes, 'fail'); capRun(null); lock(false);
+    return false;
+  }
+  const ok = !JSON.stringify(d).includes('"error"');
+  const f = format(d);
+  say(f.text ?? f, null, ok ? 'ok' : 'fail', $('result'), f.subs || null, entry);
+  stagesRun(nodes, ok ? 'done' : 'fail');
+  capRun(null);
+  badgeTimer = setTimeout(stagesFade, 4500);
+  lock(false);
+}
+
+// ── the action rail: quick access to everything, always visible, mirroring
+// the Jobotron page. Each action shows its related step and pulses the
+// components it touches while it runs; results land in the step card.
+$('act-change').onclick = e => {
+  const body = { action: 'change', change: $('change-select').value };
+  if (body.change === 'bulk_1m') body.rows = Math.max(1, Math.round(Number($('bulk-rows').value) || 1000000));
+  const label = 'Change (' + $('change-select').selectedOptions[0].text + ')';
+  run(label, body, $('result'), CHANGE_PLAN, e.currentTarget);
+};
+const syncRows = () => { $('bulk-rows').style.display = $('change-select').value === 'bulk_1m' ? '' : 'none'; };
+$('change-select').onchange = syncRows; syncRows();
+
+$('act-sync').onclick = e => run('Sync', { action: 'sync' }, $('result'), SYNC_PLAN, e.currentTarget);
+
+$('act-schema').onclick = async () => {
+  stop(); lock(true);
+  show(3); stagesRun(['sync', 'reg'], 'running'); capRun('fetching…');
+  const entry = say('Fetching schemas from the registry...', null, 'run');
+  try {
+    const d = await get('/api/schema/' + SYNC);
+    const registered = !d.error && d.key && d.value;
+    const subs = [];
+    if (registered) {
+      subs.push({ text: 'key v' + d.key.version + ' (id ' + d.key.id + ') — value v' + d.value.version + ' (id ' + d.value.id + ')', mono: true, strong: true });
+      const block = (title, cols) => {
+        subs.push({ text: title, strong: true });
+        const width = Math.max(...Object.keys(cols).map(k => k.length));
+        subs.push({ text: Object.entries(cols).map(([n, t]) => n.padEnd(width + 2) + t).join('\n'), mono: true });
+      };
+      block('Key columns', d.key.columns);
+      block('Row columns', d.value.columns);
+      subs.push({ text: 'Every message wraps the row in the Debezium envelope: ' + d.value.envelope.join(' / ') + '.' });
+      say('Registry holds the ' + SYNC + ' schemas.', null, 'ok', $('result'), subs, entry);
+    } else if (d.error) {
+      say('Schema fetch failed: ' + d.error, null, 'fail', $('result'), null, entry);
+    } else {
+      subs.push({ text: 'This sync encodes messages as JSON with the schema embedded in every message — the registry stays empty until a sync with encoding: avro runs.' });
+      say('No ' + SYNC + ' schemas in the registry yet.', null, null, $('result'), subs, entry);
+    }
+    stagesRun(['sync', 'reg'], d.error ? 'fail' : 'done');
+    capRun(null);
+    badgeTimer = setTimeout(stagesFade, 4500);
+  } finally { lock(false); }
+};
+$('act-readers').onclick = () => check('readers', d => ({ text: 'Kafka Connect: ' + (d.kafka_connect.error ? d.kafka_connect.error : d.kafka_connect.connector + ', tasks ' + d.kafka_connect.tasks.join(', ')) + '. RisingWave rows: ' + (d.risingwave_rows.error || d.risingwave_rows) + '.' }), 6, ['kafka', 'connect', 'rw']);
+$('act-postgres').onclick = () => check('postgres', d => {
+  if (d.error) return { text: 'Postgres check failed: ' + d.error };
+  // Column headings from the query itself (the set moves with the demo's
+  // schema changes), every column padded to its widest cell so the rows line up.
+  const cols = d.columns || [];
+  const cells = d.latest.map(r => r.map(v => String(v)));
+  const width = cols.map((c, j) => Math.max(String(c).length, ...cells.map(r => (r[j] || '').length)));
+  const line = cells => cells.map((c, j) => (c || '').padEnd(width[j])).join(' | ');
+  const subs = [];
+  if (cols.length) subs.push({ text: line(cols), mono: true, strong: true });
+  for (const r of cells) subs.push({ text: line(r), mono: true });
+  if (d.rows > d.latest.length) subs.push({ text: '… and ' + (d.rows - d.latest.length) + ' more', mono: true });
+  return { text: d.rows + ' row(s) in the target — latest ' + d.latest.length + ', newest first:', subs };
+}, 7, ['connect', 'pg']);
+
+$('do-rebuild').onclick = async () => {
+  if (!confirm('This drops the ' + SYNC + ' source table, clears its watermark rows (other syncs are untouched), and drops the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
+  const btn = $('do-rebuild');
+  // Reset and setup provision every component on the canvas, so all of them
+  // spin; the first sync then walks the pipeline as any sync does.
+  if (await run('Reset (1 of 3)', { action: 'reset' }, $('result'), SETUP_PLAN, btn)) if (await run('Set up (2 of 3)', { action: 'setup' }, $('result'), SETUP_PLAN, btn)) await run('First sync (3 of 3)', { action: 'sync' }, $('result'), SYNC_PLAN, btn);
+};
+
+// Table selector: switch the sync (and its source table) without leaving the page.
+const SYNC_LABELS = {
+  avro: 'avro (UniForm · Avro)',
+  cdf: 'cdf (UniForm · JSON)',
+  orders: 'orders (UniForm · JSON)',
+  delta: 'delta (plain Delta · Avro)',
+};
+// The source tables' flavors, matching each sync's defs.yaml (uniform: true is
+// the config default; the delta sync sets uniform: false — plain Delta with
+// column mapping, no UniForm).
+const SOURCE_SUBTITLES = {
+  avro: 'Delta + Iceberg (UniForm)',
+  cdf: 'Delta + Iceberg (UniForm)',
+  orders: 'Delta + Iceberg (UniForm)',
+  delta: 'Plain Delta (no UniForm)',
+};
+function setSourceSubtitle(name) {
+  const el = document.querySelector('#n-src .ts');
+  if (el) el.textContent = SOURCE_SUBTITLES[name] || '';
+}
+const syncSelect = $('sync-select');
+for (const [name, label] of Object.entries(SYNC_LABELS)) {
+  const opt = document.createElement('option');
+  opt.value = name;
+  opt.textContent = label;
+  if (name === SYNC) opt.selected = true;
+  syncSelect.append(opt);
+}
+syncSelect.onchange = () => {
+  SYNC = syncSelect.value;
+  history.replaceState(null, '', '?sync=' + SYNC);
+  setSourceSubtitle(SYNC);
+  $('bar-msg').textContent = helper ? 'helper connected · sync: ' + SYNC : $('bar-msg').textContent;
+  $('result').textContent = '';
+  costSession.warehouse = 0;
+  costSession.cluster = 0;
+  $('cost-total').style.display = 'none';
+};
+
+async function refreshHelperPill() {
+  // Live status light: the helper's ping also reports Dagster health from the
+  // launch path's point of view (the webserver's cached GraphQL stays green
+  // while the code server is dead, so the helper probes its socket instead).
+  let d = null;
+  try { d = await get('/api/ping'); } catch (e) { /* helper down */ }
+  const pill = $('helper-pill');
+  pill.classList.remove('ok', 'warn', 'fail');
+  if (!d || !d.ok) {
+    pill.classList.add('fail');
+    $('bar-msg').textContent = 'helper offline — run ./bin/3_run_reverse_etl_demo.sh and open http://localhost:4002/';
+    helper = false;
+    if (!busy) lock(false);
+    return;
+  }
+  helper = true;
+  const syncLabel = ' · sync: ' + SYNC;
+  if (d.dagster === 'LOADED') { pill.classList.add('ok'); $('bar-msg').textContent = 'helper connected' + syncLabel; }
+  else if (d.dagster === 'dead') { pill.classList.add('warn'); $('bar-msg').textContent = 'Dagster down — the next run auto-heals it (~20s)'; }
+  else if (d.dagster === 'loading') { pill.classList.add('warn'); $('bar-msg').textContent = 'Dagster loading…'; }
+  else { pill.classList.add('warn'); $('bar-msg').textContent = 'Dagster unreachable — the next run auto-heals it'; }
+  if (!busy) lock(false);
+}
+refreshHelperPill();
+setInterval(refreshHelperPill, 10000);
+show(0); setSourceSubtitle(SYNC);
+</script>
+</body>
+</html>

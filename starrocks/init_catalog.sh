@@ -1,5 +1,10 @@
 #!/bin/sh
 set -e
+
+: "${DATABRICKS_AZURE_CLIENT_ID:?DATABRICKS_AZURE_CLIENT_ID must be set}"
+: "${DATABRICKS_AZURE_TENANT_ID:?DATABRICKS_AZURE_TENANT_ID must be set}"
+: "${DATABRICKS_AZURE_CLIENT_SECRET:?DATABRICKS_AZURE_CLIENT_SECRET must be set}"
+
 apk add --no-cache mysql-client >/dev/null
 
 # Unset any injected proxy so requests to Databricks go direct
@@ -16,10 +21,25 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
+echo "Creating default storage volume (shared-data, backed by MinIO)..."
+mysql -h starrocks -P 9030 -u root <<SQL
+CREATE STORAGE VOLUME IF NOT EXISTS minio_default
+    TYPE = S3
+    LOCATIONS = ('s3://starrocks/')
+    PROPERTIES (
+        "aws.s3.endpoint" = "http://minio-0:9301",
+        "aws.s3.region" = "us-east-1",
+        "aws.s3.access_key" = "hummockadmin",
+        "aws.s3.secret_key" = "hummockadmin",
+        "aws.s3.enable_path_style_access" = "true",
+        "aws.s3.use_aws_sdk_default_behavior" = "false",
+        "enabled" = "true"
+    );
+SET minio_default AS DEFAULT STORAGE VOLUME;
+SQL
+
 echo "Creating external catalog databricks_uc..."
 # The heredoc is unquoted (<<SQL) so ${VAR} expands from the container environment.
-# azure.adls2 properties are included as fallback if credential vending doesn't pick up
-# the SAS token automatically; remove them once vending is confirmed working.
 mysql -h starrocks -P 9030 -u root <<SQL
 DROP CATALOG IF EXISTS databricks_uc;
 CREATE EXTERNAL CATALOG databricks_uc
@@ -30,9 +50,9 @@ PROPERTIES (
     "iceberg.catalog.uri"           = "https://adb-1608121643336927.7.azuredatabricks.net/api/2.1/unity-catalog/iceberg-rest",
     "iceberg.catalog.warehouse"     = "de_dev",
     "iceberg.catalog.credential"    = "${DATABRICKS_AZURE_CLIENT_ID}:${DATABRICKS_AZURE_CLIENT_SECRET}",
-    "iceberg.catalog.oauth2-server-uri" = "https://login.microsoftonline.com/78395483-9425-447a-ba64-60b90f6bb16e/oauth2/v2.0/token",
+    "iceberg.catalog.oauth2-server-uri" = "https://login.microsoftonline.com/${DATABRICKS_AZURE_TENANT_ID}/oauth2/v2.0/token",
     "iceberg.catalog.scope"         = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default",
-    "hadoop.fs.azure.account.key.stkznneurwpoccdddevstd.dfs.core.windows.net" = "${ADLS_ACCOUNT_KEY}"
+    "iceberg_meta_cache_ttl_sec"    = "0"
 );
 SQL
 
@@ -54,6 +74,60 @@ PROPERTIES (
 );
 SQL
 
+echo "Creating RisingWave JDBC catalog (risingwave)..."
+mysql -h starrocks -P 9030 -u root <<SQL
+DROP CATALOG IF EXISTS risingwave;
+CREATE EXTERNAL CATALOG risingwave
+COMMENT "RisingWave PostgreSQL JDBC federation"
+PROPERTIES (
+  "type"            = "jdbc",
+  "user"            = "root",
+  "password"        = "root",
+  # binaryTransfer=false forces the Postgres JDBC driver to use text protocol
+  # instead of binary. Without it, StarRocks CN's native JDBC scanner
+  # intermittently misdecodes RisingWave's binary-protocol timestamps as
+  # 2000-01-01 00:00:00 (Postgres's own internal epoch -- i.e. zeroed/stale
+  # buffer memory, not a StarRocks default) after a small, fixed number of
+  # queries per CN process lifetime; row counts through the catalog also
+  # fluctuated. Confirmed via 100+ repeated queries with this flag: zero
+  # corruption, vs. reliably reproducing within ~6 calls without it. See
+  # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md.
+  "jdbc_uri"        = "jdbc:postgresql://frontend-node-0:4566/dev?binaryTransfer=false",
+  "driver_url"      = "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar",
+  "driver_class"    = "org.postgresql.Driver",
+  "schema_resolver" = "postgresql"
+);
+SQL
+
+# NOTE: this project tried three different mechanisms to get "hot" RisingWave
+# data into StarRocks without a live per-query JDBC touch: a 10s-refresh
+# local MV mirror, a StarRocks Routine Load job off RisingWave's `funnel`
+# Kafka topic (hard 5s minimum batch interval, StarRocks-enforced), and a
+# native RisingWave StarRocks sink (Stream Load-based, no floor, but
+# every-checkpoint flushing overloaded compaction on the receiving table and
+# made query latency worse). All were reverted 2026-09-07 in favor of the
+# original live JDBC SELECT (see dbt_starrocks/models/dashboard_funnel_serving.sql
+# and docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md for the full history) --
+# do not re-add a hot_funnel_kafka table/Routine Load job/native sink here
+# without reading that history first.
+
+echo "Raising planner optimize timeout for external-catalog queries..."
+# Default new_planner_optimize_timeout (3000ms) is too tight for queries
+# against databricks_uc: evaluating MV rewrite eligibility against an
+# Iceberg external catalog requires fetching Hive/Iceberg metadata during
+# planning, which alone can take ~3.1-3.6s here -- right at the default
+# timeout boundary, causing intermittent "StarRocks planner use long time"
+# 1064 errors even though the query itself (and the eventual MV-rewritten
+# plan) runs in ~1-3s. Confirmed 2026-09-14 investigating a Superset error
+# on the Query Rewrite Demo dashboard: EXPLAIN on the exact
+# Superset-wrapped query (subquery + ORDER BY + LIMIT, as Superset issues
+# it) reproduced the failure directly against StarRocks, with no
+# correlating FE GC pause -- ruling out JVM heap pressure as the cause
+# despite the error message's own "1. FE Full GC" framing. Set as a GLOBAL
+# session variable (not just fe.conf) so it applies to every connection,
+# including Superset's, without per-connection init_command changes.
+mysql -h starrocks -P 9030 -u root -e "SET GLOBAL new_planner_optimize_timeout = 15000;"
+
 echo "Verifying catalogs..."
-mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local';"
+mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave';"
 echo "StarRocks init complete."

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
     Legend
@@ -49,7 +49,6 @@ const PredictionsTab = ({ funnelData }) => {
     const [modelStatus, setModelStatus] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [comparisonData, setComparisonData] = useState([]);
     const [timeAdjustedPredictions, setTimeAdjustedPredictions] = useState(null);
     const [minuteProgress, setMinuteProgress] = useState(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -159,22 +158,6 @@ const PredictionsTab = ({ funnelData }) => {
             setIsRefreshing(false);
         }
     };
-
-    // Build comparison data when actuals or predictions change
-    // Actuals come from funnelData (parent) - same as dashboard tab
-    // Predictions come from predictions API - updated separately
-    useEffect(() => {
-        if (funnelData && funnelData.length > 0) {
-            const combined = buildComparisonData(funnelData, predictions, timeAdjustedPredictions);
-            // Only update state if data actually changed to prevent chart redraws
-            const currentJson = JSON.stringify(chartDataRef.current);
-            const newJson = JSON.stringify(combined);
-            if (currentJson !== newJson) {
-                chartDataRef.current = combined;
-                setComparisonData(combined);
-            }
-        }
-    }, [predictions, funnelData, timeAdjustedPredictions]);
 
     useEffect(() => {
         // Initial fetch
@@ -303,6 +286,24 @@ const PredictionsTab = ({ funnelData }) => {
         return deduplicated;
     };
 
+    // Build comparison data synchronously during render (same path the KPI
+    // cards use for `funnelData`) instead of via useEffect+state, which
+    // otherwise lags one render cycle behind the cards -- both read the
+    // same `funnelData` prop, so they should update together.
+    // Still returns the same array reference when content is unchanged
+    // (via chartDataRef), to avoid unnecessary chart redraws.
+    const comparisonData = useMemo(() => {
+        if (funnelData && funnelData.length > 0) {
+            const combined = buildComparisonData(funnelData, predictions, timeAdjustedPredictions);
+            const currentJson = JSON.stringify(chartDataRef.current);
+            const newJson = JSON.stringify(combined);
+            if (currentJson !== newJson) {
+                chartDataRef.current = combined;
+            }
+        }
+        return chartDataRef.current;
+    }, [predictions, funnelData, timeAdjustedPredictions]);
+
 
     if (loading) {
         return (
@@ -382,7 +383,7 @@ const PredictionsTab = ({ funnelData }) => {
                                              predictions.model_type === 'LinearRegression' ? `Batch Model (${predictions.source}): Linear Regression - ${formatModelVersionDisplay(predictions.model_version)}` :
                                              predictions.model_type === 'river_kafka_online' ? `Online Learning (${predictions.source}): River Online (Kafka) - ${formatModelVersionDisplay(predictions.model_version)}` :
                                              predictions.model_type === 'moving_average_fallback' ? `Online Learning (${predictions.source}): River Online (Kafka) [MA Fallback] - ${formatModelVersionDisplay(predictions.model_version)}` :
-                                             predictions.model_type === 'river_risingwave_online' ? `Online Learning (${predictions.source}): Rate Extrapolation (Live)` :
+                                             predictions.model_type === 'river_risingwave_online' ? `Online Learning (${predictions.source}): Latest 20s Window (Live)` :
                                              `${predictions.mode === 'online' ? 'Online Learning' : 'Batch Model'} (${predictions.source}): ${predictions.model_type} - ${formatModelVersionDisplay(predictions.model_version)}`}
                                         </span>
                                     </>

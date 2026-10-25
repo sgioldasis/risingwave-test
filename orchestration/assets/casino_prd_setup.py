@@ -6,21 +6,161 @@ import subprocess
 import time
 from pathlib import Path
 
-import boto3
+import os
+
 import httpx
 import requests
 from dagster import AssetDep, AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from .databricks_optimize import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    DATABRICKS_HOST,
+    TENANT_ID,
+    _get_token,
+    _poll,
+    _submit,
+)
+
 PROTO_DIR = Path(__file__).parent.parent.parent / "proto"
 
-APICURIO_BASE = "http://staging-schema-registry.kaizengaming.net/apis/registry/v2/groups/bigdata/artifacts"
+# UC tables that must exist before RisingWave sinks are created by dbt.
+# Each tuple: (fully-qualified table name, CREATE TABLE DDL without TBLPROPERTIES).
+# TBLPROPERTIES are appended uniformly below.
+_UC_TABLES = [
+    (
+        "de_dev.rw_poc.rw_casino_transactions",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
+    customer_id              INT           NOT NULL,
+    message_type_id          INT           NOT NULL,
+    account_id               INT           NOT NULL,
+    currency_id              INT           NOT NULL,
+    transaction_created_at   TIMESTAMP     NOT NULL,
+    amount_abs               DECIMAL(20,8),
+    properties               STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_sportsbook_bets",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
+    bet_id               BIGINT        NOT NULL,
+    customer_id          INT           NOT NULL,
+    customer_segment_id  INT,
+    bet_type_id          INT,
+    bet_status_id        INT,
+    channel_id           INT,
+    currency_id          INT,
+    placed_at            TIMESTAMP     NOT NULL,
+    stake_euro           DECIMAL(20,8),
+    stake_local          DECIMAL(20,8),
+    properties           STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_casino_turnover_90d",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_turnover_90d (
+    customer_id          INT           NOT NULL,
+    event_ts             TIMESTAMP     NOT NULL,
+    rolling_7d_turnover  DECIMAL(38,8)
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_casino_landing",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+    (
+        "de_dev.rw_poc.rw_sportsbook_landing",
+        """CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')""",
+    ),
+]
+
+
+def _run_sql(token: str, statement: str) -> dict:
+    data = _submit(token, statement)
+    state = data.get("status", {}).get("state", "")
+    if state not in ("SUCCEEDED", "FAILED", "CANCELED", "CLOSED"):
+        data = _poll(token, data["statement_id"])
+    return data
+
+
+@asset(
+    group_name="casino_prd_setup",
+    description=(
+        "Ensure the three Unity Catalog Iceberg tables exist before dbt creates the "
+        "RisingWave sinks that write into them. Creates each table only if absent; "
+        "a no-op when all tables already exist. See sql/databricks_setup.sql for the DDL."
+    ),
+)
+def databricks_uc_tables_setup(context: AssetExecutionContext):
+    """CREATE TABLE IF NOT EXISTS for each UC table required by the RisingWave sinks."""
+    missing_vars = [k for k, v in {
+        "DBT_DATABRICKS_HOST":            DATABRICKS_HOST,
+        "DATABRICKS_AZURE_TENANT_ID":     TENANT_ID,
+        "DATABRICKS_AZURE_CLIENT_ID":     CLIENT_ID,
+        "DATABRICKS_AZURE_CLIENT_SECRET": CLIENT_SECRET,
+    }.items() if not v]
+    if missing_vars:
+        raise ValueError(f"Missing required env vars: {missing_vars}")
+
+    token = _get_token()
+    created, existed, failed = [], [], []
+
+    for table_fqn, ddl in _UC_TABLES:
+        # Probe first so we can report "created" vs "already existed" in metadata.
+        probe = _run_sql(token, f"SELECT 1 FROM {table_fqn} LIMIT 0")
+        if probe.get("status", {}).get("state") == "SUCCEEDED":
+            context.log.info(f"✓ {table_fqn} already exists — skipping")
+            existed.append(table_fqn)
+            continue
+
+        context.log.info(f"Creating {table_fqn}...")
+        result = _run_sql(token, ddl)
+        state = result.get("status", {}).get("state", "")
+        if state == "SUCCEEDED":
+            context.log.info(f"✓ Created {table_fqn}")
+            created.append(table_fqn)
+        else:
+            error = result.get("status", {}).get("error", {}).get("message", state)
+            context.log.error(f"✗ Failed to create {table_fqn}: {error}")
+            failed.append(f"{table_fqn}: {error}")
+
+    if failed:
+        raise RuntimeError(f"Failed to create {len(failed)} table(s):\n" + "\n".join(failed))
+
+    return {
+        "created":       MetadataValue.json(created),
+        "already_existed": MetadataValue.json(existed),
+    }
+
+def _apicurio_base() -> str:
+    url = os.environ.get("APICURIO_BASE_URL")
+    if not url:
+        raise ValueError("APICURIO_BASE_URL must be set in .env")
+    return url
 CASINO_ARTIFACT = "casinoroundinfo"
 BETS_ARTIFACT = "betinfo"
 
-MINIO_ENDPOINT = "http://minio-0:9301"
-MINIO_BUCKET = "hummock001"
-MINIO_ACCESS_KEY = "hummockadmin"
-MINIO_SECRET_KEY = "hummockadmin"
+ADLS_ACCOUNT_NAME = os.environ.get("ADLS_ACCOUNT_NAME", "stkznneurwpoccdddevstd")
+ADLS_CONTAINER = os.environ.get("ADLS_CONTAINER", "cont1")
 
 
 @asset(group_name="casino_prd_setup", description="Fetch .proto files from Apicurio schema registry (native v2)")
@@ -38,7 +178,7 @@ def casino_prd_proto_fetch(context: AssetExecutionContext):
         (BETS_ARTIFACT, "betinfo.proto"),
     ]:
         dest = PROTO_DIR / filename
-        url = f"{APICURIO_BASE}/{artifact}"
+        url = f"{_apicurio_base()}/{artifact}"
         try:
             context.log.info(f"Fetching {url} → {dest}")
             response = httpx.get(url, headers={"Accept": "text/plain"}, timeout=30, follow_redirects=True)
@@ -119,17 +259,21 @@ def casino_prd_proto_compile(context: AssetExecutionContext):
 @asset(
     group_name="casino_prd_setup",
     deps=[casino_prd_proto_compile],
-    description="Upload compiled proto descriptors to MinIO at s3://hummock001/proto/",
+    description="Upload compiled proto descriptors to ADLS Gen2 at cont1/proto/",
 )
 def casino_prd_proto_upload(context: AssetExecutionContext):
-    """Upload .pb/.desc files to MinIO so RisingWave can fetch them at CREATE TABLE time."""
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name="us-east-1",
+    """Upload .pb/.desc files to ADLS so RisingWave can fetch them at CREATE TABLE time."""
+    from azure.storage.blob import BlobServiceClient
+
+    account_key = os.environ.get("ADLS_ACCOUNT_KEY")
+    if not account_key:
+        raise RuntimeError("ADLS_ACCOUNT_KEY must be set in the environment")
+
+    client = BlobServiceClient(
+        account_url=f"https://{ADLS_ACCOUNT_NAME}.blob.core.windows.net",
+        credential=account_key,
     )
+    container = client.get_container_client(ADLS_CONTAINER)
 
     uploaded = []
     for filename in ["casinoroundinfodto.pb", "betinfo.desc"]:
@@ -137,17 +281,18 @@ def casino_prd_proto_upload(context: AssetExecutionContext):
         if not local_path.exists():
             raise FileNotFoundError(f"{local_path} not found. Run casino_prd_proto_compile first.")
 
-        s3_key = f"proto/{filename}"
-        context.log.info(f"Uploading {local_path} → s3://{MINIO_BUCKET}/{s3_key}")
-        s3.upload_file(str(local_path), MINIO_BUCKET, s3_key)
-        uri = f"s3://{MINIO_BUCKET}/{s3_key}"
+        blob_name = f"proto/{filename}"
+        context.log.info(f"Uploading {local_path} → {ADLS_CONTAINER}/{blob_name}")
+        with open(local_path, "rb") as f:
+            container.upload_blob(blob_name, f, overwrite=True)
+        uri = f"https://{ADLS_ACCOUNT_NAME}.blob.core.windows.net/{ADLS_CONTAINER}/{blob_name}"
         context.log.info(f"Uploaded {uri}")
         uploaded.append(uri)
 
     return {"uploaded_uris": MetadataValue.json(uploaded)}
 
 
-REDPANDA_SCHEMA_REGISTRY = "http://redpanda:8081"
+REDPANDA_SCHEMA_REGISTRY = os.environ.get("SCHEMA_REGISTRY_URL", "http://redpanda:8081")
 
 # Proto descriptor compiled by casino_prd_proto_compile
 CASINO_PROTO_PB = PROTO_DIR / "casinoroundinfodto.pb"
@@ -243,7 +388,7 @@ def _proto_descriptor_to_avro(pb_path: Path, root_message_fqn: str) -> dict:
     deps=["casino_prd_proto_compile"],
     description=(
         "Derive a full Avro schema from the CasinoRoundInfoDto Protobuf descriptor "
-        "and register it as casino_out_avro-value in Redpanda's built-in schema registry. "
+        "and register it as rw_poc_casino_out_avro-value in Redpanda's built-in schema registry. "
         "Idempotent — skips registration if the subject already exists."
     ),
 )
@@ -260,7 +405,7 @@ def casino_avro_schema_register(context: AssetExecutionContext):
     and fails with 40401 if the subject is absent. This asset must run before the dbt
     build step that creates sink_casino_avro_redpanda and src_casino_avro.
     """
-    subject = "casino_out_avro-value"
+    subject = "rw_poc_casino_out_avro-value"
 
     # --- 1. Check whether schema is already registered ---
     check = requests.get(
@@ -347,7 +492,7 @@ TRINO_VIEWS = [
 
 
 @asset(
-    group_name="trino",
+    group_name="casino_trino",
     deps=[
         # Depend on the two Iceberg sinks — they create the tables in Lakekeeper
         # that these views read from. The views must be created after the tables exist.

@@ -1,0 +1,66 @@
+table_name: query_rewrite_on
+main_dttm_col: day
+description: null
+default_endpoint: null
+offset: 0
+cache_timeout: null
+schema: sr_local_db_sr_local_db
+sql: SELECT date_trunc('day', window_start) AS day, country, SUM(viewers) AS viewers
+  FROM databricks_uc.sr_poc_external.funnel_summary_historical GROUP BY day, country
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: 1a83c900-76f0-4bc4-bb79-578400685b6e
+metrics:
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: day
+  verbose_name: null
+  is_dttm: true
+  is_active: true
+  type: DATETIME
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: country
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VAR_STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: viewers
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: LONGLONG
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+version: 1.0.0
+database_uuid: debd0510-5d66-4f6b-9765-ccea1342506c

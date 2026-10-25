@@ -1,0 +1,200 @@
+"""Tear down a reverse-ETL CDF sync so the demo can start again from a known state.
+
+For the POC: run reverse_etl_cdf_reset_job, then reverse_etl_cdf_setup_job, then the
+seed script. Setup recreates everything with the original schema (rid, id, value,
+updated_at), so columns added during a demo do not survive a reset. See
+docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md, section 14.3.
+
+Destructive, but only against the sync's own named objects, and only after the
+guard in _assert_reset_allowed() confirms every name matches the config's
+reset_name_prefixes allowlist and reset_schema.
+"""
+
+import time
+
+import psycopg2
+from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, op
+
+from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_debezium_sink import CONNECT_URL
+from .reverse_etl_resources import (
+    DatabricksResource,
+    HttpResource,
+    KafkaResource,
+    PostgresResource,
+    RisingWaveResource,
+)
+
+
+def _assert_reset_allowed(cfg: ReverseEtlSyncConfig) -> None:
+    """Refuse to run if any name this job drops stops looking like it belongs to
+    the sync (for example after a careless rename in the config). The allowlist is
+    its own config field, so widening it is a deliberate edit."""
+    names = [
+        cfg.kafka_topic,
+        cfg.connector_name,
+        cfg.postgres_table,
+        cfg.risingwave_table,
+        cfg.source_table,
+        cfg.state_table,
+    ]
+    if cfg.encoding == "avro":
+        names += [cfg.key_subject, cfg.value_subject]
+    bad = [n for n in names if not n.startswith(cfg.reset_name_prefixes)]
+    if bad or cfg.schema != cfg.reset_schema:
+        raise RuntimeError(
+            f"Refusing to reset {cfg.sync_name}: these do not match {cfg.reset_name_prefixes}: {bad}, "
+            f"schema {cfg.schema} (allowed: {cfg.reset_schema})"
+        )
+
+
+def build_reset_job(cfg: ReverseEtlSyncConfig):
+    # Dagster requires unique op names across all jobs in a repository, so each
+    # sync's ops carry its sync_name.
+    prefix = cfg.sync_name
+
+    @op(name=f"{prefix}_delete_connector")
+    def delete_connector(context: OpExecutionContext, http: HttpResource) -> None:
+        _assert_reset_allowed(cfg)
+        resp = http.delete(f"{CONNECT_URL}/connectors/{cfg.connector_name}", timeout=30)
+        if resp.status_code == 404:
+            context.log.info(f"{cfg.connector_name} did not exist")
+        elif resp.ok:
+            context.log.info(f"Deleted connector {cfg.connector_name}")
+        else:
+            raise RuntimeError(f"Deleting {cfg.connector_name} failed ({resp.status_code}): {resp.text[:500]}")
+
+    @op(name=f"{prefix}_drop_risingwave_table", ins={"start": In(Nothing)})
+    def drop_risingwave_table(context: OpExecutionContext, risingwave: RisingWaveResource) -> None:
+        conn = risingwave.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS {cfg.risingwave_table}")
+            conn.commit()
+        finally:
+            conn.close()
+        context.log.info(f"Dropped RisingWave table {cfg.risingwave_table} (if it existed)")
+
+    @op(name=f"{prefix}_drop_postgres_table", ins={"start": In(Nothing)})
+    def drop_postgres_table(context: OpExecutionContext, postgres: PostgresResource) -> None:
+        conn = postgres.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f'DROP TABLE IF EXISTS "{cfg.postgres_table}"')
+            conn.commit()
+        finally:
+            conn.close()
+        context.log.info(f"Dropped Postgres table {cfg.postgres_table} (if it existed)")
+
+    @op(name=f"{prefix}_delete_kafka_topic_and_group", ins={"start": In(Nothing)})
+    def delete_kafka_topic_and_group(context: OpExecutionContext, kafka: KafkaResource) -> None:
+        admin = kafka.admin_client()
+        group = cfg.consumer_group
+        topic = cfg.kafka_topic
+
+        # The group only becomes deletable once the connector's consumer has left it.
+        for attempt in range(6):
+            try:
+                admin.delete_consumer_groups([group])[group].result()
+                context.log.info(f"Deleted consumer group {group}")
+                break
+            except Exception as e:
+                text = str(e)
+                if "GROUP_ID_NOT_FOUND" in text:
+                    context.log.info(f"Consumer group {group} did not exist")
+                    break
+                if attempt == 5:
+                    raise RuntimeError(f"Could not delete consumer group {group}: {text[:300]}") from e
+                time.sleep(5)
+
+        if topic in admin.list_topics(timeout=20).topics:
+            admin.delete_topics([topic], operation_timeout=30)[topic].result()
+            context.log.info(f"Delete requested for topic {topic}; waiting for it to disappear")
+        # Topic deletes are asynchronous (about 6s observed); the setup job must not
+        # try to recreate it while it is still listed.
+        deadline = time.monotonic() + 90
+        while topic in admin.list_topics(timeout=20).topics:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"Topic {topic} still listed after 90s")
+            time.sleep(3)
+        context.log.info(f"Topic {topic} is gone")
+
+    @op(name=f"{prefix}_delete_registry_subjects", ins={"start": In(Nothing)})
+    def delete_registry_subjects(context: OpExecutionContext, http: HttpResource) -> None:
+        # Soft delete, then permanent: a soft-deleted subject still blocks re-registering a different schema.
+        for subject in (cfg.key_subject, cfg.value_subject):
+            url = f"{cfg.schema_registry_url}/subjects/{subject}"
+            for params in ({}, {"permanent": "true"}):
+                resp = http.delete(url, params=params, timeout=30)
+                if resp.status_code == 404:
+                    context.log.info(f"Registry subject {subject} did not exist ({params or 'soft'})")
+                elif resp.ok:
+                    context.log.info(f"Deleted registry subject {subject} ({'permanent' if params else 'soft'})")
+                else:
+                    raise RuntimeError(f"Deleting subject {subject} failed ({resp.status_code}): {resp.text[:500]}")
+
+    @op(name=f"{prefix}_drop_databricks_tables", ins={"start": In(Nothing)})
+    def drop_databricks_tables(
+        context: OpExecutionContext, postgres: PostgresResource, databricks: DatabricksResource
+    ) -> None:
+        # Cleared FIRST, before any Databricks call: the drops below can fail (for example a
+        # source table the service principal does not own), and a watermark left behind by a
+        # failed reset stalls the next sync silently once the source is recreated at version 0
+        # (docs/poc/REVERSE_ETL_EXISTING_TABLE.md, "The drop+recreate trap"). A watermark cleared
+        # while the source survives only makes the next sync backfill, which upserts by key.
+        # The state table lives in Postgres now (reverse_etl_sync_state); the cfg.state_fqn DROP
+        # below is legacy cleanup for state tables created before the move.
+        # The Postgres state table is SHARED by every sync (keyed by sync_name),
+        # so a reset must delete only this sync's rows — dropping the table
+        # would wipe every other sync's watermark too (bit us live: a delta
+        # reset erased the avro rows).
+        with postgres.connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        "DELETE FROM reverse_etl_sync_state WHERE sync_name = %s",
+                        (cfg.sync_name,),
+                    )
+                except psycopg2.errors.UndefinedTable:
+                    conn.rollback()
+                    context.log.info("reverse_etl_sync_state does not exist — nothing to clear")
+                else:
+                    conn.commit()
+        context.log.info(
+            f"Cleared {cfg.sync_name}'s watermark rows from reverse_etl_sync_state "
+            "(other syncs' watermarks untouched)"
+        )
+        # Dropping + recreating moves the managed tables to new storage locations,
+        # so any cached location now points at the DEAD tables — a sync right
+        # after this reset would pre-check "no new commits" against them (a green
+        # no-op that silently skips everything until the cache expires). The
+        # cache file lives in dagster_storage, shared with the sync's run workers.
+        databricks.clear_location_cache()
+        context.log.info("Cleared the sync's location cache (the tables are about to move)")
+        databricks.require_env()
+        token = databricks.token()
+        databricks.reset_meter()
+        for table in (cfg.source_fqn, cfg.state_fqn):
+            databricks.run_sql(token, f"DROP TABLE IF EXISTS {table}")
+            context.log.info(f"Dropped {table} (if it existed)")
+
+    @job(
+        name=cfg.reset_job,
+        description=(
+            f"Tear down the {cfg.sync_name} reverse-ETL CDF sync: the Debezium JDBC sink connector, "
+            "the RisingWave and Postgres tables, the Kafka topic and consumer group, the registry subjects (Avro), and the "
+            f"Databricks source and watermark tables. Then run {cfg.setup_job} and "
+            "the seed script for a fresh demo with the original schema."
+        ),
+        executor_def=in_process_executor,
+    )
+    def reset_job():
+        stopped = delete_connector()
+        rw_dropped = drop_risingwave_table(stopped)
+        pg_dropped = drop_postgres_table(rw_dropped)
+        kafka_gone = delete_kafka_topic_and_group(pg_dropped)
+        if cfg.encoding == "avro":
+            kafka_gone = delete_registry_subjects(kafka_gone)
+        drop_databricks_tables(kafka_gone)
+
+    return reset_job

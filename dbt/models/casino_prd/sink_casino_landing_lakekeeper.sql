@@ -1,6 +1,6 @@
 {{ config(
     materialized='sink',
-    tags=['lakekeeper']
+    tags=['lakekeeper', 'local_infra']
 ) }}
 
 CREATE SINK IF NOT EXISTS sink_casino_landing_lakekeeper

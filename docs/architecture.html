@@ -163,19 +163,17 @@ const NODES = [
   { id:'src-page',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_page',                  sub:'RW source (Kafka)',    b:'RW' },
   { id:'src-cart',        col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_cart',                  sub:'RW source (Kafka)',    b:'RW' },
   { id:'src-purchase',    col:2, type:'data', c:C.rw,     logo:L.rw,    lbl:'src_purchase',              sub:'RW source (Kafka)',    b:'RW' },
-  { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.rw,    lbl:'src_iceberg_countries',     sub:'Iceberg → RW source',  b:'ICEBERG' },
+  { id:'src-ice-country', col:2, type:'data', c:C.ice,    logo:L.rw,    lbl:'src_iceberg_countries',     sub:'RW source · live batch reads', b:'ICEBERG' },
 
   // COL 3 – Funnel join/aggregate
   { id:'mv-summary',      col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_summary',            sub:'MV · 1 min tumble',    b:'RW MV', tip:'1-minute window aggregation. Main source for sinks.' },
-  { id:'v-countries',     col:3, type:'data', c:C.rw,     logo:L.rw,    lbl:'rw_countries',              sub:'View · country snapshot',b:'RW' },
 
-  // COL 4 – Downstream of funnel (summary, training, countries view)
+  // COL 4 – Downstream of funnel (summary, training)
   { id:'mv-funnel',       col:3, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'hermes_features',      sub:'MV · feature windows', b:'RW MV', tip:'Joins Hermes tables in tumbling windows for viewers, carters, purchasers, and rates.', rowOff:-1 },
   { id:'mv-training',     col:4, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_training',           sub:'MV · + time & lag feats',b:'RW MV',tip:'+ hour, minute, day_of_week, lag_1..3 for ML.', rowOff:4 },
 
   // COL 5 – Views, UDFs, kafka sink, iceberg MV
   { id:'sink-kafka',      col:6, type:'data', c:C.kafka,  logo:L.rw,    lbl:'funnel_kafka_sink',         sub:'RW sink → Kafka topic', b:'KAFKA' },
-  { id:'v-country',       col:4, type:'data', c:C.rw,     logo:L.rw,    lbl:'funnel_summary_with_country',sub:'View · + country join', b:'RW' },
   { id:'udf',             col:3, type:'app',  c:C.py,     logo:L.rw,    lbl:'Python UDFs',               sub:'conversion, score, emoji…', b:'PYTHON', rowOff:-1 },
   { id:'v-enriched',      col:5, type:'data', c:C.rw,     logo:L.rw,    lbl:'funnel_enriched',           sub:'View · + Python UDFs',  b:'RW', tip:'UDF columns: conversion_category, funnel_score, rate_emoji, funnel_health.', rowOff:2 },
   { id:'mv-ice',          col:5, type:'data', c:C.rwmv,   logo:L.rw,    lbl:'funnel_for_iceberg',        sub:'MV · DOUBLE cast',     b:'RW MV', rowOff:3 },
@@ -191,7 +189,7 @@ const NODES = [
   { id:'ml-train',        col:5, type:'app',  c:C.ml,     logo:L.ml,    lbl:'Batch Training',            sub:'sklearn · RF + LR',     tip:'Batch training from funnel_training MV. Models → MinIO.', lane:'ml' },
   { id:'ice-rw-managed-funnel', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'rw_managed_funnel', sub:'Table - MinIO', b:'ICEBERG', tip:'RW-managed Iceberg table written in storage mode. Auto-compacted by dedicated compactor-1 service. Query via Trino datalake.public.', lane:'ice' },
   { id:'ice-hermes-feature-store', col:7, type:'data', c:C.ice, logo:L.ice, lbl:'iceberg_hermes_features', sub:'Table - MinIO', b:'ICEBERG', tip:'Hermes features sink target table in Iceberg.', lane:'ice' },
-  { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary_with_country',sub:'PostgreSQL table',       b:'PG', lane:'pg' },
+  { id:'pg-table',        col:7, type:'data', c:C.pg,     logo:L.pg,    lbl:'funnel_summary',            sub:'PostgreSQL table',       b:'PG', lane:'pg' },
   { id:'ice-countries',   col:1, type:'data', c:C.ice,    logo:L.ice,   lbl:'iceberg_countries',         sub:'Table - MinIO',      b:'ICEBERG', lane:'ice' },
 
   // COL 8 – ML serving
@@ -227,20 +225,18 @@ const EDGES = [
   // summary reads from sources directly
   ['src-page','mv-summary',C.rw], ['src-cart','mv-summary',C.rw], ['src-purchase','mv-summary',C.rw],
   // summary → further
-  ['mv-summary','mv-ice',C.rwmv], ['mv-summary','v-country',C.rwmv],
-  // countries
-  ['src-ice-country','v-countries',C.ice], ['v-countries','v-country',C.rw],
-  // enriched
-  ['v-country','v-enriched',C.rw], ['udf','v-enriched',C.py],
+  ['mv-summary','mv-ice',C.rwmv],
+  // enriched reads funnel_summary directly (no country join needed)
+  ['mv-summary','v-enriched',C.rwmv], ['udf','v-enriched',C.py],
   // MVs → sinks
-  ['mv-summary','sink-kafka',C.rwmv], ['v-country','sink-pg',C.pg],
+  ['mv-summary','sink-kafka',C.rwmv], ['mv-summary','sink-pg',C.rwmv],
   ['mv-ice','sink-rw-managed-iceberg',C.ice],
   ['mv-funnel','sink-hermes-iceberg',C.ice],
   // sinks → external
   ['sink-kafka','t-funnel',C.kafka], ['sink-pg','pg-table',C.pg],
   ['sink-rw-managed-iceberg','ice-rw-managed-funnel',C.ice],
   ['sink-hermes-iceberg','ice-hermes-feature-store',C.ice],
-  // Iceberg countries reference
+  // Iceberg countries SOURCE for live backend reads
   ['ice-countries','src-ice-country',C.ice],
   // external → consumers
   ['t-funnel','api-stream',C.kafka],
@@ -250,7 +246,8 @@ const EDGES = [
   ['ml-serving','api-predict',C.ml],
   // RW direct → API
   ['v-enriched','api-enriched',C.rw],
-  ['v-country','api-query',C.rw],
+  // backend uses inline JOIN: funnel_summary + src_iceberg_countries (SOURCE) via DataFusion
+  ['mv-summary','api-query',C.rwmv], ['src-ice-country','api-query',C.ice],
   // API → Frontend tabs (matching reordered positions)
   ['api-stream','tab-dashboard',C.kafka,'PUSH (SSE)'],
   ['api-query','tab-queries','#4ade80','PULL'], ['api-predict','tab-predictions','#60a5fa','POLL'],
@@ -816,10 +813,8 @@ function applyTab(which) {
       'src-ice-country',
       'ice-countries',
       'mv-summary',
-      'v-countries',
       'mv-training',
       'sink-kafka',
-      'v-country',
       'udf',
       'v-enriched',
       'mv-ice',

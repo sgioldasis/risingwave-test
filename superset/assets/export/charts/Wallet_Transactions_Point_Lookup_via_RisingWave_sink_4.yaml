@@ -1,0 +1,28 @@
+slice_name: "Wallet Transactions \u2014 Point Lookup [via RisingWave sink]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 6__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - transaction_id
+  - account_id
+  - type
+  - amount
+  - status
+  - event_time
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["event_time", false]'
+  time_range: No filter
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 7659cec0-3b9d-4f4c-8114-82df77689575
+version: 1.0.0
+dataset_uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed

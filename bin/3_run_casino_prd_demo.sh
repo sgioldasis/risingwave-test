@@ -6,8 +6,8 @@
 #   1. (Re)compile proto FileDescriptorSets if protoc is available
 #   2. Ensure RisingWave core nodes are up and accepting SQL on :4566
 #   3. Bring up Lakekeeper + MinIO + Trino + Grafana (idempotent)
-#   4. Upload proto FileDescriptorSets to MinIO (the sources read the schema
-#      from s3://hummock001/proto/ — see docs/PRODUCTION_CASINO_DEMO.md §3.2)
+#   4. Upload proto FileDescriptorSets to ADLS Gen2 (cont1/proto/) — the
+#      sources read schema.location via HTTPS + SAS token
 #   5. Create prod Kafka source `src_casino_prd` (prd2, cronus.casino.out.br)
 #   6. Create prod Kafka source `src_bets_br`    (prd4, bets-out-br)
 #   7. Create UC1 + UC2 MVs and Iceberg sinks
@@ -25,6 +25,33 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Load .env for Kafka bootstrap overrides (KAFKA_CASINO_BOOTSTRAP, KAFKA_BETS_BOOTSTRAP)
+if [ -f .env ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source .env
+    set +a
+fi
+
+: "${KAFKA_CASINO_BOOTSTRAP:?KAFKA_CASINO_BOOTSTRAP must be set in .env}"
+: "${KAFKA_BETS_BOOTSTRAP:?KAFKA_BETS_BOOTSTRAP must be set in .env}"
+: "${ADLS_ACCOUNT_NAME:?ADLS_ACCOUNT_NAME must be set in .env}"
+: "${ADLS_ACCOUNT_KEY:?ADLS_ACCOUNT_KEY must be set in .env}"
+: "${ADLS_PROTO_SAS_TOKEN:?ADLS_PROTO_SAS_TOKEN must be set in .env (run: bin/gen_adls_sas_token.sh)}"
+: "${ADLS_CONTAINER:?ADLS_CONTAINER must be set in .env}"
+KAFKA_SASL_USERNAME="${KAFKA_SASL_USERNAME:-}"
+KAFKA_SASL_PASSWORD="${KAFKA_SASL_PASSWORD:-}"
+
+if [ -n "$KAFKA_SASL_USERNAME" ]; then
+    USE_SASL="true"
+else
+    USE_SASL="false"
+fi
+
+ADLS_PROTO_BASE="https://${ADLS_ACCOUNT_NAME}.blob.core.windows.net/${ADLS_CONTAINER}/proto"
+PROTO_CASINO_URL="${ADLS_PROTO_BASE}/casinoroundinfodto.pb?${ADLS_PROTO_SAS_TOKEN}"
+PROTO_BETS_URL="${ADLS_PROTO_BASE}/betinfo.desc?${ADLS_PROTO_SAS_TOKEN}"
+
 PROTO_DIR="proto"
 CASINO_PROTO_FILE="${PROTO_DIR}/casinoroundinfodto.proto"
 CASINO_PROTO_PB="${PROTO_DIR}/casinoroundinfodto.pb"
@@ -36,31 +63,30 @@ SQL_BETS_SOURCE="sql/casino_prd_bets_source.sql"
 SQL_PIPELINE="sql/casino_prd_funnel_iceberg.sql"
 SQL_RAW_SINK="sql/casino_prd_raw_iceberg.sql"
 
-PSQL_URL="postgresql://root@localhost:4566/dev"
+: "${RISINGWAVE_HOST:?RISINGWAVE_HOST must be set in .env}"
+_RW_USER="${RISINGWAVE_USER:-root}"
+_RW_PASS="${RISINGWAVE_PASSWORD:-}"
+_RW_USERINFO="${_RW_USER}${_RW_PASS:+:${_RW_PASS}}"
+PSQL_URL="${PSQL_URL:-postgresql://${_RW_USERINFO}@${RISINGWAVE_HOST}:${RISINGWAVE_PORT:-4566}/${RISINGWAVE_DB:-dev}}"
 
-# MinIO connection (matches docker-compose minio-0 + the s3.* options in the
-# source SQL). Schema descriptors live under s3://${MINIO_BUCKET}/proto/.
-MINIO_HOST_ENDPOINT="http://localhost:9301"
-MINIO_ACCESS_KEY="hummockadmin"
-MINIO_SECRET_KEY="hummockadmin"
-MINIO_BUCKET="hummock001"
-
-# Upload a local descriptor to MinIO at proto/<basename>. Prefers the host
-# aws CLI (matches the documented flow); falls back to the mc client baked
-# into the minio-0 container so the script works with no host S3 tooling.
+# Upload a local proto descriptor to ADLS Gen2 cont1/proto/<basename>.
+# Requires az CLI on PATH and ADLS_ACCOUNT_NAME / ADLS_ACCOUNT_KEY in env.
 upload_proto() {
     local localfile="$1"
-    local key="proto/$(basename "$localfile")"
+    local blobname="proto/$(basename "$localfile")"
 
-    if command -v aws >/dev/null 2>&1; then
-        AWS_ACCESS_KEY_ID="$MINIO_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$MINIO_SECRET_KEY" \
-            aws --endpoint-url "$MINIO_HOST_ENDPOINT" s3 cp "$localfile" "s3://${MINIO_BUCKET}/${key}"
-    else
-        echo "host aws not found — uploading via mc inside minio-0"
-        docker exec minio-0 mc alias set local "http://localhost:9301" \
-            "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1 || true
-        docker exec -i minio-0 mc pipe "local/${MINIO_BUCKET}/${key}" < "$localfile"
+    if ! command -v az >/dev/null 2>&1; then
+        echo "ERROR: az CLI not found — install with: brew install azure-cli" >&2
+        exit 1
     fi
+    az storage blob upload \
+        --account-name   "$ADLS_ACCOUNT_NAME" \
+        --account-key    "$ADLS_ACCOUNT_KEY" \
+        --container-name "$ADLS_CONTAINER" \
+        --name           "$blobname" \
+        --file           "$localfile" \
+        --overwrite \
+        --only-show-errors
 }
 
 # psql wrapper that suppresses NOTICE-level messages on stderr while keeping
@@ -168,32 +194,29 @@ echo "=== [3/9] Lakekeeper + MinIO + Trino + Grafana + Redpanda ==="
 docker compose up -d lakekeeper-db lakekeeper-migrate lakekeeper lakekeeper-bootstrap trino prometheus-0 grafana-0 redpanda
 
 echo ""
-echo "=== [4/9] Upload proto descriptors to MinIO (s3://${MINIO_BUCKET}/proto/) ==="
-# minio-0 is brought up in step 2; wait for it to answer before uploading.
-echo -n "Waiting for MinIO on ${MINIO_HOST_ENDPOINT} "
-for i in $(seq 1 30); do
-    if curl -fsS "${MINIO_HOST_ENDPOINT}/minio/health/live" >/dev/null 2>&1; then
-        echo " ready."
-        break
-    fi
-    echo -n "."
-    sleep 2
-    if [ "$i" -eq 30 ]; then
-        echo ""
-        echo "ERROR: MinIO did not become healthy within 60s" >&2
-        exit 1
-    fi
-done
+echo "=== [4/9] Upload proto descriptors to ADLS (cont1/proto/) ==="
 upload_proto "$CASINO_PROTO_PB"
 upload_proto "$BETS_PROTO_DESC"
 
 echo ""
-echo "=== [5/9] Create source src_casino_prd (prd2 — cronus.casino.out.br) ==="
-psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$SQL_CASINO_SOURCE"
+echo "=== [5/9] Create source src_casino_prd (${KAFKA_CASINO_BOOTSTRAP} — cronus.casino.out.br, SASL=${USE_SASL}) ==="
+psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 \
+    -v "KAFKA_CASINO_BOOTSTRAP=${KAFKA_CASINO_BOOTSTRAP}" \
+    -v "USE_SASL=${USE_SASL}" \
+    -v "KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME}" \
+    -v "KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}" \
+    -v "PROTO_CASINO_URL=${PROTO_CASINO_URL}" \
+    -f "$SQL_CASINO_SOURCE"
 
 echo ""
-echo "=== [6/9] Create source src_bets_br (prd4 — bets-out-br) ==="
-psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$SQL_BETS_SOURCE"
+echo "=== [6/9] Create source src_bets_br (${KAFKA_BETS_BOOTSTRAP} — bets-out-br, SASL=${USE_SASL}) ==="
+psql_quiet "$PSQL_URL" -v ON_ERROR_STOP=1 \
+    -v "KAFKA_BETS_BOOTSTRAP=${KAFKA_BETS_BOOTSTRAP}" \
+    -v "USE_SASL=${USE_SASL}" \
+    -v "KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME}" \
+    -v "KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}" \
+    -v "PROTO_BETS_URL=${PROTO_BETS_URL}" \
+    -f "$SQL_BETS_SOURCE"
 
 echo ""
 echo "=== [7/9] Create UC1 + UC2 MVs and Iceberg sinks ==="
@@ -265,7 +288,7 @@ ORDER BY name;
 
 \echo ''
 \echo '--- Kafka output topics ---'
-\echo 'Run: docker exec redpanda rpk topic consume casino_real_bet_output -n 5'
+\echo 'Run: docker exec redpanda rpk topic consume rw_poc_casino_out_real_bet -n 5'
 SQL
 
 echo ""

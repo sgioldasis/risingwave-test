@@ -1,0 +1,20 @@
+FROM apache/hive:4.0.0
+
+ADD https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.4/postgresql-42.7.4.jar /opt/hive/lib/postgresql-42.7.4.jar
+ADD https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.5/hadoop-azure-3.3.5.jar /opt/hadoop/share/hadoop/common/lib/hadoop-azure-3.3.5.jar
+
+USER root
+
+RUN chmod 644 \
+	/opt/hive/lib/postgresql-42.7.4.jar \
+	/opt/hadoop/share/hadoop/common/lib/hadoop-azure-3.3.5.jar
+
+RUN mv /opt/hive/bin/schematool /opt/hive/bin/schematool.real \
+	&& printf '%s\n' \
+	   '#!/usr/bin/env bash' \
+	   'exec /opt/hive/bin/hive --auxpath /opt/hive/lib --service schemaTool "$@"' \
+	   > /opt/hive/bin/schematool \
+	&& chmod +x /opt/hive/bin/schematool
+
+COPY hive-metastore-entrypoint.sh /usr/local/bin/hive-metastore-entrypoint.sh
+RUN chmod +x /usr/local/bin/hive-metastore-entrypoint.sh

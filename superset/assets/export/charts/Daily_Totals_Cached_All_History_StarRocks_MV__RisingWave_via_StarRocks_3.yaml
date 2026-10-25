@@ -1,0 +1,35 @@
+slice_name: "Daily Totals (Cached) \u2014 All History [StarRocks MV + RisingWave,\
+  \ via StarRocks]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 5__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - label: day
+    sqlExpression: DATE(window_start)
+    expressionType: SQL
+  metrics:
+  - sum__viewers
+  - sum__carters
+  - sum__purchasers
+  adhoc_filters: []
+  row_limit: 1000
+  time_range: No filter
+  timeseries_limit_metric:
+    label: day
+    sqlExpression: DATE(window_start)
+    expressionType: SQL
+  order_desc: true
+  table_timestamp_format: '%Y-%m-%d'
+  show_cell_bars: true
+  color_pn: true
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 65f7df80-fc91-4300-a76d-965a8986f45e
+version: 1.0.0
+dataset_uuid: 4a913584-3059-465c-a79d-5980f3990ecf

@@ -1,0 +1,488 @@
+# Reverse-ETL live demo: Databricks -> Kafka -> Postgres and RisingWave
+
+Date: 2026-10-05. Branch: `feature-sr`.
+
+A script for demonstrating the reverse-ETL pipeline live, in about 10 minutes, driven from the Dagster UI.
+Changes made to a table in Databricks (inserts, updates, deletes, a new column) arrive in a Postgres table
+(through the Debezium JDBC sink) and in a RisingWave table, with the messages in Kafka in between.
+
+The steps use the **`avro` sync**, which sends Avro messages with the schemas in a registry. To demo the **JSON**
+version instead, use the `cdf` label everywhere `avro` appears (asset `reverse_etl_cdf_to_kafka`, tables
+`reverse_etl_cdf_target`, jobs `reverse_etl_cdf_*`) and skip the registry steps. Background and test results:
+[`REVERSE_ETL_DEBEZIUM_JDBC_SINK.md`](REVERSE_ETL_DEBEZIUM_JDBC_SINK.md) (sections 10, 14.1, 14.1.1).
+
+Each step was run separately while building the sync; this script was not rehearsed as one continuous pass, so do
+a dry run first.
+
+## What the audience sees
+
+```
+Databricks table (Change Data Feed)
+   -> Dagster asset or Databricks notebook: reads the changes since the last watermark
+   -> Kafka topic reverse_etl_avro_topic (Debezium-style before/after/op messages, Avro)
+        -> Debezium JDBC sink (Kafka Connect) -> Postgres table reverse_etl_avro_target
+        -> RisingWave table reverse_etl_avro_target (FORMAT DEBEZIUM ENCODE AVRO)
+   schemas: shared staging Apicurio registry (reverse_etl_avro_topic-key / -value)
+```
+
+## The components
+
+Names are for the `avro` sync. Every name is `reverse_etl_<label>_<role>`, so for `cdf` or `orders` replace `avro`.
+The demo also has a `delta` sync whose source table is created as **plain Delta** (`uniform: false` in its
+`defs.yaml` — Change Data Feed only, no UniForm/Iceberg/column-mapping properties): it shows the pipeline is
+UniForm-agnostic end to end. The trade-off is visible in StarRocks, whose `databricks_uc` catalog reads tables
+through UniForm's Iceberg metadata — `reverse_etl_delta_source` does not appear there.
+
+### Diagram
+
+![Reverse-ETL components](img/reverse_etl_components.png)
+
+The two readers of the topic are independent: each keeps its own place in it, so one can fall behind or stop
+without the other noticing (the demo in section 7 uses this).
+
+(The drawing is `img/reverse_etl_components.svg`, a plain-text SVG you can edit; the PNG is the same drawing
+exported at 2x with headless Chrome: `chrome --headless=new --force-device-scale-factor=2 --window-size=1500,1260
+--screenshot=img/reverse_etl_components.png file://…/reverse_etl_components.svg`. It is drawn by hand, not
+generated, because Mermaid laid the arrows out poorly. Updated 2026-10-16: Option A notes the sync's OSS Delta
+extraction (zero Databricks compute) and the Dagster panel notes the per-run compute meter.)
+
+An animated walkthrough of one change, step by step with a description of each step, is in
+[`reverse_etl_data_flow.html`](reverse_etl_data_flow.html) (open it in a browser). It also describes what the
+Databricks source table needs and how to define it. For the code behind it — config, assets, both sync
+backends, Kafka production, targets — see [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md).
+
+To run the steps from the page, start `./bin/3_run_reverse_etl_demo.sh` and open `http://localhost:4002/?sync=avro`
+If buttons fail with "Dagster's code server is unreachable" (typical after the Mac slept with the stack up —
+the code server kills itself when heartbeats stop), run `docker compose restart dagster-webserver dagster-daemon`
+and click again.
+(`cdf`, `orders` and `delta` work too — the page's top-bar table selector switches sync live and updates the
+URL, so `?sync=` is only needed for the first load). Step 1 makes an insert, update, delete, column add or
+column drop in Databricks, steps 2 to 5 and 8 run the sync
+(one Dagster run, so they cannot be launched separately), and steps 6 and 7 only check Kafka Connect, RisingWave and
+Postgres. The Reset and set up button at the top chains **three** runs: the reset job, the setup job (create
+tables and topic → a baseline sync → RisingWave → sink → seed rows — the setup's own sync intentionally runs
+*before* the seeds are inserted, baselining the watermark on the fresh table), and a **first data sync** whose
+job is to land those seeded rows in RisingWave and Postgres. After it, you are at a fully synced steady state.
+The Postgres check needs a devbox
+shell (`POSTGRES_PASSWORD`). Opened as a plain file, the page is the animation only.
+
+While a sync runs (2026-10-19): the diagram walks the sync's steps and, on success, continues through the
+downstream ones — the watermark move, the two readers, Postgres — before the green badges land; a failure
+stops at the watermark step with red badges. The walk's timing is the page's own (Dagster reports only run
+status), but the status chip and the run log show the run's **real** progress read back from the Dagster
+event log: the sync's per-chunk heartbeat (`Chunk 2/6: versions 2-2, 2 rows, 1 events (total 4)`) replaces
+the invented phase counter in the chip, and the heartbeat and schema-propagation lines (`Produced N event(s)
+to …`, `Added column(s) to the RisingWave table …`) appear in the run log as they are logged.
+
+Debezium appears three times: the messages on the topic are Debezium change events (`before`, `after`, `op`), the
+Kafka Connect connector is the Debezium JDBC sink, and RisingWave reads the topic with `FORMAT DEBEZIUM ENCODE AVRO`.
+
+Arrow colours show where an arrow starts: orange from Databricks, green from Dagster, blue from the other
+components (Kafka, the registry, Kafka Connect). Solid arrows are data, dotted arrows are lookups and checks. The sync is the two yellow nodes, and you run
+either one, never both for the same change, because they share the watermark. Option A is the Dagster asset
+(you run it in Dagster). Option B is the Databricks job, which Dagster's `reverse_etl_notebook_sync_job` starts.
+Both do the same steps (read the changes, register the schemas, produce the messages, move the watermark), so
+each has its own arrows to the source, the watermark, the topic (the Avro messages, solid arrow) and the
+registry (the schemas, dotted arrow).
+The health check (`sink_healthy`) is in the Dagster box; its dotted arrows go to Kafka Connect (connector state) and to
+the Kaizen STG box (consumer group lag).
+
+### Databricks (DEV workspace, `de_dev.sr_poc_external`)
+
+| Object | What it is |
+|---|---|
+| `reverse_etl_avro_source` | The Databricks table you change in the demo. It is also a UniForm table, so Iceberg readers can query it (see section 6). Change Data Feed is on, and `rid` is an identity column Databricks assigns on insert; it is the key everywhere downstream. |
+| `reverse_etl_avro_state` | The watermark table: one row per sync with the last table version already synced. The next run reads from the version after it. |
+| Notebook `reverse_etl_cdf_to_kafka` | The sync as a PySpark notebook, one notebook for every label (the `label` and `encoding` widgets choose the sync and the format). |
+| Databricks job `reverse_etl_notebook_sync` | Runs that notebook, with `label` and `encoding` as job parameters. It runs on the author's cluster and exists only in the DEV workspace. |
+
+### Dagster (http://localhost:3000)
+
+| Object | Kind | What it does |
+|---|---|---|
+| `reverse_etl_avro_table_setup` | asset | Creates the source and watermark tables if they do not exist. |
+| `reverse_etl_avro_topic_setup` | asset | Creates the Kafka topic if it does not exist. |
+| `reverse_etl_avro_to_kafka` | asset | **The sync.** Reads the change feed since the watermark, makes the Debezium-style events, registers the schemas, produces Avro messages, moves the watermark, and adds new columns to the RisingWave table first. Run this after every change. |
+| `reverse_etl_avro_risingwave_target` | asset | Creates the RisingWave table that reads the topic. |
+| `reverse_etl_avro_jdbc_sink` | asset | Registers the Kafka Connect connector and waits until it is RUNNING. |
+| `reverse_etl_avro_seed` | asset | Writes the three demo rows (insert, update, delete) to Databricks, as the last setup step. |
+| `sink_healthy` | asset check, on `reverse_etl_avro_jdbc_sink` | Reads the connector and task states from Connect and the sink's lag from Kafka (section 7). |
+| `reverse_etl_avro_setup_job` | job | Runs the assets above in order. Section 2. |
+| `reverse_etl_avro_reset_job` | job | Removes the connector, both target tables, the topic, the two registry subjects and the Databricks tables. Section 1 and 8. |
+| `reverse_etl_avro_sink_health_job` | job | Runs only the `sink_healthy` check. |
+| `reverse_etl_avro_sink_health_schedule` | schedule | Runs the health job every 5 minutes. |
+| `reverse_etl_notebook_sync_job` | job (shared by all syncs) | Adds any missing RisingWave columns, then triggers the Databricks job for the label in its run config. Section 6. |
+
+### Kafka, registry and Connect
+
+| Object | What it is |
+|---|---|
+| Topic `reverse_etl_avro_topic` | On Kaizen's staging Kafka cluster. Each message is one change: the key is `{rid}`, the value has `before`, `after`, `op` (`c`, `u` or `d`) and `source`, in Avro. |
+| Apicurio registry | The shared staging registry (anonymous read and write, used by other teams). Holds the schemas `reverse_etl_avro_topic-key` and `reverse_etl_avro_topic-value`, through its Confluent-compatible API (`/apis/ccompat/v7`), in the default group. Messages carry only a schema id; readers look the schema up. Every sync run registers both schemas again; an identical schema returns the existing version, so a version is added only when the schema changes. One wrinkle the sync handles for you: re-registering a schema that matches an OLDER version (the demo's second add → rename → drop → add cycle) does not make it the latest — the registry returns the old version's id and RisingWave then rejects the new column. The sync verifies the built schema IS the latest (deciding from the register's returned id — the registry's latest-version read lags its writes for a few seconds) and, when it deduped to an older version, soft-deletes the versions after it and registers again, so the version list can shrink by those retired numbers. |
+| Container `kafka-connect` | Kafka Connect with the Debezium JDBC sink plugin and the Confluent Avro converter, running locally. Its own bookkeeping topics are on the local Redpanda. |
+| Connector `reverse_etl_avro_sink` | Reads the topic (consumer group `connect-reverse_etl_avro_sink`) and upserts or deletes rows in Postgres, one task. Created by the `reverse_etl_avro_jdbc_sink` asset. |
+
+### Targets (local)
+
+| Object | What it is |
+|---|---|
+| Postgres, table `reverse_etl_avro_target` | On the host Postgres (database `postgres`). Created by the sink on the first message; the sink also adds new columns. |
+| RisingWave, table `reverse_etl_avro_target` | Reads the topic itself, with `FORMAT DEBEZIUM ENCODE AVRO`. The timestamp arrives as text in `updated_at`, and a generated `updated_at_ts` column is the real `timestamptz`. New columns are added by the sync asset before the messages that carry them. |
+
+### Where the code is
+
+| Piece | File |
+|---|---|
+| The sync's definition (name, columns, seed, `encoding: avro`) | `orchestration/defs/reverse_etl_avro/defs.yaml` |
+| The sync asset, schema building, producer | `orchestration/assets/reverse_etl_cdf_setup.py` |
+| Connector registration | `orchestration/assets/reverse_etl_debezium_sink.py` |
+| RisingWave table and column handling | `orchestration/assets/reverse_etl_risingwave_setup.py` |
+| Reset job | `orchestration/assets/reverse_etl_reset.py` |
+| Health check, job and schedule | `orchestration/assets/reverse_etl_health.py` |
+| Notebook trigger job | `orchestration/assets/reverse_etl_notebook_job.py` |
+| The notebook | `notebooks/reverse_etl_cdf_to_kafka.py` |
+| Connect image (Debezium plugin, Avro converter) | `Dockerfile.debezium-connect` |
+
+### Which run does what
+
+| You want to | Run |
+|---|---|
+| Sync a change from Databricks | `reverse_etl_avro_to_kafka` (or the notebook through `reverse_etl_notebook_sync_job`; use one trigger per change, they share a watermark) |
+| Build everything from scratch | `reverse_etl_avro_setup_job` |
+| Throw everything away | `reverse_etl_avro_reset_job`, then the setup job to start again |
+| Check the sink is alive | `reverse_etl_avro_sink_health_job` (or wait for the schedule) |
+
+## Before you start
+
+- The local stack is up (`./bin/1_up.sh`) and `kafka-connect` was built with the Avro converter
+  (`docker compose build kafka-connect`; this needs the VPN off, then `docker compose up -d kafka-connect`).
+- Credentials for Databricks and the Kafka cluster are in `.env`, as for the other syncs.
+- Dagster is open at http://localhost:3000.
+- Two shell shortcuts:
+  ```
+  alias pg='psql -h localhost -U postgres -d postgres'
+  alias rw='psql -h localhost -p 4566 -U root -d dev'
+  ```
+- A Databricks SQL editor open on the DEV workspace, for the table changes.
+- Optional: a DB client (for example DBeaver) on both databases. If it shows `updated_at_ts` with only three
+  fractional digits, that is its display format; see "Showing microseconds" below.
+
+## 1. Start clean (skip the first time)
+
+Run **`reverse_etl_avro_reset_job`**. It drops the connector, both target tables, the topic, the Databricks
+source and watermark tables, and the two registry subjects. It only touches objects named `reverse_etl_*` in the
+scratch schema `sr_poc_external`.
+
+Reset and setup are opposites. Reset only removes things, and refuses to run if a name it would drop does not match
+the allowed prefix and schema. Setup only builds: its table creation is skipped when a table already exists, so it
+never changes an existing table. That is why a change to the table definition (for example the UniForm properties)
+needs reset first, then setup. Columns added during a demo do not survive a reset.
+
+To reset and set up all four syncs (`avro`, `cdf`, `orders`, `delta`) at once, run `./bin/3_rebuild_reverse_etl.sh`. The
+syncs run in parallel, about 70 seconds in total instead of about 4 minutes one after another. It needs the VPN
+(staging Kafka and registry). Pass a sync name (for example `avro`) to rebuild only that one.
+
+## 2. Setup
+
+Run **`reverse_etl_avro_setup_job`**. It creates the Databricks source and watermark tables (Change Data Feed on,
+UniForm Iceberg reads on, with an identity `rid` key), the topic, the RisingWave table and the Debezium sink, and last
+seeds three rows into Databricks (an insert, an update and a delete). Run it on its own if nothing exists yet; run
+reset first if the objects are already there.
+
+Show:
+- The registry has the schema: `curl -s http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7/subjects/reverse_etl_avro_topic-value/versions`
+  returns `[1]`.
+- Both targets are empty: `select * from reverse_etl_avro_target;` in `pg` and in `rw`. The rows are waiting in
+  Databricks; nothing has been synced yet.
+
+## 3. First sync
+
+Materialize the asset **`reverse_etl_avro_to_kafka`**.
+
+How it reads the changes: by reconstructing them from Delta storage alone — for each commit version since the
+watermark, the sync diffs the snapshot at v-1 against the snapshot at v (`orchestration/assets/reverse_etl_delta_reader.py`,
+delta-rs reads with the service principal, no Spark, no warehouse; see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
+Before any of that, a no-op check reads the source's current version and the state table's watermark with delta-rs —
+when they are equal the run ends there. The check's token and storage locations come from a
+small disk cache, and the heavy imports sit at module level so they never land in the run's measured seconds.
+The state tables are plain Delta on purpose (no
+column mapping, deletion vectors off), because delta-rs rejects tables carrying those reader features. The change
+feed is read from the version after the watermark — one chunk at a time (10
+commits by default, tunable via `REVERSE_ETL_CDF_CHUNK_VERSIONS` in `.env`), so a
+backlog streams read → produce through the driver and memory stays bounded by
+what a chunk can hold — `chunk_versions × rows_per_commit` must stay ≤ ~100k (a
+1M-row *single commit* OOMs the
+run worker; spread over commits, 1M syncs fine — measured at 120s with the
+append fast-path) — and the watermark row is appended
+back to the append-only state table (the
+freshest row wins on the next read; one auditable row per sync). Each changed row comes back with its change
+type (`insert`, `delete`, `update_preimage`, `update_postimage`) and its
+commit version. The sync joins an update's old and new rows into one event with `before`, `after` and `op`
+(`c`, `u`, `d`). On the first run there is no watermark, so it starts at version 0 and reads the whole history.
+
+Show:
+- `select * from reverse_etl_avro_target order by rid;` in `pg` and in `rw`: two rows, the updated one and the
+  inserted one. The deleted row never appears.
+- In RisingWave, `updated_at_ts` is a real `timestamptz` with microseconds (generated from the Avro string).
+- In the asset's run metadata, `kafka_messages_raw` shows the messages as hex: a zero byte, the 4-byte schema id,
+  then the Avro payload. `kafka_messages` shows the same events as readable payloads.
+
+## 4. Change data
+
+In the Databricks SQL editor:
+
+```sql
+UPDATE de_dev.sr_poc_external.reverse_etl_avro_source
+SET value = 'changed', updated_at = current_timestamp() WHERE id = 1;
+```
+
+Run the sync asset again and query both targets: the update is applied in both. A delete works the same way
+(`DELETE FROM ... WHERE id = 1`): the row disappears from both. (The demo sources keep **deletion vectors off** at
+creation — a choice, not a requirement since 2026-10-20: the delta-rs reader now applies DV keep-masks per version,
+so a DV-enabled unpartitioned source syncs correctly. The old hazard was Spark's Change Data Feed, which made a
+1-row DELETE emit the whole touched file — 100,000 spurious delete events per delete on a bulk-loaded table — and
+the sync relayed that verbatim; see the deletion-vectors gotcha in
+[`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md) §11.)
+
+## 5. Add a column
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source ADD COLUMN country STRING;
+UPDATE de_dev.sr_poc_external.reverse_etl_avro_source
+SET country = 'GR', updated_at = current_timestamp() WHERE id = 2;
+```
+
+Run the sync asset. The registry versions become `[1,2]`, and `country` appears in Postgres and in RisingWave
+with its value. Worth saying: the sink adds the column by itself; RisingWave only accepts a new column once the
+registry schema has it, so the order is registry, then RisingWave, then messages, and the asset does that for you.
+Dropping a column is propagated too on `avro`/`cdf`/`orders` (`propagate_drops: true`) — see section 5b. A *type
+change* is still not propagated.
+
+## 5b. Drop a column (propagated)
+
+The demo op for this is in the page's change dropdown ("drop a column"); by hand it is:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source DROP COLUMN country;
+```
+
+Run the sync asset. The drop commit emits **no Change Data Feed rows**, so nothing is produced — but the sync
+diffs the source schema against the `last_schema` the state table recorded at the previous sync, sees the
+column vanished, and drops it from RisingWave (with its `<col>_ts` generated companion) and Postgres. The run
+metadata shows `columns_dropped`. Guards worth saying out loud: propagation only fires on a version change and
+only on evidence from the recorded schema (a partial schema read can never cascade into drops); it is on for
+every sync, and every source table is created with `delta.columnMapping.mode = 'name'` — column mapping is not
+a UniForm feature, it is simply what lets Delta accept `DROP COLUMN` (the plain-Delta `delta` source included).
+One caveat for hand-testing: the Postgres sink caches the table schema in
+memory, so if you drop a column in Postgres *manually* while the source still sends it, the task fails
+unrecoverably and needs `POST /connectors/<sink>/tasks/0/restart` — the automated path avoids this because
+events stop carrying the field before the sync drops the column. Add and drop in the *same* unsynced window is
+fine on the page's syncs too — the zero-DBU reconstruction diffs each commit version's snapshots, so schema
+changes inside the window never break the read (the chunking is by version count, not by schema change; the
+optional Databricks notebook path does differ there — sync between changes on it).
+
+## 5c. Rename a column (propagated, data-preserving)
+
+The demo op for this is in the page's change dropdown ("rename a column"). Demo columns only — the op flips the
+highest `new_col_<n>` to `renamed_col_<n>`, and clicking it again renames that back — so the natural cycle is
+*add a column* → sync → *rename a column* → sync → (optionally *rename a column* again) → *drop a column* →
+sync; the drop takes either form. The cycle repeats: a second add → rename after a drop works too (2026-10-19:
+the registry dedups the re-added column's schema against the first cycle's version and the sync now handles
+that — see the registry row above), even with the drop, re-add and rename in ONE unsynced window. Sync *between*
+the add and the rename — or add, populate and rename all in one unsynced window — works: with the demo's
+single-version chunks (`REVERSE_ETL_CDF_CHUNK_VERSIONS=1` in `.env`;
+the code default is 10) the sync pins each chunk's envelope to that chunk's schema (the populate's message
+carries the column under its old name, with the value), the watermark reaches every commit including the
+schema-only ones, and the sync diffs the schema the events were enveloped with against the final one — so the
+in-window rename propagates to the targets data-preserving in the SAME sync. (2026-10-19 fixed two defects that
+broke this window: empty chunks skipped the watermark update, and the envelope schema was resolved once for the
+whole run.) Clicking *rename* or *drop* with no demo column on the table is a green no-op — the run result says
+"Skipped — …" with the reason, not a failure. By hand, a configured column can be renamed too:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.reverse_etl_avro_source RENAME COLUMN country TO destination;
+```
+
+**Renames propagate as renames,** with the target data preserved. Delta's `delta.columnMapping.id` survives a
+rename while the name changes, so the sync can tell the two apart: the state table's `last_schema` now records
+each column's id alongside its name, and the zero-DBU reader pulls the current ids with delta-rs
+(`get_column_ids`, pinned to the synced version — delta-rs preserves the schema's field metadata, so this is a
+~0.2s local read, not a log-JSON parse; the ids are pinned to the same commit as the data for the same race
+reason as the schema pinning). A
+recorded column whose id reappears under a new name is a rename: RisingWave gets an `ADD COLUMN` + `UPDATE` copy
++ drop of the old name — v3.1 has no `RENAME COLUMN`, so this is how the data survives; the column moves to the
+end of the table. Postgres gets a native `RENAME COLUMN` — or, if the sink's schema evolution already created
+the new column (empty) while the rename was pending, a copy of the data across and a drop of the old column,
+which leaves the new column where the evolution put it (last) — and the sync restarts the sink connector's task
+right after either path: the JDBC sink caches the table schema
+in memory, and a rename performed behind its back would fail the next message exactly like a manual column
+drop. Both registrations keep every column the targets still have (a pending rename's old name included),
+because RisingWave rebinds the whole table against the registry's latest schema on every `ADD COLUMN` and
+rejects the statement while a table column is missing from it. The run metadata shows `columns_renamed`.
+Two caveats worth saying out loud: the warehouse/notebook path cannot read the ids (Databricks'
+`information_schema.columns` exposes no column metadata), so renames still propagate as drop + add there; and
+state rows written before this feature recorded names only, so the *first* rename after the upgrade can still
+land as drop + add — run one sync first so the state picks up the ids. Renaming a *configured* column (e.g.
+`RENAME COLUMN value TO description`) also needs the sync's `source_columns`/seed in its `defs.yaml` renamed
+with it, since the change ops build their SQL from it.
+
+## 5d. Bulk-load rows (delta sync)
+
+The page's change dropdown has "bulk insert rows (delta)" — selecting it reveals a **row-count input**
+(default 1,000,000). One click runs the make_change job, which executes **one INSERT statement per commit of at
+most 100,000 rows** (so 1,000,000 rows = ten statements; each commit chains off the previous one's `max(id)` via
+a scalar subquery, so repeated loads append after the last bulk row and the op works on a fresh table too). The
+per-commit ceiling is the point: with `REVERSE_ETL_CDF_CHUNK_VERSIONS=1` the sync reads one commit per chunk, and
+~100k rows is the proven driver ceiling — a 1M-row *single commit* OOMs the run worker. The total is only bounded
+by the input cap (10,000,000). This is the load behind the stress numbers: a sync afterwards processes 1,000,000
+events in ~2 minutes (10 read chunks of 100k rows, single Kafka flush, both targets converging).
+
+Two requirements are already wired: the commits need `REVERSE_ETL_CDF_CHUNK_VERSIONS=1` (set in `.env` — the
+default 10 would collect up to 1M rows in one read chunk and the sync would be OOM-killed; the op logs a warning
+if the setting is not 1), and the op is **delta-only** — the helper rejects it for the other syncs, whose schemas
+differ. Repeated loads grow the dataset; the reset flow clears everything when the demo is done.
+
+## 6. Run the sync from Databricks (optional)
+
+The same sync as a Databricks notebook, triggered from Dagster. Make one more change in the source table, then run
+the Dagster job **`reverse_etl_notebook_sync_job`** with this config:
+
+```yaml
+ops:
+  reverse_etl_trigger_notebook_sync:
+    config:
+      label: avro
+```
+
+It triggers the DEV job `reverse_etl_notebook_sync` with `label=avro` and `encoding=avro`. The change lands in both
+targets. The registry stays at its current version, because the notebook builds the identical schema.
+(The job only exists in the DEV workspace; STG has the notebook but no job yet.)
+
+### Read the same table from outside Databricks (optional)
+
+The source tables of `avro`, `cdf` and `orders` are created as UniForm tables: Delta with Iceberg
+metadata generated next to it. The `delta` sync's source is deliberately plain Delta — Change Data Feed plus
+column mapping, no UniForm — as the counterexample: the sync reads it exactly the same way, but it does not
+appear in `databricks_uc` below. The watermark (state) tables are plain Delta too, since OSS Delta writes their
+watermarks (see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5). The UniForm tables can be read by another engine
+through Unity Catalog's Iceberg REST API, with no copy
+and no pipeline. StarRocks already has that catalog (`databricks_uc`), so in a SQL client on StarRocks:
+
+```sql
+SELECT * FROM databricks_uc.sr_poc_external.reverse_etl_avro_source;
+```
+
+Change a row in Databricks, wait a few seconds, and run it again. Rules to know:
+- The Iceberg side is read-only, and its metadata is written asynchronously, so a new change can take seconds to a
+  minute to appear.
+- The table needs the UniForm properties from creation (column mapping `name`, deletion vectors off,
+  `delta.enableIcebergCompatV2`, `delta.universalFormat.enabledFormats = iceberg`). The setup job sets them; a table
+  created before this change has to go through reset and setup again, or Unity Catalog answers "not an Iceberg
+  compatible table".
+- The reader needs `EXTERNAL USE SCHEMA` on `sr_poc_external` (the `databricks_uc` catalog already has it).
+- Not tested yet: a long run of syncs on a UniForm table. A short run (inserts, an update, a delete) was verified.
+
+## 7. Show the sink health check (optional, about 5 minutes)
+
+Kafka Connect reports a connector as RUNNING even when its task has failed, and does not restart it, so a dead
+sink does not fail any Dagster run. Each sync has an asset check, `sink_healthy`, on its sink asset
+(`reverse_etl_avro_jdbc_sink`) that reads the connector and task states from Connect and the sink's lag from
+Kafka. A schedule runs it every 5 minutes through `reverse_etl_avro_sink_health_job`.
+
+**Where to see it in the Dagster UI** (http://localhost:3000):
+- **Asset page, Checks tab.** Left sidebar: **Catalog** (called **Assets** in some versions), search for
+  `jdbc_sink` and click `reverse_etl_avro_jdbc_sink`, then the **Checks** tab. It lists `sink_healthy` with the latest
+  result, severity and description; click it for the history.
+- **Lineage.** Left sidebar: **Lineage**, search `key:"reverse_etl_avro_jdbc_sink"`. The check is not a node of its
+  own: it shows as the **Asset checks** row on the sink asset's node (a status once the check has run, a dash if it
+  has not or the page is stale). Click the node for the side panel; **View in Asset Catalog** opens the asset page
+  with the Checks tab.
+- **Run page.** Open any run of `reverse_etl_avro_sink_health_job`: the result is an "asset check evaluation" entry
+  in the event log.
+- **A stale page shows a dash.** The page may have been loaded before the check existed: hard-refresh the browser tab,
+  or click **Reload definitions** (top right) and refresh.
+
+**Steps**
+1. **Show it healthy.** Launch `reverse_etl_avro_sink_health_job` (Jobs), or wait for the schedule, then open the Checks
+   tab: `sink_healthy` passed, "reverse_etl_avro_sink is healthy, lag 0".
+2. **Break the sink.** Pause the connector (a safe stand-in for a failed task):
+   ```
+   docker exec kafka-connect curl -s -X PUT localhost:8083/connectors/reverse_etl_avro_sink/pause
+   ```
+3. **Change data and sync, the key part of the demo.** Update a row of `reverse_etl_avro_source` in Databricks (as in
+   section 4) and run the sync asset `reverse_etl_avro_to_kafka`. **The run is green.** Compare the targets:
+   RisingWave has the change (it has its own consumer) and Postgres does not. The two disagree and nothing in the
+   sync run says so.
+4. **Let the check catch it.** Launch `reverse_etl_avro_sink_health_job` again, or wait up to 5 minutes. The check is
+   now red with an ERROR, "connector is PAUSED; task 0 is PAUSED". The job run itself still succeeds: a failed check
+   shows on the asset, it does not fail runs.
+5. **Make it healthy again.** Resume the connector:
+   ```
+   docker exec kafka-connect curl -s -X PUT localhost:8083/connectors/reverse_etl_avro_sink/resume
+   ```
+   Confirm both states are `RUNNING`:
+   ```
+   docker exec kafka-connect curl -s localhost:8083/connectors/reverse_etl_avro_sink/status
+   ```
+   The sink resumes from where it stopped, so Postgres applies what was produced while it was paused within a few
+   seconds (`select * from reverse_etl_avro_target order by rid`, compare with RisingWave). Then launch
+   `reverse_etl_avro_sink_health_job` again (or wait for the schedule): the check is green again.
+
+**If the task is `FAILED` rather than paused** (for example the one-off DNS error `No resolvable bootstrap urls`),
+restart the task instead of resuming the connector:
+```
+docker exec kafka-connect curl -s -X POST localhost:8083/connectors/reverse_etl_avro_sink/tasks/0/restart
+```
+Do not try to cause a real failure on the demo machine; pausing shows the same thing.
+
+**What to say**
+- This happened for real on 2026-10-07: a one-off DNS error left the `cdf` and `orders` sink tasks FAILED while
+  Connect still reported the connectors as RUNNING, and nobody noticed. The check found it on its first run.
+- The asset's own metadata is a snapshot of its last materialization: the setup run's `connector_state: RUNNING`
+  stays on the asset page even while the connector is paused. The check reads live from Connect, which is why it is needed.
+- The check only shows in the Dagster UI. Nobody is notified until an alert destination (Slack, email or incident.io)
+  is added, which is not built.
+- It also warns when the sink's lag is above 10,000 messages. That needs a large backlog, so it is not part of the
+  demo.
+
+## 8. Clean up
+
+Run **`reverse_etl_avro_reset_job`** again. It also removes the two registry subjects, so nothing is left in the
+shared staging registry.
+
+## Talking points
+
+- **Why Kafka in the middle:** one stream feeds several consumers (here Postgres and RisingWave), and each keeps
+  its own place in the topic.
+- **Deletes and updates are real:** the messages carry `op` (`c`, `u`, `d`) with `before` and `after`, so both
+  targets apply upserts and deletes rather than appending history.
+- **One table, three readers:** the source is Delta for the sync (Change Data Feed), and Iceberg for any other
+  engine (StarRocks here), without a second copy.
+- **Size (Avro vs JSON):** for one four-column update event, JSON is 1,726 bytes and Avro is 137, about 12.6 times
+  smaller. This is computed offline from one event, not measured on the topic; say so if asked.
+- **What Avro costs:** a registry dependency (the shared, anonymous staging Apicurio), harder debugging, and a
+  timestamp workaround in RisingWave (a `VARCHAR` column plus a generated `timestamptz` one). The recommendation
+  in the docs is still that `cdf` and `orders` stay on JSON; `avro` is a trial.
+- **Not shown or tested:** throughput at volume, a backfill, billions of rows, column drops with Avro, and the STG
+  workspace.
+
+## Showing microseconds
+
+A DB client may display `updated_at_ts` as `2026-10-05 10:09:16.675 +0300`. The stored value has microseconds (the
+`updated_at` string next to it shows `...16.675967Z`); the client is formatting to milliseconds.
+- Quick check: `select updated_at_ts::text from reverse_etl_avro_target;`.
+- DBeaver: Settings (`⌘,` on a Mac) -> Editors -> Data Editor -> Data Formats, then tick "Use native date/time
+  format" or set the Timestamp pattern to `yyyy-MM-dd HH:mm:ss.ffffff`; re-run the query.
+- `psql` shows the full value. The `+0300` is just the session time zone.
+
+## If something goes wrong
+
+- **Is the sink alive?** Each sink asset has a `sink_healthy` check (Checks tab of `reverse_etl_avro_jdbc_sink`),
+  run every 5 minutes; it fails if the connector or a task is not RUNNING (section 7 shows it and how to recover).
+- **Sink connector FAILED:** `docker exec kafka-connect curl -s localhost:8083/connectors/reverse_etl_avro_sink/status`
+  shows the cause. Two failures were seen: a schema registered in the wrong string form (`The given schema does
+  not match any schema under the subject ...`), fixed in the code, where a reset plus setup recovers; and a
+  transient DNS error (`No resolvable bootstrap urls`), fixed by `POST /connectors/<name>/tasks/0/restart` on Connect.
+- **A Dagster run fails at the Databricks step:** check the VPN and the credentials in `.env`.
+- **A column did not arrive in RisingWave:** it only fills a column from messages read after the column exists;
+  run the sync asset again after the column is added, and see section 10.1 of the sink doc.

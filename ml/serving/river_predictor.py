@@ -198,64 +198,75 @@ class RiverModelPredictor:
             print(f"Warning: Failed to fetch lag values: {e}")
             return defaults
     
-    def _fetch_moving_average(self, metric: str, history: int = 2) -> Optional[float]:
-        """Predict using rate-based extrapolation from the in-progress window.
-        
-        Core idea: measure the current event rate (events / elapsed seconds)
-        from the in-progress window and project to 60 seconds. This adapts
-        instantly to TPS changes.
-        
-        At the start of a new minute (< 5s elapsed), blends with the last
-        completed window for stability until enough data accumulates.
+    # Weight applied to each of the last 3 completed 20s windows, newest
+    # first. Set to 100% on the newest window on 2026-09-09 at the user's
+    # request (fastest possible reaction to a rate change) -- this means
+    # the prediction is now just the newest completed 20s window, pro-rated
+    # to a minute. Accepted trade-off: a single 20s window is a small
+    # sample, so this reintroduces some per-window sampling noise under
+    # steady traffic (the exact thing the earlier weighted-average version
+    # was damping).
+    WINDOW_WEIGHTS = [1.0, 0.0, 0.0]
+
+    def _fetch_moving_average(self, metric: str) -> Optional[float]:
+        """Predict the next minute as a weighted rolling average over the last 60s.
+
+        Every earlier version of this method extrapolated from a partial
+        sample of the 1-minute `funnel_summary` window in some form (raw
+        rate * elapsed, then various capped/damped blends of that rate with
+        a stable anchor). Each version traded off two things that turned
+        out to be in direct tension as long as extrapolation from a partial
+        minute was involved: react quickly to a genuine TPS change, or stay
+        free of noise-driven wobble from a small, Poisson-ish partial
+        sample. No amount of tuning the blend weight or elapsed floor
+        escaped that trade-off, because both properties were coming from
+        the same noisy per-poll extrapolation.
+
+        Fixed 2026-09-09 by using a different, better-suited data source
+        instead: `funnel` (dbt/models/funnel.sql) tumbles in 20-second
+        windows -- built for exactly this ("Create 20-second tumbling
+        windows for faster prediction updates", per its own header comment)
+        but never actually wired up here until now. Every data point going
+        into this is a finalized 20s count, not a noisy in-progress sample,
+        so there's no per-poll wobble source at all.
+
+        An unweighted sum of the last three windows (i.e. equal weights)
+        reacts to a genuine TPS change gradually over three ~20s cycles, as
+        stale windows age out one at a time. Weighting the newest window
+        more heavily (`WINDOW_WEIGHTS`) pulls the prediction toward a real
+        change harder on the very first cycle, while staying exactly
+        neutral when the three windows already agree (steady traffic).
         """
         try:
             conn = self._get_db_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute(f"""
-                SELECT {metric},
-                       EXTRACT(EPOCH FROM (NOW() - window_start)) as elapsed_seconds
-                FROM funnel_summary
-                WHERE {metric} IS NOT NULL
+                SELECT {metric}
+                FROM funnel
+                WHERE {metric} IS NOT NULL AND window_end < NOW()
                 ORDER BY window_start DESC
-                LIMIT 2
+                LIMIT 3
             """)
-            
             rows = cursor.fetchall()
             cursor.close()
             conn.close()
-            
+
             if not rows:
                 return None
-            
-            current_value = float(rows[0][0])
-            elapsed = float(rows[0][1]) if rows[0][1] else 60.0
-            
-            if elapsed >= 60.0:
-                # Current row is a completed window — just return it
-                return current_value
-            
-            # In-progress window: extrapolate current rate to full minute
-            if elapsed >= 5.0:
-                # Enough data to extrapolate reliably
-                projected = current_value * (60.0 / elapsed)
-            else:
-                # Very start of minute: not enough data to extrapolate
-                # Use last completed window as baseline
-                if len(rows) >= 2:
-                    last_completed = float(rows[1][0])
-                    if elapsed > 0:
-                        projected = current_value * (60.0 / elapsed)
-                        # Blend: ramp from 100% historical to 100% projected over 5 seconds
-                        blend = elapsed / 5.0
-                        projected = projected * blend + last_completed * (1.0 - blend)
-                    else:
-                        projected = last_completed
-                else:
-                    projected = current_value
-            
-            return projected
-            
+
+            values = [float(r[0]) for r in rows]  # newest first
+            weights = self.WINDOW_WEIGHTS[:len(values)]
+            weighted_avg = sum(v * w for v, w in zip(values, weights)) / sum(weights)
+
+            if metric in ('view_to_cart_rate', 'cart_to_buy_rate'):
+                # Ratios don't accumulate across windows like counts do --
+                # the weighted average is already the right shape.
+                return weighted_avg
+
+            # weighted_avg is a per-20s-window count; project to per-minute.
+            return weighted_avg * len(values)
+
         except Exception as e:
             print(f"Error fetching moving average: {e}")
             return None

@@ -166,13 +166,6 @@ else
     echo "✅ Frontend dependencies already installed (node_modules exists)"
 fi
 
-echo ""
-echo "=== Starting Sink Failure Watchdog ==="
-if ./bin/watch_sink_failures.sh; then
-    echo "✅ Sink failure watchdog started"
-else
-    echo "⚠ Failed to start sink failure watchdog"
-fi
 
 echo ""
 echo "✅ Docker Compose services started successfully!"

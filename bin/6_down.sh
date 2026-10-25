@@ -5,26 +5,6 @@
 
 set -e
 
-echo "=== Stopping Sink Failure Watchdog ==="
-WATCHDOG_PID_FILE="${SINK_WATCHDOG_PID_FILE:-/tmp/rw_sink_watchdog.pid}"
-if [ -f "$WATCHDOG_PID_FILE" ]; then
-    WATCHDOG_PID=$(cat "$WATCHDOG_PID_FILE" 2>/dev/null || true)
-    if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
-        echo "Stopping sink watchdog (PID: $WATCHDOG_PID)..."
-        kill "$WATCHDOG_PID" 2>/dev/null || true
-        sleep 1
-        if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
-            kill -9 "$WATCHDOG_PID" 2>/dev/null || true
-        fi
-        echo "✅ Sink watchdog stopped"
-    else
-        echo "No running sink watchdog process found"
-    fi
-    rm -f "$WATCHDOG_PID_FILE"
-else
-    echo "No sink watchdog PID file found"
-fi
-
 echo ""
 
 echo "=== Stopping Producer ==="
@@ -41,6 +21,20 @@ else
     echo "No producer process found"
 fi
 
+echo "=== Stopping Wallet Producer ==="
+if pgrep -f "scripts/wallet_producer.py" > /dev/null 2>&1; then
+    echo "Stopping wallet producer process..."
+    pkill -f "scripts/wallet_producer.py" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "scripts/wallet_producer.py" > /dev/null 2>&1; then
+        pkill -9 -f "scripts/wallet_producer.py" 2>/dev/null || true
+    fi
+    echo "✅ Wallet producer stopped"
+else
+    echo "No wallet producer process found"
+fi
+
 # Also ensure producer port is closed if it uses one (though default is usually logic-based)
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS - use lsof instead
@@ -48,6 +42,22 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 else
     # Linux syntax
     fuser -k 5000/tcp 2>/dev/null || true
+fi
+
+echo ""
+
+echo "=== Stopping Reverse-ETL Demo ==="
+if pgrep -f "scripts/reverse_etl_demo_server.py" > /dev/null 2>&1; then
+    echo "Stopping reverse-ETL demo helper..."
+    pkill -f "scripts/reverse_etl_demo_server.py" 2>/dev/null || true
+    sleep 1
+    # Force kill if still running
+    if pgrep -f "scripts/reverse_etl_demo_server.py" > /dev/null 2>&1; then
+        pkill -9 -f "scripts/reverse_etl_demo_server.py" 2>/dev/null || true
+    fi
+    echo "✅ Reverse-ETL demo helper stopped"
+else
+    echo "No reverse-ETL demo helper found"
 fi
 
 echo ""
@@ -331,20 +341,43 @@ fi
 
 echo ""
 echo "=== Stopping Docker Compose Services ==="
-echo "Running docker compose down --volumes from project root"
+echo "Running docker compose down (containers only, volumes handled below)"
 echo ""
 
-docker compose down --volumes
+docker compose down
 
-# Project volumes (postgres-0, minio-0, trino-data, hummock-fs-store, …) are removed by
-# `docker compose down --volumes` above — Compose creates them project-prefixed
-# (e.g. risingwave-test_postgres-0), so the old bare-name `docker volume rm` calls never
-# matched and were no-ops. Just prune any remaining dangling volumes for a clean slate.
+# Wipe every project volume EXCEPT superset-home (Superset's own admin
+# login, the StarRocks connection, saved charts/dashboards -- see
+# docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md for why this replaced
+# Metabase, since removed entirely 2026-09-12). None of that needs to be
+# reset just because RisingWave/MinIO/Postgres/etc. are being torn down for
+# a clean restart. Compose creates volumes project-prefixed (e.g.
+# risingwave-test_postgres-0); the old bare-name `docker volume rm` calls
+# never matched, so this resolves the real prefixed names via
+# `docker compose config --format json`.
+echo ""
+echo "=== Removing project volumes (keeping superset-home) ==="
+PROJECT_NAME=$(docker compose config --format json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('name',''))" 2>/dev/null)
+for v in $(docker compose config --volumes); do
+    if [ "$v" = "superset-home" ]; then
+        echo "Skipping superset-home (preserved)"
+        continue
+    fi
+    full_name="${PROJECT_NAME}_${v}"
+    if docker volume rm -f "$full_name" > /dev/null 2>&1; then
+        echo "✅ Removed volume $full_name"
+    elif docker volume rm -f "$v" > /dev/null 2>&1; then
+        echo "✅ Removed volume $v"
+    else
+        echo "⚠️  Could not remove volume for $v (may not exist)"
+    fi
+done
+
 echo ""
 echo "=== Pruning dangling volumes ==="
 docker volume prune -f 2>/dev/null || true
 
-echo "✅ All volumes cleaned up"
+echo "✅ Volumes cleaned up (superset-home preserved)"
 
 # Run fix_alembic script to ensure clean state for next startup
 echo ""
@@ -428,6 +461,13 @@ if [ -f "producer_direct.log" ]; then
     echo "Removing producer_direct.log..."
     rm -f "producer_direct.log"
     echo "✅ producer_direct.log removed"
+fi
+
+# Remove all log files from the logs/ directory
+if [ -d "logs" ]; then
+    echo "Removing logs/*.log..."
+    rm -f logs/*.log
+    echo "✅ logs/ directory cleaned"
 fi
 
 echo ""

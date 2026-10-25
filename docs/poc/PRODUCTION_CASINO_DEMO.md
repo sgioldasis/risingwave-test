@@ -2,14 +2,14 @@
 
 Real-time streaming pipeline that reads live casino and sportsbook data from Kaizen production Kafka clusters into RisingWave, computes two customer-level metrics, and lands results into Lakekeeper-managed Iceberg tables.
 
-> **Status:** working as of 2026-06-01. RisingWave **2.8.0** (upgraded from 2.7.4 — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19), Lakekeeper `latest-main`, MinIO local, Trino 453. No producer required — the pipeline consumes live production topics directly.
-> _Note: the two "in 2.7.4" limitations were re-verified on 2.8.0 (2026-06-01): UNNEST/watermark is **FIXED** (TUMBLE+EOWC now binds over UNNEST); snapshot expiration (§7) is **STILL BROKEN** (definitively tested — snapshots grow, oldest ages past `max_age`, nothing prunes). See §19._
+> **Status:** working as of 2026-06-13. RisingWave **v3.0.0** (upgraded from 2.7.4 → 2.8.0 → 3.0.0 — see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19, §20), Lakekeeper v0.12.3, MinIO local, Trino 481. No producer required — the pipeline consumes live production topics directly.
+> _Known limitations re-verified on v3.0.0 (2026-06-13): UNNEST/watermark **FIXED** (since 2.8.0); snapshot expiration **FIXED** (v3.0.0 — see §20); `CREATE VIEW` over Iceberg sources **broken by default** (DataFusion plan error — workaround: `SET enable_datafusion_engine = false`, auto-applied via dbt `pre_hook`); `enable_pk_index = 'true'` causes compute node crash (executor not yet shipped in v3.0.0)._
 >
 > **Architecture notes (read first):**
 > - Sources use `scan.startup.mode = 'latest'` — fast, history-free startup; the 5-minute rolling windows fill over time as live events arrive. `'earliest'` (full-history backfill) is available but slow/unpredictable on this cluster — run it off-demo, not interactively.
 > - Iceberg sinks use `connector = 'iceberg'` (write directly to Lakekeeper), **not** `ENGINE = iceberg` managed tables. The sink auto-creates the Iceberg table.
 > - The `rw_managed_*` Iceberg tables are queried via **Trino** (`datalake` catalog), not RisingWave — there are no RisingWave Iceberg read-sources.
-> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot **expiration did not** prune on 2.7.4 (see §7) — **not re-verified on 2.8.0** (the v2.8 docs claim it prunes; re-test pending).
+> - RisingWave-native compaction works (`enable_compaction` + `compaction.trigger_snapshot_count`); snapshot expiration also works as of v3.0.0 (was broken through v2.8.4 — see §7 and [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §20).
 >
 > **High-volume tuning:** for running this demo against the high-volume **Brazil** topics
 > (`cronus.casino.out.br`, `bets-out-br`) on a single-node stack — including the
@@ -847,15 +847,20 @@ SELECT operation, COUNT(*) FROM datalake.public.\"rw_managed_casino_real_bet\$sn
 | `compaction.trigger_snapshot_count` | `'5'` | Minimum snapshots before compaction fires (both conditions must be met) |
 | `compaction.write_parquet_compression` | `'zstd'` | Compacted output uses zstd compression |
 
-### Snapshot expiration — does NOT work in 2.7.4 OR 2.8.0 (known limitation)
+### Snapshot expiration — ✅ FIXED in v3.0.0
 
-`enable_snapshot_expiration = 'true'` (and `snapshot_expiration_max_age_millis` / `snapshot_expiration_retain_last`) are **accepted in the DDL but do not prune snapshots** with the Lakekeeper REST catalog. First seen on 2.7.4; **re-tested definitively on 2.8.0 (2026-06-01) and still broken** — with a 60s `max_age` set live on `sink_casino_real_bet`, the snapshot count grew (17→23) and the oldest snapshot aged past 14.5 min instead of being pruned to ~1–2 min. Snapshot count grows unbounded, no `expire` activity in logs, metadata files accumulate. **The 2.8 upgrade did not fix this** — see BRAZIL_WORKLOAD_TUNING.md §19 for the sampled data.
+`enable_snapshot_expiration = 'true'` now actually prunes snapshots with the Lakekeeper REST catalog
+as of RisingWave v3.0.0 (PRs #25700/#25723/#25749/#25902). It is **on by default** (1 h max age,
+retain last 12 snapshots) and compaction snapshots are protected from GC. The sinks already carry
+`enable_snapshot_expiration='true'` — no config change needed.
 
-**Impact is limited:** compaction (the thing that fixes query performance by merging data files) works. Expiration only removes old snapshot *metadata* — lightweight, cosmetic growth over a demo timeframe.
+**Historical note (2.7.4–2.8.4):** `enable_snapshot_expiration` and related options were accepted
+in the DDL but had no effect with the Lakekeeper REST catalog. Definitively tested on 2.8.0
+(2026-06-01): with `max_age='60000'` (1 min), snapshot count grew 17→23 and oldest aged past 14.5
+min — nothing pruned. See [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §19 for the sampled data. The Trino
+`expire_snapshots` workaround is no longer needed.
 
-**If you must expire snapshots:** the funnel pipeline's Spark-based `iceberg_compaction_job` (Dagster, on demand) runs `expire_snapshots` and works — it can be pointed at the casino tables if needed. We chose not to schedule it for casino (RisingWave-native only).
-
-> **Note:** `ALTER SINK SET` does not support changing compaction options in RisingWave 2.7.4. To change options on an existing sink, DROP and recreate it — Iceberg table data in Lakekeeper/MinIO is preserved.
+> **Note:** To change options on an existing sink, DROP and recreate it — Iceberg table data in Lakekeeper/MinIO is preserved.
 
 ### Indexes on serving MVs
 
@@ -879,11 +884,15 @@ Without these, queries filtering by `customer_id` perform full heap scans. Risin
 
 - **`scan.startup.mode = 'latest'` vs `'earliest'`.** The pipeline ships with `'latest'` (fast startup, tracks live events; rolling windows fill over time). `'earliest'` does a full-history backfill, but on this cluster it grinds under backpressure from UC2's rolling-window MVs and can take hours — use it off-demo only. The dbt source models use a `pre_hook` DROP so the mode change applies on rebuild.
 
+- **`CREATE VIEW` over Iceberg source fails in v3.0.0 with DataFusion enabled.** `enable_datafusion_engine` defaulted to `true` in v3.0.0. `CREATE VIEW ... AS SELECT * FROM <iceberg_source>` fails with `Expected RisingWave plan in BatchPlanChoice, but got DataFusion plan`. Workaround: `SET enable_datafusion_engine = false` before the `CREATE VIEW`. Applied automatically in dbt via `pre_hook`. Bug filed: https://github.com/risingwavelabs/risingwave/issues/25968.
+
+- **`enable_pk_index = 'true'` crashes compute node in v3.0.0.** The frontend planning for deletion-vector upserts (PR #25346) shipped in v3.0.0 but the streaming executor did not. The sink DDL is accepted, then the compute node crashes seconds later. Do not use `enable_pk_index` until a future v3.x patch.
+
 - **`connector='iceberg'` sinks, not `ENGINE = iceberg`.** `enable_compaction` is silently ignored on `ENGINE = iceberg` managed tables in 2.7.4. Use `connector='iceberg'` sinks with `create_table_if_not_exists='true'`; query the resulting tables via Trino, not RisingWave.
 
 - **`commit_checkpoint_interval` counts checkpoints, not seconds.** Multiply by `barrier_interval_ms` (2000 ms here) to estimate the real cadence: `20 × 2000 ms ≈ ~30–40 s`. See §7.
 
-- **Snapshot expiration doesn't prune in 2.7.4 or 2.8.0.** `enable_snapshot_expiration` is accepted but ineffective with the REST catalog (re-tested definitively on 2.8). Compaction works; expiration doesn't. See §7.
+- **Snapshot expiration works as of v3.0.0.** Was broken through v2.8.4 (accepted in DDL, no effect with REST catalog). Fixed in v3.0.0 — see §7.
 
 - **Grafana needs the `trino-datasource` plugin + dollar-free views.** Trino's metadata tables (`table$snapshots`, `table$partitions`) contain a `$`, which Grafana interprets as a variable. The `casino_trino_views` Dagster asset creates dollar-free views: `casino_real_bet_snapshots` / `turnover_pct_snapshots` (feed the snapshot-count and operations panels) and `casino_real_bet_rowcount` / `turnover_pct_rowcount` (feed the "Iceberg Rows" panels via `SUM(record_count)` over `$partitions` — instant metadata reads instead of a `COUNT(*)` full scan; see [BRAZIL_WORKLOAD_TUNING.md](BRAZIL_WORKLOAD_TUNING.md) §11). The plugin auto-installs via `GF_INSTALL_PLUGINS=trino-datasource`, and Trino needs `http-server.process-forwarded=true` to accept Grafana's proxied requests.
 
@@ -1019,7 +1028,7 @@ UC2 assets show UC1 assets (`mv_casino_transactions_full`) as upstream dependenc
 
 #### Setup assets (`casino_prd_setup` group)
 
-Three plain Python `@asset` functions in `orchestration/assets/casino_prd_setup.py` handle the prerequisites that must run before any dbt model:
+Python `@asset` functions in `orchestration/assets/casino_prd_setup.py` handle the prerequisites that must run before any dbt model:
 
 **`casino_prd_proto_fetch`**
 Fetches `.proto` source files from the Apicurio schema registry native v2 endpoint using `httpx`. Writes to `proto/casinoroundinfodto.proto` and `proto/betinfo.proto`. Falls back gracefully if the registry is unreachable (e.g. no VPN) and the `.proto` files already exist on disk — in that case it logs a warning and continues. Fails explicitly only if the registry is unreachable AND no local file exists.
@@ -1045,42 +1054,50 @@ proto/casinoroundinfodto.pb → s3://hummock001/proto/casinoroundinfodto.pb
 proto/betinfo.desc          → s3://hummock001/proto/betinfo.desc
 ```
 
-#### dbt assets (`casino_uc1` and `casino_uc2` groups)
+**`databricks_uc_tables_setup`**
+Ensures all five Unity Catalog Iceberg tables exist before the dbt build creates the RisingWave sinks that write into them. For each table it probes with `SELECT 1 ... LIMIT 0` first and only runs `CREATE TABLE IF NOT EXISTS` if the table is absent — so it is a no-op on warm restarts. The DDL (from `sql/databricks_setup.sql`) includes `TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')`. All dbt models tagged `databricks` automatically depend on this asset via `CustomDagsterDbtTranslator`.
 
-Two `@dbt_assets`-decorated functions in `orchestration/definitions.py` wrap the dbt models. The `select=` parameter on the decorator tells Dagster which dbt models belong to this asset function, and also scopes the dbt CLI invocation:
-
-```python
-@dbt_assets(manifest=dbt_project.manifest_path,
-            select="tag:casino_uc1",
-            dagster_dbt_translator=custom_translator)
-def casino_uc1_dbt_assets(context, dbt):
-    yield from dbt.cli(["build"], context=context).stream()
-
-@dbt_assets(manifest=dbt_project.manifest_path,
-            select="tag:casino_uc2",
-            dagster_dbt_translator=custom_translator)
-def casino_uc2_dbt_assets(context, dbt):
-    yield from dbt.cli(["build"], context=context).stream()
+```
+de_dev.rw_poc.rw_casino_transactions   (sink_casino_transactions_databricks)
+de_dev.rw_poc.rw_sportsbook_bets       (sink_sportsbook_bets_databricks)
+de_dev.rw_poc.rw_casino_turnover_90d   (sink_casino_turnover_90d_databricks)
+de_dev.rw_poc.rw_casino_landing        (sink_casino_landing_databricks)
+de_dev.rw_poc.rw_sportsbook_landing    (sink_sportsbook_landing_databricks)
 ```
 
-The `CustomDagsterDbtTranslator` assigns assets to groups based on their dbt tags:
-- Models tagged `casino_uc1` → group `casino_uc1`
-- Models tagged `casino_uc2` only → group `casino_uc2`
+#### dbt assets
+
+A single `@dbt_assets`-decorated function in `orchestration/definitions.py` wraps all casino dbt models. The `CustomDagsterDbtTranslator` assigns assets to groups based on their dbt tags:
+
+| dbt tag | Dagster group |
+|---|---|
+| `casino_prd_setup` | `casino_prd_setup` |
+| `casino_uc1` | `casino_uc1` |
+| `casino_uc2` | `casino_uc2` |
+| `casino_avro` | `casino_avro` |
+| `databricks` | `casino_databricks` |
+| `lakekeeper` | `casino_lakekeeper` |
+
+The translator also auto-wires upstream asset dependencies:
+- Models materialized as `kafka_table` with `casino_uc1`/`casino_uc2` tags → depend on `casino_prd_proto_upload`
+- Models materialized as `sink` or `kafka_table` with `casino_avro` tag → depend on `casino_avro_schema_register`
+- Models materialized as `sink` with `databricks` tag → depend on `databricks_uc_tables_setup`
 
 The existing `realtime_funnel_dbt_assets` function is scoped with `exclude="casino_prd"` so casino models don't appear in the funnel asset graph.
 
 #### Jobs
 
-A single end-to-end job is defined for the casino pipeline:
-
 | Job | What it runs | When to use |
 |-----|-------------|-------------|
-| `casino_prd_full_job` | proto setup → `casino_prd_dbt_assets` (UC1 + UC2) → `casino_trino_views` | **Full demo run — single click** |
+| `casino_prd_full_job` | `casino_prd_setup` → dbt (UC1 + UC2) → `casino_trino_views` → `databricks_turnover_latest_view` | **Full demo run — single click** |
+| `casino_landing_to_bronze_job` | `casino_landing_to_bronze` | Decode raw Protobuf bytes from `rw_casino_landing` into typed bronze table via Databricks notebook |
+| `casino_datafusion_job` | `casino_datafusion_demo` | OLAP analytics on Lakekeeper Iceberg tables via RisingWave's DataFusion engine |
 
 `casino_prd_full_job` is the entry point for demos. Dagster enforces the correct execution
-order automatically: the proto assets complete before the dbt build starts, UC1 models
-(including `mv_casino_transactions_full`) are created before the UC2 models that depend on them,
-and the Trino metadata views are created last once the Iceberg sinks have committed.
+order automatically: UC tables are created first, proto assets upload before the dbt build
+starts, UC1 models (including `mv_casino_transactions_full`) are created before the UC2
+models that depend on them, and the Trino metadata views are created last once the Iceberg
+sinks have committed.
 
 To run just part of the pipeline ad-hoc (e.g. re-upload proto descriptors after a schema
 change), materialize the relevant assets directly from the Dagster asset graph — no

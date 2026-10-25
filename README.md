@@ -1,6 +1,10 @@
+<!-- markdownlint-disable-file -->
+
 # Real-Time E-Commerce Conversion Funnel
 
-This project demonstrates a real-time e-commerce conversion funnel using RisingWave, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. It tracks user behavior through page views, cart events, and purchases to calculate conversion rates in real-time with predictive analytics.
+This project demonstrates a validated real-time e-commerce conversion funnel using RisingWave, StarRocks, dbt, Apache Kafka (Redpanda), Apache Iceberg, and ML predictions. The dashboard path is now served through StarRocks as the unified hot/cold query layer, with RisingWave handling stream processing and the live Kafka/SSE path preserved for real-time updates.
+
+The current runtime validation confirms the serving layer is operating as intended: the StarRocks-backed query path resolves real funnel data, the dashboard API reports ready status, and the hot/cold serving views are populated for live use. Remaining work is limited to production readiness checks for latency, resilience, and operational guardrails.
 
 Quick demo SQL reference: [docs/DEMO_OPERATIONS_SQL.md](docs/DEMO_OPERATIONS_SQL.md)
 
@@ -53,6 +57,7 @@ Casino production demo (UC1/UC2): [docs/poc/PRODUCTION_CASINO_DEMO.md](docs/poc/
 | Technology | Purpose |
 |------------|---------|
 | **RisingWave** | Stream processing database for real-time analytics |
+| **StarRocks** | Always-on OLAP serving layer for Iceberg analytics |
 | **dbt** | Data transformation and modeling |
 | **Apache Kafka (Redpanda)** | Event streaming platform |
 | **Apache Iceberg** | Open table format for data lake storage |
@@ -67,6 +72,16 @@ Casino production demo (UC1/UC2): [docs/poc/PRODUCTION_CASINO_DEMO.md](docs/poc/
 | **scikit-learn** | Batch ML model training (fallback) |
 | **DuckDB** | Local analytics on Iceberg data |
 | **Spark** | Interactive notebook for data analysis |
+
+### StarRocks
+
+StarRocks starts with the default Compose stack and exposes its MySQL protocol on port `9030` and UI/API on port `8030`. The startup path requires the Databricks/ADLS variables documented in [docs/poc/STARROCKS_OPTIONAL_PROFILE_PLAN.md](docs/poc/STARROCKS_OPTIONAL_PROFILE_PLAN.md).
+
+```bash
+devbox shell
+./bin/1_up.sh
+./bin/4_run_starrocks.sh
+```
 
 ## Project Structure
 
@@ -152,7 +167,24 @@ trino/                            # Trino configuration
 
 ### Use Case 1: Push Model - Modern Dashboard via Kafka Sink
 
-The modern dashboard uses a **push architecture** where data flows from RisingWave to the dashboard entirely through Kafka, without the backend ever querying RisingWave directly.
+The modern dashboard uses a push architecture for live updates: data flows
+from RisingWave to the dashboard through Kafka. On-demand historical and
+aggregate queries use StarRocks with a query-time hot overlay from the
+RisingWave JDBC catalog and cold history from the unified materialized view.
+The backend also derives enrichment and health metrics in StarRocks SQL, so
+ad hoc results do not wait for the asynchronous MV refresh.
+
+The current runtime validation supports StarRocks as the dashboard serving
+layer across real-time RisingWave data and historical Databricks Iceberg data.
+The serving path is functionally validated, with live data flowing through the
+StarRocks query surface and the dashboard API reporting ready status.
+
+The remaining production gates are explicit and bounded: latency and
+concurrency benchmarks, recovery under restarts and catalog outages, replay and
+late-arrival validation, and operational guardrails for monitoring, alerting,
+and runbooks. The modern dashboard bootstrap uses StarRocks for the country
+reference table through the existing `lakekeeper_local` catalog; Trino is not
+required for the dashboard runtime or setup job.
 
 #### Architecture
 
@@ -202,7 +234,8 @@ FORMAT PLAIN ENCODE JSON (
 This sink publishes every update from the `funnel_summary` materialized view to the Kafka `funnel` topic in real-time.
 
 **2. Dashboard Backend** ([`modern-dashboard/backend/api.py`](modern-dashboard/backend/api.py))
-- **No RisingWave Connection**: The backend NEVER connects to RisingWave
+- **StarRocks SQL Serving**: Ad hoc, enriched, and health queries use StarRocks
+- **Hot/Cold Query Overlay**: Recent windows are read through StarRocks JDBC; older history comes from the unified MV
 - **Kafka Consumer Thread**: Background thread consumes from `funnel` topic on startup
 - **In-Memory Cache**: Stores latest funnel data and history (last 1000 records)
 - **Deduplication Logic**: Handles materialized view retractions by keeping only latest per window
@@ -215,11 +248,11 @@ This sink publishes every update from the `funnel_summary` materialized view to 
 - Displays 3D funnel visualization and real-time metrics
 - No direct connection to Kafka or RisingWave
 
-#### Why Push Model?
-- **Decoupling**: Dashboard backend doesn't need RisingWave credentials
+#### Why Push Model for Live Data?
+- **Decoupling**: Live updates do not poll RisingWave
 - **Scalability**: Multiple dashboard instances can consume from Kafka independently
 - **Resilience**: Dashboard can survive temporary RisingWave outages (Kafka buffers data)
-- **Performance**: No query load on RisingWave from dashboard users
+- **Performance**: Live dashboard traffic does not add polling load to RisingWave
 
 ---
 
@@ -1063,6 +1096,10 @@ From the project **root** folder, run:
 ./bin/4_run_modern.sh
 ```
 
+Run the launcher from an active Devbox shell. The project provides Node.js 22
+through Devbox so the Vite frontend does not depend on the host Homebrew Node
+installation.
+
 This will start:
 - **Backend**: FastAPI server at http://localhost:8000
 - **Frontend**: React dev server at http://localhost:4000
@@ -1075,6 +1112,7 @@ This will start:
 - **Predictions Tab**: ML predictions with comparison charts
 - **Dark Theme**: Modern dark UI with RisingWave branding
 - **Kafka Consumer**: Backend consumes from Kafka for real-time updates
+- **Unified Historical Queries**: StarRocks serves ad hoc hot/cold analytics
 
 ## Architecture Overview
 

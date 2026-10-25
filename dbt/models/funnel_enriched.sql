@@ -7,10 +7,8 @@
     }
 ) }}
 
--- Enriched funnel with Python UDF-enhanced metrics
--- Based on funnel_summary_with_country, aggregated across all countries
--- NOTE: Using a regular VIEW instead of MATERIALIZED_VIEW to avoid RisingWave
--- "failed to collect barrier" error with Python UDFs in streaming context.
+-- Enriched funnel with Python UDF-enhanced metrics, aggregated across all countries.
+-- NOTE: Using a regular VIEW to avoid RisingWave "failed to collect barrier" with Python UDFs.
 WITH country_aggregated AS (
     SELECT
         window_start,
@@ -18,10 +16,9 @@ WITH country_aggregated AS (
         SUM(viewers) as viewers,
         SUM(carters) as carters,
         SUM(purchasers) as purchasers,
-        -- Calculate weighted average rates across countries
         SUM(viewers * view_to_cart_rate) / NULLIF(SUM(viewers), 0) as view_to_cart_rate,
         SUM(carters * cart_to_buy_rate) / NULLIF(SUM(carters), 0) as cart_to_buy_rate
-    FROM {{ ref('funnel_summary_with_country') }}
+    FROM {{ ref('funnel_summary') }}
     GROUP BY window_start, window_end
 )
 SELECT

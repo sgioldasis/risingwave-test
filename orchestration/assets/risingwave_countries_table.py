@@ -28,11 +28,11 @@ def _get_trino_connection():
 def _get_risingwave_connection():
     """Get connection to RisingWave."""
     return psycopg2.connect(
-        host="frontend-node-0",
-        port=4566,
-        database="dev",
-        user="root",
-        password="",
+        host=os.environ.get("RISINGWAVE_HOST",     "frontend-node-0"),
+        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
+        database=os.environ.get("RISINGWAVE_DB",   "dev"),
+        user=os.environ.get("RISINGWAVE_USER",     "root"),
+        password=os.environ.get("RISINGWAVE_PASSWORD", ""),
     )
 
 

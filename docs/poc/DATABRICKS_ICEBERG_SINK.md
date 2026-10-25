@@ -1,10 +1,17 @@
-# Databricks Iceberg Sinks — RisingWave Casino PoC
+---
+title: Databricks Iceberg Sinks for the RisingWave Casino PoC
+description: Architecture, configuration, troubleshooting, and compatibility guidance for RisingWave sinks to Databricks managed Iceberg tables
+ms.date: 2026-09-02
+ms.topic: troubleshooting
+---
 
 RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) into **Databricks Unity Catalog Iceberg tables** running in parallel to the existing Lakekeeper sinks. This document records the full integration path, every gotcha encountered, and the rationale for each decision.
 
-> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see `DATABRICKS_ICEBERG_READ.md` §6.
+> **Status: WORKING ✅ (2026-06-05).** Stable continuous commits confirmed. Architecture redesigned (2026-06-05): sinks now write **flat event facts with a JSON properties bag** (one table per Kafka topic) rather than aggregated MVs, aligning with lakehouse best practices. Root cause of original stall was `type = 'upsert'` — Unity Catalog does not support Iceberg delete files. Fix: `type = 'append-only'` + `force_append_only = 'true'`. See §3 for final sink SQL, §15 for infrastructure setup, and §16 for the full investigation history. For consumer queries (RisingWave, Databricks SQL, Trino), see [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6.
 >
-> **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and `DATABRICKS_ICEBERG_READ.md` §6 for the view.
+> **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 for the view.
+>
+> **Update (2026-09-02):** Newly created managed Iceberg tables in the current workspace receive the `delta.feature.catalogManaged` protocol feature. RisingWave, StarRocks, and Trino IRC commits failed with `ErrorCode: 2012` while that feature was enabled. Running `ALTER TABLE ... DROP FEATURE catalogManaged` on an isolated probe restored RisingWave and StarRocks writes while preserving `Provider = iceberg`, managed-table status, ownership, and predictive optimization. See §19 for the evidence and migration guardrails.
 
 ---
 
@@ -22,7 +29,7 @@ The turnover flow demonstrates **upsert semantics without Iceberg delete files**
 upserting MV (`mv_casino_turnover_latest`, one row per customer) cannot sink to UC
 directly because UC rejects delete files (§16). Instead the per-event snapshots land
 append-only and a read-side view applies the "latest per customer" collapse. See
-`DATABRICKS_ICEBERG_READ.md` §6 for the view.
+[`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 for the view.
 
 **Design principle — one table per Kafka topic, hybrid schema:**  
 RisingWave handles structural transformation only (UNNEST, type casting, protobuf field extraction). No business-logic aggregation happens before the sink. Each Databricks table has:
@@ -75,7 +82,7 @@ Source: `mv_casino_transactions_full` — one row per casino transaction (all me
 | `currency_id` | INT | |
 | `transaction_created_at` | TIMESTAMP | |
 | `amount_abs` | DECIMAL(20,8) | |
-| `properties` | STRING (JSON) | All other proto fields — see `DATABRICKS_ICEBERG_READ.md` §6 |
+| `properties` | STRING (JSON) | All other proto fields — see [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 |
 
 ```sql
 CREATE SINK IF NOT EXISTS sink_casino_transactions_databricks
@@ -117,7 +124,7 @@ Source: `mv_sportsbook_bets` — one row per sportsbook bet.
 | `placed_at` | TIMESTAMP | |
 | `stake_euro` | DECIMAL(20,8) | |
 | `stake_local` | DECIMAL(20,8) | |
-| `properties` | STRING (JSON) | All other proto fields — see `DATABRICKS_ICEBERG_READ.md` §6 |
+| `properties` | STRING (JSON) | All other proto fields — see [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 |
 
 ```sql
 CREATE SINK IF NOT EXISTS sink_sportsbook_bets_databricks
@@ -205,6 +212,18 @@ GRANT SELECT        ON SCHEMA de_dev.risingwave_poc TO `3b7f531f-db93-4186-af75-
 ---
 
 ## 7. Azure ADLS Gen2 — the S3FileIO blocker and how `vended_credentials` solves it
+
+### S3 vs ADLS Gen2 — RisingWave Iceberg sink compatibility summary
+
+| | S3 / MinIO | Azure ADLS Gen2 |
+|---|---|---|
+| **`vended_credentials = true`** | ✅ Works — UC vends S3 credentials, OpenDAL consumes them | ❌ UC vends Azure credentials, OpenDAL cannot consume them (RisingWave ≤ 2.8.4) |
+| **Default S3FileIO (no vended creds)** | ✅ Works natively | ❌ S3FileIO only understands S3-compatible endpoints; `abfss://` URIs cause silent write timeouts |
+| **Explicit storage key** | ✅ (`s3.access.key` / `s3.secret.key`) | ⚠️ Works as a workaround (`adlsgen2.account_name` + `adlsgen2.account_key`) but bypasses UC credential vending entirely |
+| **Lakekeeper upsert sinks** | ✅ Full support | N/A — Lakekeeper uses MinIO (S3-compatible) |
+| **Auth complexity** | Low | High — Azure AD OAuth2 for catalog + separate account key for storage |
+
+**Conclusion:** S3-compatible storage (MinIO locally, AWS S3 in production) is the path of least resistance for RisingWave Iceberg sinks. ADLS Gen2 requires the explicit account key workaround and is blocked for `vended_credentials` until RisingWave's OpenDAL layer adds Azure support.
 
 ### The problem (discovered during investigation)
 
@@ -335,6 +354,7 @@ auth_type    = databricks-cli
 | Limitation | Detail |
 |---|---|
 | **Grafana monitoring** | Wired up via Trino `databricks` catalog — see the "Databricks Iceberg Sinks" row in `casino-uc-metrics.json`. Panels: row counts, data freshness (minutes behind live), Parquet file counts, and snapshot count over time. |
+| **UC snapshot accumulation** | Unity Catalog forces `gc.enabled=false` on all managed Iceberg tables, so Iceberg's built-in GC never runs automatically. RisingWave's `enable_snapshot_expiration` sink option has **no effect** on UC tables — it only works with the Lakekeeper catalog. Snapshots accumulate indefinitely; Trino's `$snapshots` metadata table caps at 100 rows, so Grafana shows a flat "100 snapshots" once the table reaches that count. UC tables are created with `TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50')` (see §15.1e); to actually prune, call `CALL rw_poc.system.expire_snapshots(...)` in Databricks SQL or run `VACUUM` manually. |
 | **Token handled by Iceberg library** | With `catalog.oauth2_server_uri`, the Azure AD token is fetched and refreshed by the Apache Iceberg Java library inside RisingWave. Token refresh behaviour is library-managed, not controlled at the RisingWave level. |
 | **External tables required** | Databricks managed tables use Databricks' own ADLS account (no credentials available). Tables must be created as external Iceberg tables pointing to the PoC storage account — see §12. |
 | **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by two layers: Predictive Optimization (enabled on `de_dev.rw_poc`, runs automatically) + `databricks_optimize` Dagster step (runs `OPTIMIZE` on-demand before demo queries). See §17. |
@@ -598,6 +618,8 @@ GRANT EXTERNAL USE SCHEMA ON SCHEMA de_dev.rw_poc TO `3b7f531f-db93-4186-af75-65
 
 **1e. Create managed Iceberg tables** (already done):
 
+> All five tables are also in `sql/databricks_setup.sql` — the canonical runnable script. The `databricks_uc_tables_setup` Dagster asset (group `casino_prd_setup`) runs these DDLs automatically at the start of `casino_prd_full_job`, creating any missing tables before the dbt build creates the RisingWave sinks.
+
 ```sql
 CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
     customer_id              INT           NOT NULL,
@@ -607,7 +629,8 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_transactions (
     transaction_created_at   TIMESTAMP     NOT NULL,
     amount_abs               DECIMAL(20,8),
     properties               STRING
-) USING ICEBERG;
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
 
 CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
     bet_id               BIGINT        NOT NULL,
@@ -621,7 +644,8 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_bets (
     stake_euro           DECIMAL(20,8),
     stake_local          DECIMAL(20,8),
     properties           STRING
-) USING ICEBERG;
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
 
 -- Per-event rolling-turnover snapshots (sink_casino_turnover_90d_databricks).
 -- Append-only; the "latest per customer" collapse happens in the read-side view
@@ -634,7 +658,32 @@ CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_turnover_90d (
     customer_id          INT           NOT NULL,
     event_ts             TIMESTAMP     NOT NULL,
     rolling_7d_turnover  DECIMAL(38,8)
-) USING ICEBERG;
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
+```
+
+-- Raw Protobuf landing tables (sink_casino_landing_databricks, sink_sportsbook_landing_databricks).
+-- Payload is binary (undecoded Protobuf bytes); decoding to typed bronze happens via the
+-- casino_landing_to_bronze Databricks notebook (casino_landing_to_bronze_job in Dagster).
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_casino_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
+
+CREATE TABLE IF NOT EXISTS de_dev.rw_poc.rw_sportsbook_landing (
+    payload          BINARY,
+    kafka_key        BINARY,
+    kafka_timestamp  TIMESTAMP,
+    kafka_partition  STRING,
+    kafka_offset     STRING,
+    year_month       STRING
+) USING ICEBERG
+TBLPROPERTIES ('history.expire.min-snapshots-to-keep' = '50');
 ```
 
 > **`USING ICEBERG`** — required for RisingWave's Iceberg REST Catalog write path. `USING DELTA` creates a plain Delta table that is not Iceberg-compatible via IRC and causes `not an Iceberg compatible table` error. Managed storage is placed in the schema's MANAGED LOCATION (`stkznneurwpoccdddevstd`).
@@ -1016,3 +1065,206 @@ The `databricks_datafusion_job` runs `OPTIMIZE` on all three tables (`rw_casino_
 ### Alternative: increase `commit_checkpoint_interval`
 
 Raising `commit_checkpoint_interval` from `5` to a higher value (e.g. `30` or `60`) reduces the file creation rate proportionally at the cost of higher data latency before each commit is visible. Both approaches can be combined.
+
+## 18. Lakekeeper vs Unity Catalog — comparison from PoC experiments
+
+Both catalogs were run in parallel throughout the PoC. The key findings:
+
+| Capability | Lakekeeper (REST + MinIO) | Databricks Unity Catalog |
+|---|---|---|
+| **Upsert sinks** | ✅ Native — `type = 'upsert'` works out of the box | ❌ Rejects Iceberg delete files; `type = 'upsert'` stalls silently after initial burst |
+| **Append-only sinks** | ✅ | ✅ |
+| **Upsert workaround** | Not needed | Append-only + read-side `QUALIFY ROW_NUMBER()` VIEW (`v_casino_turnover_latest`) |
+| **Snapshot expiration** | ❌ `enable_snapshot_expiration` has no effect with REST catalog (RisingWave 2.7.4–2.8.x) | ❌ `gc.enabled=false` forced on all UC managed tables; manual `CALL system.expire_snapshots(...)` required |
+| **File compaction** | ✅ RisingWave-native `force_compaction` works | ❌ Silently ignored; requires external Trino `OPTIMIZE` or Databricks `OPTIMIZE` |
+| **Ecosystem / governance** | Local / self-hosted only | Full Databricks compute, Unity Catalog sharing, column-level security, audit logs |
+| **Auth complexity** | None (local MinIO) | Azure AD OAuth2 + ADLS Gen2 account key; `vended_credentials` only works for S3 backends |
+| **Trino federation** | ✅ via `datalake` catalog | ✅ via `databricks` catalog (separate Trino connector) |
+
+### Summary
+
+Lakekeeper wins on **write semantics**: upsert, compaction, and snapshot expiration all work natively, making it the better choice for streaming sinks where RisingWave continuously updates rows (e.g. rolling-window MVs like `mv_casino_real_bet` and `mv_turnover_percentage`).
+
+Unity Catalog wins on **ecosystem integration**: Databricks SQL, Delta Sharing, Unity Catalog governance, and existing organisational data access controls. It is the right target for **archival / append-only** workloads (raw landing tables like `rw_casino_transactions`, `rw_sportsbook_bets`) where the delete-file limitation does not apply.
+
+The current PoC architecture reflects this split: upsert aggregations go to Lakekeeper; raw event facts go to Unity Catalog.
+
+## 19. Catalog-managed Iceberg external-write compatibility
+
+### Current status
+
+External IRC writes to newly created managed Iceberg tables failed in the
+`de_dev.sr_poc_external` schema on 2026-09-02. RisingWave, StarRocks, and Trino
+all reached Unity Catalog and received the same response:
+
+```text
+Service failed: 500: Could not process table operation.
+ErrorCode: 2012
+```
+
+The isolated target `de_dev.sr_poc_external.rw_irc_probe_20260902` satisfied the
+documented prerequisites:
+
+* `Provider = iceberg`
+* `Type = MANAGED`
+* Predictive optimization enabled
+* Writer service principal owns the table
+* `ALL PRIVILEGES` and `EXTERNAL USE SCHEMA` granted
+* ADLS OAuth create, list, read, and delete operations working over VPN
+* External reads working from StarRocks and Trino
+
+These checks ruled out storage reachability, ownership, table grants, and
+reader compatibility.
+
+### Difference from the historical working tables
+
+The historical `de_dev.rw_poc` tables do not advertise the
+`delta.feature.catalogManaged` protocol feature. New managed Iceberg tables do:
+
+```text
+delta.feature.catalogManaged = supported
+databricks.internal.autoUpgrades.delta.feature.catalogManaged = supported
+delta.universalFormat.iceberg.atomicConversion.supported = true
+```
+
+This was the only tested property difference that changed commit behavior.
+
+### Required conversion for external writers
+
+`UNSET TBLPROPERTIES` does not remove the protocol feature. It only removes the
+auto-upgrade marker:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.example_table
+UNSET TBLPROPERTIES ('delta.feature.catalogManaged');
+```
+
+Use the protocol-feature operation instead:
+
+```sql
+ALTER TABLE de_dev.sr_poc_external.example_table
+DROP FEATURE catalogManaged;
+```
+
+After the conversion, verify the table through SQL and the Unity Catalog API:
+
+```sql
+DESCRIBE TABLE EXTENDED de_dev.sr_poc_external.example_table;
+DESCRIBE HISTORY de_dev.sr_poc_external.example_table LIMIT 10;
+```
+
+Expected results:
+
+* `Provider = iceberg`
+* `Type = MANAGED`
+* Predictive optimization remains enabled
+* `delta.feature.catalogManaged` is absent from the API properties
+* History contains a `DROP FEATURE` operation
+
+### Verified result
+
+After converting the isolated probe, RisingWave committed two append-only rows,
+StarRocks committed one row, and Trino committed one row. Databricks recorded
+IRC `WRITE` operations at versions `6`, `7`, and `8`. All rows were queryable
+through Databricks SQL.
+
+The successful RisingWave configuration retained the existing PoC rules:
+
+```sql
+connector = 'iceberg',
+type = 'append-only',
+force_append_only = 'true'
+```
+
+The converted operational test targets were validated next:
+
+* RisingWave committed `risingwave-sr-test-events-20260902-1510` to
+    `de_dev.sr_poc_external.sr_test_events`. StarRocks and Trino both read the
+    row; the table history recorded an external IRC `WRITE` at version `6`.
+* Trino committed an aggregate row to
+    `de_dev.sr_poc_external.sr_hourly_agg`. StarRocks read it after
+    `REFRESH EXTERNAL TABLE`; the table history recorded an external IRC `WRITE`
+    at version `5`.
+
+The conversion resolves the catalog commit error. It does not change the
+separate limitation on Iceberg delete files, so upsert sinks must continue to
+use the append-only and read-side-collapse pattern described in §16.
+
+### StarRocks decimal limitation
+
+StarRocks has a separate Iceberg REST write limitation after
+`catalogManaged` is removed. It successfully committed to an isolated
+user-owned table with `TIMESTAMP_NTZ` and `DOUBLE`, but failed with
+`ErrorCode: 2012` for both `TIMESTAMP + DECIMAL(10,2)` and
+`TIMESTAMP_NTZ + DECIMAL(10,2)` probes. Neither failed decimal write committed.
+
+This is not an ownership or Unity Catalog grant issue. Trino successfully
+wrote `DECIMAL(10,2)` to `sr_hourly_agg`, and RisingWave successfully wrote the
+same type to `sr_test_events`. For StarRocks-owned write paths, use `DOUBLE`
+for numeric measures or route decimal-valued writes through RisingWave or
+Trino. StarRocks remains a reader for decimal Iceberg tables.
+
+The confirmed upstream cause is [StarRocks PR #78456](https://github.com/StarRocks/starrocks/pull/78456).
+StarRocks 4.1.4 emits fixed-width Parquet statistic buffers as decimal bounds
+in Iceberg manifests. The Iceberg specification requires minimum-length,
+two's-complement, big-endian decimal bounds; Databricks Unity Catalog validates
+that encoding when the REST commit is submitted. The PR reproduces the same
+`500 / ErrorCode: 2012` Databricks failure and changes the StarRocks manifest
+metric conversion code to normalize the bound values.
+
+As of 2026-09-02, the fix is open and no released StarRocks version containing
+it was confirmed. It has `4.1`, `4.0`, and `3.5` backport labels. There is no
+configuration workaround in StarRocks 4.1.4. Keep exact decimal columns in the
+final tables and route their writes through RisingWave or Trino until a
+vendor-confirmed patched build has passed this PoC's decimal test matrix.
+
+Table owners can differ. External visibility and writes depend on Unity
+Catalog privileges, `EXTERNAL USE SCHEMA`, and storage access, not on the
+writer principal owning the table.
+
+### Delta plus UniForm validation
+
+The isolated managed Delta table
+`de_dev.sr_poc_external.delta_uniform_probe_20260902` was created with
+`delta.enableIcebergCompatV2 = true` and
+`delta.universalFormat.enabledFormats = iceberg`. A Databricks-native write
+succeeded, followed by `MSCK REPAIR TABLE ... SYNC METADATA` to synchronize its
+Iceberg metadata.
+
+Databricks identified the object as `Provider = delta` with a `Delta Uniform
+Iceberg` metadata section. StarRocks and Trino both read the Databricks control
+row through the Iceberg REST Catalog.
+
+An external StarRocks insert was rejected before a commit attempt:
+
+```text
+Malformed request: Table
+'de_dev.sr_poc_external.delta_uniform_probe_20260902' is not a Managed
+Iceberg table.
+request_id: 94c873c0-8a0f-46d7-a237-00bba85de9c4
+```
+
+Databricks confirmed that no external row was written. This is the expected
+UniForm behavior: external Iceberg clients can read Delta data but cannot write
+to it. Delta plus UniForm is therefore appropriate for externally readable
+Databricks-owned data, not for RisingWave, StarRocks, or Trino writer targets.
+
+> [!CAUTION]
+> Treat `DROP FEATURE catalogManaged` as a protocol migration. Validate it on an
+> isolated table before converting an existing target. Stop writers during the
+> operation, record the pre-change metadata, and verify one uniquely identified
+> append through Databricks SQL before resuming the pipeline.
+
+### Rollout status
+
+| Target | Status |
+| -------- | -------- |
+| `rw_irc_probe_20260902` | Converted and externally writable |
+| `delta_uniform_probe_20260902` | UniForm reader validation only; external writes unsupported |
+| `sr_test_events` | Converted; RisingWave append validated and readable from StarRocks and Trino |
+| `sr_hourly_agg` | Converted; Trino append validated and readable from StarRocks after refresh |
+| Existing `rw_poc` tables | Already compatible; no change required |
+
+Future table provisioning for external writers must include a post-create
+compatibility check. If Databricks adds `catalogManaged`, convert and validate
+the table before creating the RisingWave sink.

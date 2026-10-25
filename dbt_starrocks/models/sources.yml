@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: risingwave
+    database: risingwave
+    schema: public
+    tables:
+      - name: funnel_summary
+
+  - name: databricks_uc
+    database: databricks_uc
+    schema: sr_poc_external
+    tables:
+      - name: funnel_summary_historical
+      - name: iceberg_countries
+
+  - name: lakekeeper_local
+    database: lakekeeper_local
+    schema: public
+    tables:
+      - name: funnel_summary

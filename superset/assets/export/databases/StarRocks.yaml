@@ -1,0 +1,16 @@
+database_name: StarRocks
+sqlalchemy_uri: mysql+pymysql://root:@starrocks:9030/sr_local_db_sr_local_db
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+extra:
+  metadata_params: {}
+  engine_params: {}
+  metadata_cache_timeout: {}
+  schemas_allowed_for_file_upload: []
+uuid: debd0510-5d66-4f6b-9765-ccea1342506c
+version: 1.0.0

@@ -1,124 +1,95 @@
 # Iceberg ↔ RisingWave Integration (via Trino) ✅ VERIFIED
 
-This document describes the data flow between Iceberg and RisingWave using Trino as the write interface and RisingWave's native Iceberg source for reads.
+This document describes the data flow between Iceberg and RisingWave using Trino as
+the write interface and RisingWave's native Iceberg SOURCE for reads.
 
-**Status**: ✅ **TESTED AND WORKING** - Automatic refresh verified
+**Status**: ✅ **TESTED AND WORKING** — immediate refresh verified
 
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Trino         │────▶│   Iceberg       │◀────│  RisingWave     │
-│   (Write)       │     │   (Lakekeeper)  │     │  SOURCE         │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                                               │
-        │                                               │ (changelog)
-        ▼                                               ▼
-┌─────────────────┐                           ┌─────────────────┐
-│  Dagster Asset  │                           │  Materialized   │
-│  iceberg_countries                           │  View           │
-└─────────────────┘                           │  vw_iceberg_    │
-                                              │  countries      │
-                                              └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌──────────────────────┐
+│   Trino         │────▶│   Iceberg       │◀────│  RisingWave          │
+│   (Write)       │     │   (Lakekeeper)  │     │  CREATE SOURCE       │
+└─────────────────┘     └─────────────────┘     │  src_iceberg_        │
+        │                        │               │  countries           │
+        │                        │               └──────────────────────┘
+        ▼                        │                          │
+┌─────────────────┐              │               inline JOIN at query time
+│  Dagster Asset  │              │               (DataFusion reads current
+│  iceberg_countries             │                snapshot immediately)
+└─────────────────┘              │
+                                 └── Trino cross-catalog JOIN
+                                     datalake.public.iceberg_countries
 ```
 
 ## Components
 
 ### 1. Trino (Write Interface)
 - **Location**: `localhost:9080`
-- **Purpose**: Full SQL CRUD operations on Iceberg tables
-- **Works with**: UPDATE, DELETE, INSERT (unlike DuckDB)
+- **Catalog**: `datalake` (Lakekeeper REST catalog)
+- **Purpose**: Full SQL CRUD operations on Iceberg tables (UPDATE, DELETE, INSERT)
 
 ### 2. Iceberg Table
 - **Catalog**: Lakekeeper REST Catalog (`http://lakekeeper:8181/catalog`)
-- **Warehouse**: `risingwave-warehouse` (not the S3 path!)
-- **Table**: `iceberg_countries` (in `public` schema/database)
+- **Warehouse**: `risingwave-warehouse` (the warehouse name, not the S3 path)
+- **Table**: `public.iceberg_countries`
 
-### 3. RisingWave Source
-- **Name**: `src_iceberg_countries` (native RisingWave SOURCE, created outside dbt)
+### 3. RisingWave SOURCE
+- **Name**: `src_iceberg_countries`
 - **Type**: `CREATE SOURCE` with `connector = 'iceberg'`
-- **Behavior**: ✅ **Automatic refresh when Iceberg data changes**
-- **Note**: Returns **changelog data** (all changes), causing duplicates
+- **Usage**: Inline `LEFT JOIN` in batch queries — DataFusion reads the current Iceberg
+  snapshot at query time with no polling delay.
+- **Note**: Do NOT wrap in `CREATE VIEW` (broken in RisingWave 3.0 — see
+  [ICEBERG_CHANGELOG_HANDLING.md](ICEBERG_CHANGELOG_HANDLING.md)).
 
-### 4. View Layer
-- **Model**: `rw_countries` ([`dbt/models/rw_countries.sql`](dbt/models/rw_countries.sql))
-- **Purpose**: Simple view over the Iceberg source providing a clean interface with proper type casting
-- **Result**: Always queries fresh data from the source
+## Data Flow
 
-## Verified Data Flow
-
-1. **Write Path** (via Trino):
-   ```bash
-   # Update data in Iceberg
-   docker compose exec trino trino --catalog datalake --schema public \
-     --execute "UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'"
-   # Result: UPDATE: 1 row
-   ```
-
-2. **Read Path** (via View) - **Immediate automatic refresh**:
-   ```bash
-   # Query the View (auto-refreshes from source)
-   psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM rw_countries WHERE country = 'GR'"
-   # Result: GR | Hellas (immediately reflects the Trino update!)
-   ```
-
-## Usage
-
-### Load Initial Data
+### Write (via Trino)
 ```bash
-# Via standalone script (uses Trino Python client)
-uv run python scripts/load_countries_to_iceberg_trino.py
-
-# Or via Dagster
-# Materialize the 'iceberg_countries' asset in Dagster UI
-```
-
-### Query in RisingWave
-```bash
-psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries"
-```
-
-### Update via Trino
-```bash
-docker compose exec trino trino --catalog iceberg --schema analytics \
+docker compose exec trino trino --catalog datalake --schema public \
   --execute "UPDATE iceberg_countries SET country_name = 'Hellas' WHERE country = 'GR'"
+# Result: UPDATE: 1 row
 ```
 
-### Verify Automatic Refresh in RisingWave
-```bash
-psql -h localhost -p 4566 -d dev -U root -c "SELECT * FROM src_iceberg_countries WHERE country = 'GR'"
-# Should show 'Hellas' immediately after the Trino update
+### Read in RisingWave application backend (immediate)
+```sql
+SELECT f.window_start, f.country, c.country_name::varchar, f.viewers
+FROM funnel_summary f
+LEFT JOIN src_iceberg_countries c ON f.country = c.country
 ```
+Country name changes are visible on the next query — no lag.
 
-## Key Advantages
+### Read in Trino notebook (cross-catalog join)
+```sql
+SELECT f.window_start, f.country, c.country_name, f.viewers
+FROM risingwave.public.funnel_summary f
+LEFT JOIN datalake.public.iceberg_countries c ON f.country = c.country
+ORDER BY f.window_start DESC LIMIT 50
+```
+Trino cannot query RisingWave SOURCEs directly, so the join goes to Lakekeeper instead.
 
-1. **✅ Full SQL Support**: Trino supports UPDATE/DELETE (DuckDB doesn't)
-2. **✅ Automatic Sync**: RisingWave source immediately reflects Iceberg changes
-3. **✅ No Batch Jobs**: No need for scheduled sync jobs or sensors
-4. **✅ Fast Queries**: Materialized view provides local RisingWave performance
-5. **✅ Native Integration**: Uses RisingWave's built-in Iceberg connector
+## dbt Models
 
-## Models
-
-| Model | Type | Purpose | Dagster Asset |
-|-------|------|---------|---------------|
-| `iceberg_countries` (Iceberg) | Trino/Iceberg Table | Source of truth in Iceberg | `csv/iceberg_countries` |
-| `src_iceberg_countries` | RisingWave SOURCE | Native source (changelog data) | `public/src_iceberg_countries` |
-| `rw_countries` | RisingWave View | Simple view over Iceberg source with type casting | `public/rw_countries` |
-| `funnel_summary_with_country` | RisingWave MV | Pre-joined funnel + countries | `public/funnel_summary_with_country` |
+| Model | Type | Purpose |
+|-------|------|---------|
+| `iceberg_countries` (Iceberg) | Trino/Iceberg Table | Source of truth |
+| `src_iceberg_countries` | RisingWave SOURCE | Inline JOIN partner for live backend reads |
 
 ## dbt Commands
 
 ```bash
-cd dbt
+# Recreate the source (after a reset)
+dbt run --select src_iceberg_countries --project-dir dbt --profiles-dir dbt
 
-# Create/update the view
-dbt run --select rw_countries
+# Drop and recreate everything
+dbt run-operation drop_stale_iceberg_sources --project-dir dbt --profiles-dir dbt
+dbt run --select src_iceberg_countries --project-dir dbt --profiles-dir dbt
 ```
 
 ## Important Configuration Note
 
-The `warehouse.path` must be the **warehouse name** (`risingwave-warehouse`), not the S3 path:
+The `warehouse.path` must be the **warehouse name**, not the S3 path:
 
 ```sql
 -- ✅ CORRECT
@@ -130,5 +101,6 @@ warehouse.path = 's3://risingwave-warehouse/risingwave-warehouse'
 
 ## Files
 
-- **Trino Loader**: [`scripts/load_countries_to_iceberg_trino.py`](scripts/load_countries_to_iceberg_trino.py)
-- **Materialized View (Deduplication)**: [`dbt/models/vw_iceberg_countries.sql`](dbt/models/vw_iceberg_countries.sql)
+- **Trino Loader**: [`scripts/load_countries_to_iceberg_trino.py`](../scripts/load_countries_to_iceberg_trino.py)
+- **dbt SOURCE model**: [`dbt/models/src_iceberg_countries.sql`](../dbt/models/src_iceberg_countries.sql)
+- **Detailed RW 3.0 regression notes**: [ICEBERG_CHANGELOG_HANDLING.md](ICEBERG_CHANGELOG_HANDLING.md)

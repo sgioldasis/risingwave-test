@@ -36,7 +36,10 @@ Key point: **RisingWave does the transformation work once** (raw Kafka events â†
 
 ```yaml
 starrocks:
-  image: starrocks/allin1-ubuntu:4.0.10
+  image: risingwave-test/starrocks:4.1.4-sas
+  build:
+    context: ./starrocks
+    dockerfile: Dockerfile
   container_name: starrocks
   entrypoint: ["/usr/bin/tini-static", "--", "/starrocks-entrypoint.sh"]
   ports:
@@ -45,7 +48,9 @@ starrocks:
   volumes:
     - "./starrocks/docker-entrypoint.sh:/starrocks-entrypoint.sh:ro"
   environment:
-    - ADLS_ACCOUNT_KEY
+    - ADLS_ACCOUNT_NAME
+    - ADLS_PROTO_SAS_TOKEN
+    - STARROCKS_ADLS_AUTH_MODE=sas
     - HTTP_PROXY=
     - HTTPS_PROXY=
     - ALL_PROXY=
@@ -64,9 +69,9 @@ starrocks:
   deploy:
     resources:
       limits:
-        memory: 2G
+        memory: 3G
       reservations:
-        memory: 1G
+        memory: 2G
   networks:
     iceberg_net:
 

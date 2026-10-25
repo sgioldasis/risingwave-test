@@ -1,0 +1,1 @@
+{"type":"record","name":"Key","namespace":"reverse_etl_unittest.sr_poc_external.reverse_etl_unittest_source","fields":[{"name":"id","type":"long"}]}

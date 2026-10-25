@@ -9,10 +9,11 @@ import textwrap
 import psycopg2
 from dagster import AssetDep, AssetExecutionContext, AssetKey, MetadataValue, asset
 
-RW_HOST = os.environ.get("RISINGWAVE_HOST", "localhost")
-RW_PORT = 4566
-RW_USER = "root"
-RW_DB   = "dev"
+RW_HOST     = os.environ.get("RISINGWAVE_HOST",     "localhost")
+RW_PORT     = int(os.environ.get("RISINGWAVE_PORT", "4566"))
+RW_USER     = os.environ.get("RISINGWAVE_USER",     "root")
+RW_PASSWORD = os.environ.get("RISINGWAVE_PASSWORD", "")
+RW_DB       = os.environ.get("RISINGWAVE_DB",       "dev")
 
 QUERIES = [
     (
@@ -91,8 +92,8 @@ WITH (
 
 def _rw_conn():
     return psycopg2.connect(
-        host=RW_HOST, port=RW_PORT, user=RW_USER, dbname=RW_DB,
-        connect_timeout=10,
+        host=RW_HOST, port=RW_PORT, user=RW_USER, password=RW_PASSWORD,
+        dbname=RW_DB, connect_timeout=10,
     )
 
 

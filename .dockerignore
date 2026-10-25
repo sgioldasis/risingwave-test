@@ -17,6 +17,7 @@ build
 # Virtual environments
 venv
 .venv
+**/.venv
 env
 
 # IDE
@@ -56,6 +57,12 @@ node_modules
 
 # Dagster storage (runtime data)
 dagster_storage
+
+# Generated dbt artifacts and local caches
+**/target
+**/__pycache__
+.mypy_cache
+.ruff_cache
 
 # Minio data
 minio-data

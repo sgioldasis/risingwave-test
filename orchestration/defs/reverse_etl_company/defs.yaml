@@ -1,0 +1,12 @@
+# Reverse ETL of a table copy of de_dev.kaizen_wars.dim_company
+# (docs/poc/REVERSE_ETL_VIEW_COPY.md). The source table is created by hand with
+# CTAS, so source_columns is left unset: the setup asset only checks it exists.
+type: orchestration.components.reverse_etl_cdf_sync.ReverseEtlCdfSync
+
+attributes:
+  name: company
+  catalog: de_dev
+  schema_name: sr_poc_external
+  key_column: Company_ID
+  encoding: avro
+  propagate_drops: false

@@ -1,8 +1,8 @@
 x-image: &image
-  image: ${RW_IMAGE:-risingwavelabs/risingwave:v2.8.4}
+  image: ${RW_IMAGE:-risingwavelabs/risingwave:v3.1.0}
 
 x-lakekeeper-image: &lakekeeper-image
-  image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.12.3}
+  image: ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.14.1}
 
 x-lakekeeper-environment: &lakekeeper-environment
   - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
@@ -32,6 +32,12 @@ x-dagster-build: &dagster-build
   build:
     context: .
     dockerfile: Dockerfile.dagster
+
+x-superset-build: &superset-build
+  image: risingwave-test/superset:local
+  build:
+    context: .
+    dockerfile: Dockerfile.superset
 
 services:
   # RisingWave Services - Distributed Mode
@@ -372,8 +378,70 @@ services:
     networks:
       iceberg_net:
 
+  # hive-metastore-db / hive-metastore: only back trino/catalog/delta.properties,
+  # used solely by the paused Azure shared-data-mode feasibility test (Delta
+  # register-table over ADLS -- see docs/SR_POC_STARROCKS_SHARED_DATA_AZURE.md).
+  # Nothing in dbt/orchestration/the dashboard uses the Trino "delta" catalog.
+  # Commented out (not deleted) 2026-09-08 to skip pulling their base images
+  # (postgres:15-alpine, apache/hive:4.0.0) on every stack start; uncomment if
+  # resuming that Azure test.
+  # hive-metastore-db:
+  #   image: "postgres:15-alpine"
+  #   environment:
+  #     - POSTGRES_USER=hive
+  #     - POSTGRES_PASSWORD=hive
+  #     - POSTGRES_DB=metastore_db
+  #   expose:
+  #     - "5432"
+  #   volumes:
+  #     - "hive-metastore-db:/var/lib/postgresql/data"
+  #   healthcheck:
+  #     test: [ "CMD-SHELL", "pg_isready -U hive -d metastore_db" ]
+  #     interval: 2s
+  #     timeout: 5s
+  #     retries: 15
+  #   restart: always
+  #   networks:
+  #     iceberg_net:
+  #
+  # hive-metastore:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.hive-metastore
+  #   image: risingwave-test/hive-metastore:4.0.0-postgres
+  #   entrypoint: ["/usr/local/bin/hive-metastore-entrypoint.sh"]
+  #   container_name: hive-metastore
+  #   hostname: hive-metastore
+  #   environment:
+  #     - SERVICE_NAME=metastore
+  #     - DB_DRIVER=postgres
+  #     - SERVICE_OPTS=-Xmx1G
+  #     - HIVE_AUX_JARS_PATH=/opt/hive/lib
+  #     - HADOOP_CLASSPATH=/opt/hive/lib/postgresql-42.7.4.jar
+  #     - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+  #     - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+  #     - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
+  #     - "HADOOP_OPTS=-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-metastore-db:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=hive -Dfs.azure.account.auth.type.stkznneusrpoccdddevstd.dfs.core.windows.net=OAuth -Dfs.azure.account.oauth.provider.type.stkznneusrpoccdddevstd.dfs.core.windows.net=org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider -Dfs.azure.account.oauth2.client.id.stkznneusrpoccdddevstd.dfs.core.windows.net=${ADLS_CLIENT_ID-} -Dfs.azure.account.oauth2.client.secret.stkznneusrpoccdddevstd.dfs.core.windows.net=${ADLS_CLIENT_SECRET-} -Dfs.azure.account.oauth2.client.endpoint.stkznneusrpoccdddevstd.dfs.core.windows.net=https://login.microsoftonline.com/${ADLS_TENANT_ID-}/oauth2/token"
+  #   ports:
+  #     - "9083:9083"
+  #   depends_on:
+  #     hive-metastore-db:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test:
+  #       - CMD-SHELL
+  #       - bash -c 'echo > /dev/tcp/127.0.0.1/9083'
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 20
+  #     start_period: 30s
+  #   restart: always
+  #   networks:
+  #     iceberg_net:
+
   minio-0:
-    image: "quay.io/minio/minio:latest"
+    # image: "quay.io/minio/minio:latest"
+    image: pgsty/silo:latest  # Updated drop-in replacement
     command:
       - server
       - "--address"
@@ -393,6 +461,7 @@ services:
       /bin/sh -c '
       set -e
       mkdir -p "/data/hummock001"
+      mkdir -p "/data/starrocks"
       /usr/bin/docker-entrypoint.sh "$$0" "$$@"
       '
     environment:
@@ -510,7 +579,7 @@ services:
 
   # Redpanda Service - Kafka Compatible
   # redpanda:
-  #   image: redpandadata/redpanda:v26.1.9
+  #   image: redpandadata/redpanda:v26.2.2
   #   command:
   #     - redpanda
   #     - start
@@ -555,7 +624,7 @@ services:
   #   networks:
   #     iceberg_net:
   redpanda:
-    image: redpandadata/redpanda:v26.1.9
+    image: redpandadata/redpanda:v26.2.2
     command:
       - redpanda
       - start
@@ -622,7 +691,7 @@ services:
       iceberg_net:
 
   redpanda-init:
-    image: redpandadata/redpanda:v26.1.9
+    image: redpandadata/redpanda:v26.2.2
     restart: "no"
     depends_on:
       redpanda:
@@ -630,7 +699,59 @@ services:
     networks:
       iceberg_net:
     entrypoint: ["/bin/bash", "-c"]
-    command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases casino_out_avro; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
+    command: ["set -e; echo 'Waiting for Redpanda...'; sleep 5; for topic in page_views cart_events purchases funnel rw_poc_casino_out_avro wallet_transactions wallet_status_updates; do echo \"Creating: $$topic\"; rpk topic create \"$$topic\" --brokers redpanda:9092 --partitions 1 --replicas 1 || true; done; echo 'Done!'"]
+
+  # Kafka Connect + Debezium JDBC sink (reverse-ETL CDF topic -> host Postgres).
+  # The worker's internal topics live on local Redpanda; the connector's own
+  # consumer is pointed at the external SASL_SSL cluster via per-connector
+  # consumer.override.* (see orchestration/assets/reverse_etl_debezium_sink.py),
+  # so no topic-create rights are needed on the external cluster.
+  kafka-connect:
+    build:
+      context: .
+      dockerfile: Dockerfile.debezium-connect
+    container_name: kafka-connect
+    ports:
+      - "127.0.0.1:8083:8083"  # Connect REST API (localhost only)
+    environment:
+      - BOOTSTRAP_SERVERS=redpanda:9092
+      - GROUP_ID=debezium-connect
+      - CONFIG_STORAGE_TOPIC=_connect_configs
+      - OFFSET_STORAGE_TOPIC=_connect_offsets
+      - STATUS_STORAGE_TOPIC=_connect_statuses
+      - CONFIG_STORAGE_REPLICATION_FACTOR=1
+      - OFFSET_STORAGE_REPLICATION_FACTOR=1
+      - STATUS_STORAGE_REPLICATION_FACTOR=1
+      - KAFKA_HEAP_OPTS=-Xms256m -Xmx640m
+      # Lets a connector override its consumer's bootstrap/SASL settings.
+      - CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY=All
+      # Secrets are referenced from connector configs as ${env:NAME}, so they
+      # never appear in the stored config or the REST API. Allowlist limits
+      # which env vars a connector config can read.
+      - CONNECT_CONFIG_PROVIDERS=env
+      - CONNECT_CONFIG_PROVIDERS_ENV_CLASS=org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      - CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN=^(KAFKA_OUTPUT_SASL_USERNAME|KAFKA_OUTPUT_SASL_PASSWORD|POSTGRES_PASSWORD)$$
+      - KAFKA_OUTPUT_SASL_USERNAME
+      - KAFKA_OUTPUT_SASL_PASSWORD
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - iceberg_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: always
 
   prometheus-0:
     image: prom/prometheus:latest
@@ -652,7 +773,7 @@ services:
       - iceberg_net
 
   grafana-0:
-    image: grafana/grafana:13.0.1
+    image: grafana/grafana:13.2.3
     container_name: grafana-0
     deploy:
       resources:
@@ -673,6 +794,14 @@ services:
       - GF_AUTH_BASIC_ENABLED=false
       # Dark mode
       - GF_USERS_DEFAULT_THEME=dark
+      # RisingWave datasource connection.
+      # GRAFANA_RISINGWAVE_HOST defaults to the Docker-network hostname for local stacks.
+      # Set GRAFANA_RISINGWAVE_HOST in .env when pointing at a remote RisingWave instance.
+      - RISINGWAVE_HOST=${GRAFANA_RISINGWAVE_HOST:-frontend-node-0}
+      - RISINGWAVE_PORT=${RISINGWAVE_PORT:-4566}
+      - RISINGWAVE_USER=${RISINGWAVE_USER:-root}
+      - RISINGWAVE_PASSWORD=${RISINGWAVE_PASSWORD:-}
+      - RISINGWAVE_DB=${RISINGWAVE_DB:-dev}
     volumes:
       - "grafana-0:/var/lib/grafana"
       - "./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro"
@@ -681,6 +810,85 @@ services:
     depends_on:
       - prometheus-0
     restart: always
+    networks:
+      - iceberg_net
+
+  superset:
+    <<: *superset-build
+    container_name: superset
+    ports:
+      - "3002:8088"
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+    volumes:
+      - "superset-home:/app/superset_home"
+      - "./superset/superset_config.py:/app/pythonpath/superset_config.py:ro"
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    restart: always
+    networks:
+      - iceberg_net
+
+  # One-shot: runs DB migrations and creates a non-interactive admin with a
+  # KNOWN password set via env vars here -- deliberately avoiding Metabase's
+  # interactive-setup-wizard-then-forgot-it failure mode. Metadata (users,
+  # the StarRocks connection, saved charts/dashboards) lives in the
+  # `superset-home` volume as a SQLite file at the default path, following
+  # Superset's own standard quickstart pattern -- not a custom
+  # migration/move script like Metabase's entrypoint, which is what caused
+  # that whole mess.
+  superset-init:
+    <<: *superset-build
+    container_name: superset-init
+    volumes:
+      - "superset-home:/app/superset_home"
+      - "./superset/superset_config.py:/app/pythonpath/superset_config.py:ro"
+      # Git-tracked, human-diffable Superset asset bundle (databases,
+      # datasets, charts, dashboards) exported via `superset/export_assets.sh`
+      # -- re-imported here on every startup so the funnel/wallet/query-rewrite
+      # demos reproduce on any machine, not just whoever's local superset-home
+      # volume happens to have them. Idempotent: re-importing over existing
+      # objects (matched by UUID) updates them in place rather than
+      # duplicating.
+      - "./superset/assets/export:/app/assets_export:ro"
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
+      - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
+      - SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-sr_poc_admin_2026}
+      - SUPERSET_ADMIN_EMAIL=${SUPERSET_ADMIN_EMAIL:-admin@example.com}
+    # entrypoint+command deliberately kept as ["/bin/bash","-c"] + a
+    # ONE-ELEMENT command list (not a plain string): Compose shell-splits a
+    # plain string `command:` into a word array for the resolved container
+    # Cmd, which means `/bin/bash -c` only receives the FIRST word ("pip")
+    # as its script and the rest become ignored positional params ($1, $2,
+    # ...) -- confirmed via `docker compose config` showing the string
+    # tokenized into a YAML list, and confirmed live: the container ran
+    # bare `pip` (printing its top-level --help) instead of the intended
+    # script. A single-element list is passed through verbatim instead.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      # `shutil.make_archive` reads each file's on-disk mtime for its ZIP
+      # entry -- the git-tracked export files carry Superset's own baked-in
+      # 1980-01-01 timestamps (visible in `unzip -l` on the original export),
+      # and depending on how a checkout/mount resolves that, Python's zipfile
+      # can see a pre-1980 value and raise `ValueError: ZIP does not support
+      # timestamps before 1980`. Build the zip directly with a fixed
+      # `date_time` per entry instead, so it never depends on mtimes at all.
+      # NOTE: Superset's own import CLI (get_contents_from_bundle ->
+      # remove_root) unconditionally strips the FIRST path segment of every
+      # zip entry, assuming the standard `superset export` layout of a single
+      # wrapping folder (e.g. `dashboard_export_<timestamp>/metadata.yaml`).
+      # The zip built below must have that wrapper folder or metadata.yaml
+      # itself gets stripped away and the whole bundle is silently rejected.
+      - "pip install --no-cache-dir pymysql==1.1.1 && superset db upgrade && (superset fab create-admin --username \"$$SUPERSET_ADMIN_USERNAME\" --firstname Admin --lastname User --email \"$$SUPERSET_ADMIN_EMAIL\" --password \"$$SUPERSET_ADMIN_PASSWORD\" || true) && superset init && (test -d /app/assets_export && python3 -c \"import zipfile, os; zf = zipfile.ZipFile('/tmp/assets_export.zip', 'w', zipfile.ZIP_DEFLATED); [zf.writestr(zipfile.ZipInfo(os.path.join('assets_export', os.path.relpath(os.path.join(root, f), '/app/assets_export')), date_time=(2020,1,1,0,0,0)), open(os.path.join(root, f), 'rb').read()) for root, _, files in os.walk('/app/assets_export') for f in files]; zf.close()\" && superset import-dashboards -p /tmp/assets_export.zip -u \"$$SUPERSET_ADMIN_USERNAME\" || echo 'No assets_export bundle found or import failed -- continuing without it')"
+    depends_on:
+      starrocks:
+        condition: service_healthy
     networks:
       - iceberg_net
 
@@ -694,20 +902,30 @@ services:
     environment:
       - DAGSTER_HOME=/workspace
       - PYTHONPATH=/workspace
-      - DBT_HOST=frontend-node-0
+      # CDF read chunking (see reverse_etl_cdf_setup._CDF_CHUNK_VERSIONS): how
+      # many Delta commits one read→produce round holds in the driver. Lower it
+      # when bulk-loading big commits (10 x 100k-row commits wants 1); the
+      # default keeps ~100k rows per chunk for the demo's small commits.
+      - REVERSE_ETL_CDF_CHUNK_VERSIONS=${REVERSE_ETL_CDF_CHUNK_VERSIONS:-10}
+      - DBT_HOST=${RISINGWAVE_HOST:-frontend-node-0}
       - DBT_PROFILES_DIR=/workspace/dbt
       - DBT_PASSWORD=root
+      - STARROCKS_HOST=starrocks
+      - STARROCKS_PORT=9030
       - MINIO_ENDPOINT=http://minio-0:9301
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
-      - RISINGWAVE_HOST=frontend-node-0
+      - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
+      - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
+      - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
+      - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
       - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
       - DATABRICKS_CATALOG=de_dev
-      - DATABRICKS_SCHEMA=risingwave_poc
+      - DATABRICKS_SCHEMA=sr_poc_external
       - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET
-      - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
+      - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME}
       - ADLS_ACCOUNT_KEY
       # Disable OrbStack-injected HTTP proxy so in-network HTTP calls
       # (e.g. Trino, Lakekeeper, MinIO) bypass proxyproxy.orb.internal which
@@ -723,8 +941,10 @@ services:
     volumes:
       # Mount only specific directories needed by Dagster instead of entire project
       # This prevents root-owned files from being created in the project root
+      - "./.env:/workspace/.env:ro"
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
+      - "./dbt_starrocks:/workspace/dbt_starrocks"
       - "./data:/workspace/data:ro"
       - "./scripts:/workspace/scripts:ro"
       - "dagster-storage:/workspace/dagster_storage"
@@ -745,13 +965,13 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 1536M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
       interval: 10s
       timeout: 10s
-      retries: 6
-      start_period: 30s
+      retries: 12
+      start_period: 90s
     restart: always
 
   dagster-daemon:
@@ -761,20 +981,30 @@ services:
     environment:
       - DAGSTER_HOME=/workspace
       - PYTHONPATH=/workspace
-      - DBT_HOST=frontend-node-0
+      # CDF read chunking (see reverse_etl_cdf_setup._CDF_CHUNK_VERSIONS): how
+      # many Delta commits one read→produce round holds in the driver. Lower it
+      # when bulk-loading big commits (10 x 100k-row commits wants 1); the
+      # default keeps ~100k rows per chunk for the demo's small commits.
+      - REVERSE_ETL_CDF_CHUNK_VERSIONS=${REVERSE_ETL_CDF_CHUNK_VERSIONS:-10}
+      - DBT_HOST=${RISINGWAVE_HOST:-frontend-node-0}
       - DBT_PROFILES_DIR=/workspace/dbt
       - DBT_PASSWORD=root
+      - STARROCKS_HOST=starrocks
+      - STARROCKS_PORT=9030
       - MINIO_ENDPOINT=http://minio-0:9301
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
-      - RISINGWAVE_HOST=frontend-node-0
+      - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
+      - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
+      - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
+      - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
       - DBT_DATABRICKS_HOST=https://adb-1608121643336927.7.azuredatabricks.net
       - DATABRICKS_CATALOG=de_dev
-      - DATABRICKS_SCHEMA=risingwave_poc
+      - DATABRICKS_SCHEMA=sr_poc_external
       - DATABRICKS_AZURE_TENANT_ID=78395483-9425-447a-ba64-60b90f6bb16e
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_CLIENT_SECRET
-      - ADLS_ACCOUNT_NAME=stkznneurwpoccdddevstd
+      - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME}
       - ADLS_ACCOUNT_KEY
       # Disable OrbStack-injected HTTP proxy (see dagster-webserver above).
       - HTTP_PROXY=
@@ -786,8 +1016,10 @@ services:
       - NO_PROXY=*
       - no_proxy=*
     volumes:
+      - "./.env:/workspace/.env:ro"
       - "./orchestration:/workspace/orchestration:ro"
       - "./dbt:/workspace/dbt"
+      - "./dbt_starrocks:/workspace/dbt_starrocks"
       - "./data:/workspace/data:ro"
       - "./scripts:/workspace/scripts:ro"
       - "dagster-storage:/workspace/dagster_storage"
@@ -811,7 +1043,10 @@ services:
 
   # Trino - Iceberg SQL query engine with full CRUD support
   trino:
-    image: trinodb/trino:481
+    build:
+      context: .
+      dockerfile: Dockerfile.trino
+    image: risingwave-test/trino:481-hadoop-azure
     ports:
       - "9080:8080"
     environment:
@@ -829,9 +1064,19 @@ services:
       - NO_PROXY=*
       - no_proxy=*
       # Databricks Unity Catalog credentials — used by trino/catalog/databricks.properties
-      - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
-      - DATABRICKS_AZURE_CLIENT_SECRET
-      - ADLS_ACCOUNT_KEY
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
+      - DATABRICKS_AZURE_CLIENT_SECRET=${DATABRICKS_AZURE_CLIENT_SECRET-}
+      - DATABRICKS_AZURE_TENANT_ID=${DATABRICKS_AZURE_TENANT_ID-}
+      - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+      - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+      - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
+      # RisingWave catalog — used by trino/catalog/risingwave.properties
+      # TRINO_RISINGWAVE_HOST defaults to the Docker-network hostname; set in .env for STG.
+      - RISINGWAVE_HOST=${TRINO_RISINGWAVE_HOST:-frontend-node-0}
+      - RISINGWAVE_PORT=${RISINGWAVE_PORT:-4566}
+      - RISINGWAVE_USER=${RISINGWAVE_USER:-root}
+      - RISINGWAVE_PASSWORD=${RISINGWAVE_PASSWORD:-}
+      - RISINGWAVE_DB=${RISINGWAVE_DB:-dev}
     volumes:
       - type: bind
         source: ./trino/catalog
@@ -862,9 +1107,14 @@ services:
           # (~9.4G) and starves everything else. Cap is mandatory here.
           memory: 3G
 
-  # StarRocks — columnar OLAP engine reading Unity Catalog Iceberg tables via IRC
+  # Old StarRocks setup — columnar OLAP engine reading Unity Catalog and
+  # Lakekeeper Iceberg tables, shared-nothing (allin1-ubuntu, FE+BE combined).
+  # SUPERSEDED 2026-09-08 by the shared-data-on-MinIO `starrocks`+`starrocks-cn`
+  # pair below, after the standalone feasibility test in
+  # docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md confirmed it end-to-end.
+  # Commented out (not deleted) in case of a revert.
   # starrocks:
-  #   image: starrocks/allin1-ubuntu:4.0.10
+  #   image: ${STARROCKS_IMAGE:-starrocks/allin1-ubuntu:4.1.6}
   #   container_name: starrocks
   #   entrypoint: ["/usr/bin/tini-static", "--", "/starrocks-entrypoint.sh"]
   #   ports:
@@ -873,6 +1123,13 @@ services:
   #   volumes:
   #     - "./starrocks/docker-entrypoint.sh:/starrocks-entrypoint.sh:ro"
   #   environment:
+  #     - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME-}
+  #     - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+  #     - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+  #     - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
+  #     - ADLS_CONTAINER=${ADLS_CONTAINER:-sr-poc-cont1}
+  #     - ADLS_PROTO_SAS_TOKEN=${ADLS_PROTO_SAS_TOKEN-}
+  #     - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-oauth}
   #     - ADLS_ACCOUNT_KEY
   #     - HTTP_PROXY=
   #     - HTTPS_PROXY=
@@ -882,6 +1139,11 @@ services:
   #     - all_proxy=
   #     - NO_PROXY=*
   #     - no_proxy=*
+  #   depends_on:
+  #     lakekeeper-bootstrap:
+  #       condition: service_completed_successfully
+  #     minio-0:
+  #       condition: service_healthy
   #   healthcheck:
   #     test: ["CMD-SHELL", "mysql -h 127.0.0.1 -P 9030 -u root --connect-timeout=3 -e 'SELECT 1' 2>/dev/null || exit 1"]
   #     interval: 10s
@@ -892,27 +1154,278 @@ services:
   #   deploy:
   #     resources:
   #       limits:
-  #         memory: 3G
+  #         memory: 5G
   #       reservations:
-  #         memory: 2G
+  #         memory: 3G
   #   networks:
   #     iceberg_net:
 
-  # starrocks-init:
-  #   image: alpine:3.23.4
-  #   restart: "no"
-  #   depends_on:
-  #     starrocks:
-  #       condition: service_healthy
+  # StarRocks — shared-data mode, storage on the stack's own MinIO (S3-compatible).
+  # Kept the service key/hostname/container_name as "starrocks" (unchanged from
+  # the old shared-nothing setup above) so nothing downstream needed to change:
+  # dbt_starrocks profile, orchestration/*.py, modern-dashboard/backend/api.py,
+  # and starrocks/init_catalog.sh all connect via hostname "starrocks" port 9030.
+  # See docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md for how this was validated
+  # (standalone test cluster, now superseded/commented out below) and why
+  # shared-data needs the separate fe-ubuntu/cn-ubuntu images instead of
+  # allin1-ubuntu. The storage volume itself (CREATE STORAGE VOLUME ... TYPE=S3)
+  # is created by starrocks-init, not here — StarRocks shared-data doesn't take
+  # object-storage credentials via fe.conf.
+  starrocks:
+    # Bumped from 4.0-latest to 4.1.4 on 2026-09-10. Originally tried to pick
+    # up StarRocks PR #71016 ("fix pg date time bug", absent from 4.0.14,
+    # present from 4.1.1 -- confirmed via git ancestry) as a suspected fix
+    # for the JDBC-catalog corrupted-timestamp bug in
+    # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md. That bug turned out to
+    # need a different fix (binaryTransfer=false on the risingwave catalog's
+    # jdbc_uri, see starrocks/init_catalog.sh) -- the version bump alone did
+    # NOT fix it. Kept anyway: it did fix a separate, real issue (JDBC
+    # catalog row-count instability across repeated queries), no downside
+    # found. See the doc for the full investigation. Bumped again to 4.1.6 on
+    # 2026-10-21 for the 4.1.x patch fixes (docs.starrocks.io release notes 4.1).
+    image: starrocks/fe-ubuntu:4.1.6
+    hostname: starrocks
+    container_name: starrocks
+    user: root
+    volumes:
+      - "./starrocks/fe-entrypoint.sh:/fe-entrypoint.sh:ro"
+    environment:
+      - AWS_EC2_METADATA_DISABLED=true
+      - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME-}
+      - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+      - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+      - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
+      - ADLS_CONTAINER=${ADLS_CONTAINER:-sr-poc-cont1}
+      - ADLS_PROTO_SAS_TOKEN=${ADLS_PROTO_SAS_TOKEN-}
+      - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-oauth}
+      - ADLS_ACCOUNT_KEY
+    entrypoint: ["/bin/bash", "/fe-entrypoint.sh"]
+    ports:
+      - "9030:9030"   # MySQL protocol — Power BI / mysql clients connect here
+      - "8030:8030"   # HTTP API / StarRocks UI
+    depends_on:
+      lakekeeper-bootstrap:
+        condition: service_completed_successfully
+      minio-0:
+        condition: service_healthy
+    healthcheck:
+      test: 'mysql -u root -h starrocks -P 9030 -e "show frontends\G" | grep "Alive: true"'
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 5G
+        reservations:
+          memory: 3G
+    networks:
+      iceberg_net:
+
+  starrocks-cn:
+    image: starrocks/cn-ubuntu:4.1.6
+    hostname: starrocks-cn
+    container_name: starrocks-cn
+    user: root
+    volumes:
+      - "./starrocks/cn-entrypoint.sh:/cn-entrypoint.sh:ro"
+    environment:
+      - HOST_TYPE=FQDN
+      - AWS_EC2_METADATA_DISABLED=true
+      - ADLS_ACCOUNT_NAME=${ADLS_ACCOUNT_NAME-}
+      - ADLS_CLIENT_ID=${ADLS_CLIENT_ID-}
+      - ADLS_CLIENT_SECRET=${ADLS_CLIENT_SECRET-}
+      - ADLS_TENANT_ID=${ADLS_TENANT_ID-}
+      - ADLS_CONTAINER=${ADLS_CONTAINER:-sr-poc-cont1}
+      - ADLS_PROTO_SAS_TOKEN=${ADLS_PROTO_SAS_TOKEN-}
+      - STARROCKS_ADLS_AUTH_MODE=${STARROCKS_ADLS_AUTH_MODE:-oauth}
+      - ADLS_ACCOUNT_KEY
+    entrypoint: ["/bin/bash", "/cn-entrypoint.sh"]
+    ports:
+      - "8040:8040"
+    depends_on:
+      starrocks:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: 'mysql -u root -h starrocks -P 9030 -e "SHOW COMPUTE NODES\G" | grep "Alive: true"'
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 5G
+        reservations:
+          memory: 3G
+    networks:
+      iceberg_net:
+
+  # StarRocks shared-data test cluster — standalone proof-of-concept for
+  # whether StarRocks can use Azure (ADLS Gen2) as its own table storage,
+  # instead of the local BE disk the main `starrocks` service above uses.
+  # COMMENTED OUT 2026-09-08: confirmed feasible (both nodes came up
+  # healthy, shared-data bootstrap works cleanly) but blocked on Azure
+  # credentials -- every available credential (account shared key, SAS
+  # token) was rejected with 403 by Azure itself, and StarRocks's ADLS2
+  # storage volume doesn't support plain client-secret OAuth (only Managed/
+  # Workload Identity). Kept here, commented, for future reference rather
+  # than deleted. Full findings, exact commands, and how to resume:
+  # docs/SR_POC_STARROCKS_SHARED_DATA_AZURE.md
+  #
+  # starrocks-shared-fe:
+  #   image: starrocks/fe-ubuntu:4.0-latest
+  #   hostname: starrocks-shared-fe
+  #   container_name: starrocks-shared-fe
+  #   user: root
+  #   environment:
+  #     - AWS_EC2_METADATA_DISABLED=true
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - |
+  #       echo "run_mode = shared_data" >> /opt/starrocks/fe/conf/fe.conf
+  #       echo "cloud_native_storage_type = ADLS2" >> /opt/starrocks/fe/conf/fe.conf
+  #       /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
+  #   ports:
+  #     - "9031:9030"
+  #     - "8031:8030"
+  #     - "9021:9020"
+  #   healthcheck:
+  #     test: 'mysql -u root -h starrocks-shared-fe -P 9030 -e "show frontends\G" | grep "Alive: true"'
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
   #   networks:
   #     iceberg_net:
+  #
+  # starrocks-shared-cn:
+  #   image: starrocks/cn-ubuntu:4.0-latest
+  #   hostname: starrocks-shared-cn
+  #   container_name: starrocks-shared-cn
+  #   user: root
   #   environment:
-  #     - DATABRICKS_AZURE_CLIENT_ID=3b7f531f-db93-4186-af75-6566c12c076b
-  #     - DATABRICKS_AZURE_CLIENT_SECRET
-  #     - ADLS_ACCOUNT_KEY
-  #   volumes:
-  #     - "./starrocks/init_catalog.sh:/init_catalog.sh:ro"
-  #   command: sh /init_catalog.sh
+  #     - HOST_TYPE=FQDN
+  #     - AWS_EC2_METADATA_DISABLED=true
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - |
+  #       sleep 15
+  #       ulimit -u 65535
+  #       ulimit -n 65535
+  #       mysql --connect-timeout 2 -h starrocks-shared-fe -P9030 -uroot -e "ALTER SYSTEM ADD COMPUTE NODE \"starrocks-shared-cn:9050\";"
+  #       /opt/starrocks/cn/bin/start_cn.sh
+  #   ports:
+  #     - "8041:8040"
+  #   depends_on:
+  #     starrocks-shared-fe:
+  #       condition: service_healthy
+  #       restart: true
+  #   healthcheck:
+  #     test: 'mysql -u root -h starrocks-shared-fe -P 9030 -e "SHOW COMPUTE NODES\G" | grep "Alive: true"'
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     iceberg_net:
+
+  # StarRocks shared-data test cluster — standalone proof-of-concept for
+  # whether StarRocks can use the stack's own MinIO as its own table storage.
+  # CONFIRMED WORKING end-to-end (unlike the Azure attempt above), then
+  # WIRED IN as the real `starrocks`+`starrocks-cn` services above 2026-09-08
+  # (this required swapping the main service off allin1-ubuntu, so existing
+  # catalogs/tables were rebuilt via the Dagster job, not migrated). This
+  # standalone copy is now redundant with the real thing and commented out
+  # (not deleted) for reference. Full findings, exact commands, and how to
+  # resume: docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md
+  #
+  # starrocks-shared-fe:
+  #   image: starrocks/fe-ubuntu:4.0-latest
+  #   hostname: starrocks-shared-fe
+  #   container_name: starrocks-shared-fe
+  #   user: root
+  #   environment:
+  #     - AWS_EC2_METADATA_DISABLED=true
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - |
+  #       echo "run_mode = shared_data" >> /opt/starrocks/fe/conf/fe.conf
+  #       echo "cloud_native_storage_type = S3" >> /opt/starrocks/fe/conf/fe.conf
+  #       /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN
+  #   ports:
+  #     - "9032:9030"
+  #     - "8032:8030"
+  #     - "9022:9020"
+  #   depends_on:
+  #     minio-0:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: 'mysql -u root -h starrocks-shared-fe -P 9030 -e "show frontends\G" | grep "Alive: true"'
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     iceberg_net:
+  #
+  # starrocks-shared-cn:
+  #   image: starrocks/cn-ubuntu:4.0-latest
+  #   hostname: starrocks-shared-cn
+  #   container_name: starrocks-shared-cn
+  #   user: root
+  #   environment:
+  #     - HOST_TYPE=FQDN
+  #     - AWS_EC2_METADATA_DISABLED=true
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - |
+  #       sleep 15
+  #       ulimit -u 65535
+  #       ulimit -n 65535
+  #       mysql --connect-timeout 2 -h starrocks-shared-fe -P9030 -uroot -e "ALTER SYSTEM ADD COMPUTE NODE \"starrocks-shared-cn:9050\";"
+  #       /opt/starrocks/cn/bin/start_cn.sh
+  #   ports:
+  #     - "8042:8040"
+  #   depends_on:
+  #     starrocks-shared-fe:
+  #       condition: service_healthy
+  #       restart: true
+  #   healthcheck:
+  #     test: 'mysql -u root -h starrocks-shared-fe -P 9030 -e "SHOW COMPUTE NODES\G" | grep "Alive: true"'
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     iceberg_net:
+
+  starrocks-init:
+    image: alpine:3.23.4
+    container_name: starrocks-init
+    restart: "no"
+    depends_on:
+      starrocks:
+        condition: service_healthy
+      starrocks-cn:
+        condition: service_healthy
+      lakekeeper-bootstrap:
+        condition: service_completed_successfully
+      minio-0:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+    environment:
+      - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
+      - DATABRICKS_AZURE_TENANT_ID=${DATABRICKS_AZURE_TENANT_ID-}
+      - DATABRICKS_AZURE_CLIENT_SECRET=${DATABRICKS_AZURE_CLIENT_SECRET-}
+    volumes:
+      - "./starrocks/init_catalog.sh:/init_catalog.sh:ro"
+    command: sh /init_catalog.sh
 
 volumes:
   postgres-0:
@@ -923,6 +1436,8 @@ volumes:
     external: false
   grafana-0:
     external: false
+  superset-home:
+    external: false
   lakekeeper-db:
     external: false
   redpanda-data:
@@ -931,6 +1446,9 @@ volumes:
     external: false
   trino-data:                # Trino node data dir + spill-to-disk scratch (see trino/config.properties)
     external: false
+  # hive-metastore-db: paired with the commented-out hive-metastore-db service above.
+  # hive-metastore-db:
+  #   external: false
   hummock-fs-store:        # local-fs Hummock state store (§16, demo-only) — shared across RW nodes
     external: false
 

@@ -126,7 +126,7 @@ Pick one of three follow-up paths:
 ### Existing files likely to be touched
 
 - `docker-compose.yml` only if running Ververica Platform locally
-- `README.md` or a new doc under `docs/` for POC usage
+- [`README.md`](../README.md) or a new doc under `docs/` for POC usage
 - possibly `bin/` scripts for job submission and comparison
 
 ### Files that should remain unchanged

@@ -1,0 +1,9 @@
+FROM trinodb/trino:481
+
+ADD https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.5/hadoop-azure-3.3.5.jar /usr/lib/trino/plugin/delta-lake/hdfs/hadoop-azure-3.3.5.jar
+ADD https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.5/hadoop-azure-3.3.5.jar /usr/lib/trino/plugin/delta-lake/hadoop-azure-3.3.5.jar
+
+USER root
+RUN chmod 644 \
+	/usr/lib/trino/plugin/delta-lake/hdfs/hadoop-azure-3.3.5.jar \
+	/usr/lib/trino/plugin/delta-lake/hadoop-azure-3.3.5.jar

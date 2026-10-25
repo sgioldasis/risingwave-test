@@ -1,0 +1,35 @@
+slice_name: "Funnel Over Time (Cached - Fast) \u2014 Last Hour [Live RisingWave via\
+  \ StarRocks JDBC, else StarRocks's own MV]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 5__table
+  viz_type: echarts_timeseries_line
+  groupby: []
+  metrics:
+  - sum__viewers
+  - sum__carters
+  - sum__purchasers
+  granularity_sqla: window_start
+  time_range: '1 hour ago : now'
+  adhoc_filters:
+  - clause: WHERE
+    subject: window_start
+    operator: TEMPORAL_RANGE
+    comparator: '1 hour ago : now'
+    expressionType: SIMPLE
+  order_desc: false
+  x_axis: window_start
+  x_axis_time_format: '%H:%M'
+  y_axis_format: SMART_NUMBER
+  rich_tooltip: true
+  show_legend: true
+  row_limit: 10000
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: d33b8dd6-0364-4e23-8eb6-c26410fe8445
+version: 1.0.0
+dataset_uuid: 4a913584-3059-465c-a79d-5980f3990ecf

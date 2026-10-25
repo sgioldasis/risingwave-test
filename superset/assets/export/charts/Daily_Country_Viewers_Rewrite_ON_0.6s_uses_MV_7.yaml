@@ -1,0 +1,25 @@
+slice_name: "Daily Country Viewers \u2014 Rewrite ON (~0.6s, uses MV)"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 2__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - day
+  - country
+  - viewers
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["day", false]'
+  time_range: No filter
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 8ca2e3df-68f2-428c-8e66-b00bb8d84bb1
+version: 1.0.0
+dataset_uuid: 1a83c900-76f0-4bc4-bb79-578400685b6e

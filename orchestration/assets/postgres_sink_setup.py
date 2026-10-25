@@ -8,13 +8,11 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 logger = logging.getLogger(__name__)
 
-# SQL to create the funnel_summary_with_country table in PostgreSQL
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS funnel_summary_with_country (
+CREATE TABLE IF NOT EXISTS funnel_summary (
     window_start TIMESTAMP NOT NULL,
     window_end TIMESTAMP,
     country VARCHAR(2) NOT NULL,
-    country_name VARCHAR,
     viewers BIGINT,
     carters BIGINT,
     purchasers BIGINT,
@@ -61,11 +59,11 @@ def get_postgres_connection():
 @asset(
     group_name="postgres",
     compute_kind="python",
-    description="Creates the funnel_summary_with_country table in local PostgreSQL for RisingWave sink",
+    description="Creates the funnel_summary table in local PostgreSQL for RisingWave sink",
 )
 def postgres_funnel_table(context: AssetExecutionContext) -> str:
     """Create the PostgreSQL table that will receive data from RisingWave sink.
-    
+
     This table must exist before the RisingWave JDBC sink is created.
     """
     conn = None
@@ -73,22 +71,21 @@ def postgres_funnel_table(context: AssetExecutionContext) -> str:
         context.log.info("Connecting to PostgreSQL...")
         conn = get_postgres_connection()
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        
+
         with conn.cursor() as cur:
-            context.log.info("Creating funnel_summary_with_country table if not exists...")
+            context.log.info("Creating funnel_summary table if not exists...")
             cur.execute(CREATE_TABLE_SQL)
-            
-            # Verify table was created
+
             cur.execute("""
-                SELECT column_name, data_type 
-                FROM information_schema.columns 
-                WHERE table_name = 'funnel_summary_with_country'
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'funnel_summary'
                 ORDER BY ordinal_position;
             """)
             columns = cur.fetchall()
-            
+
         context.log.info(f"Table ready with columns: {[col[0] for col in columns]}")
-        return "funnel_summary_with_country table created/verified successfully"
+        return "funnel_summary table created/verified successfully"
         
     except psycopg2.Error as e:
         context.log.error(f"PostgreSQL error: {e}")

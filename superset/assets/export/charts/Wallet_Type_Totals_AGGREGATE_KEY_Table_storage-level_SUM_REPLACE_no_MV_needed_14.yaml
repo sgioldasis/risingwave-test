@@ -1,0 +1,26 @@
+slice_name: "Wallet Type Totals \u2014 AGGREGATE KEY Table [storage-level SUM/REPLACE,\
+  \ no MV needed]"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 9__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - type
+  - total_amount
+  - event_count
+  - last_event_time
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols: []
+  time_range: No filter
+  annotation_layers: []
+query_context: null
+cache_timeout: null
+uuid: 28829e50-0497-4e74-b5fe-fd4e9722a7d3
+version: 1.0.0
+dataset_uuid: 6f9b1d86-a6cb-4b2f-8c3f-79e4ab346ef3

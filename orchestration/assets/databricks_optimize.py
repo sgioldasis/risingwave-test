@@ -39,8 +39,28 @@ def _get_token() -> str:
     return resp.json()["access_token"]
 
 
+_TRANSIENT = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+
+
+def _with_retry(send, attempts: int = 2, delay: float = 3.0):
+    """Call send(), retrying once on transient connection errors (VPN blips).
+
+    The retry re-sends the request, so a statement that executed before the
+    connection dropped may run twice. Every statement in this demo tolerates
+    that — DDL and the watermark MERGE are idempotent, and a duplicated demo
+    change row is visible but harmless — while a hard failure mid-demo is not.
+    """
+    for attempt in range(attempts):
+        try:
+            return send()
+        except _TRANSIENT:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
 def _submit(token: str, statement: str) -> dict:
-    resp = requests.post(
+    resp = _with_retry(lambda: requests.post(
         f"{DATABRICKS_HOST}/api/2.0/sql/statements",
         headers={"Authorization": f"Bearer {token}"},
         json={
@@ -49,7 +69,7 @@ def _submit(token: str, statement: str) -> dict:
             "wait_timeout": "50s",
         },
         timeout=60,
-    )
+    ))
     resp.raise_for_status()
     return resp.json()
 
@@ -57,11 +77,11 @@ def _submit(token: str, statement: str) -> dict:
 def _poll(token: str, statement_id: str, poll_interval: int = 5, max_wait: int = 600) -> dict:
     deadline = time.time() + max_wait
     while time.time() < deadline:
-        resp = requests.get(
+        resp = _with_retry(lambda: requests.get(
             f"{DATABRICKS_HOST}/api/2.0/sql/statements/{statement_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=30,
-        )
+        ))
         resp.raise_for_status()
         data = resp.json()
         state = data.get("status", {}).get("state", "")

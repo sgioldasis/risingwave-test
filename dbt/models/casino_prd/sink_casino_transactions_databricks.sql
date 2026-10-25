@@ -18,6 +18,8 @@ WITH (
     database.name                        = 'rw_poc',
     table.name                           = 'rw_casino_transactions',
     adlsgen2.account_name                = '{{ env_var("ADLS_ACCOUNT_NAME") }}',
-    adlsgen2.account_key                 = '{{ env_var("ADLS_ACCOUNT_KEY") }}',
+    adlsgen2.tenant_id                   = '{{ env_var("DATABRICKS_AZURE_TENANT_ID") }}',
+    adlsgen2.client_id                   = '{{ env_var("DATABRICKS_AZURE_CLIENT_ID") }}',
+    adlsgen2.client_secret               = '{{ env_var("DATABRICKS_AZURE_CLIENT_SECRET") }}',
     commit_checkpoint_interval           = 5
 )

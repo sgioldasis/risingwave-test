@@ -1,0 +1,118 @@
+dashboard_title: StarRocks Query Rewrite Demo
+description: null
+css: null
+slug: query-rewrite-demo
+certified_by: null
+certification_details: null
+published: false
+uuid: 9e25f720-d51b-427a-9845-ce92ae6c1db8
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    children:
+    - ROW-N-I9TX10UC
+    - ROW-2
+    parents:
+    - ROOT_ID
+  ROW-2:
+    type: ROW
+    id: ROW-2
+    children:
+    - MARKDOWN-1
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-1:
+    type: MARKDOWN
+    id: MARKDOWN-1
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-2
+    meta:
+      width: 12
+      height: 46
+      code: "**Demo:** StarRocks transparent materialized-view query rewrite. Both\
+        \ charts run the *exact same query* (`SELECT date_trunc('day', window_start)\
+        \ AS day, country, SUM(viewers) AS viewers FROM databricks_uc.sr_poc_external.funnel_summary_historical\
+        \ GROUP BY day, country`) against the raw base Iceberg table \u2014 neither\
+        \ one mentions `mv_funnel_daily_country_rollup` at all. See `docs/SR_POC_QUERY_REWRITE_DEMO.md`.\n\
+        \n- **Rewrite ON** (left) is the query as-is, on the normal StarRocks connection.\
+        \ StarRocks's optimizer silently redirects it to the pre-aggregated MV.\n\
+        - **Rewrite OFF** (right) runs on a *separate* Superset database connection\
+        \ (`StarRocks (rewrite disabled)`) whose SQLAlchemy URI carries `?init_command=SET\
+        \ SESSION enable_materialized_view_rewrite=0` \u2014 that SQL runs once when\
+        \ each pooled connection opens, so every query through it has rewrite disabled\
+        \ at the session level, no per-query syntax needed.\n\n**Correction (2026-09-12):**\
+        \ the first version of this demo used a `/*+ SET_VAR(enable_materialized_view_rewrite=false)\
+        \ */` query hint embedded in the dataset's SQL instead. Confirmed directly\
+        \ via the chart's own `query` field in the API response: Superset's SQL processing\
+        \ silently stripped that hint comment when wrapping the virtual dataset in\
+        \ its outer `SELECT ... FROM (...) AS virtual_table` \u2014 the actual query\
+        \ sent to StarRocks never had the hint at all, so both charts were quietly\
+        \ running with rewrite ON the whole time (both fast, indistinguishable) despite\
+        \ `EXPLAIN` on the raw hinted SQL confirming the hint works fine outside Superset.\
+        \ The `init_command`-based separate connection avoids this since there's no\
+        \ per-query SQL text for anything to strip.\n\n**Confirmed live via `EXPLAIN`**\
+        \ (run directly, outside Superset): rewrite ON shows `TABLE: mv_funnel_daily_country_rollup`\
+        \ / `MaterializedView: true`; rewrite OFF shows `TABLE: sr_poc_external.funnel_summary_historical`\
+        \ (the raw Iceberg table). **Timing, confirmed through Superset's own API\
+        \ this time:** ~0.6-0.7s (MV) vs. ~7.2s (raw Iceberg scan) for the identical\
+        \ result.\n\n**Why it works:** `mv_funnel_daily_country_rollup` is a plain\
+        \ SPJG (Select-Project-Join-Group-by) rollup over a single external-catalog\
+        \ source, no volatile predicates -- confirmed eligible via `information_schema.materialized_views.query_rewrite_status\
+        \ = VALID`. Contrast with `mv_unified_funnel_summary` elsewhere in this project,\
+        \ which unions two catalogs with a `CURRENT_TIMESTAMP()`-relative filter and\
+        \ is explicitly `INVALID` / `UNSUPPORTED_DEFINITION` for rewrite -- not every\
+        \ MV shape qualifies."
+  ROW-N-I9TX10UC:
+    children:
+    - CHART-ROBTRDGG
+    - CHART-BCXNRZCZ
+    id: ROW-N-I9TX10UC
+    meta:
+      '0': ROOT_ID
+      background: BACKGROUND_TRANSPARENT
+    type: ROW
+    parents:
+    - ROOT_ID
+    - GRID_ID
+  CHART-ROBTRDGG:
+    children: []
+    id: CHART-ROBTRDGG
+    meta:
+      chartId: 7
+      height: 50
+      sliceName: "Daily Country Viewers \u2014 Rewrite ON (~0.6s, uses MV)"
+      uuid: 8ca2e3df-68f2-428c-8e66-b00bb8d84bb1
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-I9TX10UC
+  CHART-BCXNRZCZ:
+    children: []
+    id: CHART-BCXNRZCZ
+    meta:
+      chartId: 5
+      height: 50
+      sliceName: "Daily Country Viewers \u2014 Rewrite OFF (~7.2s, raw Iceberg scan)"
+      uuid: 10009d6f-2f72-45e0-af07-6797fc91a1f5
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-I9TX10UC
+version: 1.0.0

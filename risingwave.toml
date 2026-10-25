@@ -365,6 +365,10 @@ retryable_service_error_codes = ["SlowDown", "TooManyRequests"]
 use_opendal = true
 
 [system]
+# Briefly tightened to 500ms/1 on 2026-09-07 for a native RisingWave
+# StarRocks sink (sink_funnel_to_starrocks) that has since been reverted --
+# see docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md. Restored to the original
+# default here; nothing in this project currently needs a tighter cadence.
 barrier_interval_ms = 2000
 checkpoint_frequency = 2
 sstable_size_mb = 64

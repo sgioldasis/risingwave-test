@@ -1,0 +1,17 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      # The unit tests need no services: the reverse-ETL code runs against fake resources.
+      - run: uv sync --frozen
+      # Lint the reverse-ETL code and its tests (the rest of the repo is not linted yet).
+      - run: uv run ruff check tests orchestration/assets/reverse_etl_*.py orchestration/definitions.py
+      - run: uv run pytest --cov --cov-report=term

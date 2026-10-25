@@ -980,7 +980,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (source_name) (rate(source_partition_input_count{source_name=~\"src_casino_prd|src_bets_gh\"}[5m]))",
+          "expr": "sum by (source_name) (rate(source_partition_input_count{source_name=~\"src_casino_prd.*|src_bets_br.*\"}[5m]))",
           "legendFormat": "{{source_name}}",
           "refId": "A"
         }
@@ -1113,7 +1113,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name=~\".*kafka.*\"})\n)",
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name=~\".*kafka.*|.*redpanda.*\"})\n)",
           "legendFormat": "{{sink_name}}",
           "refId": "A"
         }
@@ -1540,7 +1540,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name!~\".*kafka.*\", sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"})\n)",
+          "expr": "sum by (sink_name) (\n  rate(stream_sink_input_row_count[5m])\n  * on (sink_id) group_left(sink_name)\n    max by (sink_id, sink_name) (sink_info{sink_name!~\".*kafka.*|.*redpanda.*\", sink_name=~\".*casino.*|.*turnover.*|.*sportsbook.*\"})\n)",
           "legendFormat": "{{sink_name}}",
           "refId": "A"
         }

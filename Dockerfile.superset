@@ -1,0 +1,9 @@
+# Superset with the MySQL driver StarRocks needs.
+# The 6.x image runs from its own virtualenv (/app/.venv), which has no MySQL driver, and a plain
+# `pip install` goes to a different Python. Install into the virtualenv as root, then drop back to
+# the image's user. superset/superset_config.py maps pymysql to MySQLdb, which Superset imports.
+FROM apache/superset:6.1.0
+
+USER root
+RUN uv pip install --no-cache --python /app/.venv/bin/python pymysql==1.1.1
+USER superset

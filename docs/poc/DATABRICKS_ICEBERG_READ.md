@@ -399,7 +399,7 @@ ORDER BY total_turnover DESC;
 
 This is the read-time replacement for an upsert sink. Unity Catalog does not
 support Iceberg delete files, so an upserting `mv_casino_turnover_latest` sink
-stalls silently (see `DATABRICKS_ICEBERG_SINK.md` §16). Instead, RisingWave
+stalls silently (see [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md) §16). Instead, RisingWave
 lands the per-event rolling-turnover snapshots **append-only** into
 `de_dev.rw_poc.rw_casino_turnover_90d` (sink `sink_casino_turnover_90d_databricks`),
 and the "latest row per customer" collapse happens here via `QUALIFY` — no
@@ -525,7 +525,7 @@ Sources and views persist across sessions once created by `casino_prd_full_job`.
 | Limitation | Detail |
 |---|---|
 | **Sources are live, not streaming** | A `CREATE SOURCE` reads the current Iceberg snapshot on each query — data is always fresh. However, it is a batch scan, not a continuous stream; you cannot base a `CREATE MATERIALIZED VIEW` on it for real-time incremental updates. |
-| **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by Predictive Optimization (enabled on `de_dev.rw_poc`) and the `databricks_optimize` Dagster step. See §17 of `DATABRICKS_ICEBERG_SINK.md`. |
+| **Small-file accumulation** | RisingWave commits one Parquet file per checkpoint (~20s). Mitigated by Predictive Optimization (enabled on `de_dev.rw_poc`) and the `databricks_optimize` Dagster step. See §17 of [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md). |
 | **Not suitable for very large tables** | Full Parquet scan from ADLS. For billion-row tables: OOM risk + slow network I/O. See §11 (production viability) below. |
 | **No partition pruning** | RisingWave 2.8.4 opens all Parquet files regardless of `WHERE` clause filters — no partition-level skipping. Row-group pruning via Parquet min/max statistics still applies within each file. Future roadmap item. |
 | **`properties` JSON is not vectorized** | JSON extraction via `(properties::jsonb)->>'key'` falls back to row-by-row string parsing. Use flat typed columns for high-frequency analytical aggregations. |
@@ -538,9 +538,10 @@ RisingWave's Iceberg connector **cannot read native Delta format** — it only u
 
 ### Databricks UniForm
 
-UniForm writes Iceberg metadata *alongside* the Delta log simultaneously, making a Delta table readable by both Delta and Iceberg readers.
+UniForm writes Iceberg metadata *alongside* the Delta log, making a Delta table
+readable by both Delta and Iceberg readers.
 
-**All four properties must be set at `CREATE TABLE` time** — cannot `ALTER` an existing table:
+For a new table, configure UniForm at creation time:
 
 ```sql
 CREATE TABLE de_dev.rw_poc.my_table ( ... )
@@ -555,24 +556,50 @@ TBLPROPERTIES (
 
 Once created, the same `CREATE SOURCE` SQL (§5) works — RisingWave reads the Iceberg metadata layer.
 
-### Why ALTER fails on existing Delta tables
+### Existing Delta tables
 
-1. `IcebergCompatV2 requires delta.columnMapping.mode = 'name'` — changing column mapping on an existing table requires a full rewrite
-2. `IcebergCompatV2 requires Deletion Vectors to be disabled` — if DVs were ever used, you'd need `REORG PURGE` first
-3. `REORG PURGE` may fail if the table has other constraints
+Existing Unity Catalog-managed Delta tables can be made readable by Iceberg
+clients when their protocol and table features are compatible. The normal
+migration path is:
 
-**The clean path for existing tables:** drop, recreate with the four properties, reload data.
+```sql
+ALTER TABLE catalog_name.schema_name.table_name
+SET TBLPROPERTIES (
+    'delta.columnMapping.mode' = 'id',
+    'delta.enableIcebergCompatV2' = 'true',
+    'delta.universalFormat.enabledFormats' = 'iceberg'
+);
+```
+
+If deletion vectors exist or the table uses legacy UniForm metadata, use the
+Databricks-supported rewrite:
+
+```sql
+REORG TABLE catalog_name.schema_name.table_name
+APPLY (UPGRADE UNIFORM (ICEBERG_COMPAT_VERSION = 2));
+```
+
+UniForm metadata generation is asynchronous after Delta commits. Use this only
+to recover or force the current Delta version into the Iceberg metadata layer:
+
+```sql
+MSCK REPAIR TABLE catalog_name.schema_name.table_name SYNC METADATA;
+```
+
+For the StarRocks-specific integration, validation, large-table rollout,
+cost model, and operational limits, see
+[StarRocks Reads of Databricks Delta Tables](SR_DATABRICKS_DELTA_READ.md).
 
 ### Gotchas when enabling UniForm on large existing tables
 
 | Blocker | Detail |
 |---|---|
-| **Deletion Vectors** | Modern Databricks tables have DVs enabled by default. Must run `REORG TABLE <t> APPLY (PURGE)` — rewrites all data files, blocks writes, can take hours |
-| **Column mapping mode** | Tables on `NoMapping` must migrate to `name` mode — can break Spark jobs that depend on column IDs |
-| **Initial metadata sync** | On first enable, Databricks generates Iceberg metadata for the entire Delta log — can take hours for large tables |
-| **Per-write overhead** | Every future write also updates Iceberg metadata — adds latency on high-frequency append tables |
-| **Incompatible features** | Cannot enable UniForm if table uses: Liquid Clustering, V-Order, row tracking, type widening |
-| **Protocol upgrade** | Requires reader version 2, writer version 7 — older Spark jobs may fail |
+| **Deletion Vectors** | IcebergCompatV2 cannot coexist with deletion vectors. A `REORG ... UPGRADE UNIFORM` operation can require substantial compute, I/O, and temporary capacity. |
+| **Column mapping mode** | Table protocol and mapping changes affect compatibility. Validate every existing Delta writer before enabling UniForm. |
+| **Initial metadata sync** | Metadata generation is asynchronous. For a large table history, allow a maintenance window and verify conversion status before enabling external readers. |
+| **Per-write overhead** | Every future Delta write can trigger Iceberg metadata generation, increasing compute demand and potentially write latency. |
+| **Existing features** | Validate Liquid Clustering, row tracking, type widening, and other enabled features against the intended UniForm version before changing the table. |
+| **Protocol upgrade** | UniForm requires Delta reader version 2 and writer version 7 or later. Older clients can fail after the upgrade. |
 
 ---
 
@@ -688,7 +715,7 @@ IcebergV2 error: Failed to load manifest list in cache
 Unexpected (persistent) at read, context: { timeout: 10 } => io timeout reached
 ```
 
-**Root cause:** The table lives in `stkznneucommoncdddevstd` — Databricks' internal managed ADLS account. We don't have the key for this account, and `vended_credentials = true` does not provide working Azure credentials through RisingWave's OpenDAL read path (same limitation as writes — see §7 of `DATABRICKS_ICEBERG_SINK.md`).
+**Root cause:** The table lives in `stkznneucommoncdddevstd` — Databricks' internal managed ADLS account. We don't have the key for this account, and `vended_credentials = true` does not provide working Azure credentials through RisingWave's OpenDAL read path (same limitation as writes — see §7 of [`DATABRICKS_ICEBERG_SINK.md`](DATABRICKS_ICEBERG_SINK.md)).
 
 ### What works vs what doesn't
 

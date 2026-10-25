@@ -1,93 +1,68 @@
-"""Dagster asset for creating and populating Iceberg countries table using Trino."""
-import csv
+"""Validate the Iceberg country reference table through StarRocks.
+
+Moved to Databricks Unity Catalog (de_dev.sr_poc_external.iceberg_countries)
+on 2026-09-07, created and loaded once via Databricks SQL as a Managed
+Iceberg table (USING ICEBERG, catalogManaged feature dropped) matching the
+format/properties of the existing funnel_summary_historical table. Read here
+through the same databricks_uc StarRocks catalog already used for that
+table -- no new catalog needed.
+
+This table previously lived in the local lakekeeper_local Iceberg catalog
+(MinIO-backed), which meant it was wiped by every full stack teardown and
+had to be recreated (a ~3 minute one-time cost per teardown -- see
+docs/SR_POC_UNIFIED_PLAN.md). Since Databricks is external/persistent like
+the historical funnel table, this table now survives teardowns permanently
+and this asset goes back to pure validation, same pattern as
+modern_dashboard_setup.py's modern_dashboard_databricks_table.
+"""
+
 import os
 
-from dagster import asset, AssetExecutionContext
-from trino.dbapi import connect
+from dagster import AssetExecutionContext, MetadataValue, asset
+from sqlalchemy import create_engine, text
 
-
-def load_csv_data(filepath: str) -> list[tuple]:
-    """Load country data from CSV file."""
-    countries = []
-    with open(filepath, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            countries.append((row['country_code'], row['country_name']))
-    return countries
+TABLE_FQN = "databricks_uc.sr_poc_external.iceberg_countries"
 
 
 @asset(
     name="iceberg_countries",
-    group_name="datalake",
-    description="Create and populate Iceberg countries table using Trino",
+    group_name="setup",
+    description=(
+        "Validate the existing Databricks Iceberg country reference table "
+        "through StarRocks."
+    ),
 )
-def iceberg_countries(context: AssetExecutionContext):
-    """Creates the iceberg_countries table and populates it with country data via Trino."""
-    context.log.info("Creating Iceberg countries table via Trino...")
+def iceberg_countries(context: AssetExecutionContext) -> dict:
+    """Validate the country reference table used by the dashboard and RisingWave."""
+    starrocks_url = os.environ.get(
+        "STARROCKS_URL",
+        "mysql+pymysql://root@starrocks:9030",
+    )
+    engine = create_engine(
+        starrocks_url,
+        connect_args={"connect_timeout": 5},
+        pool_pre_ping=True,
+    )
 
-    try:
-        # Load data from CSV
-        csv_path = os.path.join('/workspace', 'data', 'countries.csv')
-        context.log.info(f"Loading countries from {csv_path}...")
-        countries = load_csv_data(csv_path)
-        context.log.info(f"Loaded {len(countries)} countries from CSV")
+    with engine.connect() as connection:
+        columns = connection.execute(text(f"""
+            SELECT country, country_name
+            FROM {TABLE_FQN} LIMIT 0
+        """)).keys()
+        count = connection.execute(text(f"SELECT COUNT(*) FROM {TABLE_FQN}")).scalar()
 
-        # Connect to Trino (running in Docker, use 'trino' as host from within Dagster container)
-        conn = connect(
-            host="trino",
-            port=8080,
-            user="dagster",
-            catalog="datalake",
-            schema="public",
+    required_columns = {"country", "country_name"}
+    missing_columns = required_columns - set(columns)
+    if missing_columns:
+        raise RuntimeError(
+            f"{TABLE_FQN} is missing required columns: {sorted(missing_columns)}"
         )
-        cur = conn.cursor()
+    if not count:
+        raise RuntimeError(f"{TABLE_FQN} exists but contains no country rows")
 
-        # Create schema if not exists
-        context.log.info("Creating schema if not exists...")
-        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
-        conn.commit()
-        context.log.info("✓ Schema created/verified")
-
-        # Create table
-        context.log.info("Creating table...")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS iceberg_countries (
-                country VARCHAR,
-                country_name VARCHAR
-            )
-        """)
-        conn.commit()
-        context.log.info("✓ Table created/verified")
-
-        # Clear existing data
-        context.log.info("Clearing existing data...")
-        cur.execute("DELETE FROM iceberg_countries")
-        conn.commit()
-
-        # Insert data
-        context.log.info(f"Inserting {len(countries)} countries...")
-        for country_code, country_name in countries:
-            cur.execute(
-                "INSERT INTO iceberg_countries (country, country_name) VALUES (?, ?)",
-                (country_code, country_name)
-            )
-        conn.commit()
-
-        # Verify
-        cur.execute("SELECT COUNT(*) FROM iceberg_countries")
-        count = cur.fetchone()[0]
-        context.log.info(f"✓ Table now contains {count} countries")
-
-        # Show sample data
-        cur.execute("SELECT country, country_name FROM iceberg_countries ORDER BY country LIMIT 5")
-        sample = cur.fetchall()
-        context.log.info(f"Sample data: {sample}")
-
-        conn.close()
-
-        context.log.info(f"✓ Successfully created iceberg_countries table with {count} countries via Trino")
-        return {"country_count": count}
-
-    except Exception as e:
-        context.log.error(f"Failed to create table: {e}")
-        raise
+    context.log.info("Validated %s with %s rows", TABLE_FQN, count)
+    return {
+        "table": MetadataValue.text(TABLE_FQN),
+        "validated_through": MetadataValue.text("StarRocks databricks_uc catalog"),
+        "country_count": MetadataValue.int(count),
+    }

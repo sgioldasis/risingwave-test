@@ -40,6 +40,8 @@ SCRIPTS = [
      [{"label": "Offline (skip Dagster build, reuse cached image)", "flag": "--offline"}]),
     ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
+    ("3_run_wallet_producer.sh", "💳 Start Wallet Producer", "Run the synthetic wallet transaction producer (StarRocks upsert demo)", True),
+    ("3_run_reverse_etl_demo.sh", "🔁 Reverse-ETL Demo", "Serve the reverse-ETL animation with buttons that launch each step (port 4002)"),
     ("4_run_ml_serving.sh", "🤖 ML Serving", "Start ML serving with River online learning (port 8001)"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
     ("5_duckdb_iceberg.sh", "🦆 DuckDB Iceberg", "Query Iceberg tables with DuckDB"),
@@ -82,7 +84,9 @@ BACKGROUND_SERVICES_CONFIG = [
     {"script": "4_run_dashboard.sh", "port": 8050},
     {"script": "4_run_modern.sh", "port": 4000},
     {"script": "4_run_ml_serving.sh", "port": 8001},
+    {"script": "3_run_reverse_etl_demo.sh", "port": 4002},
     {"script": "3_run_producer.sh", "pattern": "scripts/producer.py"},
+    {"script": "3_run_wallet_producer.sh", "pattern": "scripts/wallet_producer.py"},
     {"script": "5_spark_iceberg.sh", "port": 2718},
     {"script": "5_marimo_risingwave.sh", "port": 2719},
 ]
