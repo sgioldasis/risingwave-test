@@ -24,9 +24,10 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     are the demo's hooks (ReverseEtlCdfDemo); this component runs without them.
 
     `name` is a short label deriving the default asset and group names, as
-    reverse_etl_<name>_<...>. `sync_name` is explicit: it is the watermark key and the Debezium
-    envelope prefix, the one name a replay silently depends on — changing it for an existing sync
-    restarts that sync from the beginning.
+    reverse_etl_<name>_<...>, and — unless overridden — the watermark key and topic with it.
+    The watermark key (`sync_name`) is the one name a replay silently depends on: changing it
+    for an existing sync restarts that sync from the beginning, which is why the sync refuses
+    to do that silently (the watermark guard) and why an explicit override exists.
     """
 
     name: str
@@ -37,15 +38,19 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     # The column that identifies a row downstream. No default: the demo's surrogate
     # key `rid` means nothing for a real table.
     key_column: str
-    # The topic to produce to. It must already exist; the sync never creates one.
-    kafka_topic: str
-    # The watermark key and the Debezium envelope prefix. Explicit on purpose: a
-    # replay depends on it silently.
-    sync_name: str
-    # The watermark state (reverse_etl_state.py): "postgres" (default; `state_table`, the
-    # shared table, which must exist -- the sync fails with the DDL otherwise) or "duckdb"
-    # (a local file at `state_path`, created on first run, needing no postgres resource).
-    state_backend: str | None = None
+    # The topic to produce to. Omitted, it derives as reverse_etl_<name>_topic.
+    kafka_topic: str | None = None
+    # The watermark key and the Debezium envelope prefix. Omitted, it derives as
+    # reverse_etl_<name>, so the whole derived name family stays consistent by
+    # construction. Given, it is verbatim: pin it to keep the watermark across a
+    # label rename -- the sync refuses to restart silently on a rename (step 3's guard).
+    sync_name: str | None = None
+    # The watermark state (reverse_etl_state.py): "postgres" (`state_table`, the shared
+    # table, which must exist -- the sync fails with the DDL otherwise) or "duckdb" (a
+    # local file at `state_path`, created on first run, needing no postgres resource).
+    # Required, no default: it is the author's decision -- restart semantics, a postgres
+    # dependency, or the DuckDB single-writer rule -- not something to forget about.
+    state_backend: str
     state_table: str | None = None
     state_path: str | None = None
 
@@ -68,22 +73,26 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
 
     def to_config(self) -> CdfSyncConfig:
         derived = dagster_names(self.name)
+        # The state fields go into the initial construction so the config validates the
+        # real backend+path combination (duckdb without a path fails here, at load).
+        state_fields = {field: getattr(self, field) for field in ("state_table", "state_path") if getattr(self, field) is not None}
         config = CdfSyncConfig(
-            sync_name=self.sync_name,
+            sync_name=self.sync_name or f"reverse_etl_{self.name}",
             catalog=self.catalog,
             schema=self.schema_name,
             source_table=self.source_table,
             key_column=self.key_column,
-            kafka_topic=self.kafka_topic,
+            kafka_topic=self.kafka_topic or f"reverse_etl_{self.name}_topic",
             group_name=derived["group_name"],
             sync_asset=derived["sync_asset"],
+            label=self.name,
+            sync_name_explicit=self.sync_name is not None,
+            state_backend=self.state_backend,
+            **state_fields,
         )
         overrides = {
             field: getattr(self, field)
-            for field in (
-                "encoding", "schema_registry_url", "group_name", "sync_asset",
-                "state_backend", "state_table", "state_path",
-            )
+            for field in ("encoding", "schema_registry_url", "group_name", "sync_asset")
             if getattr(self, field) is not None
         }
         return dataclasses.replace(config, **overrides)

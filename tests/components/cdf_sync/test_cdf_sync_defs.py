@@ -16,6 +16,8 @@ REQUIRED = {
     "schema_name": "sr_poc_external",
     "source_table": "existing_table",
     "key_column": "id",
+    "state_backend": "postgres",
+    # Given -> verbatim (the derivation path has its own tests in test_cdf_sync_attributes.py).
     "kafka_topic": "orders_cdc",
     "sync_name": "orders_watermark",
 }

@@ -266,6 +266,11 @@ MUTATIONS = [
     Mutation("component", "the component skips the topic", "orchestration/components/reverse_etl_cdf_sync.py", "if not self.create_topic:", "if True:", "tests/components/cdf_sync"),
     Mutation("component", "create_topic is ignored", "orchestration/components/reverse_etl_cdf_sync.py", "if not self.create_topic:", "if False:", "tests/components/cdf_sync"),
     Mutation("component", "the topic config is dropped", f"{ASSETS}/reverse_etl_topic.py", 'config = {"cleanup.policy": "compact", **(topic_config or {})}', 'config = {**(topic_config or {})}', "tests/components/cdf_sync"),
+    Mutation("component", "sync_name is ignored", "orchestration/components/reverse_etl_cdf_sync.py", 'sync_name=self.sync_name or f"reverse_etl_{self.name}",', 'sync_name=self.sync_name or f"reverse_etl_moved_{self.name}",', "tests/components"),
+    Mutation("component", "state_backend requiredness sneaks back", "orchestration/components/reverse_etl_cdf_sync.py", "    state_backend: str\n", '    state_backend: str = "postgres"\n', "tests/components"),
+    # Two sites read cfg.state_backend (the resource-key guard and the state build); this
+    # anchors on the state build. Either one alone is caught statically (test_config_surface).
+    Mutation("component", "the asset reads a demo-only field", f"{ASSETS}/reverse_etl_cdf_setup.py", 'context.resources.postgres if cfg.state_backend == "postgres" else None', 'context.resources.postgres if cfg.propagate_drops == "postgres" else None', "tests/sync_asset"),
     Mutation("component", "topic asset always built", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.create_topic_asset:\n", "    if True:\n", "tests/components"),
     Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
     Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),

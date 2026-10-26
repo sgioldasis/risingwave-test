@@ -112,6 +112,10 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
         Dagster object names derive from the label, each overridable."""
         config = ReverseEtlSyncConfig(
             sync_name=self.sync.sync_name,
+            label=self.name,
+            # The demo keeps the decoupling plan's naming rule: the watermark key is
+            # explicit YAML (releases derive it and guard the rename case instead).
+            sync_name_explicit=True,
             catalog=self.sync.catalog,
             schema=self.sync.schema_name,
             source_table=self.sync.source_table,

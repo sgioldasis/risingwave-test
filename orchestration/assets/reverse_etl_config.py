@@ -45,6 +45,13 @@ class CdfSyncConfig:
     # Debezium JDBC sink.
     kafka_topic: str
 
+    # --- identity (the release design's naming policy) -------------------------
+    # The YAML label every derived name comes from, and whether the watermark key was
+    # pinned or derived. The watermark guard reads the latter: a label rename moves a
+    # derived sync_name, a pinned one survives it.
+    label: str
+    sync_name_explicit: bool
+
     # --- the Dagster definitions built for it ----------------------------------
     group_name: str
     sync_asset: str
@@ -343,6 +350,9 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
         them, to stay short."""
         return cls(
             sync_name=f"reverse_etl_{name}",
+            label=name,
+            # for_name derives everything (a test helper): the watermark key is not pinned.
+            sync_name_explicit=False,
             catalog=catalog,
             schema=schema,
             source_table=f"reverse_etl_{name}_source",

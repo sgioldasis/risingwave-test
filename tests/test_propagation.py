@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
+from orchestration.assets.reverse_etl_demo_hooks import _propagate_column_drops
 from tests.fakes import make_config
 
 ROW_FIELDS = [("rid", "int64", False), ("keep", "string", True), ("new", "string", True)]
@@ -19,7 +19,7 @@ TARGET_COLUMNS = ["rid", "keep", "old", "gone"]
 def propagate(resources):
     def run(last_schema, column_ids=None, row_fields=None, propagate_drops=True):
         res = resources(postgres_columns=TARGET_COLUMNS, risingwave_columns=TARGET_COLUMNS)
-        return cdf_setup._propagate_column_drops(
+        return _propagate_column_drops(
             res["postgres"], res["risingwave"], res["http"], res["registry"], make_config(propagate_drops=propagate_drops),
             row_fields or ROW_FIELDS[:2], json.dumps(last_schema), mock.MagicMock(), column_ids,
         )
