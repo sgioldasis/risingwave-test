@@ -87,17 +87,37 @@ def _ensure_valid_manifest():
     
     manifest = None
     needs_write = False
-    
+
     if manifest_path.exists():
         try:
             with open(manifest_path) as f:
                 manifest = json.load(f)
         except Exception:
             manifest = None
-    
+
     if manifest is None:
-        manifest = {}
-        needs_write = True
+        # The manifest is missing or corrupt: regenerate it with `dbt parse`. Writing an
+        # empty skeleton here instead made the whole code location fail to load -- the
+        # dbt assets vanish and every job selecting them raises DagsterInvalidSubsetError
+        # (seen live 2026-10-26 after dbt/target was wiped: a 0-node manifest and
+        # 'Error loading repository location'). The parse below is the same one the
+        # no-manifest branch used to be preempted from running.
+        logger.info("Manifest missing or unparseable -- running `dbt parse` to regenerate it...")
+        parse_env = os.environ.copy()
+        parse_env.setdefault("DBT_PROFILES_DIR", str(dbt_PROJECT_PATH))
+        parse = subprocess.run(
+            ["dbt", "parse", "--no-partial-parse", "--project-dir", str(dbt_PROJECT_PATH)],
+            capture_output=True, text=True,
+            cwd=str(dbt_PROJECT_PATH.parent), env=parse_env,
+        )
+        if parse.returncode != 0:
+            raise RuntimeError(
+                f"`dbt parse` failed while regenerating {manifest_path} "
+                f"(the code location cannot load without it): {parse.stderr.strip()[-300:]}"
+            )
+        logger.info("`dbt parse` completed -- manifest regenerated")
+        with open(manifest_path) as f:
+            manifest = json.load(f)
     
     # Ensure all required fields exist
     required_fields = {
