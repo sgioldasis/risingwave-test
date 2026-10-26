@@ -11,8 +11,8 @@ components — see the derivation policy below; the demo keeps the explicit bloc
 
 A team in another project wants one Databricks table's changes on a Kafka topic — and,
 optionally, the prebuilt targets. They get it by dropping YAML files into their Dagster `defs/`
-directory; `load_defs` merges them into their project with no glue code. Nothing they load may
-import demo code.
+directory; the project's defs loader (`load_from_defs_folder`) merges them with no glue code.
+Nothing they load may import demo code.
 
 ## Naming policy: minted names are derived, owned names are typed
 
@@ -61,10 +61,13 @@ attributes:
   source_table: dim_company        # must already exist; never created by the component
   key_column: Company_ID           # required, no default outside the demo
   state_backend: postgres          # or duckdb — required: the author's decision, not a default
-  # state_resource: postgres       # which of the project's resource bindings carries this
-                                   # connection (default key "postgres"). Credentials are
-                                   # still never in this file — the binding holds those.
 ```
+
+The state's connection is deliberately absent from this file: the library's connection function
+reads the Postgres variables from the environment (the env contract below), and the
+deployment's Vault supplies their values. The YAML alone is the whole story — nothing to
+create, no file to write. The chain: YAML names the backend → the connection function reads
+env (`POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`DB`) → Vault supplies the values.
 
 Everything else defaults or derives:
 
@@ -76,8 +79,7 @@ Everything else defaults or derives:
 | `encoding` | `json` (avro registers schemas under `<topic>-key`/`-value`) |
 | `schema_registry_url` | the staging registry URL |
 | `state_table` | shared `reverse_etl_sync_state`, keyed by sync_name; override for a per-sync table |
-| `state_path` | required when `state_backend: duckdb` (a local file needs no postgres resource) |
-| `state_resource` | which of the project's resource bindings carries the state connection; default key `postgres`; only valid with `state_backend: postgres` |
+| `state_path` | required when `state_backend: duckdb` (a local file needs no postgres connection) |
 | `group_name`, `sync_asset`, job names | `reverse_etl_<name>[_<role>]` |
 
 Builds the sync asset, the topic asset (when `create_topic`), and a small bootstrap job
@@ -90,9 +92,8 @@ reset job, `reset_name_prefixes`, `reset_schema`.
 is read once at code-location load, and the watermark advances every run. The backend is the
 sync author's explicit choice (consequence-bearing: restart semantics, a postgres dependency,
 the DuckDB single-writer rule); which Postgres *instance* is never the YAML's business — the
-YAML only names which of the project's bindings to use (`state_resource`, default `postgres`),
-and the binding itself — class, instance, credentials — lives in the project, like every other
-entry in the contract below. Each run:
+library's connection function reads the instance from the environment, and Vault supplies the
+values (the env contract below). Each run:
 `require()` (Postgres fails with the DDL if the table is absent; DuckDB creates its file),
 `read(sync_name)` (empty = first run, which starts from the table's current version — no
 history replay), emit only versions after it to Kafka, `write` the new one. A run that dies
@@ -104,15 +105,29 @@ exclusively sync-side.
 dangerous case: a label rename (or an override typo) changes the watermark key, `read()`
 returns empty, and the sync silently restarts from the table's current version — skipping
 every change since. Hand-typing does not prevent this; a typo causes the same silent restart.
-So the state store records the **label** alongside `sync_name`, and a run that finds no
-watermark for its derived key but does find rows whose label matches fails with:
 
-> watermark exists under `sync_name='reverse_etl_company'` for label `company`, but this
-> instance derives `reverse_etl_company_v2` — the label was renamed. Pin `sync_name` in the
-> YAML to keep the watermark, or delete the old rows to start fresh.
+Guarding it needs an identity that does *not* move on rename — and `label` is not one: both
+`sync_name` and `label` derive from `name`, so a rename changes both and no stored row matches
+either new value. The stable anchor is the **source table**: the state store records
+`source_fqn` (and `label`, for the message) alongside `sync_name`, and when `read()` comes back
+empty the run looks up rows for the same `source_fqn`:
 
-The schema change is additive: a nullable `label` column; legacy rows (NULL label) predate the
-guard and are reported as such. With the guard, derivation is strictly safer than typing.
+| this run's `sync_name` | rows found for the same source, under another key | result |
+|---|---|---|
+| derived | also derived-named | **error** — the rename message below |
+| derived | explicitly named | **error** — "this derived name collides with a deliberate sync; set `sync_name` explicitly" |
+| explicit (pinned) | anything | **warn and proceed** — a deliberate identity; covers a pinned rename and a legitimate second sync on one table |
+| either | none | proceed — genuinely fresh |
+
+> watermark exists for `de_dev.sr_poc_external.dim_company` under
+> `sync_name='reverse_etl_company'` (label `company`), but this instance derives
+> `reverse_etl_company_v2` — the label was renamed. Pin `sync_name` in the YAML to keep the
+> watermark, or delete the old rows to start fresh.
+
+Whether `sync_name` was derived or pinned is config knowledge: the component records
+`sync_name_explicit` on the config. The schema change is additive — nullable `source_fqn` and
+`label` columns; legacy rows (NULL) match nothing, so no false positives, and the next sync run
+repopulates them. With the guard, derivation is strictly safer than typing.
 
 ### The target components (one per target)
 
@@ -135,8 +150,9 @@ match by construction), `sync_name` (derivation input for the envelope), `rising
 `source_fqn` — the same formula the sync side uses, so the Avro registration byte-matches by
 arithmetic, not discipline. Overrides: `kafka_topic`, `sync_name`, `risingwave_table`,
 `encoding`, `schema_registry_url` — override on one side only if you override on both.
-`deps: [...]` is optional ordering (narrative only — `scan.startup.mode='earliest'` reads the
-topic from the beginning regardless of creation order). Builds the RisingWave table asset.
+`deps: [...]` is optional ordering. `scan.startup.mode='earliest'` covers message order — it
+does not cover topic *existence*: materialize the sync's bootstrap once before a target's first
+materialization, or add the topic asset to `deps`. Builds the RisingWave table asset.
 
 **Postgres** — the Debezium JDBC sink plus the sink health check with its job and schedule
 (D19: the check watches the connector and its lag, so it exists only when this YAML does):
@@ -150,8 +166,14 @@ attributes:
 
 Derived: `connector_name` (`reverse_etl_<name>_sink`), `postgres_table`
 (`reverse_etl_<name>_target`), `kafka_topic` (same derivation as the sync), `sink_tasks_max`
-(1). The health job/schedule names derive from `name`. `jdbc_url`/`jdbc_user` default to the
-`HOST_POSTGRES_URL`/`POSTGRES_USER` env vars (see below). `deps` optional.
+(1). The health job/schedule names derive from `name`. The connector's coordinates come from
+the environment only (`HOST_POSTGRES_URL`/`POSTGRES_USER`, password `${env:POSTGRES_PASSWORD}`
+resolved by the Connect worker — see the Postgres section below; no JDBC fields in this YAML).
+`deps` optional. The check's cadence
+is optional `health_cron` (default: the library's 5-minute cron). One schema check rides with
+implementation: the connector maps the table via `collection.name.format` with no schema, so
+verify a schema-qualified `postgres_table` (`myschema.my_table`) flows through cleanly —
+otherwise this YAML grows a `postgres_schema` field.
 
 **DuckDB** — the stateless local mirror (drains the topic, latest event per key, tombstones on
 `op=="d"`, table named after the topic):
@@ -167,7 +189,9 @@ attributes:
 The path is typed — it is a deployment decision, not a minted name (the default mount in this
 repo is `/workspace`, but a team's project mounts its own). Consumer group:
 `<name>-duckdb-target` — rename-safe, because the mirror reads from `earliest` and never
-commits offsets. `deps` optional.
+commits offsets. `deps` optional. It is a dev mirror with a stated ceiling: it re-reads the
+whole topic every run (O(events ever), no committed offsets), so point it at PoC-volume topics
+— not a high-rate production topic.
 
 ## The wire contract
 
@@ -187,123 +211,78 @@ What the per-target split deletes from today's merged shape: the `targets: [...]
 list and its validation (YAML presence *is* the selection); `sync_asset`/`topic_asset` from
 the targets config (the builders' hardcoded `deps=[topic, sync]` lines become each YAML's
 `deps` field, so a target no longer knows the sync exists); `sync_name` from the postgres and
-duckdb targets (neither builder reads it). The RisingWave target regains `sync_name` — as a
+duckdb targets — the builders touch it only for Dagster-internal naming, which moves to
+`label`. The RisingWave target regains `sync_name` — as a
 derivation input for the envelope, not an identity of its own.
 
 ## Which Postgres does the postgres target write to?
 
-Not a Dagster resource. The sink asset requires only `http` — it POSTs a connector config to
-Kafka Connect; the connector itself opens the JDBC connection. Today the coordinates come from
+No Dagster resource. The sink asset declares no resource keys — it POSTs a connector config to
+Kafka Connect (its REST URL read from env); the connector itself opens the JDBC connection. The
+coordinates come from
 environment variables (`reverse_etl_debezium_sink.py`): `connection.url` from `HOST_POSTGRES_URL`,
 `connection.username` from `POSTGRES_USER`, and `connection.password` stays the literal
 `${env:POSTGRES_PASSWORD}`, resolved by the Connect worker — the password never passes through
-Dagster. Dagster's `postgres` resource serves other tenants (the watermark state, the demo
-hooks, reset cleanup), not this data path.
+Dagster. The state's Postgres is likewise env-fed — the design has no resource layer at all (see the env
+contract).
 
-Decision: the release component promotes `jdbc_url` and `jdbc_user` to explicit YAML fields
-(defaulting to the env vars, so the demo does not move). The password stays `${env:...}` —
-explicit never beats secret-free, and "which database" belongs in the same file as
-`connector_name`.
+Decision (reversed after checking the destination's conventions): the coordinates stay
+env-only — no `jdbc_url`/`jdbc_user` in the YAML. One defs.yaml deploys to both staging and
+production (the workspace copies the matching `container_context.<env>.yaml` per target), so an
+environment-specific value must never live in a component YAML; a filled-in URL would make a
+branch deploy write to production's database. The YAML's silence is the contract: the
+database's identity is a deployment fact, and the workspace's home for those is env and Vault.
+If a code location ever needs multiple postgres targets, the workspace-aligned pattern is a
+logical name resolved against a root map (the `databricks-workspaces.yaml` pattern), not
+literal URLs.
 
-## Resource contract
+## The env contract
 
-The components require these resource keys:
+The components declare **no Dagster resources at all** — matching the destination, where no
+project binds any. Connections resolve through library-internal, env-fed functions
+(`reverse_etl_connections.py`): the sync asset, the target builders, and the hooks take what
+they need from functions that read `os.environ`, and the assets declare no
+`required_resource_keys`. The environment is the only place coordinates live, because it is
+the only layer that differs per deployment: the same defs.yaml deploys to staging and
+production, and the workspace provisions env per environment (Vault → External Secrets
+Operator → `container_context.<env>.yaml`).
 
-| Component | Required resource keys |
+| Consumer | Env the connection functions read (verified in code where noted) |
 |---|---|
-| Sync asset | `databricks`, `kafka`, `registry`; the state's key (`state_resource`, default `postgres`) when `state_backend: postgres` |
-| Topic asset | `kafka` |
-| RisingWave target | `risingwave`, `databricks`, `registry` |
-| Postgres sink + health | `http`; `http`, `kafka` for the check |
-| DuckDB target | `kafka`, `registry` |
+| Sink connector assembly | `KAFKA_OUTPUT_BOOTSTRAP` (**required** — the assembly raises without it), optional `KAFKA_OUTPUT_SASL_USERNAME`/`_MECHANISM`/`_PASSWORD` |
+| Connector JDBC coordinates | `HOST_POSTGRES_URL`, `POSTGRES_USER`; the password stays `${env:POSTGRES_PASSWORD}`, resolved by the Connect worker |
+| delta-rs ADLS reads | `DATABRICKS_AZURE_CLIENT_ID` / `DATABRICKS_AZURE_TENANT_ID` / `DATABRICKS_AZURE_CLIENT_SECRET` — bare key names; service principal, never a SAS token |
+| State Postgres (the sync's watermark) | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — the names in today's `get_postgres_connection` (`postgres_sink_setup.py:26-56`). The released function keeps these names but drops the `/.dockerenv` sniffing: `POSTGRES_HOST` becomes **required** (verified: `host.docker.internal` doesn't resolve on the macOS host, so no single default serves both sides) — the demo sets it per-context via compose on the dagster services, and the other four are explicit in the demo's `.env` (step 7) |
+| RisingWave, Dagster-side Kafka clients, Databricks API, Kafka Connect REST | the remaining variables, enumerated per connection function as each is converted — the full table is the library README's env contract |
 
-The JDBC coordinates for the sink are env vars (see above), not resources.
+Everything env-adjacent that is *not* a credential stays in YAML or config: the registry URL
+is a config field with an org-specific default, the DuckDB path is typed, topic names are
+derived. The rule is the same one the YAMLs follow: names and decisions in files, values in
+the environment.
 
-**Keys and interfaces, not classes or connections.** The component hard-codes two things and no
-more: the resource *key names* in the table (the state's is choosable — the sync YAML's
-`state_resource`), and the small interface it calls on each bound
-object. Everything else — the resource class, the env-var names, the defaults, the host
-resolution — belongs to the consuming project, because each team/system points these keys at
-its own instances. The assets declare the keys as `required_resource_keys` (a project missing
-one fails at definitions load, not at run time) and duck-type the interface:
+**Why zero resources, given `Definitions.merge`.** The merge raises when two merged
+`Definitions` carry different objects under the same resource key — component-shipped defaults
+could neither be overridden by a team nor coexist across our own components. Env-direct
+sidesteps the machinery entirely: nothing to merge, nothing to conflict, nothing for a team to
+learn.
 
-| Key | The interface the component calls |
-|---|---|
-| the state's key (`state_resource`, default `postgres`) | `.connect()` — nothing else |
-| `risingwave` | `.connect()` |
-| `registry` | `.client(schema_registry_url)` |
-| `kafka` | `.producer()`, `.consumer(group, opts)`, `.admin_client()` |
-| `databricks` | `.require_env()`, `.token()` / `.cached_token()`, `.table_location_cached(token, cfg, source_fqn)` (demo-path helpers call more) |
-| `http` | `.get(...)`, `.put(...)` — Kafka Connect REST |
-
-**Why the components ship no bindings.** `Definitions.merge` raises when two merged
-`Definitions` carry different objects under the same resource key — so a component cannot ship
-env-fed defaults for a team to override, and our own tests merge fakes under the same keys. The
-library instead exports the *default bindings*, and each code location includes them exactly
-once, in a file it owns:
-
-```python
-# kaizen_dagster_reverse_etl/resources.py (library)
-def default_resources() -> Definitions:
-    """Env-fed bindings for every key the components require."""
-    return Definitions(resources={
-        "postgres": PostgresResource(), "risingwave": RisingWaveResource(),
-        "databricks": DatabricksResource(), "kafka": KafkaResource(),
-        "registry": SchemaRegistryResource(), "http": HttpResource(),
-    })
-```
-
-**A team's Python footprint: one file per code location.** The production workspace
-(`dagster-workspace`) binds no Dagster resources anywhere — credentials flow Vault → External
-Secrets Operator → `container_context.<env>.yaml` → plain `os.environ`. The one deliberate
-Python file is the bindings module, autoloaded from the team's `defs/` folder:
-
-```python
-# src/<team>/defs/reverse_etl_resources.py (the team's)
-from dagster import Definitions, definitions
-from kaizen_dagster_reverse_etl.resources import default_resources
-
-@definitions
-def reverse_etl_resources() -> Definitions:
-    return default_resources()
-```
-
-No credentials in it — Vault provides the env, the classes read it. A team needing a custom
-binding edits *their own file* — swap one line for their class, no merge conflict because the
-defaults are theirs, not the component's:
-
-```python
-class MetadataPostgres(ConfigurableResource):
-    dsn: str                      # their env/secret conventions
-
-    def connect(self):
-        return psycopg2.connect(self.dsn)
-```
-
-For release, the library's default resource classes are cleaned up: one `connect()` per class,
-explicit env names, none of this repo's `/.dockerenv` sniffing or the
-`connect()`/`connect_with_timeout()` split. The env contract — which variables each default
-class reads — is documented in the library README, because that is exactly what Vault must
-provision. The team's project layout:
+**A team's Python footprint: zero files.** Adoption is exactly the ingestion components'
+story: drop the YAMLs, and SRE provisions the environment. Customization is env-shaped —
+different instances mean different variable values, not different classes. The project layout:
 
 ```
 their_project/
   definitions.py                  # @definitions + load_from_defs_folder — untouched, ~8 lines
   src/<team>/defs/
-    reverse_etl_resources.py      # the bindings module (above)
     reverse_etl_company_sync/defs.yaml
     reverse_etl_company_risingwave/defs.yaml
 ```
 
-Bindings cannot live in the component YAMLs — they are Python-side by design, which is why no
-host, credential, or driver detail can leak into the files the sync authors write.
-
-One binding serves most projects, and `state_table` distributes across *tables* — but a sync
-whose state belongs to a different system points `state_resource` at that binding instead, so
-a different Postgres per team/system needs nothing hard-coded anywhere. Note the asymmetry with the sink
-target: the state's postgres goes through this resource layer, while the sink's postgres
-bypasses it entirely (Kafka Connect + its own JDBC config) — two different writers, Dagster
-writing the watermark and Connect writing the rows.
+Note the asymmetry between the two Postgres writers — both env-fed, through different
+processes: the state's Postgres is reached by the Dagster run's own process (the sync asset's
+connection function), while the sink target's Postgres is reached by the Kafka Connect worker
+via the connector's JDBC config. Two different writers, two different env scopes, neither
+passing through YAML or a resource layer.
 
 ## Home in the production workspace
 
@@ -321,10 +300,26 @@ import-hygiene guarantee stated as policy.
   compatibility test (below) pins the production load path.
 - **Versions.** The demo develops on dagster 1.13.26; the workspace floor is 1.13.17 (its
   libraries pin `dagster>=1.13.17,<2`). The release library pins the same range; no version
-  work is needed.
+  work is needed. Python: the demo venv is 3.13, workspace locations run 3.14 — the library
+  supports both.
 - **Validation.** The workspace runs `dg check defs` against the real systems; the components'
-  load-time validation (unknown fields, unknown targets, missing bindings) fits it, and a
+  load-time validation (unknown fields, unknown targets, missing required attributes) fits it,
+  and a
   future custom check could verify topic existence at configure time.
+- **Component YAML conventions.** One folder per component instance; dg generates a `$schema:`
+  header per defs.yaml (pre-commit regenerates from the component definitions) which the team
+  commits; and the `type:` strings in this doc's examples are this repo's — in the destination
+  they read `kaizen_dagster_reverse_etl.components.…`. The governing rule for values: **no
+  environment-specific value in a component YAML** — one defs.yaml deploys to stg and prd, and
+  per-environment facts (hosts, credentials) live in `container_context.<env>.yaml` and Vault,
+  with per-env hosts resolved through root maps keyed by logical names
+  (`databricks-workspaces.yaml` + `workspace: newport`). The reverse-ETL components are
+  env-only for Databricks (no `workspace:` field; the connection functions read env — the same
+  pattern as this workspace's own libraries) — at extraction, consider adopting the
+  `databricks-workspaces.yaml` root map so per-env hosts converge on one mechanism.
+  Catalog/schema/source names must be stable across environments
+  (`target_catalog: de_bronze` hardcoded in the ingestion YAMLs is the precedent); a team whose
+  names differ per environment needs the root-map treatment.
 - **Infrastructure prerequisites (the open gap).** The workspace's required-infrastructure list
   covers Dagster+, GitLab/Harbor, Vault and Databricks — no Kafka brokers, schema registry,
   Kafka Connect, RisingWave or Postgres. The sync needs Kafka and a registry; the postgres
@@ -333,41 +328,172 @@ import-hygiene guarantee stated as policy.
   not code; until they land, the sync-only shape is the first release and targets follow their
   infrastructure.
 
-## Implementation outline
+## The port surface
 
-Each step its own commit, suite + lint + mutation check green, as in the decoupling plan.
+The library is a specific, enumerated module set (verified against today's imports) — not
+"everything under `orchestration/assets`":
 
-1. **Sync component**: add `create_topic` (default true), the topic asset and a bootstrap job
-   to `ReverseEtlCdfSync`; move `_build_topic_asset` out of `reverse_etl_defs.py` into a
-   demo-free home both the demo and the component import. Apply the derivation policy to the
-   component (`sync_name`, `kafka_topic`, Dagster names: derived with overrides), make the
-   state's binding choosable (`state_resource`, default `postgres`, driving the sync asset's
-   required keys), and update the component tests and the mutation group.
-2. **Watermark guard**: add the nullable `label` column to the state schema
-   (`reverse_etl_state.py`: DDL, both backends' read/write) and the rename detection to the
-   sync run's precondition. Legacy NULL-label rows are reported, never fatal.
-3. **Per-target configs**: split `ReverseEtlTargetsConfig` into three slim dataclasses feeding
-   the unchanged builders, each carrying only its target's fields plus the derived-name
-   machinery. The demo's merged config, `targets_config()` and `build_target_defs` stay for
-   the demo's single setup job; the seam's golden field-set test is re-pinned deliberately in
-   this step.
-4. **Target components**: `orchestration/components/reverse_etl_targets.py` with the three
-   components wrapping the builders; the `deps` field; the health check travelling with the
-   postgres target; the envelope composed from `sync_name` + `source_fqn`.
-5. **Connection fields**: `jdbc_url`/`jdbc_user` on the postgres target, env-var defaults.
-6. **Resource bindings**: clean the resource classes into the library's defaults (one
-   `connect()` per class, explicit env names, no demo sniffing), export `default_resources()`,
-   swap the demo's six inline bindings (`orchestration/definitions.py:1042-1048`) for the
-   helper, and document the env contract.
-7. **Seam and hygiene tests**: envelope-formula equality across the two sides; a test pinning
-   that the sync and target component modules' transitive imports contain no demo module
-   (`reverse_etl_demo_*`, `reverse_etl_change`, `reverse_etl_reset`) — the extractability
-   guarantee; and a compatibility test loading a minimal defs-folder project (one component
-   YAML plus the `@definitions` bindings module) through `load_from_defs_folder` — the exact
-   production load path.
-8. **Docs**: a "Releasing to a team" section in `REVERSE_ETL_COMPONENT_GUIDE.md` (the naming
-   policy, the resource contract and bindings module, the env contract, the wire contract, the
-   minimal YAMLs) and walkthrough rows for the new module.
+`reverse_etl_config` (the base `CdfSyncConfig` and helpers), `reverse_etl_state`,
+`reverse_etl_cdf_setup`, `reverse_etl_delta_reader`, `databricks_cost_meter`,
+`reverse_etl_topic` (new, step 1), `reverse_etl_risingwave_setup`, `reverse_etl_debezium_sink`,
+`reverse_etl_health`, `reverse_etl_duckdb_target`, `reverse_etl_connections` (the env-fed
+connection functions that replace today's resource classes), plus the components
+(`reverse_etl_cdf_sync`, the new `reverse_etl_targets`) and the slim target configs. Staying
+behind: `reverse_etl_defs`, `reverse_etl_demo_assets`, `reverse_etl_demo_hooks`,
+`reverse_etl_change`, `reverse_etl_reset`, `reverse_etl_notebook_job`, the drt modules.
+
+Two structural notes. First, the config split is the port's axis: the sync asset's body reads
+only base-config fields (verified attribute-by-attribute); the one demo-only access
+(`cfg.propagate_drops`) lives in `_propagate_column_drops`, whose only callers are the demo
+hooks — so the sync asset retypes to `CdfSyncConfig` (step 2) and the propagation helper moves
+to the demo-hooks side. Second, the test kit (`tests/fakes.py`,
+`tests/sync_asset/conftest.py`) is the executable proof of the connection seam — after the
+env-direct conversion the fakes are injected by patching the connection functions — and ships
+with the library as `kaizen_dagster_reverse_etl.testing`, so teams can reuse the fakes in their
+own tests.
+
+Optional step 0: group the surface into a subpackage (`orchestration/reverse_etl/`) so the
+port is a directory move and the hygiene test is structural. Mechanical import churn across
+`definitions.py`, the demo builder, drt and tests; if zero churn is preferred, the step-8 grep
+test stands in — but the enumeration above is the checklist either way.
+
+## Implementation steps
+
+Each step is its own commit on a branch cut from the one carrying this doc, and leaves the
+suite, the lint on touched files, and the mutation check green — the decoupling plan's
+discipline. Steps 1–2 split what the outline called "sync component"; the order respects the
+dependencies (builders' configs before components, components before connections).
+
+1. **Topic bootstrap on the sync component.** Move `_build_topic_asset` out of
+   `reverse_etl_defs.py` into a demo-free home (`reverse_etl_topic.py`); `build_demo_defs`
+   imports it from there, unchanged in behavior. `ReverseEtlCdfSync` gains
+   `create_topic: bool = True`; its `build_defs` appends the topic asset and a bootstrap job
+   (topic → sync, `in_process_executor`), named via `dagster_names` (which gains a
+   `bootstrap_job` entry — check the anchors referencing the dict). The topic asset exposes
+   `topic_partitions`/`topic_config` with `cleanup.policy=compact` as the documented default —
+   a Debezium-style change topic wants compaction; the broker default (`delete`) risks
+   retention dropping events a lagging consumer has not read. Tests: the component defs
+   test asserts the topic asset and job appear, and that `create_topic: false` builds neither.
+   Mutation anchors: "the component skips the topic", "create_topic is ignored", "the topic
+   config is dropped". Live check:
+   rerun a demo setup job through the GraphQL path — the demo now exercises the moved builder.
+
+2. **Derivation policy and the config-class correction.** `sync_name` and
+   `kafka_topic` become optional attributes (omitted → `reverse_etl_<name>` /
+   `reverse_etl_<name>_topic`; given → verbatim); `key_column` stays required;
+   `state_backend` becomes **required** (`postgres` | `duckdb`, validated at load).
+   The new config fields — `label` and the guard's `sync_name_explicit` —
+   go on **`CdfSyncConfig`**, the class the released component constructs, not
+   `ReverseEtlSyncConfig`; and the sync asset retypes from `ReverseEtlSyncConfig` to
+   `CdfSyncConfig` (its body is already base-clean — verified attribute-by-attribute; the one
+   demo-only access, `cfg.propagate_drops`, lives in `_propagate_column_drops`, which moves to
+   the demo-hooks side in this step). The sync asset declares **no resource keys** — the
+   env contract (below) replaces them. The base keeps its
+   `state_backend` default for the demo path; the component does not. Tests: the derivation
+   matrix (omitted → derived, given → verbatim, `state_backend` missing → load error,
+   `state_backend: duckdb` without `state_path` → load error);
+   a static pinning test that every `cfg.<attr>`
+   accessed in `reverse_etl_cdf_setup.py` exists on `CdfSyncConfig`; and the ripple audit —
+   every construction site supplies the new fields (the demo component's `to_config`,
+   `tests/sync_asset/conftest.py`'s `make_config`, `tests/fakes.py`, the drt path, which
+   inherits through the demo component). Mutation anchors: "sync_name is ignored",
+   "state_backend requiredness sneaks back", "the asset reads a demo-only field".
+
+3. **The watermark guard (source-anchored).** `state_table_ddl` gains nullable `source_fqn` and
+   `label` columns; both backends' `write()` persist `cfg.source_fqn` and `cfg.label`; a
+   `rows_for_source(source_fqn)` lookup lands on the state interface; the sync run's
+   precondition implements the decision table above (derived/derived → the pinned rename
+   error, derived/explicit → the collision error, explicit → warn and proceed), with the error
+   wording pinned for the mutation check. Migration is check-only plus migrate: `require()`
+   also validates the new columns and its failure carries the exact
+   `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` statements (D15-consistent — a standalone sync
+   materialization on a pre-guard table fails with the fix in hand instead of
+   `UndefinedColumn` at write time); `create()` performs the migration, so the demo's next
+   setup run upgrades its tables. DuckDB files are created fresh with the new DDL — old demo
+   state files are recreated, not migrated (disposable, single-writer). Legacy NULL rows match
+   nothing and are repopulated by the next run. Tests: both backends × {fresh, legacy row,
+   rename error, explicit-overlap warn, collision error}; the wording pinned.
+
+4. **Per-target configs.** Three slim dataclasses — `RisingwaveTargetConfig`,
+   `PostgresTargetConfig`, `DuckdbTargetConfig` — each carrying only its target's fields,
+   names derived from `label` via `dagster_names`, `deps: tuple[str, ...]`, and (RW only) the
+   envelope composed from `sync_name` + the last two components of `source_fqn`. The four
+   builders (`reverse_etl_risingwave_setup`, `reverse_etl_debezium_sink`, `reverse_etl_health`,
+   `reverse_etl_duckdb_target`) retype to the slim configs; the hardcoded
+   `deps=[AssetKey(cfg.topic_asset), AssetKey(cfg.sync_asset)]` lines become `cfg.deps`;
+   health job/schedule and duckdb asset/consumer-group naming moves to `label` with slim
+   naming `reverse_etl_<label>_<role>`. **The demo bridge**: `build_target_defs` composes the
+   slim configs from the merged one passing
+   `label = sync_name.removeprefix("reverse_etl_")` (all five demo sync_names conform) and
+   `deps=(cfg.topic_asset, cfg.sync_asset)` — so the demo's health job/schedule and duckdb
+   asset names stay byte-identical and its target assets keep their deps. One accepted demo
+   delta: the duckdb consumer group becomes `<label>-duckdb-target` (was
+   `<sync_name>-duckdb-target`) — rename-safe, the mirror never commits offsets.
+   `targets_config()` and the five demo YAMLs stay untouched, and `test_targets_defs`'s
+   check-spec assertions are the no-rename gate. Tests: per-config field and
+   derivation tests; envelope-formula equality (the sync-side property equals the RW-side
+   composition given the same inputs); existing builder call sites updated. Mutation anchors
+   move to the slim configs ("a derived name is ignored", "the envelope drops the schema
+   component", "the bridge strips the wrong prefix").
+
+5. **Target components.** `orchestration/components/reverse_etl_targets.py`: three components
+   with minimal required attributes — RW: `name`, `source_fqn`, `key_column`; postgres:
+   `name`, `key_column`; duckdb: `name`, `key_column`, `duckdb_target_path` — derived fields
+   with overrides (`kafka_topic`, `encoding`, `schema_registry_url`, connector/table names,
+   `sink_tasks_max`, `health_cron`), the `deps` field, and the health check + job + schedule
+   travelling with the postgres component. Tests mirror the demo component's attribute/defs tests: required
+   attributes parametrized, per-component asset sets, golden derived names. Mutation group per
+   component ("a derived name is ignored", "the health check is dropped").
+
+6. **Connector schema check (JDBC fields stay out).** The YAML carries no JDBC coordinates —
+   reversed after the destination's per-environment rule (see the Postgres section); the
+   assembly keeps its env reads (`HOST_POSTGRES_URL`/`POSTGRES_USER`, the password untouched as
+   `${env:POSTGRES_PASSWORD}`). Verify a schema-qualified `postgres_table` flows through
+   `collection.name.format`; if it does not, add `postgres_schema` (default: the connector's
+   default schema) to the config and component. Tests: coordinates assembled from env only;
+   the password never interpolated from config. Mutation anchors: "the schema qualifier is
+   dropped", "the password is interpolated".
+
+7. **Env-direct connections.** Convert the resource layer into `reverse_etl_connections.py` —
+   one env-fed function per connection (`os.environ` only, explicit variable names, no
+   `/.dockerenv` sniffing). Verified during design: the sniffing **is load-bearing** —
+   `host.docker.internal` does not resolve on the macOS host, so one explicit value cannot
+   serve both sides. The resolution: the state-postgres function takes `POSTGRES_HOST` as
+   **required** (no default); the demo satisfies it per-context — compose sets
+   `host.docker.internal` for the dagster services, whose `extra_hosts` maps it — and `.env`
+   gains the remaining four (`POSTGRES_USER`/`_PASSWORD`/`_DB`/`_PORT`, matching today's
+   effective defaults) so the helpers stop guessing them; the entrypoint keeps owning
+   `HOST_POSTGRES_URL` (it bakes the resolved host IP into the connector config). The sync
+   asset, the target builders, and the demo hooks drop `required_resource_keys` /
+   `context.resources` entirely and call the functions directly; the demo's six inline
+   bindings (`orchestration/definitions.py:1042-1048`) are deleted. The cost meter becomes an
+   optional capability: when its env is unset the sync degrades to unmetered (metadata
+   omitted) instead of raising. The env contract lands as the module docstring — including
+   the sync's own storage credentials (`DATABRICKS_AZURE_CLIENT_ID`/`TENANT_ID`/`CLIENT_SECRET`,
+   which delta-rs needs and no resource carries today; service principal, never SAS) and the
+   connector's (`KAFKA_OUTPUT_BOOTSTRAP` is required — the assembly raises without it — plus
+   the optional SASL variables). Gate: the existing suite unchanged except the fakes — tests
+   switch from resource-binding to patching the connection functions
+   (`reverse_etl_connections.<fn>`) — plus a definitions-build smoke.
+
+8. **Hygiene and compatibility.** The import-hygiene test — a static source scan (import
+   lines) over the port surface asserting the component-reachable modules import no
+   `reverse_etl_demo_*`/`reverse_etl_change`/`reverse_etl_reset` — is the
+   extractability guarantee, and a scan so the mutation check can mutate it. The compatibility
+   test builds a minimal dg project in a tmp dir
+   (pyproject with `[tool.dg]`, a sync component YAML and a target component YAML) and
+   loads it through `load_from_defs_folder`, asserting the assets and the health check all
+   resolve with no resources configured — the exact production load path; its fixtures include a target
+   YAML whose `deps` reference the sync component's topic asset and a variant with a dangling
+   dep, proving both load.
+
+9. **Docs.** "Releasing to a team" in `REVERSE_ETL_COMPONENT_GUIDE.md` (the naming policy, the
+   minimal YAMLs, the wire contract, the env contract, the
+   no-environment-values-in-YAML rule and the generated `$schema` header); the DuckDB
+   mirror's scale ceiling and the library's org-specific defaults (the staging registry URL)
+   documented where teams will read them; walkthrough rows
+   for the new modules; and the library README skeleton (env contract + boundary rule) so the
+   eventual extraction is a move, not a rewrite.
 
 ## Deferred
 
