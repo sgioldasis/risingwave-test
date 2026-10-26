@@ -197,7 +197,7 @@
     <div class="mark">J</div>
     <div class="titles">
       <h1>Jobotron producer</h1>
-      <div class="sub">Candidate selection from the lake → one Avro message per customer → per-operator topics → Postgres. No Spark, no JVM, no Databricks compute.</div>
+      <div class="sub">The team's real notebooks as Dagster instances: the verbatim query on their warehouse → the validated 13-field envelope as JSON → one topic per market → the Postgres mirror. Dry-run (the default) sends nothing.</div>
     </div>
   </div>
   <div class="pill" id="helper-pill"><span class="dot"></span><span id="helper-text">checking helper…</span></div>
@@ -206,54 +206,54 @@
 <div class="layout">
   <aside class="rail" id="rail" aria-label="Demo actions">
     <div class="sgroup">
-      <div class="slabel">Changes · Databricks</div>
-      <button id="act-add">Add unverified customer</button>
-      <button id="act-verify">Verify a customer</button>
-      <button id="act-deactivate">Deactivate a customer</button>
+      <div class="slabel">Instance · mode</div>
+      <select id="market" style="width:100%;background:var(--surface2,#1a2029);color:inherit;border:1px solid var(--border,#2a313a);border-radius:8px;padding:8px 10px;font:inherit">
+        <option value="cy">cy — Send_Email_to_NonVerified_CY_Customers</option>
+        <option value="gr">gr — Send_Email_to_NonVerified_GR_Customers</option>
+        <option value="ro">ro — Send_Email_to_NonVerified_RO_Customers</option>
+      </select>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px">
+        <input type="checkbox" id="dry_run" checked> dry-run (nothing sent, no topic created)
+      </label>
+      <p class="hint">The checkbox flips the mode for this run only — the contract's own IsDryRun widget. Scheduled and blank launches take the YAML value.</p>
     </div>
     <div class="sgroup">
       <div class="slabel">Pipeline</div>
+      <button id="act-setup">Run setup</button>
       <button id="act-publish">Run producer</button>
       <button id="act-consume">Run demo consumer</button>
     </div>
     <div class="sgroup">
       <div class="slabel">Inspect</div>
-      <button id="act-topics">Read operator topics</button>
-      <button id="act-schemas">Schemas in Apicurio</button>
-      <button id="act-postgres">Postgres tables</button>
+      <button id="act-topics">Read the topic</button>
+      <button id="act-postgres">Postgres mirror</button>
     </div>
     <div class="sgroup">
       <div class="slabel">Demo</div>
       <button id="do-rebuild" class="danger">Reset and set up</button>
-      <p class="hint">Drops the tables, topics and subjects, reseeds, and runs the first publish.</p>
+      <p class="hint">Deletes the instance's topic and its Postgres mirror, then runs setup, the first publish and the first consume — in the checkbox's mode.</p>
     </div>
   </aside>
 
   <main>
-    <section class="canvas" aria-label="Pipeline: the demo tables feed the producer, which registers Avro schemas in Apicurio and publishes per-operator topics; the demo consumer mirrors them into Postgres">
+    <section class="canvas" aria-label="Pipeline: the team's views are queried verbatim on the warehouse, the producer builds the 13-field envelope and gates on dry-run, and the demo consumer mirrors the topic into Postgres">
       <div class="flow">
-        <div class="group">
-          <div id="st-customers" class="stage g-coral"><span class="tag">Databricks</span><div class="name">Customers</div><div class="desc">Delta · scanned, not changed</div><span class="runstate"></span></div>
-          <div id="st-kyc" class="stage g-coral"><span class="tag">Databricks</span><div class="name">KYC cases</div><div class="desc">Delta · joined in</div><span class="runstate"></span></div>
+        <div id="st-views" class="stage g-coral wide"><span class="tag">Databricks · read-only</span><div class="name">de.voperdb</div><div class="desc">the team's sharded UNION views · SELECT only</div><span class="runstate"></span></div>
+        <div class="links-col"><div id="e-L1" class="link"></div></div>
+        <div id="st-producer" class="stage g-violet wide"><span class="tag">Dagster · per-market instance</span><div class="name">Jobotron producer</div><div class="desc">statement execution → build_messages</div><span class="runstate"></span>
+          <div class="chips"><span id="chip-query" class="chip">query</span><span id="chip-envelope" class="chip">envelope</span><span id="chip-hash" class="chip">hash</span><span id="chip-gate" class="chip">gate</span></div>
         </div>
-        <div class="links-col"><div id="e-L1a" class="link"></div><div id="e-L1b" class="link"></div></div>
-        <div id="st-producer" class="stage g-violet wide"><span class="tag">Dagster · zero-DBU</span><div class="name">Jobotron producer</div><div class="desc">Delta scan → DuckDB join</div><span class="runstate"></span>
-          <div class="chips"><span id="chip-scan" class="chip">scan</span><span id="chip-query" class="chip">query</span><span id="chip-schema" class="chip">schema</span><span id="chip-route" class="chip">route</span></div>
-        </div>
-        <div class="links-col"><div id="e-L2a" class="link"></div><div id="e-L2b" class="link"></div></div>
-        <div class="group">
-          <div id="st-reg" class="stage g-teal"><span class="tag">Apicurio</span><div class="name">Registry</div><div class="desc">key + value subjects</div><span class="runstate"></span></div>
-          <div id="st-topics" class="stage g-teal"><span class="tag">Kafka</span><div class="name">Operator topics</div><div class="desc">jobotron_demo_gr / _br</div><span class="runstate"></span></div>
-        </div>
-        <div class="links-col converge"><div id="e-L4a" class="link"></div><div id="e-L4b" class="link"></div></div>
-        <div id="st-consumer" class="stage g-blue wide"><span class="tag">Dagster · zero-DBU</span><div class="name">Jobotron consumer</div><div class="desc">latest publish run only</div><span class="runstate"></span></div>
-        <div id="e-L5" class="link"></div>
-        <div id="st-postgres" class="stage g-blue"><span class="tag">Postgres</span><div class="name">Postgres tables</div><div class="desc">jobotron_demo_gr / _br</div><span class="runstate"></span></div>
+        <div class="links-col"><div id="e-L2" class="link"></div></div>
+        <div id="st-topic" class="stage g-teal"><span class="tag">Kafka</span><div class="name">The instance's topic</div><div class="desc">jobotron_unverified_customers_&lt;mkt&gt;</div><span class="runstate"></span></div>
+        <div class="links-col"><div id="e-L3" class="link"></div></div>
+        <div id="st-consumer" class="stage g-blue wide"><span class="tag">Dagster</span><div class="name">Demo consumer</div><div class="desc">decode JSON · dedup on ItemId</div><span class="runstate"></span></div>
+        <div id="e-L4" class="link"></div>
+        <div id="st-mirror" class="stage g-blue"><span class="tag">Postgres</span><div class="name">Postgres mirror</div><div class="desc">one row per ItemId</div><span class="runstate"></span></div>
       </div>
       <div class="legend">
-        <span><i style="background: var(--coral)"></i> Databricks lake</span>
-        <span><i style="background: var(--violet)"></i> Dagster producer (0.0 warehouse seconds)</span>
-        <span><i style="background: var(--teal)"></i> Kafka side</span>
+        <span><i style="background: var(--coral)"></i> Databricks (read-only views · warehouse DBUs)</span>
+        <span><i style="background: var(--violet)"></i> Dagster producer</span>
+        <span><i style="background: var(--teal)"></i> Kafka topic</span>
         <span><i style="background: var(--blue)"></i> Demo consumer</span>
       </div>
     </section>
@@ -274,70 +274,80 @@
 
     <div class="notes">
       <div class="note">
-        <h2>The demo tables</h2>
-        <p class="sub">Created by the setup job. Both are <b>plain Delta with no Change Data Feed</b> — the producer reads each table's current snapshot per the job's <code>scan_engine</code> knob (delta-rs snapshots, or the DuckDB delta extension's streaming <code>delta_scan</code>), so the CDF machinery (and the delta-rs CDF gap that pins the CDF syncs to Spark) never applies. No state table: the full eligible set is published every run and the worker deduplicates.</p>
+        <h2>The instance's YAML</h2>
+        <p class="sub">From <code>orchestration/defs/unverified_customers_cy/defs.yaml</code> — six typed facts; everything else derives or defaults, and the environment carries the coordinates (<code>DATABRICKS_WAREHOUSE_ID</code> + the service principal — the YAML never does).</p>
+<pre>type: orchestration.components.reverse_etl_jobotron.JobotronProducer
+attributes:
+  query_type: unverified_customers
+  operator: cy
+  job_name: Send_Email_to_NonVerified_CY_Customers
+  catalog: de
+  schema_name: voperdb
+  query: |
+    select cusCustomerID as CustomerId, cusCompanyID as CompanyId
+    from cCustomer ...   # the notebook's SQL, token-verbatim</pre>
+        <p class="label">Derived or defaulted</p>
+<pre>topic          → jobotron_unverified_customers_cy  (typed when the platform owns it)
+scan_engine    → databricks_sql  (delta_rs / delta_extension opt in, with sources)
+encoding       → json            (no registry anywhere)
+dry_run        → true            (the per-run switch overrides; YAML governs schedules)
+schema_version → 1</pre>
+      </div>
+      <div class="note">
+        <h2>The 13-field contract (validated 2026-10-26)</h2>
+        <p class="sub">Transcribed from the team's <code>kafka_message_publisher.ipynb</code>; the field-by-field record and every decision live in <code>docs/poc/JOBOTRON_CONTRACT_PARITY.md</code>.</p>
+<pre>JobId           &lt;JobName&gt;_&lt;CompanyId&gt;_&lt;yyyyMMddHHmmss UTC&gt;
+JobName         the YAML's job_name — the wire identity
+JobCreated      second-truncated UTC
+RunId           the Dagster run id
+CompanyId       from the row
+CustomerId      the key, cast to string
+ItemsCount      the batch total
+ItemNumber      row_number over CustomerId (deterministic tie-break)
+ItemId          &lt;ItemPayloadHash&gt;-&lt;ItemNumber&gt;
+ItemPayload     every result column, nested
+ItemPayloadHash sha256 over the pinned canonical JSON
+IsDryRun        the run's mode
+SchemaVersion   1</pre>
+        <p class="label">Guarantees</p>
         <ul>
-          <li><b>Customers</b> carries the routing column: <code>operator</code> picks the topic; an unknown value fails the run — nothing publishes cross-market.</li>
-          <li><b>KYC cases</b> holds one row per customer. The query is the RFC's example job: <i>send PM to customers that remain unverified</i>.</li>
-          <li><b>The segment changes without tombstones:</b> verify or deactivate a customer and it stops appearing at the next publish. The worker's dedup and re-validation make republishing safe (RFC: "Safe Execution").</li>
-          <li><b>GDPR:</b> the payload is exactly the query's columns plus <code>run_id</code> and <code>job_type</code>; real topics would run TLS in transit and 10-day retention.</li>
-          <li><b>The demo consumer</b> rebuilds <code>jobotron_demo_&lt;operator&gt;</code> from the messages of the <b>latest publish run only</b> — topics append, so grouping by the last message's run_id is what keeps the table the current segment.</li>
+          <li>The query must emit <code>CustomerId</code> and <code>CompanyId</code> — a result missing them fails the run, named, before any produce.</li>
+          <li>Hash canon: compact separators, result-column order, nulls explicit, non-ASCII kept — the exact bytes the wire carries.</li>
+          <li><b>GDPR:</b> the payload is exactly the query's columns; real topics would run TLS in transit and bounded retention.</li>
         </ul>
       </div>
       <div class="note">
-        <h2>The job's YAML</h2>
-        <p class="sub">From <code>orchestration/defs/reverse_etl_jobotron/defs.yaml</code> — the query, routing, and identifiers are data, not code.</p>
-<pre>type: orchestration.components.reverse_etl_jobotron.JobotronProducer
-attributes:
-  job_type: kyc.unverified_pm
-  operators: [gr, br]
-  topic_template: "jobotron_demo_{operator}"
-  query: |
-    SELECT c.customer_id, c.email, c.locale, c.operator
-    FROM customers AS c
-    JOIN kyc_cases AS k ON k.customer_id = c.customer_id
-    WHERE k.status = 'PENDING' AND c.is_active</pre>
-        <p class="label">Tables (the setup asset's DDL)</p>
-<pre>CREATE TABLE IF NOT EXISTS
-  de_dev.sr_poc_external.reverse_etl_jobotron_customers (
-  customer_id BIGINT NOT NULL, email STRING,
-  locale STRING, operator STRING, is_active BOOLEAN
-) USING DELTA
-TBLPROPERTIES ('delta.enableDeletionVectors' = 'false');
--- + reverse_etl_jobotron_kyc_cases (customer_id, status, updated_at)</pre>
-      </div>
-      <div class="note">
         <h2>Components and jobs</h2>
-        <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>): the setup job creates tables, topics and seed; the publish asset runs the whole query-to-Kafka path in one run — Delta scan + DuckDB (per-job <code>scan_engine</code> knob), <code>0.0</code> warehouse seconds; the change ops edit the demo data; the reset job tears it all down; the consume asset mirrors the topics into Postgres. Design and RFC context: <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
+        <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>), three instances (<code>orchestration/defs/unverified_customers_{cy,gr,ro}/</code>). Per instance: the setup asset (the topic only — a no-op under dry-run, not even a Kafka connection), the publish asset, the consume asset (decode, dedup on ItemId, mirror), plus setup and reset jobs. The instances own nothing in Databricks — read-only SELECTs on <code>de.voperdb</code>; a topic exists only once a run carries <code>dry_run: false</code>. Design: <code>docs/poc/JOBOTRON_CONTRACT_PARITY.md</code> and <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
         <details>
           <summary>Show the publish asset's pipeline</summary>
-<pre style="margin-top: 10px">resolve locations (UC REST, cached) — control plane only
-scan per scan_engine: delta_rs → delta-rs column-pruned snapshots
-                      delta_extension → views over streaming delta_scan
-DuckDB register(alias) / view(alias) → execute(yaml query) — the join
-derive Avro key/value schemas from the RESULT shape
-ensure subjects jobotron_demo_&lt;op&gt;-key / -value
-route rows by operator; unknown operator fails the run
-produce one message per customer (key = customer_id)
-metadata: rows per operator, previews, warehouse_seconds 0.0</pre>
+<pre style="margin-top: 10px">resolve the warehouse id (DATABRICKS_WAREHOUSE_ID — env, never YAML)
+submit the YAML query VERBATIM in the YAML's catalog.schema context (Statement Execution API, 50s inline wait)
+poll to a terminal state; fetch every result chunk (completeness-verified)
+coerce values back per the manifest's declared types (JSON_ARRAY stringifies)
+build_messages: order by CustomerId, hash per the pinned canon, 13 fields
+dry-run gate (the default): metadata only — items_count, previews, seconds
+produce one JSON message per row (key = CustomerId) to the instance's topic
+metadata: items_count, dry_run, schema_version, warehouse_id, statement_seconds</pre>
         </details>
       </div>
     </div>
+  
   </main>
 </div>
 
 <script>
 const S = [
-  { num: '1', t: "A customer's KYC state changes in Databricks", d: 'Three demo ops edit the two tables: adding a customer with a PENDING case makes it join the segment; verifying or deactivating one makes it leave. Both are plain warehouse SQL on the demo tables, metered as usual. Nothing is published until the producer runs.', n: ['customers', 'kyc'] },
-  { num: '2.1', t: 'The producer scans the lake tables', chip: 'scan', d: "The Dagster asset resolves each table location through the Unity Catalog REST API (control plane, no compute) and scans it per the job's scan_engine knob: delta_rs materializes column-pruned delta-rs snapshots; delta_extension registers views over the delta extension's streaming delta_scan — no Arrow materialization, verified live on these tables. Either way it reads straight from ADLS storage with the service principal. No Spark session, no JVM, no Databricks compute anywhere in the run.", n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
-  { num: '2.2', t: 'DuckDB runs the candidate query', chip: 'query', d: 'Each source lands in DuckDB under its YAML alias — zero-copy Arrow registration (delta_rs) or a view over the streaming delta_scan (delta_extension) — and the query from jobotron.yaml runs in-process: a real SQL join, the thing the RFC moves off VOperDB onto the data platform. Every row of the result is one customer in the segment; an empty result still carries the schema, so the next steps hold.', n: ['customers', 'kyc', 'producer'], e: ['L1a', 'L1b'] },
-  { num: '2.3', t: 'Schemas go to the registry', chip: 'schema', d: 'The Avro schemas are derived from the query result shape: key = customer_id, value = run_id + job_type + the selected columns (payload minimization by construction). They are ensured per operator subject — jobotron_demo_<op>-key and -value — and only registered when new or changed.', n: ['producer', 'reg'], e: ['L2a'] },
-  { num: '2.4', t: 'One message per customer, routed by operator', chip: 'route', d: 'Each result row becomes one message: key = customer_id (the identity the worker deduplicates on), value = run_id + job_type + payload. The operator column picks the topic — jobotron_demo_gr or jobotron_demo_br — and an unknown operator fails the run rather than publishing cross-market. run_id groups the messages into one job run, the unit the RFC counts (about 57 runs a day across its job set).', n: ['producer', 'topics'], e: ['L2b'] },
-  { num: '3', t: 'The topics hold the current segment', d: "The topics are this demo's endpoint: every publish rewrites the whole eligible set, so a topic always reflects the last run. A customer that left the segment simply stops appearing — no tombstone. The worker's dedup and eligibility re-validation make republishing safe; volumes are tiny (the RFC sizes all operators at about 20,000 messages a day).", n: ['producer', 'reg', 'topics'], e: ['L2a', 'L2b'] },
-  { num: '4', t: 'The demo consumer mirrors the segment into Postgres', d: "A demo consumer reads each operator topic from the beginning, decodes the Avro messages, and rebuilds one Postgres table per operator (jobotron_demo_gr / jobotron_demo_br). Topics append, so the consumer takes the messages of the LATEST publish run (the run_id of the topic's last message) — the current segment, nothing stale: a customer that left it disappears from its table at the next consume, no tombstone. It stands in for the RFC's worker, which would act per message (dedup in Redis, eligibility re-validation through CustomerService, actions through Iris and VOperDB, item state).", n: ['reg', 'topics', 'consumer', 'postgres'], e: ['L4a', 'L4b', 'L5'] }
+  { num: '1', t: 'The team’s three notebooks, as Dagster instances', d: 'One instance is one query type × one operator: the folder is unverified_customers_<mkt>, the YAML carries six typed facts (query_type, operator, job_name, catalog, schema_name, query), and the query is the notebook’s SQL, token-verbatim — nothing ported, nothing routed. Everything else derives: the topic is jobotron_unverified_customers_<mkt>, the engine is databricks_sql, encoding is JSON, and dry-run is the default.', n: ['views'] },
+  { num: '2.1', t: 'The candidate query runs on the team’s warehouse', chip: 'query', d: 'scan_engine databricks_sql submits the YAML query VERBATIM through the Statement Execution API to the SQL warehouse from DATABRICKS_WAREHOUSE_ID — the team’s own SQL on their own views (de.voperdb, the sharded UNION layer over the per-market _bronze tables), no transcription. It polls to a terminal state and fetches every result chunk, completeness-verified. The cost is stated, not hidden: seconds of DBUs at the validated scale (the CY query returned 13 candidates in ~38 s wall). delta_rs / delta_extension opt in for zero DBUs, with sources pointing at bronze.', n: ['views', 'producer'], e: ['L1'] },
+  { num: '2.2', t: 'The envelope is the real 13-field contract', chip: 'envelope', d: 'build_messages turns the result rows into the team’s exact envelope: JobId = <JobName>_<the row’s CompanyId>_<yyyyMMddHHmmss UTC>, JobCreated second-truncated UTC, RunId = the Dagster run id, ItemPayload = every result column nested, ItemNumber = row_number over CustomerId (tie-broken deterministically), ItemsCount = the batch total. The query must emit CustomerId and CompanyId — a result missing them fails here, named, before any message exists.', n: ['producer'] },
+  { num: '2.3', t: 'Hashed so the worker can verify', chip: 'hash', d: 'ItemPayloadHash is sha256 over a pinned canonical JSON (compact separators, result-column order, nulls explicit, non-ASCII kept) — the same rendering that lands in ItemPayload, so the worker recomputes and checks. ItemId = <hash>-<number>: the dedup token. The key is CustomerId, cast to string, exactly theirs.', n: ['producer'] },
+  { num: '2.4', t: 'Dry-run: everything built, nothing sent', chip: 'gate', d: 'The default mode runs the WHOLE path — query, envelope, hashing, counting — and produce() never happens; setup is a no-op too (not even a Kafka connection). The launch dialog’s dry_run switch flips the mode per run, exactly like the notebook’s IsDryRun widget, and the YAML value still governs schedules and blank launches. Metadata records items_count, the statement’s seconds and the warehouse id — audits ask the run, not the repo.', n: ['producer'] },
+  { num: '3', t: 'One JSON message per customer on the instance’s topic', d: 'With dry_run false, each message goes out as compact canonical JSON (the hash’s exact canon), keyed by CustomerId, to jobotron_unverified_customers_<mkt>. No registry anywhere — the validated contract is plain JSON. The full eligible set is republished every run; the worker owns dedup and re-validation, so the producer stays stateless.', n: ['producer', 'topic'], e: ['L2'] },
+  { num: '4', t: 'The demo consumer mirrors the topic, deduped on ItemId', d: 'The demo consumer drains the topic from the beginning (watermark-verified, no timing races), decodes the JSON envelopes, and keeps one Postgres mirror row per ItemId — INSERT ... ON CONFLICT DO NOTHING. ItemId carries the payload hash, so new content is a new row and a re-delivered item keeps its first. It stands in for the RFC’s worker, which would act per message (dedup, eligibility re-validation, actions).', n: ['topic', 'consumer', 'mirror'], e: ['L3', 'L4'] }
 ];
-const NODES = ['customers', 'kyc', 'producer', 'reg', 'topics', 'consumer', 'postgres'];
-const EDGES = ['L1a', 'L1b', 'L2a', 'L2b', 'L4a', 'L4b', 'L5'];
+const NODES = ['views', 'producer', 'topic', 'consumer', 'mirror'];
+const EDGES = ['L1', 'L2', 'L3', 'L4'];
 const $ = id => document.getElementById(id);
 let i = 0, timer = null;
 
@@ -491,77 +501,50 @@ async function run(label, body, out = $('result'), step = null, edges = null, st
 }
 
 // Every check renders into the step card's result area, like the runs.
+const market = () => $('market').value;
+const mode = () => ({ market: market(), dry_run: $('dry_run').checked });
 async function topicsCheck(out = $('result')) {
-  say('Reading the operator topics...', null, 'run', out);
-  const d = await get('/api/check/jobotron/topics');
-  if (d.error) { say('Topics check failed: ' + d.error, null, 'fail', out); return; }
-  const total = Object.values(d).reduce((n, t) => n + t.count, 0);
-  const subs = [{ text: (total ? '\u2713 ' : '\u2717 ') + total + ' message(s) on the operator topics. Each publish rewrites the whole eligible set — the last run\u2019s rows are what a topic holds.' }];
-  for (const [topic, info] of Object.entries(d)) {
-    subs.push({ text: topic + ': ' + info.count + ' message(s)', cls: 'strong' });
-    for (const m of info.messages) {
-      subs.push({ text: m.error ? 'decode error: ' + m.error : 'customer ' + m.key.customer_id + ' \u2192 ' + (m.value.job_type || '?') + ' (' + (m.value.locale || '-') + ', ' + (m.value.email || '-') + ')', mono: true });
-    }
-    if (info.count > info.messages.length) subs.push({ text: '\u2026 and ' + (info.count - info.messages.length) + ' more', mono: true });
+  say('Reading the topic...', null, 'run', out);
+  const d = await get('/api/check/jobotron/topics?market=' + market());
+  if (d.error) { say('Topic check failed: ' + d.error, null, 'fail', out); return; }
+  const subs = [{ text: d.topic + ': ' + d.count + ' message(s). Every publish rewrites the whole eligible set — the last run’s rows are what the topic holds.' }];
+  for (const m of d.messages) {
+    subs.push({ text: m.error ? 'decode error: ' + m.error : 'item ' + m.ItemNumber + '/' + m.ItemsCount + ' · ' + m.CustomerId + ' → ' + m.JobName + (m.IsDryRun ? ' [dry-run]' : ''), mono: true });
   }
-  say('Operator topics', null, total ? 'ok' : 'fail', out, subs);
-}
-
-async function schemasCheck(out = $('result')) {
-  say('Fetching schemas from the registry...', null, 'run', out);
-  const d = await get('/api/schema/' + SYNC);
-  if (d.error) { say('Schema fetch failed: ' + d.error, null, 'fail', out); return; }
-  const any = Object.values(d).some(t => t && t.key && t.value);
-  const subs = [];
-  for (const [topic, info] of Object.entries(d)) {
-    subs.push({ text: info.key && info.value ? topic + ' — key v' + info.key.version + ' (id ' + info.key.id + '), value v' + info.value.version + ' (id ' + info.value.id + ')' : topic + ' — not registered', cls: 'strong' });
-    if (info.value) {
-      const width = Math.max(...Object.keys(info.value.columns).map(k => k.length));
-      subs.push({ text: Object.entries(info.value.columns).map(([n, t]) => n.padEnd(width + 2) + t).join('\n'), mono: true });
-    }
-  }
-  say(any ? 'Registry holds the operator subjects.' : 'No operator subjects yet — run the producer first.', null, any ? 'ok' : 'fail', out, subs);
+  if (d.count > d.messages.length) subs.push({ text: '… and ' + (d.count - d.messages.length) + ' more', mono: true });
+  say(d.topic, null, d.count ? 'ok' : 'fail', out, subs);
 }
 
 async function postgresCheck(out = $('result')) {
-  say('Reading the per-operator tables...', null, 'run', out);
-  const d = await get('/api/check/jobotron/postgres');
-  if (d.error) { say('Postgres check failed: ' + d.error, null, 'fail', out); return; }
-  const total = Object.values(d).reduce((n, rows) => n + rows.length, 0);
-  const subs = [{ text: 'Each table is rebuilt from its topic at the last consume.' }];
-  for (const [topic, rows] of Object.entries(d)) {
-    subs.push({ text: topic + ': ' + rows.length + ' row(s)', cls: 'strong' });
-    for (const row of rows) subs.push({ text: row.join(' | '), mono: true });
-  }
-  say('\u2713 ' + total + ' row(s) across the operator tables.', null, 'ok', out, subs);
+  say('Reading the mirror table...', null, 'run', out);
+  const d = await get('/api/check/jobotron/postgres?market=' + market());
+  if (d.error) { say('Mirror check failed: ' + d.error, null, 'fail', out); return; }
+  const subs = [{ text: d.table + ': ' + d.count + ' item(s) — one row per ItemId ever seen; a republished item keeps its first row.' }];
+  for (const row of d.rows) subs.push({ text: row.join(' | '), mono: true });
+  if (d.count > d.rows.length) subs.push({ text: '… and ' + (d.count - d.rows.length) + ' more', mono: true });
+  say(d.table, null, 'ok', out, subs);
 }
 
 // The action rail: quick access to everything, always visible. Each action
 // jumps to its related pipeline step so the result lands in context.
-// A publish run moves data across the producer's full path — both tables in,
-// registry + topics out — so all four arrows carry dots while it runs.
-const PUBLISH_EDGES = ['L1a', 'L1b', 'L2a', 'L2b'];
-const CONSUME_EDGES = ['L4a', 'L4b', 'L5'];
-// A publish run animates only the producer box — the lake tables it reads stay calm.
+// With dry_run false a publish moves data across the producer's full path to
+// the topic; with dry_run true the dots stop at the producer — nothing is sent.
+const PUBLISH_EDGES = ['L1', 'L2'];
+const CONSUME_EDGES = ['L3', 'L4'];
+// A publish run animates only the producer box — the views it reads stay calm.
 const PRODUCER_STAGES = ['producer'];
-// Setup provisions the tables, the subjects and the topics — those boxes spin.
-const SETUP_STAGES = ['customers', 'kyc', 'reg', 'topics'];
-// Change runs spin only the table the SQL writes to: verify moves a KYC case,
-// deactivate flips a customer, add inserts into both.
-const ADD_STAGES = ['customers', 'kyc'];
-const VERIFY_STAGES = ['kyc'];
-const DEACTIVATE_STAGES = ['customers'];
-// A consume run animates only the consumer side — it reads the topics and
-// writes Postgres, it does not run on the registry or the topics.
-const CONSUME_STAGES = ['consumer', 'postgres'];
+// Setup with dry_run false provisions the topic; under dry-run it is a no-op.
+const SETUP_STAGES = ['topic'];
+// The reset job deletes the topic and drops the mirror.
+const RESET_STAGES = ['topic', 'mirror'];
+// A consume run animates only the consumer side — it reads the topic and
+// writes Postgres.
+const CONSUME_STAGES = ['consumer', 'mirror'];
 const ACTIONS = [
-  { id: 'act-add', step: 0, go: out => run('Change (add an unverified customer)', { action: 'change', change: 'add_customer' }, out, 0, null, ADD_STAGES) },
-  { id: 'act-verify', step: 0, go: out => run('Change (verify a customer)', { action: 'change', change: 'verify_customer' }, out, 0, null, VERIFY_STAGES) },
-  { id: 'act-deactivate', step: 0, go: out => run('Change (deactivate a customer)', { action: 'change', change: 'deactivate_customer' }, out, 0, null, DEACTIVATE_STAGES) },
-  { id: 'act-publish', step: 1, go: out => run('Publish', { action: 'sync' }, out, 1, PUBLISH_EDGES, PRODUCER_STAGES) },
-  { id: 'act-consume', step: 6, go: out => run('Consume', { action: 'consume' }, out, 6, CONSUME_EDGES, CONSUME_STAGES) },
+  { id: 'act-setup', step: 4, go: out => run('Setup', { action: 'setup', ...mode() }, out, 4, null, SETUP_STAGES) },
+  { id: 'act-publish', step: 1, go: out => { const m = mode(); return run('Publish', { action: 'publish', ...m }, out, 1, m.dry_run ? ['L1'] : PUBLISH_EDGES, PRODUCER_STAGES); } },
+  { id: 'act-consume', step: 6, go: out => run('Consume', { action: 'consume', ...mode() }, out, 6, CONSUME_EDGES, CONSUME_STAGES) },
   { id: 'act-topics', step: 5, go: out => topicsCheck(out) },
-  { id: 'act-schemas', step: 3, go: out => schemasCheck(out) },
   { id: 'act-postgres', step: 6, go: out => postgresCheck(out) },
 ];
 for (const a of ACTIONS) {
@@ -569,13 +552,11 @@ for (const a of ACTIONS) {
 }
 
 $('do-rebuild').onclick = async () => {
-  stop(); show(0);
-  if (!confirm('This drops the Jobotron demo tables, deletes the operator topics and their registry subjects, drops the consumer\u2019s Postgres tables, then creates everything again and runs the first publish and the first consume. Continue?')) return;
+  stop(); show(4);
+  if (!confirm('This deletes the instance\u2019s Kafka topic and drops its Postgres mirror, then runs setup, the first publish and the first consume \u2014 in the checkbox\u2019s mode (checked = dry-run, nothing is sent). Continue?')) return;
   const out = $('result');
   try {
-    // Reset and setup spin the boxes they touch (Databricks side; tables,
-    // subjects and topics). Publish and consume animate their own arrows.
-    if (await run('Reset (1 of 4)', { action: 'reset' }, out, 0)) if (await run('Set up (2 of 4)', { action: 'setup' }, out, 0, null, SETUP_STAGES)) if (await run('First publish (3 of 4)', { action: 'sync' }, out, 1, PUBLISH_EDGES, PRODUCER_STAGES)) await run('First consume (4 of 4)', { action: 'consume' }, out, 6, CONSUME_EDGES, CONSUME_STAGES);
+    if (await run('Reset (1 of 4)', { action: 'reset', market: market() }, out, 4, null, RESET_STAGES)) if (await run('Set up (2 of 4)', { action: 'setup', ...mode() }, out, 4, null, SETUP_STAGES)) if (await run('First publish (3 of 4)', { action: 'publish', ...mode() }, out, 1, PUBLISH_EDGES, PRODUCER_STAGES)) await run('First consume (4 of 4)', { action: 'consume', ...mode() }, out, 6, CONSUME_EDGES, CONSUME_STAGES);
   } finally { edgesOff(); }
 };
 

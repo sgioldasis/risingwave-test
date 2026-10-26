@@ -1,6 +1,6 @@
 # REVERSE_ETL_JOBOTRON.md — the Jobotron producer (Dagster, Spark-free, zero-DBU)
 
-**Status: DRAFT v2 — refined against the Jobotron RFC (08.10.2026, STATUS: Review). The Phase-1 demo is built and verified live (see §12); §3, §8 and §9 remain the parts to argue.**
+**Status: v3 — the wire contract is now the team's real one, validated against their notebooks on 2026-10-26 (§4; the field-by-field transcription and every decision behind it live in [`JOBOTRON_CONTRACT_PARITY.md`](JOBOTRON_CONTRACT_PARITY.md)). The RFC-era sketch below (the `run_id`/`job_type` envelope, Avro, per-operator routing) is superseded where it contradicts the validated contract. The zero-DBU engine story (§3) is now the opt-in path — the default engine runs the team's own SQL on their warehouse (D10).**
 
 ---
 
@@ -26,13 +26,13 @@ Two other review comments are addressed by this plan:
 
 ## 2. What the producer does
 
-On a per-job schedule (hourly or daily), run the job's **candidate-selection SQL against the lake's Delta tables**, and publish **one Kafka message per selected customer** to that customer's **operator topic**, serialized as **Avro with the schema registered in Apicurio**. That message is the RFC's *unit-of-work*: the Jobotron worker consumes it, verifies it hasn't been processed before, re-validates eligibility, executes the actions (Iris notifications, customer-group updates), and records the outcome.
+On a per-instance schedule, run the instance's **candidate-selection SQL** and publish **one Kafka message per selected customer** to the **instance's topic**, as **JSON in the team's real 13-field envelope** (§4 — validated against their notebooks; no registry, no Avro). That message is the RFC's *unit-of-work*: the Jobotron worker consumes it, verifies it hasn't been processed before, re-validates eligibility, executes the actions (Iris notifications, customer-group updates), and records the outcome.
 
 Design consequences that fall out of the RFC's model:
 
 - **Publish the full eligible set every run.** The worker owns deduplication (Redis markers) and re-validation against live data, so a stateless producer that republishes the whole segment is correct by construction — and stale batch input "does not produce wrong actions" (RFC, Safe Execution). No watermark, no state table, no CDF.
-- **`run_id` stamped on every message** so the worker can group items into its "job runs" concept (the RFC's state model counts ~57 runs/day: 9 daily jobs + 2 hourly × 24).
-- **One shared topic per operator** (RFC: all job types share it; Brazil has 10 partitions, others 3), so messages are **routed by an operator column** in the query output.
+- **`RunId` on every message** (the Dagster run id) so the worker can group items into its "job runs" concept (the RFC's state model counts ~57 runs/day: 9 daily jobs + 2 hourly × 24).
+- **One topic per instance** (D9: one query type × one operator — the validated estate is per-market; each real job's query hardcodes its market, so routing by an operator column would silently change eligibility). The RFC's shared-per-operator topic is what the worker still sees.
 - **Volume is tiny on our side**: ~20,000 messages/day, peak ~100 msg/s, 400 B–1 KB each. The demo's 1M-row produce tuning transfers as headroom, not as a requirement.
 
 ## 3. Architecture
@@ -65,6 +65,14 @@ run metadata: customers published, per-operator counts, duration, warehouse_seco
 
 ### 3.1 The engine decision
 
+**Update 2026-10-26 (D10): the default engine is now `databricks_sql`** — the team's own SQL on
+their warehouse via the Statement Execution API, seconds of DBUs at the validated scale (sub-GB
+scans; the CY query returned 13 candidates in ~38 s wall). The zero-DBU paths below become the
+opt-in optimization — and they are the only ones that need `sources`, because delta-rs cannot scan
+the estate the real queries run on (`de.voperdb.cCustomer` is a sharded UNION view over per-market
+`_bronze` Delta tables; when a job transcribes that layering, **`sources` points at bronze, never
+at the views**).
+
 | Option | SQL power | Delta access | JVM | Verdict |
 |---|---|---|---|---|
 | **delta-rs scan → DuckDB over the snapshots** (recommended) | full SQL incl. joins | delta-rs — **proven on our tables** | no | recommended |
@@ -76,40 +84,63 @@ Same reasoning as v1, with one update: **multi-table joins are in scope from day
 
 **The `delta` extension path is verified live (2026-10-21), with one environment caveat.** The exact defs.yaml candidate query ran unchanged over both demo tables' abfss locations via `delta_scan` — `INSTALL azure` + one secret in the `PROVIDER service_principal` / `TENANT_ID` parameter form, using the same SP credentials the producer already holds (the `OAUTH2_ENDPOINT` parameter form is rejected on this version) — and returned the publish run's exact 4-row selection in ~6 s cold. The tables are column-mapped, so the extension's old "unverified column-mapping behavior" caveat is retired by direct test, not just by the kernel's design (delta-kernel-rs handles column mapping and deletion vectors at the kernel level; pushdown features — constant-filter pushdown since v0.1.0, file skipping + partition-info pushdown since v0.3.0 — are shipped, not future work). Day one still recommends the delta-rs path: zero new moving parts and the volumes don't need it yet — the extension is the scale lever (§8.6), not a correction. The caveat: the path works from the **host venv** but fails inside the **Dagster container** — the image's `duckdb-azure` build cannot fetch Azure tokens (`GetToken(): … Problem with the SSL CA cert`), even though system TLS to login.microsoftonline.com is fine there; a container-image issue, not a credentials or design one. The demo therefore stays on `delta_rs` (§12), and a job's default flips to the extension only when the image is fixed **and** the sizing spike says so (§8.6).
 
-## 4. The YAML contract (v2)
+## 4. The YAML contract (v3 — the validated one)
+
+One instance is **one query type × one operator** (D9); the folder is
+`orchestration/defs/<query_type>_<operator>/defs.yaml`. The minimal YAML is six typed facts —
+everything else derives or defaults, and the environment carries the coordinates
+(`DATABRICKS_WAREHOUSE_ID` + the service-principal trio; the YAML never carries them — one
+defs.yaml still deploys to stg and prd):
 
 ```yaml
-# orchestration/assets/reverse_etl_jobotron/<job>/jobotron.yaml
-name: kyc_unverified_pm
-job_type: kyc.unverified_pm            # the worker's job-type identifier (in every message)
-schedule: "0 * * * *"                  # hourly; daily jobs use their daily cron
-sources:                               # alias -> lake table (each registered in DuckDB under its alias)
-  customers:
-    fqn: de_dev.sr_poc_external.customers
-    columns: [customer_id, email, phone_number, locale, is_active]   # optional scan-pruning hint
-  kyc_cases:
-    fqn: de_dev.sr_poc_external.kyc_cases
-    columns: [customer_id, status, operator]
-query: |
-  SELECT c.customer_id, c.email, c.phone_number, c.locale, k.operator
-  FROM customers AS c
-  JOIN kyc_cases AS k ON k.customer_id = c.customer_id
-  WHERE k.status = 'PENDING' AND c.is_active
-key_columns: [customer_id]             # Kafka record key (worker's idempotency identity)
-operator_column: operator              # routing column (consumed at produce time)
-topic_template: "jobotron-{operator}"  # per-operator shared topic per the RFC
-scan_engine: delta_rs                  # optional; "delta_extension" switches the scans to
-                                       # the DuckDB delta extension's streaming delta_scan
-                                       # (verified live 2026-10-21, §3.1/§8.6)
+# orchestration/defs/unverified_customers_cy/defs.yaml — the team's CY notebook, as an instance
+type: orchestration.components.reverse_etl_jobotron.JobotronProducer
+attributes:
+  query_type: unverified_customers     # the job family; names the folder and the Dagster objects
+  operator: cy                         # the market this instance serves
+  job_name: Send_Email_to_NonVerified_CY_Customers   # the envelope's JobName — the wire identity
+  catalog: de
+  schema_name: voperdb
+  query: |                             # the notebook's SQL, token-verbatim (whitespace is the paste's)
+    select cusCustomerID as CustomerId, cusCompanyID as CompanyId
+    from cCustomer ...
+```
+
+Derived/defaults: `topic` → `jobotron_<query_type>_<operator>` (typed when the platform owns it),
+`scan_engine` → `databricks_sql`, `encoding` → `json`, `dry_run` → `true` (D5: the whole path runs
+and nothing is sent — and the launch config's optional `dry_run` flips the mode per run, the
+notebooks' own widget; the YAML value still governs schedules and blank launches),
+`schema_version` → `1`. Optional: `sources` — the zero-DBU engines' alias →
+`{table?, columns}` map (the pruning allowlist; `table` defaults to the alias); `databricks_sql`
+needs none, the warehouse resolves the views. Retired (rejected at load): `job_type`, `operators`,
+`operator_column`, `topic_template`, `key_columns`, `customers_table`/`kyc_table`/`scan_columns`.
+
+**The message contract** is the team's real envelope, transcribed from
+`kafka_message_publisher.ipynb` and **validated against the team's notebooks 2026-10-26** — the
+authoritative field-by-field record (and every decision behind it: D1–D10) lives in
+[`JOBOTRON_CONTRACT_PARITY.md`](JOBOTRON_CONTRACT_PARITY.md). One JSON message per selected row,
+keyed by `CustomerId`:
+
+```
+JobId <JobName>_<CompanyId>_<yyyyMMddHHmmss UTC> · JobName · JobCreated (second-truncated UTC) ·
+RunId (the Dagster run id) · CompanyId (from the row) · CustomerId (the key, cast to string) ·
+ItemsCount (the batch total) · ItemNumber (row_number over CustomerId, tie-broken by the remaining
+payload columns in result order) · ItemId (<ItemPayloadHash>-<ItemNumber>) · ItemPayload (every
+result column, nested) · ItemPayloadHash (sha256 over the pinned canonical JSON: compact
+separators, result-column order, nulls explicit, ensure_ascii=False) · IsDryRun · SchemaVersion
 ```
 
 Notes:
 
-- The **Avro value schema is exactly the query's output shape plus `run_id` and `job_type`** — the published contract is what the YAML author selects, which makes payload minimization (GDPR, §7) true by construction.
-- `run_id` is stamped automatically per execution (the scheduled run's timestamp), matching the RFC's job-run grouping.
-- Day one: one row per customer per run. If a job ever needs one-message-per-(customer, item) semantics, that's a per-job YAML variant, not a redesign.
+- **JSON on the wire** (D1): no Apicurio call anywhere; `encoding: avro` is deferred behind the
+  config knob. Nulls survive (`ignoreNullFields=false` parity).
+- The query must emit `CustomerId` and `CompanyId` — the envelope reads both from the row, and a
+  result missing them fails the run before any produce, naming the column.
+- `query_type` never touches the wire; `job_name` is the only wire identity.
 
 ## 5. Pipeline stages
+
+v3: stages 4–5 are replaced by the pure `build_messages` envelope builder and the dry-run gate (JSON, no registry — §4); the list below is the v2 record.
 
 1. **Resolve** — table locations via the existing cached UC helper; per-source storage options.
 2. **Scan** — per the job's `scan_engine` knob (§4): `delta_rs` (day one) reads column-pruned snapshots via delta-rs `to_pyarrow_table(columns=…)`; `delta_extension` registers each alias as a DuckDB view over the extension's streaming `delta_scan()`, projected to the same column allowlist (verified live 2026-10-21, §3.1/§8.6).
@@ -184,7 +215,7 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 
 - **Zero DBU**: cost meter records `0.0` warehouse seconds — the producer's answer to the RFC's "~$10/month/task" con.
 - **No JVM**: zero `java` processes; no pyspark import.
-- **Contract-correct messages**: one message per selected customer, key = `customer_id`, `run_id`/`job_type` stamped, subject registered in Apicurio, operator routing exact.
+- **Contract-correct messages**: one message per selected customer, key = `CustomerId`, the validated 13-field envelope in exact JSON canon (a worker can recompute `ItemPayloadHash`), dry-run sends nothing.
 - **E2E on a laptop**: the full path (YAML → lake → Kafka → Apicurio) runs against the local demo stack — the RFC review thread's testing concern, answered.
 - **Hour-safe**: every hourly job completes in minutes, well within its cadence.
 - Ruff-clean, like the sync files.
@@ -196,28 +227,38 @@ New dependency: `duckdb` only (pure wheel, no JVM).
 - The Hangfire-vs-Jobotron debate (RFC comments [h]–[m]) — settled there; this doc only designs the data-platform producer.
 - Producer-side tombstones / segment-exit messages (§8.2 unless a job type demands it).
 
-## 12. The live demo (Phase 1, built)
+## 12. The demo (built)
 
-The producer exists as one Dagster component and is driven by an animation page, exactly like the CDF sync's demo:
+Three Dagster instances — the team's three real jobs as components, read-only against their own
+warehouse:
 
 | | |
 |---|---|
-| Component | `orchestration/components/reverse_etl_jobotron.py` — `JobotronProducer`, YAML at `orchestration/defs/reverse_etl_jobotron/defs.yaml` |
-| Assets | `orchestration/assets/reverse_etl_jobotron.py`: `reverse_etl_jobotron_setup` (tables + topics + seed), `reverse_etl_jobotron_publish` (the whole scan→join→route→produce path), `reverse_etl_jobotron_consume` (demo consumer: operator topics → per-operator Postgres tables), `reverse_etl_jobotron_make_change` (add/verify/deactivate ops) |
-| Jobs | `reverse_etl_jobotron_setup_job`, `reverse_etl_jobotron_reset_job`, `reverse_etl_jobotron_make_change_job`; publish runs via `__ASSET_JOB` selecting `reverse_etl_jobotron_publish` |
-| Page | `docs/poc/jobotron_data_flow.html` at <http://localhost:4002/jobotron> (same helper server; `bin/3_run_reverse_etl_demo.sh` sources `.env` for the topics check) |
-| Demo tables | `de_dev.sr_poc_external.reverse_etl_jobotron_customers` + `reverse_etl_jobotron_kyc_cases` — plain Delta, no CDF, no state table |
-| Topics / subjects | `jobotron_demo_gr` / `jobotron_demo_br`; Apicurio subjects `<topic>-key` / `<topic>-value` (identical schemas share ids across topics) |
-| Reset chain | page's "Reset and set up" runs reset → setup → first publish → first consume (4 steps): after it, topics AND the per-operator Postgres tables hold exactly the fresh segment |
+| Component | `orchestration/components/reverse_etl_jobotron.py` — `JobotronProducer`; one folder per instance: `orchestration/defs/unverified_customers_{cy,gr,ro}/defs.yaml` (the six-fact minimal YAML, the notebooks' SQL token-verbatim) |
+| Assets per instance | `jobotron_unverified_customers_<mkt>` (publish), `_setup` (the topic, create-if-not-exists), `_consume` (demo worker stand-in: decode the JSON envelope, dedup on ItemId, mirror into Postgres); jobs `<instance>_setup_job` and `<instance>_reset_job` |
+| Engines | `databricks_sql` (the default): the query verbatim on the warehouse from `DATABRICKS_WAREHOUSE_ID` via the Statement Execution API; `delta_rs`/`delta_extension` opt in with `sources` |
+| Demo data | none of ours — the instances read `de.voperdb` (the sharded UNION views over the per-market `_bronze` Delta tables); nothing provisioned, nothing seeded |
+| Topics | `jobotron_unverified_customers_<mkt>`; setup is a no-op under dry-run (zero side effects, not even a Kafka connection) — the topic is created by a setup run carrying `dry_run: false` (run config or YAML) |
 
-What one publish run does (verified 2026-10-18 on the day-one engine; re-verified 2026-10-21 through **both** scan engines from the host venv — the demo's `defs.yaml` stays on the day-one `delta_rs` default, see §3.1's container caveat): UC location lookups (cached, control plane only), column-pruned scans of both tables, the join in DuckDB, Avro key/value schemas derived from the result shape and ensured in Apicurio, one message per selected customer routed by `operator`, bounded flush — **~5-7s end to end on `delta_rs`, ~13-15s on `delta_extension`, `0.0` warehouse seconds either way**, segment 4 = gr 2 + br 2 (gr 1002 + 1007, br 1004 + 1005 at the 2026-10-21 state). A change op (add/verify/deactivate) followed by a publish moves the segment with no tombstones — the customer simply stops (or starts) appearing, which is the full-snapshot semantics of §8.1 in action.
-
-The **demo consumer** (`reverse_etl_jobotron_consume`, the page's step 4) closes the loop observably: it drains each operator topic fully (verified against the broker's watermarks — no timing races) and rebuilds `jobotron_demo_<operator>` in the demo Postgres (the same database the Debezium sink writes) from **the messages of the latest publish run only**. "Latest" is the publish whose messages carry the newest Kafka timestamp across *all* topics — a publish that legitimately emits zero messages for one operator (empty per-operator segment) must still retire that operator's older snapshot, which per-topic grouping would keep forever (verified live: a manually verified customer lingered until this was fixed). A customer that left the segment disappears at the next consume, empty table and all. The RFC's real worker would instead act per message and keep its own item state.
+The dry-run default is the demo's first act: a run submits the real query, builds and hashes every
+envelope, and sends nothing — `items_count`, the candidate query, the statement's seconds and the
+warehouse id land in the run metadata (validated live 2026-10-26: the CY query returned 13
+candidates through the serverless warehouse in ~38 s wall). The reveal flips the mode with the
+per-run switch (`dry_run: false` in the launch config) and reads the envelopes off the topic. The
+old animation-page demo (demo tables, change ops, Apicurio subjects) is retired with the routing
+layer it demonstrated; the helper server carries a minimal replacement panel at
+`http://localhost:4002/jobotron` — instance picker, the dry-run checkbox, run buttons for
+setup/publish/consume, and read-only topic/mirror checks.
 
 ## 13. Live-demo script
 
-**Pre-flight:** VPN + stack up + helper running; open `http://localhost:4002/jobotron`; click **Reset and set up** and wait for the four green runs (known state: 6 customers, segment 4 = gr 1001+1002 + br 1004+1005 — one excluded customer per operator: 1003 inactive, 1006 verified; topics and Postgres tables hold exactly that).
-
-**Narrative:** (1) Frame — the RFC's upstream producer on Dagster, no Spark/JVM/DBUs, vs the RFC's ~$10/month/task con. (2) Step 1 — the two plain-Delta tables, no CDF, no state table; the CDF punchline (snapshots are why it is Spark-free today). (3) Step 2.1 — **Run producer**, narrate scan → DuckDB join (the SQL in the notes) → Avro/Apicurio → per-operator routing; on green, point at the **"Databricks cost: none"** chip; optionally 2.3 (schemas) and 3 (topics). (4) Step 4 — **Run demo consumer**, then **Show Postgres tables**: the segment mirrored per operator. (5) The money moment, twice: **add an unverified customer** → publish → consume → it appears in its operator's table only; **verify a customer** → publish → consume → it disappears, no tombstone. (6) Optional: open a run in Dagster (metadata + `0.0` warehouse seconds), close on §8's open questions.
-
-**Craft:** one click at a time (each ≈ 25–40s — talk during the spinners); every step is idempotent, so re-click on any failure; never restart the helper mid-demo (a stale helper says "unknown action" — restart before the audience).
+1. Open the Dagster UI: three asset groups, `jobotron_unverified_customers_{cy,gr,ro}`.
+2. Run one instance's publish (blank launch): green, `items_count` in the metadata, nothing on
+   the topic — the blast-radius story.
+3. The mode is a per-run switch, like the notebook's `IsDryRun` widget: launch setup and then
+   publish with run config `{"ops": {"<asset>": {"config": {"dry_run": false}}}}` (in the UI:
+   Launch run → add configuration). Read the JSON envelopes off Redpanda (console or
+   `rpk topic read`): the 13-field contract, `JobId` embedding the row's CompanyId,
+   `ItemPayload` nested, `ItemPayloadHash` recomputable.
+4. Run consume: the mirror table fills one row per ItemId; re-run publish + consume — same items,
+   no duplicates (the worker's dedup token demonstrated).
