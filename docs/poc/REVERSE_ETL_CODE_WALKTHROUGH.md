@@ -26,8 +26,11 @@ The other docs cover behaviour and evidence; this one covers structure:
 | File | Role |
 |---|---|
 | `orchestration/defs/<label>/defs.yaml` | One small YAML per sync — the only thing you write to add a sync |
-| `orchestration/components/reverse_etl_cdf_sync.py` | The reusable component: reads the YAML, builds exactly one asset — the sync (docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md) |
+| `orchestration/components/reverse_etl_cdf_sync.py` | The reusable sync component: reads the YAML, builds the sync asset, the topic asset and the bootstrap job (docs/poc/REVERSE_ETL_COMPONENT_GUIDE.md) |
+| `orchestration/components/reverse_etl_targets.py` | The released target components: RisingWave, Postgres (with the sink health side) and DuckDB — one YAML per concern |
 | `orchestration/components/reverse_etl_cdf_demo.py` | The demo component: the full demo attribute set; builds the sync plus every demo asset and job |
+| `orchestration/assets/reverse_etl_connections.py` | The env contract: one env-fed function per connection, read at call time — no Dagster resources anywhere |
+| `orchestration/assets/reverse_etl_topic.py` | The topic asset: creates the change topic compacted when the component does not reuse an existing one |
 | `orchestration/assets/reverse_etl_config.py` | `ReverseEtlSyncConfig` — every name a sync needs, derived from a label |
 | `orchestration/assets/reverse_etl_defs.py` | The demo's builder (`build_demo_defs`): turns one config into assets, jobs, checks and schedules |
 | `orchestration/assets/reverse_etl_demo_assets.py` | The demo's own assets: table setup and seed — they create infrastructure, so they are not part of the reusable sync |
@@ -36,6 +39,7 @@ The other docs cover behaviour and evidence; this one covers structure:
 | `orchestration/assets/reverse_etl_delta_reader.py` | The delta-rs backend: per-commit-version snapshot diffs reconstruct the change feed — no Spark, no CDF read, no Databricks compute |
 | `orchestration/assets/reverse_etl_change.py` | Demo changes (insert / update / delete / add column) |
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave target table + schema evolution |
+| `orchestration/assets/reverse_etl_postgres_setup.py` | Postgres-side schema care: renames/drops on the target table, sink-task restarts |
 | `orchestration/assets/reverse_etl_debezium_sink.py` | The Kafka Connect Debezium JDBC sink (Postgres) |
 | `orchestration/assets/reverse_etl_duckdb_target.py` | The DuckDB file mirror: a stateless consumer that drains the topic and upserts the latest event per key |
 | `orchestration/assets/reverse_etl_health.py` | `sink_healthy` asset check + its 5-minute schedule |

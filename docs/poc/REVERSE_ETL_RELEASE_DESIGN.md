@@ -173,7 +173,10 @@ resolved by the Connect worker — see the Postgres section below; no JDBC field
 is optional `health_cron` (default: the library's 5-minute cron). One schema check rides with
 implementation: the connector maps the table via `collection.name.format` with no schema, so
 verify a schema-qualified `postgres_table` (`myschema.my_table`) flows through cleanly —
-otherwise this YAML grows a `postgres_schema` field.
+otherwise this YAML grows a `postgres_schema` field. *(Verified live 2026-10-26: a
+schema-qualified `collection.name.format` creates the table in the named schema with rows
+flowing — connector 3.7.0.Final on Connect 4.3.1 — so no `postgres_schema` field; pinned by
+`test_a_schema_qualified_table_flows_through_collection_name_format_verbatim`.)*
 
 **DuckDB** — the stateless local mirror (drains the topic, latest event per key, tombstones on
 `op=="d"`, table named after the topic):
@@ -451,7 +454,8 @@ dependencies (builders' configs before components, components before connections
    assembly keeps its env reads (`HOST_POSTGRES_URL`/`POSTGRES_USER`, the password untouched as
    `${env:POSTGRES_PASSWORD}`). Verify a schema-qualified `postgres_table` flows through
    `collection.name.format`; if it does not, add `postgres_schema` (default: the connector's
-   default schema) to the config and component. Tests: coordinates assembled from env only;
+   default schema) to the config and component. *(Outcome: verified live 2026-10-26 — it does;
+   no `postgres_schema` field was added.)* Tests: coordinates assembled from env only;
    the password never interpolated from config. Mutation anchors: "the schema qualifier is
    dropped", "the password is interpolated".
 
