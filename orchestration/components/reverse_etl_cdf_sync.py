@@ -4,6 +4,7 @@ import dagster as dg
 
 from ..assets.reverse_etl_cdf_setup import build_sync_asset
 from ..assets.reverse_etl_config import CdfSyncConfig, dagster_names
+from ..assets.reverse_etl_topic import build_topic_asset
 
 
 class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
@@ -15,9 +16,11 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     reverse_etl_sync_state, and produces Debezium-style events to an existing Kafka topic in Connect
     JSON or Confluent Avro.
 
-    It creates nothing: the topic and the state table must already exist (a missing one fails the
-    sync with what to create), and the asset touches only the postgres, databricks, kafka and
-    registry resources. Schema changes on the target side — column adds, drop/rename propagation —
+    With create_topic (the default) it also builds an asset that creates the topic -- compact
+    cleanup policy, a Debezium-style change topic's -- and a bootstrap job running topic then
+    sync. The state table itself is still never created: a missing one fails the sync with what
+    to create. The sync asset touches only the postgres, databricks, kafka and registry
+    resources. Schema changes on the target side — column adds, drop/rename propagation —
     are the demo's hooks (ReverseEtlCdfDemo); this component runs without them.
 
     `name` is a short label deriving the default asset and group names, as
@@ -58,6 +61,11 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
     # Upstream asset keys, so a team can order the sync after its own pipeline's assets.
     deps: list[str] | None = None
 
+    # Build the topic asset and the bootstrap job (topic -> sync) for this sync's
+    # topic. False: the topic is the team's platform's (or another component's) and
+    # must already exist, as before.
+    create_topic: bool = True
+
     def to_config(self) -> CdfSyncConfig:
         derived = dagster_names(self.name)
         config = CdfSyncConfig(
@@ -81,5 +89,24 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
         return dataclasses.replace(config, **overrides)
 
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
-        deps = tuple(dg.AssetKey(dep) for dep in self.deps or ())
-        return dg.Definitions(assets=[build_sync_asset(self.to_config(), deps=deps)])
+        team_deps = tuple(dg.AssetKey(dep) for dep in self.deps or ())
+        if not self.create_topic:
+            return dg.Definitions(assets=[build_sync_asset(self.to_config(), deps=team_deps)])
+        derived = dagster_names(self.name)
+        topic_key = dg.AssetKey(derived["topic_asset"])
+        cfg = self.to_config()
+        return dg.Definitions(
+            assets=[
+                build_topic_asset(cfg, derived["topic_asset"]),
+                # The sync runs after the topic exists: the bootstrap job's topic -> sync
+                # edge is this dependency.
+                build_sync_asset(cfg, deps=(topic_key, *team_deps)),
+            ],
+            jobs=[
+                dg.define_asset_job(
+                    name=derived["bootstrap_job"],
+                    selection=dg.AssetSelection.assets(topic_key, dg.AssetKey(cfg.sync_asset)),
+                    executor_def=dg.in_process_executor,
+                )
+            ],
+        )

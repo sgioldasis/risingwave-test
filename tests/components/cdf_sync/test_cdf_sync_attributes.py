@@ -66,6 +66,10 @@ class TestDefaults:
         first, second = component(name="a").to_config(), component(name="b").to_config()
         assert {first.sync_asset, first.group_name}.isdisjoint({second.sync_asset, second.group_name})
 
+    def test_the_component_creates_the_topic_by_default(self):
+        assert component().create_topic is True
+        assert component(create_topic=False).create_topic is False
+
 
 class TestOverrides:
     def test_the_group_and_asset_names_can_be_overridden(self):

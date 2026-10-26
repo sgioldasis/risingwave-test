@@ -97,7 +97,10 @@ class CdfSyncConfig:
 def dagster_names(label: str) -> dict:
     """The Dagster object names for a sync labelled `label` (reverse_etl_<label>_<role>): the
     asset group and names, and the job names. The demo component derives these from its `name`
-    attribute. The infrastructure names are never derived — they are explicit in the YAML."""
+    attribute. The infrastructure names are never derived — they are explicit in the YAML.
+
+    bootstrap_job is build-only: the released ReverseEtlCdfSync component's bootstrap job,
+    which no config object carries (the demo's setup job orders topic then sync itself)."""
     base = f"reverse_etl_{label}"
     return {
         "group_name": base,
@@ -106,6 +109,7 @@ def dagster_names(label: str) -> dict:
         "risingwave_asset": f"{base}_risingwave_target",
         "sink_asset": f"{base}_jdbc_sink",
         "topic_asset": f"{base}_topic_setup",
+        "bootstrap_job": f"{base}_bootstrap_job",
         "setup_job": f"{base}_setup_job",
         "reset_job": f"{base}_reset_job",
         "seed_asset": f"{base}_seed",
@@ -353,5 +357,6 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
             reset_schema=schema,
             seed_statements=seed_statements,
             uniform=uniform,
-            **dagster_names(name),
+            # bootstrap_job is build-only (the released component's); see the dagster_names docstring.
+            **{k: v for k, v in dagster_names(name).items() if k != "bootstrap_job"},
         )

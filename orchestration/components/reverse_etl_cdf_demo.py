@@ -126,7 +126,9 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
             reset_name_prefixes=("reverse_etl_",),
             reset_schema=self.reset_schema or self.sync.schema_name,
             create_topic_asset=True,
-            **dagster_names(self.name),
+            # bootstrap_job is build-only (the released component's); the demo's setup job
+            # orders topic then sync itself.
+            **{k: v for k, v in dagster_names(self.name).items() if k != "bootstrap_job"},
         )
         overrides = {
             field: getattr(self, field)

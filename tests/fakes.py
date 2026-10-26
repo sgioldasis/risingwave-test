@@ -155,7 +155,7 @@ class FakeAdmin:
 
     def __init__(self, topics=(), group_failures=(), topics_linger=False):
         self.topics, self.topics_linger = set(topics), topics_linger
-        self.created, self.deleted = [], []
+        self.created, self.created_configs, self.deleted = [], [], []
         self.group_failures, self.group_attempts = list(group_failures), 0
 
     def list_topics(self, timeout=0):
@@ -163,8 +163,10 @@ class FakeAdmin:
 
     def create_topics(self, new_topics):
         self.created += [new_topic.topic for new_topic in new_topics]
+        self.created_configs += [dict(new_topic.config or {}) for new_topic in new_topics]
         self.topics |= {new_topic.topic for new_topic in new_topics}
-        return {}
+        # The real admin returns a per-topic future; the delete path mirrors that shape below.
+        return {new_topic.topic: types.SimpleNamespace(result=lambda: None) for new_topic in new_topics}
 
     def delete_topics(self, topics, operation_timeout=0):
         self.deleted += topics

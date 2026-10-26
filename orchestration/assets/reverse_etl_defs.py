@@ -6,18 +6,14 @@ the sync's Kafka topic (config.create_topic_asset).
     defs = Definitions.merge(base_defs, build_demo_defs(config))
 """
 
-from confluent_kafka.admin import NewTopic
 from dagster import (
-    AssetExecutionContext,
     AssetKey,
     AssetSelection,
     Definitions,
-    asset,
     define_asset_job,
     in_process_executor,
 )
 
-from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import build_sync_asset
 from .reverse_etl_demo_assets import build_seed_asset, build_table_setup_asset
 from .reverse_etl_duckdb_target import build_duckdb_target_asset
@@ -27,28 +23,8 @@ from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
 from .reverse_etl_change import build_change_asset, build_change_job
 from .reverse_etl_reset import build_reset_job
-from .reverse_etl_resources import KafkaResource
 from .reverse_etl_risingwave_setup import build_risingwave_table_asset
-
-
-def _build_topic_asset(cfg: ReverseEtlSyncConfig):
-    @asset(
-        name=cfg.topic_asset,
-        group_name=cfg.group_name,
-        description=f"Create the {cfg.kafka_topic} Kafka topic if it does not exist.",
-    )
-    def kafka_topic(context: AssetExecutionContext, kafka: KafkaResource):
-        admin = kafka.admin_client()
-        if cfg.kafka_topic in admin.list_topics(timeout=15).topics:
-            context.log.info(f"Topic {cfg.kafka_topic} already exists")
-            return
-        new_topic = NewTopic(
-            cfg.kafka_topic, num_partitions=_DEFAULT_PARTITIONS, replication_factor=_DEFAULT_REPLICATION
-        )
-        admin.create_topics([new_topic])[cfg.kafka_topic].result()
-        context.log.info(f"Created topic {cfg.kafka_topic}")
-
-    return kafka_topic
+from .reverse_etl_topic import build_topic_asset
 
 
 def build_target_defs(cfg: ReverseEtlTargetsConfig, source_fqn: str = "") -> Definitions:
@@ -96,7 +72,7 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         ),
     ]
     if cfg.create_topic_asset:
-        assets.append(_build_topic_asset(cfg))
+        assets.append(build_topic_asset(cfg, cfg.topic_asset))
     if cfg.seed_statements:
         assets.append(build_seed_asset(cfg))
     # The demo-change helper builds its SQL from source_columns and the demo key `id`; a sync on an
