@@ -1,6 +1,7 @@
 {
   "env": {
     "UV_PYTHON":                    "$PWD/.venv/bin/python",
+    "PYTHONPATH":                   ".",
     "PGHOST":                       "localhost",
     "DATABRICKS_AUTH_TYPE":         "azure-client-secret",
     "RW_LICENSE_KEY":               "$RISINGWAVE_LICENSE_KEY",
