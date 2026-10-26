@@ -106,28 +106,53 @@ MUTATIONS = [
         "change", "stale-config error not reworded", f"{ASSETS}/reverse_etl_change.py", 'if "UNRESOLVED_COLUMN" in str(error):', "if False:",
         "tests/test_change.py",
     ),
-    # --- the Jobotron demo ---
-    Mutation("jobotron", "unknown operators published anyway", f"{ASSETS}/reverse_etl_jobotron.py", "if topic is None:", "if False:", "tests/test_jobotron.py"),
-    Mutation("jobotron", "rejected deliveries ignored", f"{ASSETS}/reverse_etl_jobotron.py", "if undelivered or delivery_errors:", "if False:", "tests/test_jobotron.py"),
+    # --- the Jobotron producer (the real contract, docs/poc/JOBOTRON_CONTRACT_PARITY.md) ---
     Mutation(
-        "jobotron", "payload fields not nullable", f"{ASSETS}/reverse_etl_jobotron.py", '{"name": field.name, "type": ["null", _avro_type(field.type)], "default": None}',
-        '{"name": field.name, "type": _avro_type(field.type)}', "tests/test_jobotron.py",
+        "jobotron", "hash canonicalization loosened", f"{ASSETS}/reverse_etl_jobotron.py",
+        'json.dumps(payload, separators=(",", ":"), ensure_ascii=False)',
+        'json.dumps(payload, separators=(", ", ": "), ensure_ascii=False)', "tests/test_jobotron.py",
     ),
     Mutation(
-        "jobotron", "latest run taken from one topic", f"{ASSETS}/reverse_etl_jobotron.py", "latest_run = max(stamps)[1] if stamps else None",
-        "latest_run = stamps[0][1] if stamps else None", "tests/test_jobotron.py",
-    ),
-    Mutation("jobotron", "consume does not truncate", f"{ASSETS}/reverse_etl_jobotron.py", '                    cur.execute(f"TRUNCATE {topic}")\n', "", "tests/test_jobotron.py"),
-    Mutation(
-        "jobotron", "reset allowlist off", f"{ASSETS}/reverse_etl_jobotron.py", "if bad or cfg.schema != \"sr_poc_external\":", "if False:", "tests/test_jobotron.py",
+        "jobotron", "ItemPayloadHash dropped from the envelope", f"{ASSETS}/reverse_etl_jobotron.py",
+        '                "ItemPayloadHash": payload_hash,\n', "", "tests/test_jobotron.py",
     ),
     Mutation(
-        "jobotron", "registry subjects not deleted permanently", f"{ASSETS}/reverse_etl_jobotron.py", 'for params in ({}, {"permanent": "true"}):', "for params in ({},):",
+        "jobotron", "missing envelope columns accepted", f"{ASSETS}/reverse_etl_jobotron.py",
+        '    missing = [name for name in REQUIRED_RESULT_COLUMNS if name not in columns]\n    if missing:',
+        '    missing = [name for name in REQUIRED_RESULT_COLUMNS if name not in columns]\n    if False:',
         "tests/test_jobotron.py",
     ),
-    Mutation("jobotron", "a skipped change still runs", f"{ASSETS}/reverse_etl_jobotron.py", "        if skip:\n            context.log.warning", "        if False:\n            context.log.warning", "tests/test_jobotron.py"),
     Mutation(
-        "jobotron", "location cache kept after the tables are dropped", f"{ASSETS}/reverse_etl_jobotron.py", "        databricks.clear_location_cache()\n", "", "tests/test_jobotron.py",
+        "jobotron", "dry-run gate off", f"{ASSETS}/reverse_etl_jobotron.py",
+        '        if dry_run:\n            context.log.info(\n                f"Dry run: built',
+        '        if False:\n            context.log.info(\n                f"Dry run: built',
+        "tests/test_jobotron.py",
+    ),
+    Mutation(
+        "jobotron", "dry-run setup creates a topic anyway", f"{ASSETS}/reverse_etl_jobotron.py",
+        '        if dry_run:\n            # Zero side effects in dry-run',
+        '        if False:\n            # Zero side effects in dry-run',
+        "tests/test_jobotron.py",
+    ),
+    Mutation(
+        "jobotron", "run-config mode switch ignored", f"{ASSETS}/reverse_etl_jobotron.py",
+        "    return config.dry_run\n", "    return cfg.dry_run\n",
+        "tests/test_jobotron.py",
+    ),
+    Mutation(
+        "jobotron", "null key accepted", f"{ASSETS}/reverse_etl_jobotron.py", '        if row["CustomerId"] is None:', "        if False:",
+        "tests/test_jobotron.py",
+    ),
+    Mutation("jobotron", "rejected deliveries ignored", f"{ASSETS}/reverse_etl_jobotron.py", "if undelivered or delivery_errors:", "if False:", "tests/test_jobotron.py"),
+    Mutation(
+        "jobotron", "ItemIds not deduped", f"{ASSETS}/reverse_etl_jobotron.py",
+        '            by_item[value.get("ItemId")] = value', '            by_item[str(len(by_item))] = value',
+        "tests/test_jobotron.py",
+    ),
+    Mutation(
+        "jobotron", "reset allowlist off", f"{ASSETS}/reverse_etl_jobotron.py", '    bad = [name for name in (cfg.derived_topic,) if not name.startswith("jobotron_")]\n    if bad:',
+        '    bad = [name for name in (cfg.derived_topic,) if not name.startswith("jobotron_")]\n    if False:',
+        "tests/test_jobotron.py",
     ),
     # --- the Delta reader ---
     Mutation("reader", "any load failure treated as missing", f"{ASSETS}/reverse_etl_delta_reader.py", "if not _VERSION_LOAD_FAILURE.search(str(e)):", "if False:", "tests/test_delta_reader.py"),

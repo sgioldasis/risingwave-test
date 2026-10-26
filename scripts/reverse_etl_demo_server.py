@@ -1,19 +1,26 @@
 """Helper for the reverse-ETL animation (docs/poc/reverse_etl_data_flow.html) and the
-Jobotron producer animation (docs/poc/jobotron_data_flow.html): serves both pages and
+Jobotron producer panel (docs/poc/jobotron_data_flow.html): serves both pages and
 lets their buttons launch the Dagster runs behind each step, plus read-only checks
-(Kafka Connect and RisingWave, Postgres, the Jobotron operator topics, Apicurio
+(Kafka Connect and RisingWave, Postgres, the Jobotron topic and mirror, Apicurio
 schemas). Standard library plus psycopg2, requests and confluent-kafka. Binds to
 localhost only.
 
-  POST /api/launch          {"sync": "avro|cdf|orders|delta|jobotron", "action": "change|sync|reset|setup", "change": ...}
+  POST /api/launch          {"sync": "avro|cdf|orders|delta", "action": "change|sync|reset|setup", "change": ...}
+                            {"sync": "jobotron", "action": "setup|publish|consume", "market": "cy|gr|ro", "dry_run": bool}
   GET  /api/run/<run_id>    status and duration of a launched run
   GET  /api/check/<sync>/readers | postgres     (CDF syncs)
-  GET  /api/check/jobotron/topics            (everything on the operator topics)
+  GET  /api/check/jobotron/topics|postgres?market=<m>   (the instance's topic / mirror)
   GET  /api/schema/<sync>
 
 Needs the stack up (Dagster on DAGSTER_URL). The Postgres check reads POSTGRES_USER and POSTGRES_PASSWORD
 from the environment (a devbox shell sets them) and never returns them; the Jobotron
-topics check needs the KAFKA_OUTPUT_* credentials from .env (the bin script sources it).
+topic check needs the KAFKA_OUTPUT_* credentials from .env (the bin script sources it).
+
+(The Jobotron demo was rebuilt on 2026-10-26 around the team's real contract — three
+per-market instances, JSON envelopes, a per-run dry-run switch in the launch config; see
+docs/poc/JOBOTRON_CONTRACT_PARITY.md and REVERSE_ETL_JOBOTRON.md §12-§13. The previous
+animation page, with its demo tables and change ops, was retired with the routing layer
+it demonstrated; this panel drives the new instances directly.)
 """
 
 import json
@@ -37,10 +44,12 @@ CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL_HOST", "http://localhost:8083")
 PORT = int(os.environ.get("PORT", "4002"))
 PAGE = Path(__file__).resolve().parent.parent / "docs" / "poc" / "reverse_etl_data_flow.html"
 JOBOTRON_PAGE = PAGE.parent / "jobotron_data_flow.html"
-SYNCS = ("avro", "cdf", "orders", "delta", "jobotron")
+SYNCS = ("avro", "cdf", "orders", "delta")
 CHANGES = ("insert", "update", "delete", "add_column", "rename_column", "drop_column", "bulk_1m")
-JOBOTRON_CHANGES = ("add_customer", "verify_customer", "deactivate_customer")
-JOBOTRON_TOPICS = ("jobotron_demo_gr", "jobotron_demo_br")
+MARKETS = ("cy", "gr", "ro")
+# action -> the instance asset's suffix ("" is the publish asset itself); "reset" is the
+# instance's reset JOB, not an asset
+JOBOTRON_ASSETS = {"setup": "_setup", "publish": "", "consume": "_consume", "reset": None}
 SCHEMA_REGISTRY = os.environ.get(
     "SCHEMA_REGISTRY_URL", "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
 )
@@ -158,10 +167,14 @@ def gql(query: str, variables: dict | None = None, _retried: bool = False) -> di
         raise RuntimeError(f"Dagster GraphQL {e.code}: {body[:300]}") from e
 
 
-def launch(sync: str, action: str, change: str | None, rows: int | None = None, _retried: bool = False) -> dict:
+def launch(
+    sync: str, action: str, change: str | None, rows: int | None = None,
+    market: str | None = None, dry_run: bool | None = None, _retried: bool = False,
+) -> dict:
+    if sync == "jobotron":
+        return launch_jobotron(action, market, dry_run, _retried=_retried)
     if sync not in SYNCS:
         raise ValueError(f"unknown sync {sync!r}")
-    allowed_changes = JOBOTRON_CHANGES if sync == "jobotron" else CHANGES
     repo = gql("{repositoriesOrError{... on RepositoryConnection{nodes{name location{name}}}}}")[
         "repositoriesOrError"
     ]["nodes"][0]
@@ -169,21 +182,10 @@ def launch(sync: str, action: str, change: str | None, rows: int | None = None, 
     job_name = f"reverse_etl_{sync}_{'make_change' if action == 'change' else action}_job"
     params = {"selector": {**selector, "jobName": job_name}}
     if action == "sync":
-        # The publish asset of the Jobotron producer; the sync asset of a CDF sync.
-        asset = "reverse_etl_jobotron_publish" if sync == "jobotron" else f"reverse_etl_{sync}_to_kafka"
-        params["selector"] = {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [asset]}]}
-    elif action == "consume":
-        # The Jobotron demo consumer: operator topics -> per-operator Postgres tables.
-        if sync != "jobotron":
-            raise ValueError("consume is only available for the jobotron demo")
-        params["selector"] = {
-            **selector,
-            "jobName": "__ASSET_JOB",
-            "assetSelection": [{"path": ["reverse_etl_jobotron_consume"]}],
-        }
+        params["selector"] = {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [f"reverse_etl_{sync}_to_kafka"]}]}
     elif action == "change":
-        if change not in allowed_changes:
-            raise ValueError(f"change for {sync} must be one of {allowed_changes}")
+        if change not in CHANGES:
+            raise ValueError(f"change for {sync} must be one of {CHANGES}")
         if change == "bulk_1m" and sync != "delta":
             raise ValueError("bulk_1m is only available for the delta sync (its 1M-row load generator)")
         config: dict = {"change": change}
@@ -196,6 +198,31 @@ def launch(sync: str, action: str, change: str | None, rows: int | None = None, 
         params["runConfigData"] = {"ops": {f"reverse_etl_{sync}_make_change": {"config": config}}}
     elif action not in ("reset", "setup"):
         raise ValueError(f"unknown action {action!r}")
+    return _launch_run(params, _retried)
+
+
+def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retried: bool = False) -> dict:
+    """One instance's run: the market's setup/publish/consume asset, with the per-run mode
+    switch in the run config (the checkbox; the YAML value governs when it is not sent).
+    Reset is the instance's job, not an asset selection."""
+    if market not in MARKETS:
+        raise ValueError(f"market must be one of {MARKETS}")
+    if action not in JOBOTRON_ASSETS:
+        raise ValueError(f"action must be one of {sorted(JOBOTRON_ASSETS)}")
+    repo = gql("{repositoriesOrError{... on RepositoryConnection{nodes{name location{name}}}}}")[
+        "repositoriesOrError"
+    ]["nodes"][0]
+    selector = {"repositoryLocationName": repo["location"]["name"], "repositoryName": repo["name"]}
+    if action == "reset":
+        return _launch_run({"selector": {**selector, "jobName": f"jobotron_unverified_customers_{market}_reset_job"}}, _retried)
+    asset = f"jobotron_unverified_customers_{market}{JOBOTRON_ASSETS[action]}"
+    params: dict = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [asset]}]}}
+    if action != "consume":  # the mode switch exists on setup and publish; consume reads only
+        params["runConfigData"] = {"ops": {asset: {"config": {"dry_run": bool(dry_run)}}}}
+    return _launch_run(params, _retried)
+
+
+def _launch_run(params: dict, _retried: bool = False) -> dict:
     result = gql(
         "mutation($p:ExecutionParams!){launchRun(executionParams:$p)"
         "{__typename ... on LaunchRunSuccess{run{runId}} ... on PythonError{message} "
@@ -211,7 +238,7 @@ def launch(sync: str, action: str, change: str | None, rows: int | None = None, 
         if _dagster_unreachable(message):
             if not _retried:
                 _restart_dagster()
-                return launch(sync, action, change, rows, _retried=True)
+                return _launch_run(params, _retried=True)
             raise RuntimeError(_UNREACHABLE_HINT + " (auto-restart did not recover it)")
         raise RuntimeError(message)
     return {"runId": result["run"]["runId"], "url": f"{DAGSTER_URL}/runs/{result['run']['runId']}"}
@@ -369,7 +396,7 @@ def check_readers(sync: str) -> dict:
 
 
 def _kafka_inspect_conf() -> dict[str, str]:
-    """Consumer config for the Jobotron topics check: the same KAFKA_OUTPUT_* SASL
+    """Consumer config for the Jobotron topic check: the same KAFKA_OUTPUT_* SASL
     convention the producer uses. Needs the creds in the helper's environment --
     bin/3_run_reverse_etl_demo.sh sources .env for this."""
     bootstrap = os.environ.get("KAFKA_OUTPUT_BOOTSTRAP", "")
@@ -397,97 +424,66 @@ def _kafka_inspect_conf() -> dict[str, str]:
     return conf
 
 
-def check_jobotron_topics() -> dict:
-    """Everything currently on the operator topics: assigned from the earliest
-    offset, consumed to exhaustion, values decoded through the registry. This is
-    the Jobotron demo's 'target check' -- the topics ARE the endpoint (the worker
-    that would consume them is the RFC's scope, not this demo's)."""
+def check_jobotron_topics(market: str) -> dict:
+    """Everything currently on the instance's topic: assigned from the earliest offset,
+    consumed to exhaustion, values decoded as the JSON they are (no registry -- the
+    validated contract is plain JSON). This is the panel's 'target check'."""
+    if market not in MARKETS:
+        raise ValueError(f"market must be one of {MARKETS}")
+    topic = f"jobotron_unverified_customers_{market}"
     # Imported lazily: only this check needs confluent-kafka, and the helper
     # should still serve the CDF pages if the host venv lacks it.
     from confluent_kafka import Consumer, TopicPartition
-    from confluent_kafka.schema_registry import SchemaRegistryClient
-    from confluent_kafka.schema_registry.avro import AvroDeserializer
-    from confluent_kafka.serialization import MessageField, SerializationContext
 
-    deserializer = AvroDeserializer(SchemaRegistryClient({"url": SCHEMA_REGISTRY}))
     consumer = Consumer(_kafka_inspect_conf())
-    out: dict[str, list] = {topic: [] for topic in JOBOTRON_TOPICS}
+    messages: list = []
     try:
-        consumer.assign([TopicPartition(topic, 0) for topic in JOBOTRON_TOPICS])
+        consumer.assign([TopicPartition(topic, 0)])
         # Drain fully, verified against the broker's watermarks -- a plain "break on
         # the first quiet window" loses the race on a cold consumer and reports an
-        # empty topic that actually holds messages (same bug the consume asset had).
+        # empty topic that actually holds messages (the bug the consume asset hit).
         for _ in range(10):
             while True:
                 batch = consumer.consume(num_messages=500, timeout=5.0)
                 if not batch:
                     break
                 for message in batch:
-                    if message.error() or message.topic() not in out:
+                    if message.error() or message.topic() != topic:
                         continue
                     try:
-                        key = deserializer(message.key(), SerializationContext(message.topic(), MessageField.KEY))
-                        value = deserializer(message.value(), SerializationContext(message.topic(), MessageField.VALUE))
+                        messages.append(json.loads(message.value()))
                     except Exception as e:  # noqa: BLE001 - surface decode failures per message
-                        out[message.topic()].append({"error": f"{type(e).__name__}: {e}"})
-                        continue
-                    out[message.topic()].append({"key": key, "value": value})
-            lagging = []
-            for t in JOBOTRON_TOPICS:
-                lo, hi = consumer.get_watermark_offsets(TopicPartition(t, 0), timeout=10.0, cached=False)
-                if hi - lo > len(out[t]):
-                    lagging.append(t)
-            if not lagging:
+                        messages.append({"error": f"{type(e).__name__}: {e}"})
+            lo, hi = consumer.get_watermark_offsets(TopicPartition(topic, 0), timeout=10.0, cached=False)
+            if hi - lo <= len(messages):
                 break
         # Keep the payload bounded no matter what a run published.
-        return {topic: {"count": len(rows), "messages": rows[:12]} for topic, rows in out.items()}
+        return {"topic": topic, "count": len(messages), "messages": messages[:12]}
     finally:
         consumer.close()
 
 
-def check_jobotron_postgres() -> dict:
-    """Rows currently in the per-operator Postgres tables the demo consumer
-    maintains (table = topic name). Same credential convention as the CDF
-    demo's postgres check: POSTGRES_USER/POSTGRES_PASSWORD from the environment."""
+def check_jobotron_postgres(market: str) -> dict:
+    """Rows currently in the instance's Postgres mirror table (table = topic name; one
+    row per ItemId). Same credential convention as the CDF demo's postgres check:
+    POSTGRES_USER/POSTGRES_PASSWORD from the environment."""
+    if market not in MARKETS:
+        raise ValueError(f"market must be one of {MARKETS}")
+    topic = f"jobotron_unverified_customers_{market}"
     conn = psycopg2.connect(
         host="localhost", port=5432, dbname="postgres", connect_timeout=5,
         user=os.environ.get("POSTGRES_USER", "postgres"), password=os.environ.get("POSTGRES_PASSWORD", ""),
     )
     try:
-        out: dict[str, list] = {}
         with conn.cursor() as cur:
-            for topic in JOBOTRON_TOPICS:
-                cur.execute(f"SELECT customer_id, email, locale, run_id FROM {topic} ORDER BY customer_id")
-                out[topic] = [[str(v) for v in row] for row in cur.fetchall()]
-        return out
+            cur.execute(
+                f"SELECT item_id, item_number, customer_id, company_id, run_id, is_dry_run "
+                f"FROM {topic} ORDER BY item_number"
+            )
+            rows = [[str(v) for v in row] for row in cur.fetchall()]
+        return {"table": topic, "count": len(rows), "rows": rows[:12]}
     finally:
         conn.close()
-
-
-def jobotron_schema_info() -> dict:
-    """The latest registered Avro schemas for every operator topic's subjects."""
-    out = {}
-    for topic in JOBOTRON_TOPICS:
-        entry = {}
-        for role in ("key", "value"):
-            subject = f"{topic}-{role}"
-            try:
-                resp = requests.get(f"{SCHEMA_REGISTRY}/subjects/{subject}/versions/latest", timeout=10)
-                if resp.status_code == 404:
-                    entry[role] = None
-                    continue
-                resp.raise_for_status()
-                info = resp.json()
-                schema = json.loads(info["schema"])
-                entry[role] = {
-                    "version": info["version"],
-                    "id": info["id"],
-                    "columns": {f["name"]: _avro_field_type(f["type"]) for f in schema.get("fields", [])},
-                }
-            except Exception as e:  # noqa: BLE001 - report registry errors per subject
-                entry[role] = {"error": type(e).__name__}
-        out[topic] = entry
-    return out
 
 
 def check_postgres(sync: str) -> dict:
@@ -544,9 +540,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "dagster": dagster_health()})
             if m := re.fullmatch(r"/api/run/([^/]+)", self.path):
                 return self._json(200, run_status(m.group(1)))
-            if m := re.fullmatch(r"/api/check/jobotron/(topics|postgres)", self.path):
+            if m := re.fullmatch(r"/api/check/jobotron/(topics|postgres)", self.path.split("?")[0]):
+                market = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("market", [""])[0]
                 check = check_jobotron_topics if m.group(1) == "topics" else check_jobotron_postgres
-                return self._json(200, check())
+                return self._json(200, check(market))
             if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres)", self.path):
                 if m.group(1) not in SYNCS:
                     raise ValueError("unknown sync")
@@ -554,8 +551,7 @@ class Handler(BaseHTTPRequestHandler):
             if m := re.fullmatch(r"/api/schema/(\w+)", self.path):
                 if m.group(1) not in SYNCS:
                     raise ValueError("unknown sync")
-                info = jobotron_schema_info() if m.group(1) == "jobotron" else schema_info(m.group(1))
-                return self._json(200, info)
+                return self._json(200, schema_info(m.group(1)))
             self._json(404, {"error": "not found"})
         except Exception as e:
             self._json(400, {"error": str(e)})
@@ -565,7 +561,13 @@ class Handler(BaseHTTPRequestHandler):
             if self.path != "/api/launch":
                 return self._json(404, {"error": "not found"})
             body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
-            self._json(200, launch(body.get("sync", ""), body.get("action", ""), body.get("change"), body.get("rows")))
+            self._json(
+                200,
+                launch(
+                    body.get("sync", ""), body.get("action", ""), body.get("change"), body.get("rows"),
+                    market=body.get("market"), dry_run=body.get("dry_run"),
+                ),
+            )
         except Exception as e:
             self._json(400, {"error": str(e)})
 
@@ -575,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(
-        f"Reverse-ETL demo at http://localhost:{PORT}/?sync=avro — Jobotron demo at "
+        f"Reverse-ETL demo at http://localhost:{PORT}/?sync=avro — Jobotron panel at "
         f"http://localhost:{PORT}/jobotron (Dagster: {DAGSTER_URL})",
         flush=True,
     )

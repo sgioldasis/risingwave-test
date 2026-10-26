@@ -1,0 +1,28 @@
+# The Jobotron team's real RO job (unverified_customers_ro.ipynb) as a Dagster
+# component instance: one query type x one operator (D9), the minimal YAML. The
+# query is the notebook's SQL with its tables qualified to the RO market's
+# physical shard: the notebook runs the union views, but de.voperdb_ro holds
+# only company 4 (verified live 2026-10-26, evidence in
+# docs/poc/JOBOTRON_CONTRACT_PARITY.md) -- single-market tables turn a 29-way
+# UNION scan into a seconds-class statement. The company/group filters stay as
+# guards. Runs verbatim on the team's SQL warehouse (DATABRICKS_WAREHOUSE_ID in
+# the environment). dry_run defaults to true -- the first run sends nothing.
+type: orchestration.components.reverse_etl_jobotron.JobotronProducer
+
+attributes:
+  query_type: unverified_customers
+  operator: ro
+  job_name: Send_Email_to_NonVerified_RO_Customers
+  catalog: de
+  schema_name: voperdb
+  query: |
+    select cusCustomerID as CustomerId, cusCompanyID as CompanyId
+    from de.voperdb_ro.cCustomer
+    inner join de.metadatadb.mVerificationStatus on cusVerificationStatusID = vstVerificationStatusID
+    left join de.voperdb_ro.cCustomer_Group on ccgCustomerID = cusCustomerID and ccgGroupID = 1321
+    where cusCreated between current_timestamp() - interval 28 days and current_timestamp() - interval 26 days
+    and cusTypeID not in (2, 5, 6, 10, 11)  -- Test, RISK BLOCK, UAT, UNVERIFIED BETANO-RO
+    and cusCompanyID = 4  -- Romanian
+    and cusStatusID = 3  -- REAL
+    and vstVerifiedFL = false  -- Not verified
+    and (ccgValue0 is null or ccgValue0 <> 1)

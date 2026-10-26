@@ -1,46 +1,41 @@
-"""Jobotron producer demo (docs/poc/REVERSE_ETL_JOBOTRON.md): the upstream publisher
-described by the Jobotron RFC -- run a candidate-selection query against the lake's
-Delta tables and publish one Avro message per selected customer to that customer's
-operator topic, schemas in Apicurio. The Jobotron worker itself (dedup, eligibility
-re-validation, actions, state) is the RFC's Accounts & Payments scope and is NOT
-built here; this component is the data-platform side of that boundary.
+"""Jobotron producer (docs/poc/JOBOTRON_CONTRACT_PARITY.md): the upstream publisher on the
+Jobotron team's real wire contract -- run the candidate-selection query and publish one JSON
+message per selected customer, the validated 13-field PascalCase envelope
+(`JobId`/`JobName`/.../`ItemPayload`/`ItemPayloadHash`), keyed by `CustomerId`. The contract
+was transcribed from the team's own notebooks (kafka_message_publisher.ipynb + the
+CY/GR/RO unverified-customers jobs) on 2026-10-26; one Dagster instance is one query type x
+one operator (D9), each with its own folder, query and topic.
 
-No Spark, no JVM, no Databricks compute in the publish path: the tables are scanned
-with the service principal, DuckDB -- already a project dependency -- runs the YAML
-query, confluent-kafka produces. The scan engine is a per-job knob (scan_engine):
-"delta_rs" materializes column-pruned snapshots via delta-rs (day one); "delta_extension"
-registers DuckDB views over the delta extension's streaming delta_scan (verified live
-on the demo tables 2026-10-21). Either way the cost meter reads 0.0 warehouse seconds
-on every publish run.
+The candidate query runs on one of three engines (D10, the `scan_engine` YAML knob):
+"databricks_sql" (the default) submits the query verbatim to a SQL warehouse through the
+Statement Execution API -- the team's own SQL on the team's own views, no transcription;
+"delta_rs" and "delta_extension" keep the zero-DBU path -- delta-rs scans each `sources`
+table directly (DuckDB runs the query over the registered aliases) -- and need the
+bronze-table transcription because delta-rs cannot scan the sharded UNION views. The
+envelope and Kafka path downstream are identical for all three.
 
-No CDF anywhere: the query runs against each table's current snapshot, which is
-exactly what frees this component from the delta-rs CDF gap that pins the CDF
-syncs to Spark. The full eligible set is published every run -- the worker owns
-deduplication and re-validation, so the producer stays stateless (no watermark
-table, unlike the CDF syncs).
-
-Demo tables (created by the setup asset, plain Delta, deletion vectors off, no
-Change Data Feed): customers + kyc_cases in de_dev.sr_poc_external. The demo
-query is the RFC's example job, "send PM to customers that remain unverified":
-active customers joined to their PENDING KYC case, routed per operator to the
-jobotron_demo_<operator> topics. Topics/subjects are demo-prefixed because they
-live on the shared staging broker/registry (same convention as the reverse_etl_*
-topics).
+`build_messages` (D7) is the pure envelope builder -- no Kafka, no Dagster context -- which
+is what makes the contract tests possible without services. In dry-run (the default, D5)
+the asset runs the whole path and sends nothing. The full eligible set is published every
+run; the Jobotron worker owns deduplication (on `ItemId`) and re-validation, so the
+producer stays stateless. The demo instances are read-only scans of `de.voperdb` -- the
+only state this component owns is its topic and the demo consumer's mirror table.
 """
 
+import hashlib
+import json
 import os
 import time
-from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import duckdb
+import psycopg2.extras
 import pyarrow as pa
+import requests
 from confluent_kafka import TopicPartition
 from confluent_kafka.admin import NewTopic
-from confluent_kafka.schema_registry import Schema
-from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
-from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import (
     AssetExecutionContext,
     AssetKey,
@@ -59,15 +54,16 @@ from dagster import (
 )
 from deltalake import DeltaTable
 
-from .databricks_cost_meter import snapshot as meter_snapshot
+from .databricks_cost_meter import record as meter_record
 from .databricks_cost_meter import reset as meter_reset
 from .kafka_topics_setup import _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import (
-    _avro_schema_string,
+    DATABRICKS_HOST,
     _azure_storage_options,
     _cost_metadata,
+    _poll,
     _rows_as_dicts,
-    _schema_already_registered,
+    _with_all_chunks,
 )
 from . import reverse_etl_connections as connections
 
@@ -75,101 +71,175 @@ BASE = "reverse_etl_jobotron"
 SCHEMA_REGISTRY_URL = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
 # Cap on message previews echoed into run metadata (same idea as the sync's MESSAGE_PREVIEW_LIMIT).
 PREVIEW_LIMIT = 20
+# The wire contract's field set, in transcription order (the JSON lands in this order).
+ENVELOPE_FIELDS = (
+    "JobId",
+    "JobName",
+    "JobCreated",
+    "RunId",
+    "CompanyId",
+    "CustomerId",
+    "ItemsCount",
+    "ItemNumber",
+    "ItemId",
+    "ItemPayload",
+    "ItemPayloadHash",
+    "IsDryRun",
+    "SchemaVersion",
+)
+# The two columns every query must emit: the envelope reads both from the row (D2/D4).
+REQUIRED_RESULT_COLUMNS = ("CustomerId", "CompanyId")
+ENGINES = ("databricks_sql", "delta_rs", "delta_extension")
 
 
 @dataclass(frozen=True)
 class JobotronConfig:
-    """One Jobotron producer job (see the plan doc's YAML contract). The demo's
-    single instance lives in orchestration/defs/reverse_etl_jobotron/defs.yaml."""
+    """One Jobotron producer instance (D9): one query type x one operator. The demo's three
+    instances live in orchestration/defs/unverified_customers_{cy,gr,ro}/defs.yaml."""
 
-    job_type: str
+    query_type: str
+    operator: str
+    job_name: str
     catalog: str
     schema: str
-    # alias -> (fqn, scan columns): the alias is the name the query uses (and the
-    # DuckDB registration); the columns prune the delta-rs scan to what the query
-    # selects -- day one has no predicate pushdown, so never scan more than needed.
-    sources: dict[str, tuple[str, tuple[str, ...]]]
     query: str
-    operators: tuple[str, ...]
-    topic_template: str
-    key_columns: tuple[str, ...]
-    operator_column: str
-    customers_table: str
-    kyc_table: str
-    group_name: str = BASE
-    setup_asset: str = f"{BASE}_setup"
-    publish_asset: str = f"{BASE}_publish"
-    consume_asset: str = f"{BASE}_consume"
-    change_asset: str = f"{BASE}_make_change"
-    setup_job: str = f"{BASE}_setup_job"
-    reset_job: str = f"{BASE}_reset_job"
-    change_job: str = f"{BASE}_make_change_job"
+    dry_run: bool = True
+    schema_version: int = 1
+    encoding: str = "json"
+    scan_engine: str = "databricks_sql"
+    # Typed when the platform owns the topic; the derived default is the D9 name.
+    topic: str = ""
+    # alias -> (fqn, scan columns) for the zero-DBU engines: the alias is the name the
+    # query uses (and the DuckDB registration); the columns prune the delta-rs scan to
+    # what the query selects -- day one has no predicate pushdown, so never scan more
+    # than needed. `databricks_sql` needs none (the warehouse resolves the views).
+    sources: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     schema_registry_url: str = SCHEMA_REGISTRY_URL
-    # Per-job scan engine (docs/poc/REVERSE_ETL_JOBOTRON.md §8.6 scale ladder): "delta_rs"
-    # (day one) materializes column-pruned snapshots via delta-rs and registers them
-    # zero-copy; "delta_extension" registers DuckDB views over the delta extension's
-    # streaming delta_scan -- same YAML query, no Arrow materialization, spill-to-disk
-    # joins (verified live on the demo tables 2026-10-21, §3.1).
-    scan_engine: str = "delta_rs"
 
     @property
-    def customers_fqn(self) -> str:
-        return f"{self.catalog}.{self.schema}.{self.customers_table}"
+    def instance_name(self) -> str:
+        """The D9 identity: every Dagster object derives from it (`[_<role>`)."""
+        return f"jobotron_{self.query_type}_{self.operator}"
 
     @property
-    def kyc_fqn(self) -> str:
-        return f"{self.catalog}.{self.schema}.{self.kyc_table}"
+    def derived_topic(self) -> str:
+        return self.topic or self.instance_name
 
     @property
-    def topics(self) -> dict[str, str]:
-        """operator -> topic."""
-        return {operator: self.topic_template.format(operator=operator) for operator in self.operators}
+    def group_name(self) -> str:
+        return self.instance_name
+
+    @property
+    def setup_asset(self) -> str:
+        return f"{self.instance_name}_setup"
+
+    @property
+    def publish_asset(self) -> str:
+        return self.instance_name
+
+    @property
+    def consume_asset(self) -> str:
+        return f"{self.instance_name}_consume"
+
+    @property
+    def setup_job(self) -> str:
+        return f"{self.instance_name}_setup_job"
+
+    @property
+    def reset_job(self) -> str:
+        return f"{self.instance_name}_reset_job"
 
 
-# --- Avro ----------------------------------------------------------------------
+class JobotronRunMode(Config):
+    """The per-run mode switch. None (the default) means the YAML decides; a value
+    overrides it for this run only -- the contract's own IsDryRun is a per-run widget, so
+    the mode is flippable at launch time, logged and recorded in the metadata. The YAML
+    value still governs schedules and blank launches."""
+
+    dry_run: bool | None = None
 
 
-def _avro_type(pa_type: pa.DataType) -> str:
-    """Arrow (DuckDB result) type -> Avro primitive. Timestamps map to string on
-    purpose: the demo convention carries them as microsecond-UTC strings (the
-    ZonedTimestamp rendering the CDF sync uses), and the demo query selects none."""
-    if pa.types.is_integer(pa_type):
-        return "long"
-    if pa.types.is_boolean(pa_type):
-        return "boolean"
-    if pa.types.is_floating(pa_type) or pa.types.is_decimal(pa_type):
-        return "double"
-    return "string"
+def _effective_dry_run(cfg: JobotronConfig, config: JobotronRunMode, context) -> bool:
+    """The run's mode: the YAML value, or the launch's override (logged when they differ)."""
+    if config.dry_run is None:
+        return cfg.dry_run
+    if config.dry_run != cfg.dry_run:
+        context.log.info(f"Run-config override: dry_run={config.dry_run} (the YAML value is {cfg.dry_run})")
+    return config.dry_run
 
 
-def _jobotron_schemas(cfg: JobotronConfig, result_schema: pa.Schema) -> tuple[dict, dict]:
-    """(key schema, value schema) derived from the query's RESULT shape: the published
-    contract is exactly what the YAML author selected (payload minimization by
-    construction), wrapped with the run_id/job_type envelope."""
-    key_schema = {
-        "type": "record",
-        "name": "Key",
-        "namespace": "kaizen.jobotron",
-        "fields": [
-            {"name": column, "type": _avro_type(result_schema.field(column).type)} for column in cfg.key_columns
-        ],
-    }
-    value_schema = {
-        "type": "record",
-        "name": "JobotronItem",
-        "namespace": "kaizen.jobotron",
-        "fields": [
-            {"name": "run_id", "type": "string"},
-            {"name": "job_type", "type": "string"},
-            # Every payload field is nullable: a NULL in the query result must not
-            # fail the run, mirroring the sync's Value schema convention.
-            *(
-                {"name": field.name, "type": ["null", _avro_type(field.type)], "default": None}
-                for field in result_schema
-            ),
-        ],
-    }
-    return key_schema, value_schema
+# --- the envelope (D2-D4, D7) ---------------------------------------------------
+
+
+def _canonical_json(payload: dict) -> str:
+    """D3's canon: compact separators, keys in the dict's order (the query result's column
+    order), nulls explicit (json.dumps never drops them), non-ASCII kept as-is."""
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def _sort_key(row: dict, columns: list[str]) -> tuple:
+    """D4's deterministic total order: CustomerId first, then the remaining payload columns
+    in result order (identical to the notebooks' orderBy("CustomerId") whenever a customer
+    has one row; stable if a query type ever returns several). Each column sorts as
+    (is-null, value): nulls group together, and within one SQL column the values share a
+    type, so the pair is always comparable."""
+    order = ["CustomerId"] + [column for column in columns if column != "CustomerId"]
+    return tuple((row[column] is None, row[column]) for column in order)
+
+
+def build_messages(
+    rows: pa.Table,
+    cfg: JobotronConfig,
+    *,
+    job_created: datetime,
+    run_id: str,
+    dry_run: bool,
+) -> list[dict]:
+    """D7: the pure envelope builder -- rows in, the real 13-field PascalCase envelope out,
+    one message per row in ItemNumber order. No Kafka, no registry, no Dagster context.
+    Fails before any message exists if the result misses the envelope's columns."""
+    columns = list(rows.schema.names)
+    missing = [name for name in REQUIRED_RESULT_COLUMNS if name not in columns]
+    if missing:
+        raise ValueError(
+            f"The query result is missing the envelope's required column(s) {missing} "
+            f"(found {columns}) -- the contract reads CustomerId and CompanyId from every "
+            "row; alias them in the SELECT"
+        )
+    records = rows.to_pylist()
+    records.sort(key=lambda row: _sort_key(row, columns))
+    created = job_created.astimezone(timezone.utc)
+    job_created_text = created.strftime("%Y-%m-%dT%H:%M:%SZ")  # second-truncated UTC
+    job_stamp = created.strftime("%Y%m%d%H%M%S")  # the JobId's yyyyMMddHHmmss
+    messages = []
+    for number, row in enumerate(records, start=1):
+        if row["CustomerId"] is None:
+            raise ValueError(f"Row {number} has a null CustomerId -- the Kafka record key cannot be null")
+        if row["CompanyId"] is None:
+            raise ValueError(f"Row {number} has a null CompanyId -- the envelope's CompanyId cannot be null")
+        payload = {column: row[column] for column in columns}
+        payload_hash = hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+        messages.append(
+            {
+                "JobId": f"{cfg.job_name}_{row['CompanyId']}_{job_stamp}",  # the row's CompanyId
+                "JobName": cfg.job_name,
+                "JobCreated": job_created_text,
+                "RunId": run_id,
+                "CompanyId": row["CompanyId"],
+                "CustomerId": str(row["CustomerId"]),
+                "ItemsCount": len(records),
+                "ItemNumber": number,
+                "ItemId": f"{payload_hash}-{number}",
+                "ItemPayload": payload,
+                "ItemPayloadHash": payload_hash,
+                "IsDryRun": dry_run,
+                "SchemaVersion": cfg.schema_version,
+            }
+        )
+    return messages
+
+
+# --- Kafka ----------------------------------------------------------------------
 
 
 def _produce_one(producer, topic: str, key: bytes, value: bytes, delivery_errors: list[str]) -> None:
@@ -192,123 +262,177 @@ def _produce_one(producer, topic: str, key: bytes, value: bytes, delivery_errors
             producer.poll(0.1)
 
 
-# --- assets --------------------------------------------------------------------
+# --- the engines (D10) ----------------------------------------------------------
 
 
-def build_setup_asset(cfg: JobotronConfig):
-    @asset(
-        name=cfg.setup_asset,
-        group_name=cfg.group_name,
-        description=(
-            f"Create the Jobotron demo tables {cfg.customers_fqn} and {cfg.kyc_fqn} (plain Delta, "
-            "no Change Data Feed -- the producer reads snapshots), the per-operator Kafka topics, "
-            "and seed the demo customers. See docs/poc/REVERSE_ETL_JOBOTRON.md."
-        ),
+def _submit_statement(token: str, statement: str, warehouse_id: str, catalog: str, schema: str) -> dict:
+    """One Statement Execution API submission (same REST shape as databricks_optimize's
+    _submit, but the warehouse comes from the caller -- the env contract's value, never a
+    module constant): wait up to 50 s inline, poll beyond that. The YAML's catalog and
+    schema set the statement's context -- the notebook's `use de.voperdb`; without them
+    the query's unqualified names resolve against the warehouse default (verified live
+    2026-10-26: cCustomer then fails TABLE_OR_VIEW_NOT_FOUND against de.default)."""
+    resp = requests.post(
+        f"{DATABRICKS_HOST}/api/2.0/sql/statements",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "statement": statement,
+            "warehouse_id": warehouse_id,
+            "catalog": catalog,
+            "schema": schema,
+            "wait_timeout": "50s",
+        },
+        timeout=60,
     )
-    def setup(context: AssetExecutionContext):
-        databricks, kafka = connections.databricks(), connections.kafka()
-        databricks.require_env()
-        token = databricks.token()
-        meter_reset()
+    resp.raise_for_status()
+    return resp.json()
 
-        admin = kafka.admin_client()
-        existing = admin.list_topics(timeout=20).topics
-        missing = [topic for topic in cfg.topics.values() if topic not in existing]
-        if missing:
-            # One partition per operator topic: the demo volumes are a handful of
-            # messages (the RFC sizes real ones at 3-10 partitions per operator).
-            admin.create_topics(
-                [NewTopic(topic, num_partitions=1, replication_factor=_DEFAULT_REPLICATION) for topic in missing]
+
+def _cancel_statement(token: str, statement_id: str, log: Any | None = None) -> None:
+    """Best-effort cancellation of a statement the client stopped waiting for: without it
+    the warehouse keeps executing (and billing) a statement whose result nobody reads.
+    Endpoint note: the documented `/cancellation` form 404s on this workspace's build --
+    `/cancel` is the one that works (verified live 2026-10-26). Network errors are
+    swallowed; a rejected cancellation is logged, never raised (the original failure
+    still propagates)."""
+    try:
+        resp = requests.post(
+            f"{DATABRICKS_HOST}/api/2.0/sql/statements/{statement_id}/cancel",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if not resp.ok and log:
+            log.warning(f"Cancellation of statement {statement_id} was rejected: HTTP {resp.status_code}")
+    except requests.RequestException:
+        pass
+
+
+def _run_statement(token: str, cfg: JobotronConfig, log: Any | None = None) -> tuple[dict, float]:
+    """The databricks_sql engine's statement client: submit the query verbatim on the
+    env's warehouse, in the YAML's catalog.schema context, poll to a terminal state, and
+    fetch every result chunk (completeness-verified by _with_all_chunks). Returns
+    (response, wall seconds). Progress is logged (the submission, then any handoff to
+    polling) so a queued statement doesn't read as a hung run; on the polling deadline
+    the statement is cancelled before the TimeoutError propagates. A missing
+    DATABRICKS_WAREHOUSE_ID fails here, at call time, naming the variable -- the YAML
+    never carries it (one defs.yaml still deploys to stg and prd)."""
+    warehouse_id = os.environ.get("DATABRICKS_WAREHOUSE_ID", "")
+    if not warehouse_id:
+        raise ValueError(
+            "DATABRICKS_WAREHOUSE_ID is required for scan_engine 'databricks_sql' (the candidate "
+            "query runs on a SQL warehouse); set it in the environment -- the YAML never carries it"
+        )
+    if log:
+        log.info(f"Submitting the YAML query on warehouse {warehouse_id} in {cfg.catalog}.{cfg.schema} context (inline wait 50 s)")
+    started = time.monotonic()
+    try:
+        data = _submit_statement(token, cfg.query, warehouse_id, cfg.catalog, cfg.schema)
+    except requests.exceptions.HTTPError as e:
+        body = e.response.text if e.response is not None else "<no response body>"
+        raise RuntimeError(f"Databricks Statement Execution API request failed: {e}\nResponse body: {body}") from e
+    state = data.get("status", {}).get("state", "")
+    if state not in ("SUCCEEDED", "FAILED", "CANCELED", "CLOSED"):
+        if log:
+            log.info(f"Statement {data['statement_id']} still {state} after the inline wait -- polling every 5 s (deadline 600 s)")
+        try:
+            data = _poll(token, data["statement_id"])
+        except TimeoutError:
+            _cancel_statement(token, data["statement_id"], log)
+            raise
+    if data.get("status", {}).get("state") != "SUCCEEDED":
+        raise RuntimeError(f"Statement failed: {data.get('status', {})}")
+    return _with_all_chunks(token, data), round(time.monotonic() - started, 1)
+
+
+_INT_TYPES = {"int", "integer", "long", "bigint", "smallint", "tinyint", "short", "byte"}
+
+
+def _coerced(value: Any, type_name: str) -> Any:
+    """The JSON_ARRAY wire format renders every value as a string (the smoke test's count
+    came back "13"); the manifest's declared column type says what it really is. Unknown
+    types keep the raw value."""
+    if value is None or not type_name:
+        return value
+    name = type_name.lower()
+    if name in _INT_TYPES:
+        return int(value)
+    if name.startswith(("decimal", "float", "double", "real")):
+        return float(value)
+    if name == "boolean":
+        return value if isinstance(value, bool) else str(value).lower() == "true"
+    return value
+
+
+def _statement_table(response: dict) -> pa.Table:
+    """The statement result as one Arrow table: column names, order and declared types from
+    the manifest schema (so an empty result still carries the names for the contract
+    check), values coerced back from their JSON string forms."""
+    columns = [
+        (column["name"], column.get("type", ""))
+        for column in response.get("manifest", {}).get("schema", {}).get("columns", [])
+    ]
+    rows = _rows_as_dicts(response)
+    return pa.table({name: [_coerced(row.get(name), type_name) for row in rows] for name, type_name in columns})
+
+
+def _scan(cfg: JobotronConfig, databricks, token: str, context) -> tuple[pa.Table, dict]:
+    """The engine seam (D10): every engine returns the candidate rows as one Arrow table
+    plus its engine-specific metadata; the envelope and Kafka path downstream are
+    identical for all three."""
+    if cfg.scan_engine == "databricks_sql":
+        response, seconds = _run_statement(token, cfg, context.log)
+        meter_record(seconds)
+        table = _statement_table(response)
+        warehouse_id = os.environ["DATABRICKS_WAREHOUSE_ID"]
+        context.log.info(
+            f"Statement executed on warehouse {warehouse_id} in {seconds}s: {table.num_rows} row(s)"
+        )
+        return table, {"warehouse_id": warehouse_id, "statement_seconds": seconds}
+
+    if cfg.scan_engine in ("delta_rs", "delta_extension"):
+        if not cfg.sources:
+            raise ValueError(
+                f"scan_engine '{cfg.scan_engine}' scans Delta tables directly, so it needs `sources` "
+                "(the bronze-table transcription of what the query joins -- delta-rs cannot scan the "
+                "sharded UNION views); only 'databricks_sql' lets the warehouse resolve the names"
             )
-            for topic in missing:
-                context.log.info(f"Created topic {topic}")
+        locations: dict[str, str] = {
+            alias: databricks.table_location_cached(token, cfg, fqn) for alias, (fqn, _columns) in cfg.sources.items()
+        }
+        connection = duckdb.connect()
+        if cfg.scan_engine == "delta_extension":
+            # Each alias becomes a view over the extension's streaming delta_scan() -- no
+            # Arrow snapshot materialization, morsel-driven scans, spill-to-disk joins.
+            # The view projects ONLY the allowlisted columns, so a query edit touching a
+            # non-allowlisted column fails loudly instead of silently scanning it
+            # (payload minimization by construction).
+            _ensure_delta_scan_secret(connection, next(iter(locations.values())))
+            for alias, (fqn, columns) in cfg.sources.items():
+                location = locations[alias]
+                version = DeltaTable(location, storage_options=_azure_storage_options(location)).version()
+                projection = ", ".join(columns) if columns else "*"
+                connection.execute(f"CREATE VIEW {alias} AS SELECT {projection} FROM delta_scan('{location}')")
+                context.log.info(f"Scanned {fqn} via delta_scan at version {version} (streaming view): {projection}")
         else:
-            context.log.info(f"Topics already exist: {', '.join(cfg.topics.values())}")
+            # delta-rs scans each source column-pruned into a pyarrow snapshot; DuckDB
+            # registers it zero-copy (in-process, the only SQL engine in the whole path).
+            for alias, (fqn, columns) in cfg.sources.items():
+                delta = DeltaTable(locations[alias], storage_options=_azure_storage_options(locations[alias]))
+                snapshot = delta.to_pyarrow_table(columns=list(columns))
+                connection.register(alias, snapshot)
+                context.log.info(
+                    f"Scanned {fqn} at version {delta.version()}: {snapshot.num_rows} rows, "
+                    f"columns {list(columns)}"
+                )
+        # to_arrow_table() materializes the result: duckdb 1.5's .arrow() returns a
+        # RecordBatchReader instead of a Table, and duckdb 2.0 dropped fetch_arrow_table() and warns
+        # when a DB-API result (execute) is converted, so the query goes through sql().
+        result = connection.sql(cfg.query).to_arrow_table()
+        connection.close()
+        context.log.info(f"Candidate query selected {result.num_rows} row(s) [scan_engine={cfg.scan_engine}]")
+        return result, {}
 
-        # Plain Delta on purpose, and NO Change Data Feed: the producer reads each
-        # table's current snapshot via delta-rs, so the CDF machinery (and the
-        # delta-rs CDF gap that pins the sync component to Spark) never applies.
-        # Deletion vectors off keeps the read path uniform with the other demo
-        # tables; column mapping is off because this demo has no drop/rename ops.
-        for fqn, ddl in (
-            (
-                cfg.customers_fqn,
-                f"""
-            CREATE TABLE IF NOT EXISTS {cfg.customers_fqn} (
-                customer_id BIGINT NOT NULL,
-                email STRING,
-                locale STRING,
-                operator STRING,
-                is_active BOOLEAN
-            ) USING DELTA
-            TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')
-            """,
-            ),
-            (
-                cfg.kyc_fqn,
-                f"""
-            CREATE TABLE IF NOT EXISTS {cfg.kyc_fqn} (
-                customer_id BIGINT NOT NULL,
-                status STRING,
-                updated_at TIMESTAMP
-            ) USING DELTA
-            TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')
-            """,
-            ),
-        ):
-            databricks.run_sql(token, ddl)
-            context.log.info(f"{fqn} ready (plain Delta: no CDF, no column mapping)")
-
-        # MERGE so "Set up" twice never duplicates the demo rows (same pattern as
-        # the CDF syncs' seed_statements). Seed shape: six customers across two
-        # operators; the eligible segment (active AND a PENDING KYC case) starts
-        # at three -- 1001/gr, 1004+1005/br -- small enough to read off the page.
-        databricks.run_sql(
-            token,
-            f"""
-        MERGE INTO {cfg.customers_fqn} AS target
-        USING (
-            SELECT 1001 AS customer_id, 'nikos.papadopoulos@example.gr' AS email, 'el-GR' AS locale, 'gr' AS operator, true AS is_active
-            UNION ALL SELECT 1002, 'maria.ioannou@example.gr', 'el-GR', 'gr', true
-            UNION ALL SELECT 1003, 'georgos.dimopoulos@example.gr', 'el-GR', 'gr', false
-            UNION ALL SELECT 1004, 'ana.souza@example.br', 'pt-BR', 'br', true
-            UNION ALL SELECT 1005, 'bruno.costa@example.br', 'pt-BR', 'br', true
-            UNION ALL SELECT 1006, 'lucia.almeida@example.br', 'pt-BR', 'br', true
-        ) AS source
-        ON target.customer_id = source.customer_id
-        WHEN NOT MATCHED THEN INSERT (customer_id, email, locale, operator, is_active)
-            VALUES (source.customer_id, source.email, source.locale, source.operator, source.is_active)
-        """,
-        )
-        databricks.run_sql(
-            token,
-            f"""
-        MERGE INTO {cfg.kyc_fqn} AS target
-        USING (
-            SELECT 1001 AS customer_id, 'PENDING' AS status, current_timestamp() AS updated_at
-            UNION ALL SELECT 1002, 'PENDING', current_timestamp()
-            UNION ALL SELECT 1003, 'PENDING', current_timestamp()
-            UNION ALL SELECT 1004, 'PENDING', current_timestamp()
-            UNION ALL SELECT 1005, 'PENDING', current_timestamp()
-            UNION ALL SELECT 1006, 'VERIFIED', current_timestamp()
-        ) AS source
-        ON target.customer_id = source.customer_id
-        WHEN NOT MATCHED THEN INSERT (customer_id, status, updated_at)
-            VALUES (source.customer_id, source.status, source.updated_at)
-        """,
-        )
-        context.log.info(f"Seeded {cfg.customers_fqn} and {cfg.kyc_fqn} (segment: 1001+1002/gr, 1004+1005/br)")
-
-        context.add_output_metadata(
-            {
-                "customers_table": MetadataValue.text(cfg.customers_fqn),
-                "kyc_table": MetadataValue.text(cfg.kyc_fqn),
-                "topics": MetadataValue.text(", ".join(cfg.topics.values())),
-                **_cost_metadata(),
-            }
-        )
-
-    return setup
+    raise ValueError(f"Unknown scan_engine {cfg.scan_engine!r} (expected one of {ENGINES})")
 
 
 def _ensure_delta_scan_secret(connection: duckdb.DuckDBPyConnection, location: str) -> None:
@@ -331,111 +455,130 @@ def _ensure_delta_scan_secret(connection: duckdb.DuckDBPyConnection, location: s
     )
 
 
+# --- assets ---------------------------------------------------------------------
+
+
+def build_setup_asset(cfg: JobotronConfig):
+    @asset(
+        name=cfg.setup_asset,
+        group_name=cfg.group_name,
+        description=(
+            f"Create the instance's Kafka topic {cfg.derived_topic} (create-if-not-exists, one "
+            "partition). Under dry-run (the YAML default, or this run's mode switch) the asset "
+            "is a no-op -- zero side effects, not even a Kafka connection."
+        ),
+    )
+    def setup(context: AssetExecutionContext, config: JobotronRunMode):
+        dry_run = _effective_dry_run(cfg, config, context)
+        if dry_run:
+            # Zero side effects in dry-run: not even a Kafka connection. The topic
+            # matters only for runs that actually publish.
+            context.log.info(
+                f"Dry run: nothing created -- launch setup with dry_run: false in the run config "
+                f"(or pin it in the YAML) to create the topic {cfg.derived_topic}"
+            )
+            context.add_output_metadata(
+                {
+                    "topic": MetadataValue.text(cfg.derived_topic),
+                    "created": MetadataValue.bool(False),
+                    "dry_run": MetadataValue.bool(True),
+                }
+            )
+            return
+
+        kafka = connections.kafka()
+        meter_reset()
+
+        admin = kafka.admin_client()
+        existing = admin.list_topics(timeout=20).topics
+        if cfg.derived_topic in existing:
+            context.log.info(f"Topic {cfg.derived_topic} already exists")
+        else:
+            admin.create_topics(
+                [NewTopic(cfg.derived_topic, num_partitions=1, replication_factor=_DEFAULT_REPLICATION)]
+            )
+            context.log.info(f"Created topic {cfg.derived_topic}")
+
+        context.add_output_metadata(
+            {
+                "topic": MetadataValue.text(cfg.derived_topic),
+                "created": MetadataValue.bool(True),
+                "dry_run": MetadataValue.bool(False),
+                **_cost_metadata(),
+            }
+        )
+
+    return setup
+
+
 def build_publish_asset(cfg: JobotronConfig):
     @asset(
         name=cfg.publish_asset,
         group_name=cfg.group_name,
         description=(
-            "Run the candidate-selection query from jobotron.yaml over the demo tables and publish "
-            f"one Avro message per selected customer to its operator topic ({', '.join(cfg.topics.values())}). "
-            f"Scan engine {cfg.scan_engine} + DuckDB query: no Spark, no JVM, zero Databricks compute."
+            f"Run the candidate-selection query ({cfg.scan_engine}) and publish the real Jobotron "
+            f"envelope -- one JSON message per selected customer, keyed by CustomerId -- to "
+            f"{cfg.derived_topic}. Under dry-run (the YAML default, or this run's mode switch) "
+            "every message is built and hashed and nothing is sent."
         ),
     )
-    def publish(context: AssetExecutionContext):
-        databricks, kafka, registry = connections.databricks(), connections.kafka(), connections.registry()
+    def publish(context: AssetExecutionContext, config: JobotronRunMode):
+        dry_run = _effective_dry_run(cfg, config, context)
+        databricks, kafka = connections.databricks(), connections.kafka()
         databricks.require_env()
         token = databricks.token()
         meter_reset()
         started = time.monotonic()
 
-        # 1. Resolve locations (UC REST, cached) -- control-plane reads only, no compute.
-        locations: dict[str, str] = {
-            alias: databricks.table_location_cached(token, cfg, fqn) for alias, (fqn, _columns) in cfg.sources.items()
-        }
-
-        # 2. The scan engine is the per-job YAML knob (§8.6): both branches feed the
-        #    SAME YAML query over the SAME aliases -- only each alias's source differs.
-        if cfg.scan_engine not in ("delta_rs", "delta_extension"):
-            raise ValueError(f"Unknown scan_engine {cfg.scan_engine!r} (expected delta_rs or delta_extension)")
-        connection = duckdb.connect()
-        if cfg.scan_engine == "delta_extension":
-            # Phase-4 lever, verified live on these tables (2026-10-21): each alias
-            # becomes a view over the extension's streaming delta_scan() -- no Arrow
-            # snapshot materialization, morsel-driven scans, spill-to-disk joins. The
-            # view projects ONLY the scan_columns allowlist, so a query edit touching a
-            # non-allowlisted column fails loudly instead of silently scanning it
-            # (payload minimization by construction).
-            _ensure_delta_scan_secret(connection, next(iter(locations.values())))
-            for alias, (fqn, columns) in cfg.sources.items():
-                location = locations[alias]
-                version = DeltaTable(location, storage_options=_azure_storage_options(location)).version()
-                projection = ", ".join(columns) if columns else "*"
-                connection.execute(f"CREATE VIEW {alias} AS SELECT {projection} FROM delta_scan('{location}')")
-                context.log.info(f"Scanned {fqn} via delta_scan at version {version} (streaming view): {projection}")
-        else:
-            # Day-one engine: delta-rs scans each source column-pruned into a pyarrow
-            # snapshot; DuckDB registers it zero-copy (in-process, the only SQL engine
-            # in the whole path).
-            for alias, (fqn, columns) in cfg.sources.items():
-                delta = DeltaTable(locations[alias], storage_options=_azure_storage_options(locations[alias]))
-                snapshot = delta.to_pyarrow_table(columns=list(columns))
-                connection.register(alias, snapshot)
-                context.log.info(
-                    f"Scanned {fqn} at version {delta.version()}: {snapshot.num_rows} rows, "
-                    f"columns {list(columns)}"
-                )
-        # to_arrow_table() materializes the result: duckdb 1.5's .arrow() returns a
-        # RecordBatchReader instead of a Table, and duckdb 2.0 dropped fetch_arrow_table() and warns
-        # when a DB-API result (execute) is converted, so the query goes through sql().
-        result = connection.sql(cfg.query).to_arrow_table()
-        connection.close()
-        context.log.info(f"Candidate query selected {result.num_rows} customer(s) [scan_engine={cfg.scan_engine}]")
-
-        # 3. Schemas derived from the result shape (an empty result still carries the
-        #    schema), ensured per operator subject before any message uses them.
-        key_schema, value_schema = _jobotron_schemas(cfg, result.schema)
-        client = registry.client(cfg.schema_registry_url)
-        for topic in cfg.topics.values():
-            for subject, schema in ((f"{topic}-key", key_schema), (f"{topic}-value", value_schema)):
-                if not _schema_already_registered(client, subject, schema):
-                    client.register_schema(subject, Schema(_avro_schema_string(schema), "AVRO"))
-                    context.log.info(f"Registered {subject}")
-                else:
-                    context.log.info(f"{subject} unchanged")
-
-        # 4. Route by operator and produce one message per customer. An unknown
-        #    operator fails the run loudly -- a bad value must never publish
-        #    cross-market (operator isolation is the RFC's own selling point).
-        serializers = {}
-        for topic in cfg.topics.values():
-            # All subjects were just ensured above, so the serializers can point at
-            # the registered versions instead of re-registering on the first message.
-            conf = {"auto.register.schemas": False, "use.latest.version": True}
-            serializers[topic] = (
-                AvroSerializer(client, _avro_schema_string(key_schema), conf=conf),
-                AvroSerializer(client, _avro_schema_string(value_schema), conf=conf),
+        if cfg.encoding != "json":
+            raise ValueError(
+                f"encoding {cfg.encoding!r} is not implemented -- the validated contract is JSON "
+                "(Avro is deferred behind `encoding`, see docs/poc/JOBOTRON_CONTRACT_PARITY.md)"
             )
+
+        # 1. The engine seam: candidate rows as one Arrow table (plus engine metadata).
+        result, engine_meta = _scan(cfg, databricks, token, context)
+
+        # 2. The pure envelope builder: the real 13-field contract, ordered and hashed.
+        #    A result missing CustomerId/CompanyId fails here, named, before any produce.
+        messages = build_messages(
+            result, cfg, job_created=datetime.now(timezone.utc), run_id=context.run.run_id, dry_run=dry_run
+        )
+        previews = [{"key": message["CustomerId"], "value": message} for message in messages[:PREVIEW_LIMIT]]
+
+        def metadata_entries():
+            return {
+                "items_count": MetadataValue.int(len(messages)),
+                "job_name": MetadataValue.text(cfg.job_name),
+                "topic": MetadataValue.text(cfg.derived_topic),
+                "dry_run": MetadataValue.bool(dry_run),
+                "schema_version": MetadataValue.int(cfg.schema_version),
+                "candidate_query": MetadataValue.text(cfg.query),
+                "message_previews": MetadataValue.json(previews),
+                "publish_seconds": MetadataValue.float(round(time.monotonic() - started, 1)),
+                **engine_meta,
+                **_cost_metadata(),
+            }
+
+        # 3. The dry-run gate (D5): the whole path ran -- scan, query, envelope, hashing,
+        #    counting -- and nothing is sent. A misconfigured instance cannot pollute the
+        #    topic at all.
+        if dry_run:
+            context.log.info(
+                f"Dry run: built {len(messages)} message(s) for {cfg.derived_topic} and sent NOTHING "
+                f"(pin dry_run: false to publish)"
+            )
+            context.add_output_metadata(metadata_entries())
+            return
+
+        # 4. Publish: compact canonical JSON on the wire (the hash's exact canon), key =
+        #    CustomerId, every message to the instance's topic.
         producer = kafka.producer()
         delivery_errors: list[str] = []
-        per_operator: Counter[str] = Counter()
-        previews: list[dict] = []
-        for row in result.to_pylist():
-            operator = str(row.get(cfg.operator_column) or "")
-            topic = cfg.topics.get(operator)
-            if topic is None:
-                raise RuntimeError(
-                    f"Unknown operator {operator!r} in the query result -- refusing to publish "
-                    f"cross-market (known operators: {sorted(cfg.topics)})"
-                )
-            key_serializer, value_serializer = serializers[topic]
-            key = {column: row[column] for column in cfg.key_columns}
-            value = {"run_id": context.run.run_id, "job_type": cfg.job_type, **row}
-            key_bytes = key_serializer(key, SerializationContext(topic, MessageField.KEY))
-            value_bytes = value_serializer(value, SerializationContext(topic, MessageField.VALUE))
-            _produce_one(producer, topic, key_bytes, value_bytes, delivery_errors)
-            per_operator[operator] += 1
-            if len(previews) < PREVIEW_LIMIT:
-                previews.append({"topic": topic, "key": key, "value": value})
+        for message in messages:
+            value = _canonical_json(message).encode("utf-8")
+            key = message["CustomerId"].encode("utf-8")
+            _produce_one(producer, cfg.derived_topic, key, value, delivery_errors)
 
         # 5. Bounded final flush; any rejected delivery fails the run.
         undelivered = producer.flush(timeout=120)
@@ -444,18 +587,8 @@ def build_publish_asset(cfg: JobotronConfig):
                 f"Kafka delivery failed: {len(delivery_errors)} rejected ({delivery_errors[:3]}), "
                 f"{undelivered} undelivered after 120s"
             )
-
-        context.add_output_metadata(
-            {
-                "rows_published": MetadataValue.int(sum(per_operator.values())),
-                "per_operator": MetadataValue.json(dict(per_operator)),
-                "candidate_query": MetadataValue.text(cfg.query),
-                "job_type": MetadataValue.text(cfg.job_type),
-                "message_previews": MetadataValue.json(previews),
-                "publish_seconds": MetadataValue.float(round(time.monotonic() - started, 1)),
-                **_cost_metadata(),
-            }
-        )
+        context.log.info(f"Published {len(messages)} message(s) to {cfg.derived_topic}")
+        context.add_output_metadata(metadata_entries())
 
     return publish
 
@@ -465,108 +598,97 @@ def build_consume_asset(cfg: JobotronConfig):
         name=cfg.consume_asset,
         group_name=cfg.group_name,
         description=(
-            "Demo consumer: read every message on the operator topics, decode the Avro values, and mirror "
-            "the current segment into one Postgres table per operator (one row per customer, table = topic "
-            "name). Stands in for the RFC's worker, which would act per message -- this one mirrors state, "
-            "so a customer that left the segment disappears from its table at the next consume."
+            f"Demo worker stand-in: read every message on {cfg.derived_topic}, decode the JSON "
+            "envelope, dedup on ItemId, and keep one mirror row per item in the Postgres table "
+            f"{cfg.derived_topic}. Stands in for the RFC's worker, which would act per message -- "
+            "ItemId carries the payload hash, so a republished item with new content is a new row."
         ),
     )
     def consume(context: AssetExecutionContext):
-        postgres = connections.state_postgres()
-        kafka, registry = connections.kafka(), connections.registry()
+        postgres, kafka = connections.state_postgres(), connections.kafka()
         meter_reset()
         started = time.monotonic()
 
-        # Read each operator topic from the beginning. Topics APPEND: a customer
-        # that left the segment has no new message, so "last message per customer"
-        # would keep stale members forever. The current segment is the latest
-        # publish's full set -- the messages whose run_id matches the topic's LAST
-        # message (highest offset). Manual partition assign, no commits: the
-        # consumer is stateless and re-reads the whole topic per run (demo volumes
-        # are a handful of messages; the RFC sizes ~20k/day).
-        deserializer = AvroDeserializer(registry.client(cfg.schema_registry_url))
+        # Read the topic from the beginning. The full eligible set is republished every
+        # run, so the mirror accumulates one row per ItemId ever seen (INSERT ... ON
+        # CONFLICT DO NOTHING). Manual partition assign, no commits: the consumer is
+        # stateless and re-reads the whole topic per run (demo volumes are a handful of
+        # messages; the RFC sizes ~20k/day).
         consumer = kafka.consumer(
             f"{BASE}-demo-consumer", {"auto.offset.reset": "earliest", "enable.auto.commit": "false"}
         )
-        read: dict[str, list[dict]] = {topic: [] for topic in cfg.topics.values()}
-        last_run: dict[str, str] = {}
-        last_ts: dict[str, int] = {}
+        values: list[dict] = []
         try:
-            consumer.assign([TopicPartition(topic, 0) for topic in cfg.topics.values()])
-            # Drain every topic fully, verified against the broker's watermarks. A
-            # plain "break on the first quiet window" loses the race on a cold
-            # consumer (fresh metadata + fetch handshake) and silently rebuilds the
-            # tables EMPTY -- verified live. Watermarks make "fully drained" a fact,
-            # not a timing guess; the outer cap only guards a pathological loop.
+            consumer.assign([TopicPartition(cfg.derived_topic, 0)])
+            # Drain the topic fully, verified against the broker's watermarks. A plain
+            # "break on the first quiet window" loses the race on a cold consumer (fresh
+            # metadata + fetch handshake) and silently rebuilds the table EMPTY -- verified
+            # live. Watermarks make "fully drained" a fact, not a timing guess; the outer
+            # cap only guards a pathological loop.
             for _ in range(10):
                 while True:
                     batch = consumer.consume(num_messages=500, timeout=5.0)
                     if not batch:
                         break
                     for message in batch:
-                        if message.error() or message.topic() not in read:
+                        if message.error() or message.topic() != cfg.derived_topic:
                             continue
                         try:
-                            value = deserializer(message.value(), SerializationContext(message.topic(), MessageField.VALUE))
+                            values.append(json.loads(message.value()))
                         except Exception as e:  # noqa: BLE001 -- surface decode failures per message
                             context.log.warning(f"Could not decode a message on {message.topic()}: {e}")
-                            continue
-                        read[message.topic()].append(value)
-                        last_run[message.topic()] = value.get("run_id")
-                        last_ts[message.topic()] = message.timestamp()[1]
-                lagging = []
-                for topic in cfg.topics.values():
-                    lo, hi = consumer.get_watermark_offsets(TopicPartition(topic, 0), timeout=10.0, cached=False)
-                    if hi - lo > len(read[topic]):
-                        lagging.append(f"{topic} ({len(read[topic])}/{hi - lo})")
-                if not lagging:
+                lo, hi = consumer.get_watermark_offsets(TopicPartition(cfg.derived_topic, 0), timeout=10.0, cached=False)
+                if hi - lo <= len(values):
                     break
-                context.log.info(f"Topics not fully drained yet: {', '.join(lagging)} -- reading again")
+                context.log.info(f"{cfg.derived_topic} not fully drained yet ({len(values)}/{hi - lo}) -- reading again")
         finally:
             consumer.close()
 
-        current: dict[str, dict[int, dict]] = {}
-        # The current segment is the latest PUBLISH's full set. Grouping per topic by
-        # that topic's last message breaks when a publish legitimately emits ZERO
-        # messages for one operator (empty segment): the topic's last message is then
-        # from an OLDER run and its stale snapshot survives forever (a verified 1007
-        # did exactly that). The latest publish is the one whose message carries the
-        # newest Kafka timestamp across ALL topics -- topics without messages from it
-        # correctly rebuild empty.
-        stamps = [(last_ts[topic], rid) for topic, rid in last_run.items()]
-        latest_run = max(stamps)[1] if stamps else None
-        for topic, values in read.items():
-            current[topic] = {int(v["customer_id"]): v for v in values if v.get("run_id") == latest_run}
-            context.log.info(f"{topic}: latest publish {latest_run} holds {len(current[topic])} customer(s)")
+        # Dedup on ItemId (the doc's worker stand-in): a re-delivered item keeps its first
+        # mirror row; new content means a new hash and so a new ItemId.
+        by_item: dict[str, dict] = {}
+        for value in values:
+            by_item[value.get("ItemId")] = value
+        mirror_rows = [
+            {
+                "item_id": value.get("ItemId"),
+                "item_number": value.get("ItemNumber"),
+                "customer_id": value.get("CustomerId"),
+                "company_id": None if value.get("CompanyId") is None else str(value.get("CompanyId")),
+                "job_name": value.get("JobName"),
+                "run_id": value.get("RunId"),
+                "is_dry_run": value.get("IsDryRun"),
+                "schema_version": value.get("SchemaVersion"),
+                "payload": psycopg2.extras.Json(value.get("ItemPayload")),
+            }
+            for value in by_item.values()
+        ]
 
-        # One Postgres table per operator topic (same name), rebuilt per consume:
-        # the table IS the current segment for that operator. The full-set publish
-        # makes this safe -- the topic always reflects the last publish's segment.
         conn = postgres.connect()
         try:
             with conn.cursor() as cur:
-                for topic in cfg.topics.values():
-                    cur.execute(
-                        f"CREATE TABLE IF NOT EXISTS {topic} ("
-                        "customer_id BIGINT PRIMARY KEY, email TEXT, locale TEXT, "
-                        "operator TEXT, run_id TEXT, job_type TEXT)"
-                    )
-                    cur.execute(f"TRUNCATE {topic}")
-                    cur.executemany(
-                        f"INSERT INTO {topic} (customer_id, email, locale, operator, run_id, job_type) "
-                        "VALUES (%(customer_id)s, %(email)s, %(locale)s, %(operator)s, %(run_id)s, %(job_type)s)",
-                        list(current[topic].values()),
-                    )
-                    context.log.info(f"{topic}: {len(current[topic])} row(s)")
+                cur.execute(
+                    f"CREATE TABLE IF NOT EXISTS {cfg.derived_topic} ("
+                    "item_id TEXT PRIMARY KEY, item_number BIGINT, customer_id TEXT, company_id TEXT, "
+                    "job_name TEXT, run_id TEXT, is_dry_run BOOLEAN, schema_version INTEGER, payload JSONB)"
+                )
+                cur.executemany(
+                    f"INSERT INTO {cfg.derived_topic} (item_id, item_number, customer_id, company_id, "
+                    "job_name, run_id, is_dry_run, schema_version, payload) VALUES "
+                    "(%(item_id)s, %(item_number)s, %(customer_id)s, %(company_id)s, %(job_name)s, "
+                    "%(run_id)s, %(is_dry_run)s, %(schema_version)s, %(payload)s) "
+                    "ON CONFLICT (item_id) DO NOTHING",
+                    mirror_rows,
+                )
             conn.commit()
         finally:
             conn.close()
+        context.log.info(f"{cfg.derived_topic}: {len(values)} message(s) read, {len(mirror_rows)} item(s) mirrored")
 
         context.add_output_metadata(
             {
-                "rows_per_operator": MetadataValue.json(
-                    {operator: len(current[topic]) for operator, topic in cfg.topics.items()}
-                ),
+                "messages_read": MetadataValue.int(len(values)),
+                "items_count": MetadataValue.int(len(mirror_rows)),
                 "consume_seconds": MetadataValue.float(round(time.monotonic() - started, 1)),
                 **_cost_metadata(),
             }
@@ -575,220 +697,46 @@ def build_consume_asset(cfg: JobotronConfig):
     return consume
 
 
-class JobotronChangeConfig(Config):
-    change: str = "add_customer"  # add_customer, verify_customer or deactivate_customer
-
-def _scalar(databricks, token: str, sql: str) -> Any:
-    rows = _rows_as_dicts(databricks.run_sql(token, sql))
-    return next(iter(rows[0].values()))
-
-
-def _change_statements(cfg: JobotronConfig, change: str) -> list[str]:
-    """The SQL for one demo change. add_customer inserts a new active customer with a
-    PENDING KYC case (it joins the segment at the next publish); verify_customer and
-    deactivate_customer move one eligible customer out of the segment. The full-set
-    publish then simply stops carrying them -- no tombstone, which is exactly the
-    full-snapshot semantics the plan doc describes."""
-    customers, kyc = cfg.customers_fqn, cfg.kyc_fqn
-    if change == "add_customer":
-        # The id chains off max(); the operator alternates by row count so the
-        # segment's routing mix keeps changing across demo runs.
-        return [
-            f"""
-        INSERT INTO {customers} (customer_id, email, locale, operator, is_active)
-        SELECT (SELECT max(customer_id) FROM {customers}) + 1,
-               'customer' || CAST((SELECT max(customer_id) FROM {customers}) + 1 AS STRING)
-                   || '@example.' || (SELECT CASE WHEN count(*) % 2 = 0 THEN 'gr' ELSE 'br' END FROM {customers}),
-               (SELECT CASE WHEN count(*) % 2 = 0 THEN 'el-GR' ELSE 'pt-BR' END FROM {customers}),
-               (SELECT CASE WHEN count(*) % 2 = 0 THEN 'gr' ELSE 'br' END FROM {customers}),
-               true
-            """,
-            f"""
-        INSERT INTO {kyc} (customer_id, status, updated_at)
-        SELECT max(customer_id), 'PENDING', current_timestamp() FROM {customers}
-            """,
-        ]
-    if change == "verify_customer":
-        return [
-            f"""
-        UPDATE {kyc} SET status = 'VERIFIED', updated_at = current_timestamp()
-        WHERE customer_id = (
-            SELECT min(k.customer_id) FROM {kyc} k
-            JOIN {customers} c ON c.customer_id = k.customer_id
-            WHERE k.status = 'PENDING' AND c.is_active
-        )
-            """
-        ]
-    if change == "deactivate_customer":
-        return [
-            f"""
-        UPDATE {customers} SET is_active = false
-        WHERE customer_id = (
-            SELECT min(c.customer_id) FROM {customers} c
-            WHERE c.is_active
-              AND c.customer_id IN (SELECT k.customer_id FROM {kyc} k WHERE k.status = 'PENDING')
-        )
-            """
-        ]
-    raise ValueError(f"change must be add_customer, verify_customer or deactivate_customer, got {change!r}")
-
-
-def build_change_asset(cfg: JobotronConfig):
-    @asset(
-        name=cfg.change_asset,
-        description=(
-            f"Change the Jobotron demo data in Databricks: add an unverified customer (joins the "
-            f"segment), verify a customer, or deactivate one (both leave it). Nothing is published "
-            f"until {cfg.publish_asset} runs."
-        ),
-    )
-    def make_change(context: AssetExecutionContext, config: JobotronChangeConfig):
-        databricks = connections.databricks()
-        databricks.require_env()
-        token = databricks.token()
-        meter_reset()
-        statements = _change_statements(cfg, config.change)
-
-        # A change with nothing to do is a normal demo condition (the segment can be
-        # empty): end the run green and tell the page why, like the CDF change ops do.
-        skip = None
-        if config.change == "verify_customer":
-            pending = _scalar(
-                databricks,
-                token,
-                f"SELECT count(*) FROM {cfg.kyc_fqn} k JOIN {cfg.customers_fqn} c ON c.customer_id = k.customer_id "
-                "WHERE k.status = 'PENDING' AND c.is_active",
-            )
-            if not pending:
-                skip = "no active customer with a PENDING KYC case left to verify -- run add_customer first"
-        elif config.change == "deactivate_customer":
-            eligible = _scalar(
-                databricks,
-                token,
-                f"SELECT count(*) FROM {cfg.customers_fqn} c WHERE c.is_active AND c.customer_id IN "
-                f"(SELECT k.customer_id FROM {cfg.kyc_fqn} k WHERE k.status = 'PENDING')",
-            )
-            if not eligible:
-                skip = "no eligible customer left to deactivate -- run add_customer first"
-        if skip:
-            context.log.warning(f"{config.change} skipped: {skip}")
-            context.add_output_metadata(
-                {
-                    "databricks_warehouse_seconds": MetadataValue.float(meter_snapshot()["warehouse_seconds"]),
-                    "databricks_statements": MetadataValue.int(0),
-                    "databricks_change_sql": MetadataValue.json(
-                        {"change": config.change, "sql": [], "skipped": skip}
-                    ),
-                }
-            )
-            return
-
-        for statement in statements:
-            databricks.run_sql(token, statement)
-            context.log.info(f"{config.change}: {' '.join(statement.split())}")
-        usage = meter_snapshot()
-        context.add_output_metadata(
-            {
-                "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
-                "databricks_statements": MetadataValue.int(usage["statements"]),
-                # The exact SQL the demo page shows under the run result.
-                "databricks_change_sql": MetadataValue.json({"change": config.change, "sql": statements}),
-            }
-        )
-
-    return make_change
-
-
-# --- reset ---------------------------------------------------------------------
+# --- reset ----------------------------------------------------------------------
 
 
 def _assert_reset_allowed(cfg: JobotronConfig) -> None:
-    """Refuse to run unless every name this job drops looks like a demo object: the
-    tables under reverse_etl_jobotron_, the topics/subjects under jobotron_demo_,
-    and the scratch schema. Same guard idea as the CDF syncs' reset. (The table
-    names are checked bare -- the FQNs start with the catalog.)"""
-    names = (cfg.customers_table, cfg.kyc_table, *cfg.topics.values())
-    bad = [name for name in names if not name.startswith((f"{BASE}_", "jobotron_demo_"))]
-    if bad or cfg.schema != "sr_poc_external":
-        raise RuntimeError(
-            f"Refusing to reset the Jobotron demo: these do not look like demo objects: {bad} "
-            f"(schema {cfg.schema!r})"
-        )
+    """Refuse to run unless every name this job drops looks like this component's: the
+    topic and the mirror table under jobotron_ (the derived default; a typed topic gets
+    the same check). Same guard idea as the CDF syncs' reset."""
+    bad = [name for name in (cfg.derived_topic,) if not name.startswith("jobotron_")]
+    if bad:
+        raise RuntimeError(f"Refusing to reset the Jobotron instance: these do not look like jobotron objects: {bad}")
 
 
 def build_reset_job(cfg: JobotronConfig):
-    @op(name=f"{BASE}_delete_topics", ins={"start": In(Nothing)})
-    def delete_topics(context: OpExecutionContext) -> None:
+    @op(name=f"{cfg.instance_name}_delete_topic", ins={"start": In(Nothing)})
+    def delete_topic(context: OpExecutionContext) -> None:
         kafka = connections.kafka()
         _assert_reset_allowed(cfg)
         admin = kafka.admin_client()
-        for topic in cfg.topics.values():
-            if topic in admin.list_topics(timeout=20).topics:
-                admin.delete_topics([topic], operation_timeout=30)[topic].result()
-                context.log.info(f"Delete requested for topic {topic}")
-            else:
-                context.log.info(f"Topic {topic} did not exist")
+        if cfg.derived_topic in admin.list_topics(timeout=20).topics:
+            admin.delete_topics([cfg.derived_topic], operation_timeout=30)[cfg.derived_topic].result()
+            context.log.info(f"Delete requested for topic {cfg.derived_topic}")
+        else:
+            context.log.info(f"Topic {cfg.derived_topic} did not exist")
         # Topic deletes are asynchronous; the setup job must not recreate while listed.
         deadline = time.monotonic() + 90
-        remaining = set(cfg.topics.values())
-        while remaining:
-            remaining = {topic for topic in cfg.topics.values() if topic in admin.list_topics(timeout=20).topics}
-            if not remaining:
-                break
+        while cfg.derived_topic in admin.list_topics(timeout=20).topics:
             if time.monotonic() > deadline:
-                raise RuntimeError(f"Topics still listed after 90s: {sorted(remaining)}")
+                raise RuntimeError(f"Topic {cfg.derived_topic} still listed after 90s")
             time.sleep(3)
-        context.log.info("Operator topics are gone")
+        context.log.info(f"Topic {cfg.derived_topic} is gone")
 
-    @op(name=f"{BASE}_delete_registry_subjects", ins={"start": In(Nothing)})
-    def delete_registry_subjects(context: OpExecutionContext) -> None:
-        http = connections.http()
-        _assert_reset_allowed(cfg)
-        # Soft delete, then permanent (a soft-deleted subject still blocks re-registering).
-        for topic in cfg.topics.values():
-            for role in ("key", "value"):
-                subject = f"{topic}-{role}"
-                for params in ({}, {"permanent": "true"}):
-                    resp = http.delete(
-                        f"{cfg.schema_registry_url}/subjects/{subject}", params=params, timeout=30
-                    )
-                    if resp.status_code == 404:
-                        context.log.info(f"Registry subject {subject} did not exist ({params or 'soft'})")
-                    elif resp.ok:
-                        context.log.info(f"Deleted registry subject {subject} ({'permanent' if params else 'soft'})")
-                    else:
-                        raise RuntimeError(
-                            f"Deleting subject {subject} failed ({resp.status_code}): {resp.text[:500]}"
-                        )
-
-    @op(name=f"{BASE}_drop_tables", ins={"start": In(Nothing)})
-    def drop_tables(context: OpExecutionContext) -> None:
-        databricks = connections.databricks()
-        databricks.require_env()
-        token = databricks.token()
-        meter_reset()
-        for fqn in (cfg.customers_fqn, cfg.kyc_fqn):
-            databricks.run_sql(token, f"DROP TABLE IF EXISTS {fqn}")
-            context.log.info(f"Dropped {fqn} (if it existed)")
-        # Drop + recreate moves the managed tables to new storage locations; the
-        # cached locations would then point at dead tables (the CDF syncs hit this).
-        databricks.clear_location_cache()
-        context.log.info("Cleared the location cache (the tables moved)")
-
-    @op(name=f"{BASE}_drop_postgres_tables", ins={"start": In(Nothing)})
-    def drop_postgres_tables(context: OpExecutionContext) -> None:
+    @op(name=f"{cfg.instance_name}_drop_mirror_table", ins={"start": In(Nothing)})
+    def drop_mirror_table(context: OpExecutionContext) -> None:
         postgres = connections.state_postgres()
         _assert_reset_allowed(cfg)
         conn = postgres.connect()
         try:
             with conn.cursor() as cur:
-                # The demo consumer's per-operator tables carry the same names as
-                # the topics (same guard covers them). Dropping them here means a
-                # reset leaves NO stale rows behind even before the first consume
-                # rebuilds them (CREATE IF NOT EXISTS + TRUNCATE).
-                for topic in cfg.topics.values():
-                    cur.execute(f"DROP TABLE IF EXISTS {topic}")
-                    context.log.info(f"Dropped Postgres table {topic} (if it existed)")
+                cur.execute(f"DROP TABLE IF EXISTS {cfg.derived_topic}")
+                context.log.info(f"Dropped Postgres table {cfg.derived_topic} (if it existed)")
             conn.commit()
         finally:
             conn.close()
@@ -796,42 +744,34 @@ def build_reset_job(cfg: JobotronConfig):
     @job(
         name=cfg.reset_job,
         description=(
-            f"Tear down the Jobotron demo: the per-operator Kafka topics ({', '.join(cfg.topics.values())}), "
-            f"their Apicurio subjects, the Databricks tables {cfg.customers_fqn} / {cfg.kyc_fqn}, and the "
-            f"consumer's Postgres tables. Then run {cfg.setup_job}, the first publish and the first consume "
-            "for a fresh demo."
+            f"Tear down the instance: the Kafka topic {cfg.derived_topic} and the demo consumer's "
+            f"Postgres mirror table. The instances own no Databricks tables (read-only scans of "
+            f"de.voperdb) and no registry subjects (JSON needs none). Then run {cfg.setup_job} and "
+            "the first publish for a fresh demo."
         ),
         executor_def=in_process_executor,
     )
     def reset_job():
-        gone = delete_topics()
-        deleted = delete_registry_subjects(gone)
-        dropped = drop_tables(deleted)
-        drop_postgres_tables(dropped)
+        gone = delete_topic()
+        drop_mirror_table(gone)
 
     return reset_job
 
 
-# --- defs ----------------------------------------------------------------------
+# --- defs -----------------------------------------------------------------------
 
 
 def build_jobotron_defs(cfg: JobotronConfig) -> Definitions:
     setup = build_setup_asset(cfg)
     publish = build_publish_asset(cfg)
     consume = build_consume_asset(cfg)
-    change = build_change_asset(cfg)
     setup_job = define_asset_job(
         name=cfg.setup_job,
         selection=AssetSelection.assets(AssetKey(cfg.setup_asset)),
-        description="Create the Jobotron demo tables and operator topics, then seed the demo customers.",
-        executor_def=in_process_executor,
-    )
-    change_job = define_asset_job(
-        name=cfg.change_job,
-        selection=AssetSelection.assets(AssetKey(cfg.change_asset)),
+        description="Create the instance's topic (create-if-not-exists; a no-op under the dry-run default).",
         executor_def=in_process_executor,
     )
     return Definitions(
-        assets=[setup, publish, consume, change],
-        jobs=[setup_job, build_reset_job(cfg), change_job],
+        assets=[setup, publish, consume],
+        jobs=[setup_job, build_reset_job(cfg)],
     )

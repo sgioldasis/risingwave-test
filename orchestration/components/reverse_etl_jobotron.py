@@ -1,7 +1,6 @@
 import dagster as dg
 
 from ..assets.reverse_etl_jobotron import (
-    BASE,
     SCHEMA_REGISTRY_URL,
     JobotronConfig,
     build_jobotron_defs,
@@ -9,61 +8,67 @@ from ..assets.reverse_etl_jobotron import (
 
 
 class JobotronProducer(dg.Component, dg.Model, dg.Resolvable):
-    """The Jobotron RFC's upstream producer (docs/poc/REVERSE_ETL_JOBOTRON.md): run a
-    candidate-selection SQL query against the lake's Delta tables and publish one Avro
-    message per selected customer to its operator topic, schemas in Apicurio.
-
-    No Spark, no JVM, no CDF: the sources are scanned with the service principal (engine
-    per scan_engine: delta-rs column-pruned snapshots, or the DuckDB delta extension's
-    streaming delta_scan), DuckDB runs the query, the full eligible set is published every
-    run (the Jobotron worker owns deduplication and re-validation). The setup asset creates
-    the demo tables (plain Delta, no Change Data Feed) and the per-operator topics; the
-    reset job tears them down.
+    """One Jobotron producer instance (docs/poc/JOBOTRON_CONTRACT_PARITY.md): one query type
+    x one operator, publishing the team's real 13-field envelope -- one JSON message per
+    selected customer, keyed by CustomerId -- to the instance's topic. The candidate query
+    runs on the scan_engine of choice: "databricks_sql" (the default) submits the YAML
+    query verbatim to a SQL warehouse (DATABRICKS_WAREHOUSE_ID in the environment, never
+    here); "delta_rs"/"delta_extension" scan Delta tables directly and need `sources`, the
+    bronze-table transcription of what the query joins. dry_run (the default) runs the
+    whole path -- scan, query, envelope, hashing, counting -- and sends nothing.
     """
 
-    job_type: str = "kyc.unverified_pm"
-    catalog: str = "de_dev"
-    schema_name: str = "sr_poc_external"
-    # The candidate-selection query, in DuckDB dialect. Table names must match the
-    # customers_table/kyc_table values below (they are the DuckDB registrations).
+    # D9: the instance identity -- names the folder and every Dagster object
+    # (jobotron_<query_type>_<operator>[_<role>]).
+    query_type: str
+    operator: str
+    # D2: the wire identity -- the envelope's JobName, typed, never derived.
+    job_name: str
+    catalog: str
+    schema_name: str
+    # The candidate-selection query, verbatim (tokens, not bytes: whitespace is the
+    # paste's). Must emit CustomerId and CompanyId -- the envelope reads both from the
+    # row, and a result missing them fails before any produce.
     query: str
-    operators: list[str] | None = None
-    topic_template: str = "jobotron_demo_{operator}"
-    key_columns: list[str] | None = None
-    operator_column: str = "operator"
-    # Columns each delta-rs scan fetches (pruning hint: scan only what the query selects).
-    scan_columns: dict[str, list[str]] | None = None
-    # Per-job scan engine (docs/poc/REVERSE_ETL_JOBOTRON.md §8.6): "delta_rs" (day one)
-    # materializes column-pruned snapshots via delta-rs; "delta_extension" registers DuckDB
-    # views over the delta extension's streaming delta_scan (verified live 2026-10-21).
-    scan_engine: str = "delta_rs"
-    customers_table: str = f"{BASE}_customers"
-    kyc_table: str = f"{BASE}_kyc_cases"
+    dry_run: bool = True
+    schema_version: int = 1
+    encoding: str = "json"
+    scan_engine: str = "databricks_sql"
+    topic: str | None = None
+    # alias -> {table?, columns}: the zero-DBU engines' DuckDB registrations (the
+    # pruning allowlist); `databricks_sql` needs none -- the warehouse resolves the views.
+    sources: dict[str, dict] | None = None
     schema_registry_url: str | None = None
 
     def to_config(self) -> JobotronConfig:
+        sources = {}
+        for alias, spec in (self.sources or {}).items():
+            columns = spec.get("columns") or []
+            if not columns:
+                raise ValueError(
+                    f"sources.{alias}.columns is required -- it is the pruning allowlist "
+                    "(the query may touch nothing else)"
+                )
+            table = spec.get("table") or alias
+            # A 3-part name is absolute -- the demo's market shards live in sibling
+            # schemas (de.voperdb_cy.cCustomer) and the verification dimension is
+            # cross-catalog (de.metadatadb.mVerificationStatus); a 1-part name stays
+            # relative to the instance's catalog.schema.
+            fqn = table if table.count(".") == 2 else f"{self.catalog}.{self.schema_name}.{table}"
+            sources[alias] = (fqn, tuple(columns))
         return JobotronConfig(
-            job_type=self.job_type,
+            query_type=self.query_type,
+            operator=self.operator,
+            job_name=self.job_name,
             catalog=self.catalog,
             schema=self.schema_name,
-            sources={
-                "customers": (
-                    f"{self.catalog}.{self.schema_name}.{self.customers_table}",
-                    tuple((self.scan_columns or {}).get("customers", ())),
-                ),
-                "kyc_cases": (
-                    f"{self.catalog}.{self.schema_name}.{self.kyc_table}",
-                    tuple((self.scan_columns or {}).get("kyc_cases", ())),
-                ),
-            },
             query=self.query,
-            operators=tuple(self.operators or ["gr", "br"]),
-            topic_template=self.topic_template,
-            key_columns=tuple(self.key_columns or ["customer_id"]),
-            operator_column=self.operator_column,
+            dry_run=self.dry_run,
+            schema_version=self.schema_version,
+            encoding=self.encoding,
             scan_engine=self.scan_engine,
-            customers_table=self.customers_table,
-            kyc_table=self.kyc_table,
+            topic=self.topic or "",
+            sources=sources,
             schema_registry_url=self.schema_registry_url or SCHEMA_REGISTRY_URL,
         )
 
