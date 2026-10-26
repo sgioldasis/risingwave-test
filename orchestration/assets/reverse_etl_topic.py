@@ -16,9 +16,9 @@ per key.
 from confluent_kafka.admin import NewTopic
 from dagster import AssetExecutionContext, asset
 
+from . import reverse_etl_connections as connections
 from .kafka_topics_setup import _DEFAULT_PARTITIONS, _DEFAULT_REPLICATION
 from .reverse_etl_config import CdfSyncConfig
-from .reverse_etl_resources import KafkaResource
 
 
 def build_topic_asset(
@@ -40,8 +40,8 @@ def build_topic_asset(
         group_name=cfg.group_name,
         description=f"Create the {cfg.kafka_topic} Kafka topic if it does not exist.",
     )
-    def kafka_topic(context: AssetExecutionContext, kafka: KafkaResource):
-        admin = kafka.admin_client()
+    def kafka_topic(context: AssetExecutionContext):
+        admin = connections.kafka().admin_client()
         if cfg.kafka_topic in admin.list_topics(timeout=15).topics:
             context.log.info(f"Topic {cfg.kafka_topic} already exists")
             return

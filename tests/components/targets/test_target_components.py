@@ -153,16 +153,13 @@ class TestTogether:
             "reverse_etl_company_duckdb_target",
         }
 
-    def test_the_assets_are_loadable_with_their_fakes(self, resources):
-        """The postgres target needs http (Connect REST) and kafka (the lag read); the RisingWave
-        target needs its database, the source's location and the registry; the mirror needs kafka
-        and the registry. Nothing else is bound — no postgres resource anywhere."""
-        four = {k: v for k, v in resources().items() if k in ("risingwave", "databricks", "kafka", "registry", "http")}
+    def test_the_assets_are_loadable_with_no_resources(self):
+        """The env contract: the connections come from the env-fed functions, so the merged
+        definitions load with nothing bound at all."""
         merged = dg.Definitions.merge(
             build(ReverseEtlRisingwaveTarget, **TestRisingwave.REQUIRED),
             build(ReverseEtlPostgresTarget, **TestPostgres.REQUIRED),
             build(ReverseEtlDuckdbTarget, **TestDuckdb.REQUIRED),
-            dg.Definitions(resources=four),
         )
         dg.Definitions.validate_loadable(merged)
 

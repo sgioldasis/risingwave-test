@@ -148,7 +148,7 @@ class TestSetupJobSelection:
             "reverse_etl_unittest_table_setup",
             "reverse_etl_unittest_topic_setup",
         }
-        assert {"risingwave", "http"} <= set(sync.required_resource_keys)
+        assert set(sync.required_resource_keys) - {"io_manager"} == set()
 
     def test_the_setup_job_runs_the_pipeline_assets_and_the_topic_asset(self, resources):
         assert self.selected(build(), resources, "reverse_etl_unittest_setup_job") == BASE

@@ -1,7 +1,9 @@
-"""Fake resources for the reverse-ETL tests, bound under the keys the project registers (postgres, risingwave,
-databricks, kafka, http, registry; see orchestration/assets/reverse_etl_resources.py). Each fake records what it
-was asked to do in one shared `calls` list of (kind, detail) tuples, so a test can assert what happened and in
-which order."""
+"""Fakes for the reverse-ETL tests, shaped like the connection surfaces in
+orchestration/assets/reverse_etl_connections.py (postgres, risingwave, databricks, kafka, http,
+registry — the env contract). Each fake records what it was asked to do in one shared `calls`
+list of (kind, detail) tuples, so a test can assert what happened and in which order. The tests
+bind them by patching the connection functions (bind_connections), not by registering Dagster
+resources: the assets declare none."""
 
 import dataclasses
 import types
@@ -22,7 +24,7 @@ def make_config(source_columns=("description STRING",), key_column="rid", **over
 
 
 class FakeDatabase:
-    """Stands in for PostgresResource and RisingWaveResource: records each statement under `kind`.
+    """Stands in for the connections module's Postgres/RisingWave connectables: records each statement under `kind`.
     `columns` is what an information_schema.columns query returns (the table's current columns).
     `state_rows` is the sync's watermark table, a list of (last_commit_version, last_schema): the sync's state
     read returns it freshest first and its state write appends to it. `state_table_exists` is what the
@@ -42,9 +44,6 @@ class FakeDatabase:
         self.state_table_exists = state_table_exists
         self.state_guard_columns = state_guard_columns
         self.state_identities = state_identities if state_identities is not None else []
-
-    def connect_with_timeout(self):
-        return self.connect()
 
     def connect(self):
         cursor = mock.MagicMock()
@@ -303,6 +302,22 @@ def fake_resources(
 
 def kinds(calls: list) -> list:
     return [kind for kind, _ in calls]
+
+
+def bind_connections(monkeypatch, res: dict) -> None:
+    """Point every env-direct connection function (reverse_etl_connections) at the fakes: the
+    tests' replacement for binding fake resources under Dagster keys, which the assets no longer
+    declare. Each connection function takes no arguments and returns the fake object whose
+    methods the assets then call."""
+    from orchestration.assets import reverse_etl_connections as connections
+
+    monkeypatch.setattr(connections, "state_postgres", lambda: res["postgres"])
+    monkeypatch.setattr(connections, "schema_postgres", lambda: res["postgres"])
+    monkeypatch.setattr(connections, "risingwave", lambda: res["risingwave"])
+    monkeypatch.setattr(connections, "databricks", lambda: res["databricks"])
+    monkeypatch.setattr(connections, "kafka", lambda: res["kafka"])
+    monkeypatch.setattr(connections, "registry", lambda: res["registry"])
+    monkeypatch.setattr(connections, "http", lambda: res["http"])
 
 
 def error_text(result) -> str:

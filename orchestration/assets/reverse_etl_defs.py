@@ -72,14 +72,12 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
     mirror."""
     assets = [
         build_table_setup_asset(cfg),
-        # The demo's hooks reach RisingWave, Kafka Connect and the Postgres TARGET through
-        # context.resources, so those are declared as required (postgres is needed by the hooks
-        # whatever the state backend is -- the state's own postgres need is the core's, per
-        # cfg.state_backend); the setup and topic assets are wired in as upstream deps.
+        # The demo's hooks reach RisingWave, Kafka Connect and the Postgres target through the
+        # env-fed connection functions (reverse_etl_connections.py) — nothing to declare as a
+        # Dagster resource; the setup and topic assets are wired in as upstream deps.
         build_sync_asset(
             cfg,
             hooks=DemoSyncHooks(),
-            extra_resource_keys=("risingwave", "http", "postgres"),
             deps=[AssetKey(cfg.table_setup_asset), AssetKey(cfg.topic_asset)],
         ),
     ]

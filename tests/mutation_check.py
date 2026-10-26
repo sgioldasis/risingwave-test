@@ -244,7 +244,7 @@ MUTATIONS = [
         "risingwave", "rename does not copy the data", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'cur.execute(f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = {_quote(old)}")', "pass", "tests/test_risingwave_setup.py",
     ),
     Mutation("risingwave", "companions registered as columns", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'if name in known or name.endswith("_ts"):', "if name in known:", "tests/test_risingwave_setup.py"),
-    Mutation("risingwave", "connect timeout changed", f"{ASSETS}/reverse_etl_risingwave_setup.py", "connect_timeout=10,", "connect_timeout=60,", "tests/test_risingwave_setup.py"),
+    Mutation("risingwave", "connect timeout changed", f"{ASSETS}/reverse_etl_connections.py", "            # zero-DBU sync ran from outside the container network (2026-10-14).\n            connect_timeout=10,", "            # zero-DBU sync ran from outside the container network (2026-10-14).\n            connect_timeout=60,", "tests/test_risingwave_setup.py"),
     Mutation("risingwave", "topic read from the end", f"{ASSETS}/reverse_etl_risingwave_setup.py", "\"scan.startup.mode = 'earliest'\",", "\"scan.startup.mode = 'latest'\",", "tests/test_risingwave_setup.py"),
     Mutation("risingwave", "missing bootstrap accepted", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if not bootstrap:", "if False:", "tests/test_risingwave_setup.py"),
     # --- the Postgres setup ---
@@ -270,16 +270,11 @@ MUTATIONS = [
     Mutation("component", "state_backend requiredness sneaks back", "orchestration/components/reverse_etl_cdf_sync.py", "    state_backend: str\n", '    state_backend: str = "postgres"\n', "tests/components"),
     # Two sites read cfg.state_backend (the resource-key guard and the state build); this
     # anchors on the state build. Either one alone is caught statically (test_config_surface).
-    Mutation("component", "the asset reads a demo-only field", f"{ASSETS}/reverse_etl_cdf_setup.py", 'context.resources.postgres if cfg.state_backend == "postgres" else None', 'context.resources.postgres if cfg.propagate_drops == "postgres" else None', "tests/sync_asset"),
+    Mutation("component", "the asset reads a demo-only field", f"{ASSETS}/reverse_etl_cdf_setup.py", 'connections.state_postgres() if cfg.state_backend == "postgres" else None', 'connections.state_postgres() if cfg.propagate_drops == "postgres" else None', "tests/sync_asset"),
     Mutation("component", "topic asset always built", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.create_topic_asset:\n", "    if True:\n", "tests/components"),
     Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
     Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),
-    # --- the core signature: resources are decorator-declared, the demo wires the extras in ---
-    Mutation("component", "the core requires the demo resources", f"{ASSETS}/reverse_etl_cdf_setup.py", 'required_resource_keys={"databricks", "kafka", "registry"}', 'required_resource_keys={"databricks", "kafka", "registry", "risingwave", "http"}', "tests/sync_asset"),
-    Mutation("component", "the demo's extra resources are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", '| set(extra_resource_keys),', '| set(),', "tests/components"),
-    # The postgres resource belongs to the postgres state backend (reverse_etl_state.py): a
-    # duckdb-state sync needs only its file, so the core must not require postgres unconditionally.
-    Mutation("component", "the postgres resource is required even for duckdb", f"{ASSETS}/reverse_etl_cdf_setup.py", '| ({"postgres"} if cfg.state_backend == "postgres" else set())', '| {"postgres"}', "tests/components"),
+    # --- the core signature: no resources (the env contract), the demo wires its deps in ---
     Mutation("component", "the demo's upstream deps are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "deps=list(deps) or None,", "deps=None,", "tests/components"),
     # --- the target selection (plan section 12, option A): each gate is pinned by a selection's exact asset set ---
     Mutation("targets", "the RisingWave target is built anyway", f"{ASSETS}/reverse_etl_defs.py", '*([build_risingwave_table_asset(risingwave_target_config(cfg, source_fqn))] if "risingwave" in cfg.targets else []),', "*([build_risingwave_table_asset(risingwave_target_config(cfg, source_fqn))]),", "tests/components"),
@@ -308,6 +303,9 @@ MUTATIONS = [
     # --- the connector's coordinates (release design step 6): env only, password untouched ---
     Mutation("connector-coords", "the schema qualifier is dropped", f"{ASSETS}/reverse_etl_debezium_sink.py", '        "collection.name.format": cfg.postgres_table,', '        "collection.name.format": cfg.postgres_table.rsplit(".", 1)[-1],', "tests/test_types.py"),
     Mutation("connector-coords", "the password is interpolated", f"{ASSETS}/reverse_etl_debezium_sink.py", '        "connection.password": "${env:POSTGRES_PASSWORD}",', '        "connection.password": os.environ.get("POSTGRES_PASSWORD", "${env:POSTGRES_PASSWORD}"),', "tests/test_types.py"),
+    # --- the env contract (release design step 7): connections from the environment, meter optional ---
+    Mutation("env-connections", "the cost meter is always emitted", f"{ASSETS}/reverse_etl_cdf_setup.py", '    if not os.environ.get("DBT_DATABRICKS_HOST", ""):\n        return {}', "    if False:", "tests/test_types.py"),
+    Mutation("env-connections", "the state Postgres host is defaulted", f"{ASSETS}/reverse_etl_connections.py", '    host = os.environ.get("POSTGRES_HOST", "")\n    if not host:', '    host = os.environ.get("POSTGRES_HOST", "host.docker.internal")\n    if not host:', "tests/test_postgres_setup.py"),
     # --- the core's preconditions: the topic and the state table are the team's (D1, D5) ---
     Mutation("preconditions", "the topic check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "if topic not in kafka.admin_client().list_topics(timeout=15).topics:", "if False:", "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),

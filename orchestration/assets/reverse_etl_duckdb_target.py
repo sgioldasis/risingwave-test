@@ -20,8 +20,8 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from . import reverse_etl_connections as connections
 from .reverse_etl_config import DuckdbTargetConfig
-from .reverse_etl_resources import KafkaResource, SchemaRegistryResource
 
 _DRAIN_ROUNDS = 10
 
@@ -40,8 +40,10 @@ def build_duckdb_target_asset(cfg: DuckdbTargetConfig):
             "topic (plan section 12, option A) — the sync itself does not write this file."
         ),
     )
-    def duckdb_target(context: AssetExecutionContext, kafka: KafkaResource, registry: SchemaRegistryResource):
+    def duckdb_target(context: AssetExecutionContext):
         import duckdb
+
+        kafka, registry = connections.kafka(), connections.registry()
 
         # Read the whole topic from the beginning, no commits: the consumer is stateless and
         # rebuilds the mirror per run. Draining is verified against the broker's watermarks --

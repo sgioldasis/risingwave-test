@@ -15,7 +15,7 @@ import pytest
 
 from orchestration.assets.reverse_etl_config import duckdb_target_config
 from orchestration.assets.reverse_etl_duckdb_target import build_duckdb_target_asset
-from tests.fakes import FakeKafka, FakeSchemaRegistry, make_config
+from tests.fakes import FakeKafka, FakeSchemaRegistry, bind_connections, make_config
 
 
 def event(key, op, after):
@@ -70,7 +70,8 @@ class TargetKafka(FakeKafka):
 class Topic:
     """A topic with Debezium messages on it, plus the asset run against it."""
 
-    def __init__(self, tmp_path, calls):
+    def __init__(self, tmp_path, calls, monkeypatch):
+        self.monkeypatch = monkeypatch
         self.cfg = duckdb_target_config(
             make_config(source_columns=(), key_column="id", duckdb_target_path=str(tmp_path / "mirror.duckdb")).targets_config()
         )
@@ -83,11 +84,8 @@ class Topic:
         self.kafka.recording_producer.messages.append((self.cfg.kafka_topic, key_json, value_json))
 
     def run(self):
-        return dg.materialize(
-            [build_duckdb_target_asset(self.cfg)],
-            resources={"kafka": self.kafka, "registry": self.registry},
-            raise_on_error=False,
-        )
+        bind_connections(self.monkeypatch, {"kafka": self.kafka, "registry": self.registry})
+        return dg.materialize([build_duckdb_target_asset(self.cfg)], raise_on_error=False)
 
     def rows(self, columns="*"):
         connection = duckdb.connect(self.cfg.duckdb_target_path, read_only=True)
@@ -98,8 +96,8 @@ class Topic:
 
 
 @pytest.fixture
-def topic(tmp_path, calls):
-    return Topic(tmp_path, calls)
+def topic(tmp_path, calls, monkeypatch):
+    return Topic(tmp_path, calls, monkeypatch)
 
 
 def test_the_mirror_holds_the_latest_event_per_key(topic):

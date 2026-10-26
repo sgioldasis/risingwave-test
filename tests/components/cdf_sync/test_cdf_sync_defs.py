@@ -8,7 +8,7 @@ services needed. Run from the repo root:  .venv/bin/python -m pytest
 import dagster as dg
 
 from orchestration.components.reverse_etl_cdf_sync import ReverseEtlCdfSync
-from tests.fakes import FakeAdmin, FakeKafka
+from tests.fakes import FakeAdmin, FakeKafka, bind_connections
 
 REQUIRED = {
     "name": "orders",
@@ -66,21 +66,19 @@ class TestTheSync:
         (spec,) = sync_asset(build(create_topic=False)).specs
         assert {dep.asset_key.to_user_string() for dep in spec.deps} == set()
 
-    def test_the_asset_needs_only_the_four_resources(self):
-        required = set(sync_asset(build()).required_resource_keys)
-        assert {"postgres", "databricks", "kafka", "registry"} <= required
-        assert {"risingwave", "http"} & required == set()
+    def test_the_asset_needs_no_resources(self):
+        """The env contract: connections come from reverse_etl_connections' env-fed functions,
+        so the asset declares no Dagster resources (io_manager is Dagster's implicit one)."""
+        assert set(sync_asset(build()).required_resource_keys) - {"io_manager"} == set()
 
     def test_a_duckdb_state_sync_does_not_need_the_postgres_resource(self):
-        """The postgres resource belongs to the postgres state backend (plan section 12): a
-        duckdb-state sync needs nothing but its file path."""
+        """No backend needs a resource: a duckdb-state sync needs nothing but its file path,
+        a postgres-state sync opens its connection from the environment."""
         asset = sync_asset(build(state_backend="duckdb", state_path="/tmp/orders/state.duckdb"))
-        assert "postgres" not in set(asset.required_resource_keys)
-        assert {"databricks", "kafka", "registry"} <= set(asset.required_resource_keys)
+        assert set(asset.required_resource_keys) - {"io_manager"} == set()
 
-    def test_the_definitions_load_with_only_the_four_fakes(self, resources):
-        four = {k: v for k, v in resources().items() if k not in ("risingwave", "http")}
-        dg.Definitions.validate_loadable(dg.Definitions.merge(build(), dg.Definitions(resources=four)))
+    def test_the_definitions_load_with_no_resources(self):
+        dg.Definitions.validate_loadable(build())
 
     def test_two_syncs_merge_without_a_name_clash(self):
         merged = dg.Definitions.merge(build(name="one"), build(name="two"))
@@ -115,12 +113,13 @@ class TestTheTopicBootstrap:
         assert job.executor_def is dg.in_process_executor
         assert {key.to_user_string() for key in job.selection.selected_keys} == {TOPIC_ASSET, SYNC_ASSET}
 
-    def test_the_topic_asset_creates_the_topic_compacted(self, calls):
+    def test_the_topic_asset_creates_the_topic_compacted(self, calls, monkeypatch):
         """A Debezium-style change topic wants cleanup.policy=compact: the broker default (delete)
         risks retention dropping events a lagging consumer has not read."""
         (topic,) = [a for a in build().assets if TOPIC_ASSET in {s.key.to_user_string() for s in a.specs}]
         admin = FakeAdmin()
-        result = dg.materialize([topic], resources={"kafka": FakeKafka(calls, admin=admin)})
+        bind_connections(monkeypatch, {"kafka": FakeKafka(calls, admin=admin)})
+        result = dg.materialize([topic])
         assert result.success
         assert admin.created == ["orders_cdc"]
         assert admin.created_configs == [{"cleanup.policy": "compact"}]

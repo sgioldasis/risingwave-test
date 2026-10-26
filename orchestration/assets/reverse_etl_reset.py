@@ -12,18 +12,13 @@ reset_name_prefixes allowlist and reset_schema.
 
 import time
 
+from .databricks_cost_meter import reset as meter_reset
 from dagster import In, Nothing, OpExecutionContext, in_process_executor, job, op
 
+from . import reverse_etl_connections as connections
 from .reverse_etl_config import ReverseEtlSyncConfig
 from .reverse_etl_state import build_sync_state
 from .reverse_etl_debezium_sink import CONNECT_URL
-from .reverse_etl_resources import (
-    DatabricksResource,
-    HttpResource,
-    KafkaResource,
-    PostgresResource,
-    RisingWaveResource,
-)
 
 
 def _assert_reset_allowed(cfg: ReverseEtlSyncConfig) -> None:
@@ -54,7 +49,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
     prefix = cfg.sync_name
 
     @op(name=f"{prefix}_delete_connector")
-    def delete_connector(context: OpExecutionContext, http: HttpResource) -> None:
+    def delete_connector(context: OpExecutionContext) -> None:
+        http = connections.http()
         _assert_reset_allowed(cfg)
         resp = http.delete(f"{CONNECT_URL}/connectors/{cfg.connector_name}", timeout=30)
         if resp.status_code == 404:
@@ -65,8 +61,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
             raise RuntimeError(f"Deleting {cfg.connector_name} failed ({resp.status_code}): {resp.text[:500]}")
 
     @op(name=f"{prefix}_drop_risingwave_table", ins={"start": In(Nothing)})
-    def drop_risingwave_table(context: OpExecutionContext, risingwave: RisingWaveResource) -> None:
-        conn = risingwave.connect()
+    def drop_risingwave_table(context: OpExecutionContext) -> None:
+        conn = connections.risingwave().connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(f"DROP TABLE IF EXISTS {cfg.risingwave_table}")
@@ -76,8 +72,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         context.log.info(f"Dropped RisingWave table {cfg.risingwave_table} (if it existed)")
 
     @op(name=f"{prefix}_drop_postgres_table", ins={"start": In(Nothing)})
-    def drop_postgres_table(context: OpExecutionContext, postgres: PostgresResource) -> None:
-        conn = postgres.connect()
+    def drop_postgres_table(context: OpExecutionContext) -> None:
+        conn = connections.state_postgres().connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{cfg.postgres_table}"')
@@ -87,8 +83,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         context.log.info(f"Dropped Postgres table {cfg.postgres_table} (if it existed)")
 
     @op(name=f"{prefix}_delete_kafka_topic_and_group", ins={"start": In(Nothing)})
-    def delete_kafka_topic_and_group(context: OpExecutionContext, kafka: KafkaResource) -> None:
-        admin = kafka.admin_client()
+    def delete_kafka_topic_and_group(context: OpExecutionContext) -> None:
+        admin = connections.kafka().admin_client()
         group = cfg.consumer_group
         topic = cfg.kafka_topic
 
@@ -120,7 +116,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         context.log.info(f"Topic {topic} is gone")
 
     @op(name=f"{prefix}_delete_registry_subjects", ins={"start": In(Nothing)})
-    def delete_registry_subjects(context: OpExecutionContext, http: HttpResource) -> None:
+    def delete_registry_subjects(context: OpExecutionContext) -> None:
+        http = connections.http()
         # Soft delete, then permanent: a soft-deleted subject still blocks re-registering a different schema.
         for subject in (cfg.key_subject, cfg.value_subject):
             url = f"{cfg.schema_registry_url}/subjects/{subject}"
@@ -134,9 +131,8 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
                     raise RuntimeError(f"Deleting subject {subject} failed ({resp.status_code}): {resp.text[:500]}")
 
     @op(name=f"{prefix}_drop_databricks_tables", ins={"start": In(Nothing)})
-    def drop_databricks_tables(
-        context: OpExecutionContext, postgres: PostgresResource, databricks: DatabricksResource
-    ) -> None:
+    def drop_databricks_tables(context: OpExecutionContext) -> None:
+        postgres, databricks = connections.state_postgres(), connections.databricks()
         # Cleared FIRST, before any Databricks call: the drops below can fail (for example a
         # source table the service principal does not own), and a watermark left behind by a
         # failed reset stalls the next sync silently once the source is recreated at version 0
@@ -158,7 +154,7 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         context.log.info("Cleared the sync's location cache (the tables are about to move)")
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
         for table in (cfg.source_fqn, cfg.state_fqn):
             databricks.run_sql(token, f"DROP TABLE IF EXISTS {table}")
             context.log.info(f"Dropped {table} (if it existed)")

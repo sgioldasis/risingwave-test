@@ -8,7 +8,7 @@ import pytest
 
 from orchestration.assets import reverse_etl_change as change_module
 from orchestration.assets.reverse_etl_change import DemoChangeSkip, change_statements
-from tests.fakes import error_text, make_config
+from tests.fakes import bind_connections, error_text, make_config
 
 TABLE = "de_dev.sr_poc_external.reverse_etl_unittest_source"
 
@@ -112,10 +112,11 @@ class TestBulkLoad:
             change_statements(cfg, "bulk_1m", rows=10)
 
 
-def run_change(cfg, resources, change, **options):
+def run_change(cfg, monkeypatch, resources, change, **options):
     config = {"ops": {f"{cfg.sync_name}_make_change": {"config": {"change": change}}}}
+    bind_connections(monkeypatch, resources(**options))
     return dg.materialize(
-        [change_module.build_change_asset(cfg)], resources=resources(**options), run_config=config, raise_on_error=False
+        [change_module.build_change_asset(cfg)], run_config=config, raise_on_error=False
     )
 
 
@@ -125,41 +126,41 @@ def change_sql(result):
 
 
 class TestChangeAsset:
-    def test_the_statements_run_in_order_and_are_reported_for_the_page(self, cfg, calls, resources):
-        result = run_change(cfg, resources, "add_column", table_columns=("id", "description"))
+    def test_the_statements_run_in_order_and_are_reported_for_the_page(self, cfg, calls, monkeypatch, resources):
+        result = run_change(cfg, monkeypatch, resources, "add_column", table_columns=("id", "description"))
         assert result.success
         sent = [detail for kind, detail in calls if kind == "databricks" and not detail.startswith("DESCRIBE")]
         assert sent[0] == f"ALTER TABLE {TABLE} ADD COLUMN new_col_1 STRING"
         assert change_sql(result)["sql"] == sent
 
-    def test_the_tables_columns_are_read_only_for_column_changes(self, cfg, calls, resources):
-        run_change(cfg, resources, "update", table_columns=("id",))
+    def test_the_tables_columns_are_read_only_for_column_changes(self, cfg, calls, monkeypatch, resources):
+        run_change(cfg, monkeypatch, resources, "update", table_columns=("id",))
         assert not any(detail.startswith("DESCRIBE") for _, detail in calls)
 
-    def test_a_rename_with_nothing_to_rename_ends_green_and_says_why(self, cfg, calls, resources):
-        result = run_change(cfg, resources, "rename_column", table_columns=("id", "description"))
+    def test_a_rename_with_nothing_to_rename_ends_green_and_says_why(self, cfg, calls, monkeypatch, resources):
+        result = run_change(cfg, monkeypatch, resources, "rename_column", table_columns=("id", "description"))
         assert result.success
         report = change_sql(result)
         assert report["sql"] == [] and "run add_column first" in report["skipped"]
         assert not [detail for kind, detail in calls if kind == "databricks" and not detail.startswith("DESCRIBE")]
 
-    def test_a_missing_configured_column_points_at_the_stale_sync_config(self, cfg, resources):
-        result = run_change(cfg, resources, "update", sql_error=RuntimeError("[UNRESOLVED_COLUMN] score"))
+    def test_a_missing_configured_column_points_at_the_stale_sync_config(self, cfg, monkeypatch, resources):
+        result = run_change(cfg, monkeypatch, resources, "update", sql_error=RuntimeError("[UNRESOLVED_COLUMN] score"))
         assert not result.success
         assert "source_columns" in error_text(result)
 
-    def test_any_other_statement_failure_is_not_reworded(self, cfg, resources):
-        result = run_change(cfg, resources, "update", sql_error=RuntimeError("PERMISSION_DENIED"))
+    def test_any_other_statement_failure_is_not_reworded(self, cfg, monkeypatch, resources):
+        result = run_change(cfg, monkeypatch, resources, "update", sql_error=RuntimeError("PERMISSION_DENIED"))
         assert not result.success
         text = error_text(result)
         assert "PERMISSION_DENIED" in text and "source_columns" not in text
 
-    def test_a_bulk_load_warns_unless_the_sync_reads_one_commit_per_chunk(self, calls, resources, monkeypatch):
+    def test_a_bulk_load_warns_unless_the_sync_reads_one_commit_per_chunk(self, calls, monkeypatch, resources):
         monkeypatch.delenv("REVERSE_ETL_CDF_CHUNK_VERSIONS", raising=False)
         cfg = delta_cfg()
         warnings = []
         monkeypatch.setattr(
             dg.DagsterLogManager, "warning", lambda self, message, *a, **k: warnings.append(message), raising=False
         )
-        assert run_change(cfg, resources, "bulk_1m").success
+        assert run_change(cfg, monkeypatch, resources, "bulk_1m").success
         assert any("REVERSE_ETL_CDF_CHUNK_VERSIONS=1" in message for message in warnings)

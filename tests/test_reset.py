@@ -12,14 +12,14 @@ import psycopg2.errors
 import pytest
 
 from orchestration.assets import reverse_etl_reset as reset_module
-from tests.fakes import FakeAdmin, FakeHttp, FakeKafka, error_text, kinds, make_config
+from tests.fakes import FakeAdmin, FakeHttp, FakeKafka, bind_connections, error_text, kinds, make_config
 
 
 @pytest.fixture
-def run_reset(resources):
+def run_reset(resources, monkeypatch):
     def run(cfg, **options):
         job = reset_module.build_reset_job(cfg)
-        job = dg.Definitions(jobs=[job], resources=resources(**options)).get_job_def(cfg.reset_job)
+        bind_connections(monkeypatch, resources(**options))
         return job.execute_in_process(raise_on_error=False)
 
     return run
@@ -140,13 +140,12 @@ class WatermarkPostgres:
 
 
 @pytest.fixture
-def run_with(resources):
+def run_with(resources, monkeypatch):
     """Run the reset job with some of the fake resources replaced."""
 
     def run(cfg, **overrides):
-        res = resources()
-        res.update(overrides)
-        job = dg.Definitions(jobs=[reset_module.build_reset_job(cfg)], resources=res).get_job_def(cfg.reset_job)
+        bind_connections(monkeypatch, {**resources(), **overrides})
+        job = dg.Definitions(jobs=[reset_module.build_reset_job(cfg)]).get_job_def(cfg.reset_job)
         return job.execute_in_process(raise_on_error=False)
 
     return run

@@ -7,10 +7,11 @@ existing table brings their own table and their own state, and gets neither asse
 
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from . import reverse_etl_connections as connections
+from .databricks_cost_meter import reset as meter_reset
 from .reverse_etl_cdf_setup import _cost_metadata
 from .reverse_etl_state import DuckDBSyncState, PostgresSyncState
 from .reverse_etl_config import ReverseEtlSyncConfig
-from .reverse_etl_resources import DatabricksResource, PostgresResource
 
 
 def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
@@ -23,10 +24,11 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
             "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
         ),
     )
-    def table_setup(context: AssetExecutionContext, postgres: PostgresResource, databricks: DatabricksResource):
+    def table_setup(context: AssetExecutionContext):
+        postgres, databricks = connections.state_postgres(), connections.databricks()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
 
         columns = ",\n            ".join(
             [f"{cfg.key_column} BIGINT GENERATED ALWAYS AS IDENTITY", *cfg.source_columns]
@@ -119,10 +121,11 @@ def build_seed_asset(cfg: ReverseEtlSyncConfig):
             f"Not synced until {cfg.sync_asset} runs."
         ),
     )
-    def seed(context: AssetExecutionContext, databricks: DatabricksResource):
+    def seed(context: AssetExecutionContext):
+        databricks = connections.databricks()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
         for statement in cfg.seed_statements:
             databricks.run_sql(token, statement.replace("{source_table}", cfg.source_fqn))
         context.log.info(f"Ran {len(cfg.seed_statements)} seed statement(s) against {cfg.source_fqn}")

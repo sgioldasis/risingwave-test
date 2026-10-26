@@ -8,7 +8,7 @@ import pytest
 
 from orchestration.assets import reverse_etl_debezium_sink as sink_module
 from orchestration.assets.reverse_etl_config import postgres_target_config
-from tests.fakes import error_text, make_config
+from tests.fakes import bind_connections, error_text, make_config
 
 
 @pytest.fixture(autouse=True)
@@ -17,26 +17,26 @@ def kafka_env(monkeypatch):
     monkeypatch.setenv("KAFKA_OUTPUT_BOOTSTRAP", "kafka.invalid:9093")
 
 
-def run_sink(cfg, resources, **options):
+def run_sink(cfg, monkeypatch, resources, **options):
     """The builder takes the slim postgres config (release design step 4): the test composes it
     through the demo bridge, the same path the demo's builder uses."""
+    bind_connections(monkeypatch, resources(**options))
     return dg.materialize(
         [sink_module.build_debezium_sink_asset(postgres_target_config(cfg.targets_config()))],
-        resources=resources(**options),
         raise_on_error=False,
     )
 
 
-def test_the_connector_config_is_put_and_awaited_until_running(calls, resources):
+def test_the_connector_config_is_put_and_awaited_until_running(calls, monkeypatch, resources):
     cfg = make_config()
-    assert run_sink(cfg, resources).success
+    assert run_sink(cfg, monkeypatch, resources).success
     url = f"{sink_module.CONNECT_URL}/connectors/{cfg.connector_name}"
     assert calls.count(("http", f"PUT {url}/config")) == 1
     assert ("http", f"GET {url}/status") in calls
 
 
-def test_a_failed_connector_fails_the_asset_with_its_trace(resources):
-    result = run_sink(make_config(), resources, connector_state="FAILED")
+def test_a_failed_connector_fails_the_asset_with_its_trace(monkeypatch, resources):
+    result = run_sink(make_config(), monkeypatch, resources, connector_state="FAILED")
     assert not result.success
     assert "FAILED" in error_text(result)
 

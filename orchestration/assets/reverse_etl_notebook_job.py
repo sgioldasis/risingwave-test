@@ -22,7 +22,7 @@ from dagster import Config, MetadataValue, OpExecutionContext, in_process_execut
 from .databricks_optimize import DATABRICKS_HOST
 from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config
-from .reverse_etl_resources import DatabricksResource, HttpResource, RisingWaveResource, SchemaRegistryResource
+from . import reverse_etl_connections as connections
 from .reverse_etl_risingwave_setup import add_missing_columns
 
 # Where the ReverseEtlCdfSync instances live (orchestration/defs/<folder>/defs.yaml).
@@ -61,7 +61,7 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _find_job_id(http: HttpResource, token: str) -> int:
+def _find_job_id(http, token: str) -> int:
     resp = http.get(
         f"{DATABRICKS_HOST}/api/2.1/jobs/list",
         headers=_headers(token),
@@ -80,7 +80,7 @@ def _find_job_id(http: HttpResource, token: str) -> int:
     return jobs[0]["job_id"]
 
 
-def _wait_for_run(http: HttpResource, token: str, run_id: int, poll_interval: int = 10, max_wait: int = 1800) -> dict:
+def _wait_for_run(http, token: str, run_id: int, poll_interval: int = 10, max_wait: int = 1800) -> dict:
     deadline = time.monotonic() + max_wait
     while time.monotonic() < deadline:
         resp = http.get(
@@ -95,18 +95,17 @@ def _wait_for_run(http: HttpResource, token: str, run_id: int, poll_interval: in
 
 
 @op(name="reverse_etl_trigger_notebook_sync")
-def trigger_notebook_sync(
-    context: OpExecutionContext,
-    config: TriggerNotebookSyncConfig,
-    databricks: DatabricksResource,
-    risingwave: RisingWaveResource,
-    registry: SchemaRegistryResource,
-    http: HttpResource,
-) -> None:
+def trigger_notebook_sync(context: OpExecutionContext, config: TriggerNotebookSyncConfig) -> None:
     label = config.label.strip()
     if not _LABEL_PATTERN.fullmatch(label):
         raise ValueError(f"Invalid label {label!r}: use lowercase letters, digits and underscores, starting with a letter")
 
+    databricks, risingwave, registry, http = (
+        connections.databricks(),
+        connections.risingwave(),
+        connections.registry(),
+        connections.http(),
+    )
     databricks.require_env()
     token = databricks.token()
     sync_config = _load_sync_config(label)

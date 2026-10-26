@@ -916,6 +916,9 @@ services:
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
       - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
+      # The env-fed state/schema connections require it (reverse_etl_connections):
+      # inside the containers the state Postgres is the host-mapped one.
+      - POSTGRES_HOST=host.docker.internal
       - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
       - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
       - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
@@ -996,6 +999,8 @@ services:
       - MINIO_ACCESS_KEY=hummockadmin
       - MINIO_SECRET_KEY=hummockadmin
       - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
+      # The env-fed state/schema connections require it (see dagster-webserver above).
+      - POSTGRES_HOST=host.docker.internal
       - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
       - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
       - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}

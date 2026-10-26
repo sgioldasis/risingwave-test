@@ -14,7 +14,7 @@ from confluent_kafka.serialization import MessageField, SerializationContext
 from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
 from orchestration.assets import reverse_etl_delta_reader as reader
 from orchestration.assets.reverse_etl_demo_hooks import DemoSyncHooks
-from tests.fakes import FakeSchemaRegistry, make_config, use_local_azure, use_local_paths
+from tests.fakes import FakeSchemaRegistry, bind_connections, make_config, use_local_azure, use_local_paths
 from tests.sync_asset.support import (
     ABFS_LOCATION,
     FAST_PATH,
@@ -67,7 +67,7 @@ def registry(calls) -> FakeSchemaRegistry:
 
 
 @pytest.fixture
-def sync(source, calls, resources, state_rows, registry, encoding):
+def sync(source, calls, resources, state_rows, registry, encoding, monkeypatch):
     """Run the sync asset once; returns (result, the fake resources, the messages produced, decoded).
     Keyword options go to the fakes; `propagate_drops` turns on schema-change propagation to the targets."""
     deserializer = AvroDeserializer(registry.mock_client)
@@ -98,10 +98,6 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             targets=targets, duckdb_target_path=duckdb_target_path,
             **(cfg_overrides or {}),
         )
-        # Mirror the demo's wiring (reverse_etl_defs.py): the demo hooks reach risingwave/http and
-        # the Postgres target, so those must be declared required; the bare core and test hooks
-        # touch none of them and run without them.
-        extra = ("risingwave", "http", "postgres") if isinstance(hooks, DemoSyncHooks) else ()
         # The sync's precondition asks the admin for the sync's topic; a test overrides
         # kafka_admin_topics=() to get the missing-topic failure.
         options.setdefault("kafka_admin_topics", (cfg.kafka_topic,))
@@ -113,8 +109,9 @@ def sync(source, calls, resources, state_rows, registry, encoding):
             registry=registry,
             **options,
         )
+        bind_connections(monkeypatch, res)
         result = dg.materialize(
-            [cdf_setup.build_sync_asset(cfg, hooks=hooks, extra_resource_keys=extra)], resources=res, raise_on_error=False
+            [cdf_setup.build_sync_asset(cfg, hooks=hooks)], raise_on_error=False
         )
         produced = [decode(*message) for message in res["kafka"].recording_producer.messages]
         return result, res, produced

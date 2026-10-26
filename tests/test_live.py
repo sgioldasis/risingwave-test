@@ -65,10 +65,10 @@ def test_the_jobotron_demo_publishes_and_the_consumer_mirrors_the_latest_publish
 
 
 def target_values() -> str:
-    """The delta target's values of the demo column, read through the project's own Postgres resource."""
+    """The delta target's values of the demo column, read through the env-fed state connection."""
     code = (
-        "from orchestration.assets.reverse_etl_resources import PostgresResource\n"
-        "cur = PostgresResource().connect().cursor()\n"
+        "from orchestration.assets.reverse_etl_connections import state_postgres\n"
+        "cur = state_postgres().connect().cursor()\n"
         "cur.execute('SELECT renamed_col_1 FROM reverse_etl_delta_target WHERE renamed_col_1 IS NOT NULL')\n"
         "print('VALUES', [row[0] for row in cur.fetchall()])\n"
     )

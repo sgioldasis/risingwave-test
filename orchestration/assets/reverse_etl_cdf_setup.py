@@ -55,12 +55,9 @@ from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 from deltalake import DeltaTable
 
 from .databricks_cost_meter import record as meter_record
+from .databricks_cost_meter import reset as meter_reset
 from .databricks_cost_meter import snapshot as meter_snapshot
-from .reverse_etl_resources import (
-    DatabricksResource,
-    KafkaResource,
-    SchemaRegistryResource,
-)
+from . import reverse_etl_connections as connections
 from .databricks_optimize import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -299,7 +296,11 @@ def _cost_metadata() -> dict:
     """Databricks compute usage since the last meter reset, as run metadata.
 
     The demo helper (scripts/reverse_etl_demo_server.py) reads these entries
-    through the GraphQL API and renders cost chips on the demo page."""
+    through the GraphQL API and renders cost chips on the demo page. The meter
+    is demo-only telemetry (release design step 7): with the Databricks env
+    unset the sync runs unmetered and omits the metadata instead of raising."""
+    if not os.environ.get("DBT_DATABRICKS_HOST", ""):
+        return {}
     usage = meter_snapshot()
     return {
         "databricks_warehouse_seconds": MetadataValue.float(usage["warehouse_seconds"]),
@@ -412,7 +413,7 @@ def check_watermark_identity(state: SyncState, cfg: CdfSyncConfig, log) -> None:
     )
 
 
-def _require_topic(kafka: KafkaResource, topic: str) -> None:
+def _require_topic(kafka, topic: str) -> None:
     """The topic is the team's to create (D5): the core checks it and fails fast if it is
     absent. It never creates one -- the demo's topic asset runs before the sync."""
     if topic not in kafka.admin_client().list_topics(timeout=15).topics:
@@ -1117,7 +1118,8 @@ class SyncHooks(Protocol):
 
     `before_produce` and `after_delivery` return metadata to add to the run: list values are merged
     across chunks (extended, order kept, duplicates dropped), any other value overwrites. Resources
-    reach the hooks through `context.resources`."""
+    reach the hooks through the env-fed connection functions
+    (reverse_etl_connections.py)."""
 
     def before_produce(self, context, cfg, row_fields: list["RowField"]) -> dict: ...
 
@@ -1142,44 +1144,35 @@ def _merge_hook_metadata(into: dict, extra: dict) -> dict:
 def build_sync_asset(
     cfg: CdfSyncConfig,
     hooks: SyncHooks | None = None,
-    extra_resource_keys: tuple[str, ...] = (),
     deps: tuple[AssetKey, ...] = (),
 ):
     """The sync asset: delta-rs version-range reconstruction (see
     reverse_etl_delta_reader.py) -- no CDF read, no Spark, no warehouse anything:
     reads are delta-rs and the watermark state lives in the backend the config chose
-    (reverse_etl_state.py). The asset needs only the databricks, kafka and registry
-    resources, plus postgres when the state backend is postgres -- a DuckDB state file
-    needs nothing but its path. Resources are reached through context.resources (Dagster
-    forbids decorator-declared resource requirements alongside resource parameters, so the
-    signature is just the context); the asset writes to Kafka and its state, and nothing else. The Kafka
+    (reverse_etl_state.py). The asset declares no Dagster resources (the env
+    contract, reverse_etl_connections.py): its connections come from env-fed
+    functions — databricks/kafka/registry always, the state Postgres when the
+    backend is postgres (a DuckDB state file needs nothing but its path). The
+    asset writes to Kafka and its state, and nothing else. The Kafka
     topic and the state table must already exist: both are checked before anything
     else runs, and a missing one fails with what to create (D1, D5) — the core
     never creates either.
 
     `hooks` (the demo passes DemoSyncHooks) adds target care at the two points documented on
-    SyncHooks — the hooks reach any further resources through context.resources, and
-    `extra_resource_keys` declares them as required so a definitions build without them fails
-    validation. `deps` declares upstream assets (the demo wires its table-setup and topic assets
+    SyncHooks — the hooks reach their connections through the same env-fed functions.
+    `deps` declares upstream assets (the demo wires its table-setup and topic assets
     in; the bare core declares none)."""
-    return _build_sync_asset_delta_rs(cfg, hooks, extra_resource_keys, deps)
+    return _build_sync_asset_delta_rs(cfg, hooks, deps)
 
 
-def _build_sync_asset_delta_rs(
-    cfg: CdfSyncConfig, hooks: SyncHooks | None, extra_resource_keys: tuple[str, ...], deps: tuple[AssetKey, ...]
-):
+def _build_sync_asset_delta_rs(cfg: CdfSyncConfig, hooks: SyncHooks | None, deps: tuple[AssetKey, ...]):
     @asset(
         name=cfg.sync_asset,
         group_name=cfg.group_name,
         deps=list(deps) or None,
-        # All resources are declared here rather than as function parameters:
-        # Dagster forbids the two together, and the hook-reachable keys are only
-        # known at build time (extra_resource_keys).
-        # The postgres resource is required only by the postgres state backend; a DuckDB
-        # state file needs nothing but its path (reverse_etl_state.py).
-        required_resource_keys={"databricks", "kafka", "registry"}
-        | ({"postgres"} if cfg.state_backend == "postgres" else set())
-        | set(extra_resource_keys),
+        # No required_resource_keys (the env contract): the connections come from
+        # reverse_etl_connections' env-fed functions, so the same defs.yaml deploys
+        # to staging and production with nothing for a team to bind.
         description=(
             f"Batch-read new/changed/deleted rows from {cfg.source_fqn}'s Change "
             "Data Feed since the last watermark (delta-rs version-range "
@@ -1189,11 +1182,9 @@ def _build_sync_asset_delta_rs(
         ),
     )
     def cdf_to_kafka(context: AssetExecutionContext):
-        databricks: DatabricksResource = context.resources.databricks
-        kafka: KafkaResource = context.resources.kafka
-        registry: SchemaRegistryResource = context.resources.registry
+        databricks, kafka = connections.databricks(), connections.kafka()
         state: SyncState = build_sync_state(
-            cfg, context.resources.postgres if cfg.state_backend == "postgres" else None
+            cfg, connections.state_postgres() if cfg.state_backend == "postgres" else None
         )
         # The topic and the state store are the team's to provide (D1, D5): both are checked
         # before anything else runs. Neither is ever created here -- except the DuckDB file,
@@ -1204,8 +1195,8 @@ def _build_sync_asset_delta_rs(
         # sync's key must not mean a silent fresh start when the source already has one
         # under another key (check_watermark_identity's decision table).
         check_watermark_identity(state, cfg, context.log)
-        databricks.reset_meter()
-        registry_client = registry.client(cfg.schema_registry_url)
+        meter_reset()
+        registry_client = connections.registry().client(cfg.schema_registry_url)
         # The token is control-plane only here: it resolves the tables' storage
         # locations through the UC REST API. No SQL runs against a warehouse.
         # Both come from the disk cache when warm (see _get_token_cached).

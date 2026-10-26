@@ -13,9 +13,9 @@ payload and reads typed values from it.
 
 import os
 
-import psycopg2
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from . import reverse_etl_connections as connections
 from .reverse_etl_config import RisingwaveTargetConfig
 from .reverse_etl_cdf_setup import (
     DATE,
@@ -24,7 +24,6 @@ from .reverse_etl_cdf_setup import (
     _register_avro_schemas,
 )
 from .reverse_etl_delta_reader import get_row_fields
-from .reverse_etl_resources import DatabricksResource, RisingWaveResource, SchemaRegistryResource
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
 # SMALLINT (RisingWave has no 1-byte integer).
@@ -82,21 +81,6 @@ def _registration_fields(cfg: RisingwaveTargetConfig, row_fields: list[RowField]
 
 def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
-
-
-def _get_risingwave_connection():
-    """Same connection convention as risingwave_countries_table.py / risingwave_udfs.py."""
-    return psycopg2.connect(
-        host=os.environ.get("RISINGWAVE_HOST",     "frontend-node-0"),
-        port=int(os.environ.get("RISINGWAVE_PORT", "4566")),
-        database=os.environ.get("RISINGWAVE_DB",   "dev"),
-        user=os.environ.get("RISINGWAVE_USER",     "root"),
-        password=os.environ.get("RISINGWAVE_PASSWORD", ""),
-        # A stalled frontend (TCP accepted, handshake never completes) must fail
-        # the sync fast instead of hanging the run forever — seen live when the
-        # zero-DBU sync ran from outside the container network (2026-10-14).
-        connect_timeout=10,
-    )
 
 
 def _kafka_connector_options(cfg: RisingwaveTargetConfig) -> str:
@@ -162,7 +146,7 @@ def _create_table_sql(cfg: RisingwaveTargetConfig, row_fields: list[RowField]) -
 
 
 def add_missing_columns(
-    risingwave: RisingWaveResource, registry: SchemaRegistryResource, cfg: RisingwaveTargetConfig, row_fields: list[RowField]
+    risingwave, registry, cfg: RisingwaveTargetConfig, row_fields: list[RowField]
 ) -> list[str]:
     """Add any of `row_fields` the table lacks, with the matching RisingWave
     type; returns the names added. A no-op (returns []) if the table doesn't
@@ -201,7 +185,7 @@ def add_missing_columns(
 
 
 def drop_columns_from_risingwave(
-    risingwave: RisingWaveResource, cfg: RisingwaveTargetConfig, dropped_fields: list[str]
+    risingwave, cfg: RisingwaveTargetConfig, dropped_fields: list[str]
 ) -> list[str]:
     """Drop `dropped_fields` — and their <name>_ts generated companions — from the
     RisingWave table; returns the names actually dropped. A no-op (returns [])
@@ -236,8 +220,8 @@ def drop_columns_from_risingwave(
 
 
 def rename_columns_in_risingwave(
-    risingwave: RisingWaveResource,
-    registry: SchemaRegistryResource,
+    risingwave,
+    registry,
     cfg: RisingwaveTargetConfig,
     renames: list[tuple[str, str]],
     row_fields: list[RowField],
@@ -335,12 +319,8 @@ def build_risingwave_table_asset(cfg: RisingwaveTargetConfig):
             "columns and types. See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
         ),
     )
-    def risingwave_table(
-        context: AssetExecutionContext,
-        risingwave: RisingWaveResource,
-        databricks: DatabricksResource,
-        registry: SchemaRegistryResource,
-    ):
+    def risingwave_table(context: AssetExecutionContext):
+        databricks, risingwave, registry = connections.databricks(), connections.risingwave(), connections.registry()
         databricks.require_env()
         token = databricks.token()
         row_fields = get_row_fields(databricks.table_location_cached(token, cfg, cfg.source_fqn))

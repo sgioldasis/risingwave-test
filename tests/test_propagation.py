@@ -1,4 +1,4 @@
-"""Source drops and renames reach both targets through the resources.
+"""Source drops and renames reach both targets through the connection fakes.
 
 Run from the repo root:  .venv/bin/python -m pytest
 """

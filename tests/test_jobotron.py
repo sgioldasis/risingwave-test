@@ -19,7 +19,16 @@ from deltalake import write_deltalake
 
 from orchestration.assets import reverse_etl_jobotron as jobotron
 from orchestration.components.reverse_etl_jobotron import JobotronProducer
-from tests.fakes import FakeAdmin, FakeDatabricks, FakeHttp, FakeKafka, FakeSchemaRegistry, error_text, fake_resources
+from tests.fakes import (
+        FakeAdmin,
+        FakeDatabricks,
+        FakeHttp,
+        FakeKafka,
+        FakeSchemaRegistry,
+        bind_connections,
+        error_text,
+        fake_resources,
+    )
 
 DEFS = Path(__file__).resolve().parent.parent / "orchestration" / "defs" / "reverse_etl_jobotron" / "defs.yaml"
 
@@ -181,8 +190,8 @@ SEED_KYC = [(1001, "PENDING"), (1002, "PENDING"), (1003, "PENDING"), (1004, "PEN
 
 
 class Env:
-    def __init__(self, cfg, tmp_path, calls):
-        self.cfg, self.calls, self.tmp_path = cfg, calls, tmp_path
+    def __init__(self, cfg, tmp_path, calls, monkeypatch):
+        self.cfg, self.calls, self.tmp_path, self.monkeypatch = cfg, calls, tmp_path, monkeypatch
         self.registry = FakeSchemaRegistry(calls)
         self.kafka = JobotronKafka(calls, topics=cfg.topics.values())
         self.postgres = RecordingPostgres()
@@ -207,7 +216,8 @@ class Env:
 
     def run(self, asset, **run_config):
         config = {"ops": {asset.key.to_user_string(): {"config": run_config}}} if run_config else None
-        return dg.materialize([asset], resources=self.resources(), run_config=config, raise_on_error=False)
+        bind_connections(self.monkeypatch, self.resources())
+        return dg.materialize([asset], run_config=config, raise_on_error=False)
 
     def publish(self):
         return self.run(jobotron.build_publish_asset(self.cfg))
@@ -240,7 +250,7 @@ def env(cfg, tmp_path, calls, monkeypatch):
 
     monkeypatch.setattr(jobotron, "DeltaTable", local_table)
     monkeypatch.setattr(jobotron, "_azure_storage_options", lambda location: {})
-    return Env(cfg, tmp_path, calls)
+    return Env(cfg, tmp_path, calls, monkeypatch)
 
 
 def metadata(result):
@@ -558,7 +568,8 @@ class TestSetup:
 
 def run_reset(env, cfg=None):
     cfg = cfg or env.cfg
-    defs = dg.Definitions(jobs=[jobotron.build_reset_job(cfg)], resources=env.resources())
+    bind_connections(env.monkeypatch, env.resources())
+    defs = dg.Definitions(jobs=[jobotron.build_reset_job(cfg)])
     return defs.resolve_job_def(cfg.reset_job).execute_in_process(raise_on_error=False)
 
 

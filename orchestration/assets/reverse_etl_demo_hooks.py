@@ -20,14 +20,9 @@ from typing import Any
 
 from dagster import AssetExecutionContext
 
+from . import reverse_etl_connections as connections
 from .reverse_etl_cdf_setup import RowField, SyncHooks, get_column_ids
 from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config
-from .reverse_etl_resources import (
-    HttpResource,
-    PostgresResource,
-    RisingWaveResource,
-    SchemaRegistryResource,
-)
 from .reverse_etl_risingwave_setup import add_missing_columns
 
 
@@ -52,10 +47,10 @@ def _parse_last_schema(last_schema: str | None) -> list[tuple[str, int | None]]:
 
 
 def _propagate_column_drops(
-    postgres: PostgresResource,
-    risingwave: RisingWaveResource,
-    http: HttpResource,
-    registry: SchemaRegistryResource,
+    postgres,
+    risingwave,
+    http,
+    registry,
     cfg: ReverseEtlSyncConfig,
     row_fields: list[RowField],
     last_schema: str | None,
@@ -144,8 +139,8 @@ class DemoSyncHooks(SyncHooks):
             # no table to keep ahead of the messages.
             return {"risingwave_columns_added": []}
         added = add_missing_columns(
-            context.resources.risingwave,
-            context.resources.registry,
+            connections.risingwave(),
+            connections.registry(),
             risingwave_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn),
             row_fields,
         )
@@ -166,10 +161,10 @@ class DemoSyncHooks(SyncHooks):
         columns_dropped: dict[str, list[str]] = {}
         columns_renamed: list[str] = []
         schema_changes = _propagate_column_drops(
-            context.resources.postgres,
-            context.resources.risingwave,
-            context.resources.http,
-            context.resources.registry,
+            connections.schema_postgres(),
+            connections.risingwave(),
+            connections.http(),
+            connections.registry(),
             cfg,
             schema["row_fields"],
             schema["last_schema"],
@@ -200,10 +195,10 @@ class DemoSyncHooks(SyncHooks):
                 for name in names:
                     event_recorded = [entry for entry in event_recorded if entry["name"] != name]
             event_changes = _propagate_column_drops(
-                context.resources.postgres,
-                context.resources.risingwave,
-                context.resources.http,
-                context.resources.registry,
+                connections.schema_postgres(),
+                connections.risingwave(),
+                connections.http(),
+                connections.registry(),
                 cfg,
                 schema["row_fields"],
                 json.dumps(event_recorded),

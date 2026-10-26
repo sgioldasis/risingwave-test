@@ -12,9 +12,10 @@ import re
 import dagster as dg
 import pytest
 
+from orchestration.assets import reverse_etl_connections as connections
 from orchestration.assets import reverse_etl_risingwave_setup as rw
 from orchestration.assets.reverse_etl_config import risingwave_target_config
-from tests.fakes import FakeSchemaRegistry, error_text, fake_resources, make_config
+from tests.fakes import FakeSchemaRegistry, bind_connections, error_text, fake_resources, make_config
 
 FIELDS = [
     ("id", "int64", False),
@@ -107,8 +108,8 @@ class TestConnection:
         for name in ("RISINGWAVE_HOST", "RISINGWAVE_PORT", "RISINGWAVE_DB", "RISINGWAVE_USER", "RISINGWAVE_PASSWORD"):
             monkeypatch.delenv(name, raising=False)
         seen = {}
-        monkeypatch.setattr(rw.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or "connection")
-        assert rw._get_risingwave_connection() == "connection"
+        monkeypatch.setattr(connections.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or "connection")
+        assert connections.risingwave().connect() == "connection"
         assert seen == {"host": "frontend-node-0", "port": 4566, "database": "dev", "user": "root", "password": "", "connect_timeout": 10}
 
     def test_the_environment_overrides_every_setting_but_the_timeout(self, monkeypatch):
@@ -118,8 +119,8 @@ class TestConnection:
         monkeypatch.setenv("RISINGWAVE_USER", "someone")
         monkeypatch.setenv("RISINGWAVE_PASSWORD", "not-a-real-password")
         seen = {}
-        monkeypatch.setattr(rw.psycopg2, "connect", lambda **kwargs: seen.update(kwargs))
-        rw._get_risingwave_connection()
+        monkeypatch.setattr(connections.psycopg2, "connect", lambda **kwargs: seen.update(kwargs))
+        connections.risingwave().connect()
         assert (seen["host"], seen["port"], seen["database"], seen["user"], seen["connect_timeout"]) == ("elsewhere", 5555, "other", "someone", 10)
 
 
@@ -209,10 +210,7 @@ class TestRegistrationFields:
 class TestAddMissingColumns:
     def run(self, table, encoding="json", fields=FIELDS, calls=None):
         calls = calls if calls is not None else []
-        registry = FakeSchemaRegistry(calls)
-        resources = fake_resources(calls, registry=registry)
-        resources["risingwave"] = table
-        return rw.add_missing_columns(resources["risingwave"], resources["registry"], cfg_for(encoding), fields), calls
+        return rw.add_missing_columns(table, FakeSchemaRegistry(calls), cfg_for(encoding), fields), calls
 
     def test_a_table_that_does_not_exist_yet_is_left_to_the_create_asset(self):
         table = StatefulRisingWave(columns=None)
@@ -256,9 +254,7 @@ class TestAddMissingColumns:
 
 class TestDropColumns:
     def run(self, table, dropped):
-        resources = fake_resources([])
-        resources["risingwave"] = table
-        return rw.drop_columns_from_risingwave(resources["risingwave"], cfg_for("avro"), dropped)
+        return rw.drop_columns_from_risingwave(table, cfg_for("avro"), dropped)
 
     def test_a_table_that_does_not_exist_has_nothing_to_drop(self):
         assert self.run(StatefulRisingWave(columns=None), ["name"]) == []
@@ -284,11 +280,7 @@ class TestDropColumns:
 class TestRenameColumns:
     def run(self, table, renames, row_fields, encoding="json", calls=None):
         calls = calls if calls is not None else []
-        resources = fake_resources(calls, registry=FakeSchemaRegistry(calls))
-        resources["risingwave"] = table
-        applied = rw.rename_columns_in_risingwave(
-            resources["risingwave"], resources["registry"], cfg_for(encoding), renames, row_fields
-        )
+        applied = rw.rename_columns_in_risingwave(table, FakeSchemaRegistry(calls), cfg_for(encoding), renames, row_fields)
         return applied, calls
 
     TITLE_FIELDS = [("id", "int64", False), ("title", "string", True)]
@@ -365,35 +357,32 @@ class TestTableAsset:
         monkeypatch.delenv("KAFKA_OUTPUT_SASL_USERNAME", raising=False)
         monkeypatch.setattr(rw, "get_row_fields", lambda location: FIELDS)
 
-    def materialize(self, table, encoding, calls):
-        resources = fake_resources(calls, registry=FakeSchemaRegistry(calls))
-        resources["risingwave"] = table
-        return dg.materialize(
-            [rw.build_risingwave_table_asset(cfg_for(encoding))], resources=resources, raise_on_error=False
-        )
+    def materialize(self, table, encoding, calls, monkeypatch):
+        bind_connections(monkeypatch, {**fake_resources(calls), "risingwave": table, "registry": FakeSchemaRegistry(calls)})
+        return dg.materialize([rw.build_risingwave_table_asset(cfg_for(encoding))], raise_on_error=False)
 
-    def test_the_table_is_created_from_the_sources_columns(self):
+    def test_the_table_is_created_from_the_sources_columns(self, monkeypatch):
         table, calls = StatefulRisingWave(count=7), []
-        assert self.materialize(table, "json", calls).success
+        assert self.materialize(table, "json", calls, monkeypatch).success
         (create,) = [s for s in table.ddl() if s.startswith("CREATE TABLE IF NOT EXISTS")]
         assert '"id" BIGINT PRIMARY KEY' in create and create.endswith("FORMAT DEBEZIUM ENCODE JSON")
         assert registrations(calls) == []
 
-    def test_the_table_topic_and_row_count_are_reported_as_metadata(self):
-        result = self.materialize(StatefulRisingWave(count=7), "json", [])
+    def test_the_table_topic_and_row_count_are_reported_as_metadata(self, monkeypatch):
+        result = self.materialize(StatefulRisingWave(count=7), "json", [], monkeypatch)
         (event,) = result.get_asset_materialization_events()
         assert event.materialization.metadata["row_count_at_setup_time"].value == 7
 
-    def test_avro_registers_its_schemas_before_the_table_exists(self):
+    def test_avro_registers_its_schemas_before_the_table_exists(self, monkeypatch):
         table, calls = StatefulRisingWave(), []
-        assert self.materialize(table, "avro", calls).success
+        assert self.materialize(table, "avro", calls, monkeypatch).success
         assert len(registrations(calls)) == 2
         assert any("ENCODE AVRO" in s for s in table.ddl())
 
-    def test_an_unreachable_frontend_fails_the_run_with_its_error(self):
+    def test_an_unreachable_frontend_fails_the_run_with_its_error(self, monkeypatch):
         class Failing(StatefulRisingWave):
             def connect(self):
                 raise RuntimeError("frontend unreachable")
 
-        result = self.materialize(Failing(), "json", [])
+        result = self.materialize(Failing(), "json", [], monkeypatch)
         assert not result.success and "frontend unreachable" in error_text(result)

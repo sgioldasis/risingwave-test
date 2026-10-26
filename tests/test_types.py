@@ -199,6 +199,25 @@ def test_the_password_is_never_interpolated_into_the_config(monkeypatch):
     assert "their_secret_password" not in json.dumps(config)
 
 
+# --- the cost meter degrades gracefully (release design step 7) --------------------
+
+
+def test_without_the_databricks_env_the_cost_meter_is_a_noop(monkeypatch):
+    """Demo-only telemetry: with the Databricks env absent the sync runs unmetered and omits the
+    metadata instead of raising — a released sync must not need the demo's cost chips."""
+    monkeypatch.delenv("DBT_DATABRICKS_HOST", raising=False)
+    with mock.patch.object(cs, "meter_snapshot", side_effect=AssertionError("the meter must not be read")):
+        assert cs._cost_metadata() == {}
+
+
+def test_with_the_databricks_env_the_cost_meter_reports(monkeypatch):
+    monkeypatch.setenv("DBT_DATABRICKS_HOST", "adb.invalid")
+    with mock.patch.object(cs, "meter_snapshot", return_value={"warehouse_seconds": 1.5, "statements": 3}):
+        metadata = cs._cost_metadata()
+    assert metadata["databricks_warehouse_seconds"].value == 1.5
+    assert metadata["databricks_statements"].value == 3
+
+
 def test_reader_turns_dates_into_iso_strings_and_keeps_timestamps_formatted():
     rows = [{"d": datetime.date(2012, 1, 1), "t": datetime.datetime(2026, 10, 25, 10, 0, 0, 5)}]
     reader._format_rows(rows, ["t"], ["d"])

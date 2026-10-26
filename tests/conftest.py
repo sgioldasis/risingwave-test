@@ -1,15 +1,15 @@
 """Shared fixtures. The fakes live in tests/fakes.py.
 
-`calls` is the shared record of what the fake resources were asked to do; `resources(**options)` builds the fake
-resource dict bound to it; `defs_with_fakes(cfg)` is a sync's definitions with those resources attached (its jobs
-and assets need them to resolve).
+`calls` is the shared record of what the fake connections were asked to do; `resources(**options)` builds the fake
+dict, and `defs_with_fakes(cfg)` builds a sync's definitions with those fakes bound to the connection functions
+(the assets declare no Dagster resources — the tests patch reverse_etl_connections instead).
 """
 
 import dagster as dg
 import pytest
 
 from orchestration.assets.reverse_etl_defs import build_demo_defs
-from tests.fakes import fake_resources
+from tests.fakes import bind_connections, fake_resources
 
 
 @pytest.fixture(autouse=True)
@@ -35,8 +35,9 @@ def resources(calls):
 
 
 @pytest.fixture
-def defs_with_fakes(resources):
+def defs_with_fakes(resources, monkeypatch):
     def build(cfg, **options) -> dg.Definitions:
-        return dg.Definitions.merge(build_demo_defs(cfg), dg.Definitions(resources=resources(**options)))
+        bind_connections(monkeypatch, resources(**options))
+        return build_demo_defs(cfg)
 
     return build

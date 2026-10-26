@@ -13,7 +13,7 @@ import yaml
 
 from orchestration.assets import reverse_etl_drt as drt
 from orchestration.assets.reverse_etl_config import ReverseEtlSyncConfig
-from tests.fakes import error_text, make_config
+from tests.fakes import bind_connections, error_text, make_config
 
 COMPANY = ReverseEtlSyncConfig.for_name(
     "company", catalog="de_dev", schema="sr_poc_external", source_columns=("Company_ID BIGINT",), key_column="Company_ID"
@@ -144,15 +144,14 @@ class PostgresStub:
         return Connection()
 
 
-def run_job(cfg, job_name, resources, postgres):
-    res = resources()
-    res["postgres"], res["drt"] = postgres, FakeDrt()
-    defs = dg.Definitions.merge(drt.build_drt_defs(cfg), dg.Definitions(resources=res))
+def run_job(cfg, job_name, monkeypatch, resources, postgres):
+    bind_connections(monkeypatch, {**resources(), "postgres": postgres})
+    defs = dg.Definitions.merge(drt.build_drt_defs(cfg), dg.Definitions(resources={"drt": FakeDrt()}))
     return defs.resolve_job_def(job_name).execute_in_process(raise_on_error=False)
 
 
 class TestSetupJob:
-    def test_the_target_is_created_with_the_sources_columns_and_the_key_as_primary_key(self, resources, monkeypatch):
+    def test_the_target_is_created_with_the_sources_columns_and_the_key_as_primary_key(self, monkeypatch, resources):
         monkeypatch.setattr(
             drt,
             "get_row_fields",
@@ -164,7 +163,7 @@ class TestSetupJob:
             ],
         )
         postgres = PostgresStub()
-        assert run_job(COMPANY, "reverse_etl_company_drt_setup_job", resources, postgres).success
+        assert run_job(COMPANY, "reverse_etl_company_drt_setup_job", monkeypatch, resources, postgres).success
         assert postgres.statements == [
             (
                 'CREATE TABLE IF NOT EXISTS "reverse_etl_company_drt_target" '
@@ -177,15 +176,15 @@ class TestSetupJob:
     def test_the_connection_is_closed_when_the_create_fails(self, resources, monkeypatch):
         monkeypatch.setattr(drt, "get_row_fields", lambda location: [("Company_ID", "int64", False)])
         postgres = PostgresStub(fail=True)
-        result = run_job(COMPANY, "reverse_etl_company_drt_setup_job", resources, postgres)
+        result = run_job(COMPANY, "reverse_etl_company_drt_setup_job", monkeypatch, resources, postgres)
         assert not result.success and "boom" in error_text(result)
         assert postgres.closed == 1
 
 
 class TestResetJob:
-    def test_the_target_is_dropped_and_only_this_syncs_key_rows_are_removed(self, resources):
+    def test_the_target_is_dropped_and_only_this_syncs_key_rows_are_removed(self, monkeypatch, resources):
         postgres = PostgresStub()
-        assert run_job(COMPANY, "reverse_etl_company_drt_reset_job", resources, postgres).success
+        assert run_job(COMPANY, "reverse_etl_company_drt_reset_job", monkeypatch, resources, postgres).success
         assert postgres.statements == [
             ('DROP TABLE IF EXISTS "reverse_etl_company_drt_target"', ()),
             ("SELECT to_regclass(%s)", (drt.DRT_KEYS_TABLE,)),
@@ -193,15 +192,15 @@ class TestResetJob:
         ]
         assert postgres.commits == 1
 
-    def test_without_a_key_table_nothing_is_deleted(self, resources):
+    def test_without_a_key_table_nothing_is_deleted(self, monkeypatch, resources):
         postgres = PostgresStub(keys_table_exists=False)
-        assert run_job(COMPANY, "reverse_etl_company_drt_reset_job", resources, postgres).success
+        assert run_job(COMPANY, "reverse_etl_company_drt_reset_job", monkeypatch, resources, postgres).success
         assert not [sql for sql, _ in postgres.statements if sql.startswith("DELETE")]
 
-    def test_a_table_outside_the_allowlist_is_never_dropped(self, resources):
+    def test_a_table_outside_the_allowlist_is_never_dropped(self, monkeypatch, resources):
         cfg = dataclasses.replace(COMPANY, reset_name_prefixes=("something_else_",))
         postgres = PostgresStub()
-        result = run_job(cfg, "reverse_etl_company_drt_reset_job", resources, postgres)
+        result = run_job(cfg, "reverse_etl_company_drt_reset_job", monkeypatch, resources, postgres)
         assert not result.success and "Refusing to reset" in error_text(result)
         assert postgres.statements == []
 
@@ -227,17 +226,16 @@ def isolated_run(tmp_path, monkeypatch):
     return tmp_path
 
 
-def materialize(resources, fake_drt):
-    res = resources()
-    res["drt"] = fake_drt
+def materialize(monkeypatch, resources, fake_drt):
+    bind_connections(monkeypatch, resources())
     asset = drt.build_drt_defs(COMPANY).assets[0]
-    return dg.materialize([asset], resources=res, raise_on_error=False)
+    return dg.materialize([asset], resources={"drt": fake_drt}, raise_on_error=False)
 
 
 class TestAsset:
-    def test_a_run_gets_a_token_in_the_environment_a_profile_and_a_copy_of_the_project(self, resources, isolated_run):
+    def test_a_run_gets_a_token_in_the_environment_a_profile_and_a_copy_of_the_project(self, monkeypatch, resources, isolated_run):
         fake = FakeDrt()
-        assert materialize(resources, fake).success
+        assert materialize(monkeypatch, resources, fake).success
         assert fake.ran == 1
         assert os.environ[drt.TOKEN_ENV] == "token" and os.environ["PGTZ"] == "UTC"
         profile = isolated_run / "home" / ".drt" / "profiles.yml"
@@ -245,8 +243,8 @@ class TestAsset:
         assert (isolated_run / "workdir" / "syncs" / "reverse_etl_company_drt.yml").exists()
         assert "token" not in profile.read_text().replace("access_token_env", "")
 
-    def test_failed_rows_fail_the_asset_although_drt_reports_success(self, resources, isolated_run):
-        result = materialize(resources, FakeDrt(rows_failed=2))
+    def test_failed_rows_fail_the_asset_although_drt_reports_success(self, monkeypatch, resources, isolated_run):
+        result = materialize(monkeypatch, resources, FakeDrt(rows_failed=2))
         assert not result.success
         assert "failed 2 row(s)" in error_text(result)
 
@@ -256,5 +254,5 @@ class TestAsset:
 
         monkeypatch.setattr(drt, "_check_sync_file", disagree)
         fake = FakeDrt()
-        result = materialize(resources, fake)
+        result = materialize(monkeypatch, resources, fake)
         assert not result.success and fake.ran == 0

@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 
+from orchestration.assets import reverse_etl_connections as connections
 from orchestration.assets import reverse_etl_postgres_setup as setup
 from tests.fakes import FakeDatabase, FakeHttp, make_config
 
@@ -29,15 +30,25 @@ class RestartHttp(FakeHttp):
 @pytest.fixture
 def connect_kwargs(monkeypatch):
     seen = {}
-    monkeypatch.setattr(setup.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or mock.MagicMock())
+    monkeypatch.setattr(connections.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or mock.MagicMock())
     return seen
 
 
 class TestConnection:
-    def test_defaults_match_the_sink_connectors_convention(self, monkeypatch, connect_kwargs):
+    @pytest.mark.parametrize("connect", ["state_postgres", "schema_postgres"])
+    def test_postgres_host_is_required_with_no_default(self, monkeypatch, connect):
+        """The env contract: POSTGRES_HOST has no default — host.docker.internal does not resolve
+        on the macOS host, so one value cannot serve both the containers and the host."""
         for name in ("POSTGRES_HOST", "POSTGRES_USER", "POSTGRES_PASSWORD"):
             monkeypatch.delenv(name, raising=False)
-        setup._get_postgres_connection()
+        with pytest.raises(ValueError, match="POSTGRES_HOST"):
+            getattr(connections, connect)().connect()
+
+    def test_defaults_match_the_sink_connectors_convention(self, monkeypatch, connect_kwargs):
+        monkeypatch.setenv("POSTGRES_HOST", "host.docker.internal")
+        for name in ("POSTGRES_USER", "POSTGRES_PASSWORD"):
+            monkeypatch.delenv(name, raising=False)
+        connections.schema_postgres().connect()
         assert connect_kwargs == {
             "host": "host.docker.internal",
             "port": 5432,
@@ -50,7 +61,7 @@ class TestConnection:
     def test_the_environment_overrides_host_and_user(self, monkeypatch, connect_kwargs):
         monkeypatch.setenv("POSTGRES_HOST", "db.invalid")
         monkeypatch.setenv("POSTGRES_USER", "someone")
-        setup._get_postgres_connection()
+        connections.schema_postgres().connect()
         assert (connect_kwargs["host"], connect_kwargs["user"]) == ("db.invalid", "someone")
 
 
@@ -100,7 +111,7 @@ class TestRename:
     def test_the_connection_is_committed_and_closed(self, calls):
         database = FakeDatabase(calls, "postgres", columns=["id", "name"])
         connection = database.connect()
-        database.connect_with_timeout = lambda: connection
+        database.connect = lambda: connection
         setup.rename_columns_in_postgres(database, RestartHttp(calls), CFG, [("name", "title")])
         connection.commit.assert_called_once()
         connection.close.assert_called_once()
@@ -108,7 +119,7 @@ class TestRename:
     def test_a_failed_restart_is_raised_after_the_ddl_is_committed(self, calls):
         database = FakeDatabase(calls, "postgres", columns=["id", "name"])
         connection = database.connect()
-        database.connect_with_timeout = lambda: connection
+        database.connect = lambda: connection
         with pytest.raises(RuntimeError, match="Sink task restart failed: HTTP 500"):
             setup.rename_columns_in_postgres(database, RestartHttp(calls, status=500), CFG, [("name", "title")])
         connection.commit.assert_called_once()

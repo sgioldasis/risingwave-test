@@ -60,6 +60,7 @@ from dagster import (
 from deltalake import DeltaTable
 
 from .databricks_cost_meter import snapshot as meter_snapshot
+from .databricks_cost_meter import reset as meter_reset
 from .kafka_topics_setup import _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import (
     _avro_schema_string,
@@ -68,13 +69,7 @@ from .reverse_etl_cdf_setup import (
     _rows_as_dicts,
     _schema_already_registered,
 )
-from .reverse_etl_resources import (
-    DatabricksResource,
-    HttpResource,
-    KafkaResource,
-    PostgresResource,
-    SchemaRegistryResource,
-)
+from . import reverse_etl_connections as connections
 
 BASE = "reverse_etl_jobotron"
 SCHEMA_REGISTRY_URL = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
@@ -210,10 +205,11 @@ def build_setup_asset(cfg: JobotronConfig):
             "and seed the demo customers. See docs/poc/REVERSE_ETL_JOBOTRON.md."
         ),
     )
-    def setup(context: AssetExecutionContext, databricks: DatabricksResource, kafka: KafkaResource):
+    def setup(context: AssetExecutionContext):
+        databricks, kafka = connections.databricks(), connections.kafka()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
 
         admin = kafka.admin_client()
         existing = admin.list_topics(timeout=20).topics
@@ -345,15 +341,11 @@ def build_publish_asset(cfg: JobotronConfig):
             f"Scan engine {cfg.scan_engine} + DuckDB query: no Spark, no JVM, zero Databricks compute."
         ),
     )
-    def publish(
-        context: AssetExecutionContext,
-        databricks: DatabricksResource,
-        kafka: KafkaResource,
-        registry: SchemaRegistryResource,
-    ):
+    def publish(context: AssetExecutionContext):
+        databricks, kafka, registry = connections.databricks(), connections.kafka(), connections.registry()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
         started = time.monotonic()
 
         # 1. Resolve locations (UC REST, cached) -- control-plane reads only, no compute.
@@ -479,14 +471,10 @@ def build_consume_asset(cfg: JobotronConfig):
             "so a customer that left the segment disappears from its table at the next consume."
         ),
     )
-    def consume(
-        context: AssetExecutionContext,
-        postgres: PostgresResource,
-        databricks: DatabricksResource,
-        kafka: KafkaResource,
-        registry: SchemaRegistryResource,
-    ):
-        databricks.reset_meter()
+    def consume(context: AssetExecutionContext):
+        postgres = connections.state_postgres()
+        kafka, registry = connections.kafka(), connections.registry()
+        meter_reset()
         started = time.monotonic()
 
         # Read each operator topic from the beginning. Topics APPEND: a customer
@@ -590,7 +578,7 @@ def build_consume_asset(cfg: JobotronConfig):
 class JobotronChangeConfig(Config):
     change: str = "add_customer"  # add_customer, verify_customer or deactivate_customer
 
-def _scalar(databricks: DatabricksResource, token: str, sql: str) -> Any:
+def _scalar(databricks, token: str, sql: str) -> Any:
     rows = _rows_as_dicts(databricks.run_sql(token, sql))
     return next(iter(rows[0].values()))
 
@@ -654,10 +642,11 @@ def build_change_asset(cfg: JobotronConfig):
             f"until {cfg.publish_asset} runs."
         ),
     )
-    def make_change(context: AssetExecutionContext, config: JobotronChangeConfig, databricks: DatabricksResource):
+    def make_change(context: AssetExecutionContext, config: JobotronChangeConfig):
+        databricks = connections.databricks()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
         statements = _change_statements(cfg, config.change)
 
         # A change with nothing to do is a normal demo condition (the segment can be
@@ -729,7 +718,8 @@ def _assert_reset_allowed(cfg: JobotronConfig) -> None:
 
 def build_reset_job(cfg: JobotronConfig):
     @op(name=f"{BASE}_delete_topics", ins={"start": In(Nothing)})
-    def delete_topics(context: OpExecutionContext, kafka: KafkaResource) -> None:
+    def delete_topics(context: OpExecutionContext) -> None:
+        kafka = connections.kafka()
         _assert_reset_allowed(cfg)
         admin = kafka.admin_client()
         for topic in cfg.topics.values():
@@ -751,7 +741,8 @@ def build_reset_job(cfg: JobotronConfig):
         context.log.info("Operator topics are gone")
 
     @op(name=f"{BASE}_delete_registry_subjects", ins={"start": In(Nothing)})
-    def delete_registry_subjects(context: OpExecutionContext, http: HttpResource) -> None:
+    def delete_registry_subjects(context: OpExecutionContext) -> None:
+        http = connections.http()
         _assert_reset_allowed(cfg)
         # Soft delete, then permanent (a soft-deleted subject still blocks re-registering).
         for topic in cfg.topics.values():
@@ -771,10 +762,11 @@ def build_reset_job(cfg: JobotronConfig):
                         )
 
     @op(name=f"{BASE}_drop_tables", ins={"start": In(Nothing)})
-    def drop_tables(context: OpExecutionContext, databricks: DatabricksResource) -> None:
+    def drop_tables(context: OpExecutionContext) -> None:
+        databricks = connections.databricks()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
         for fqn in (cfg.customers_fqn, cfg.kyc_fqn):
             databricks.run_sql(token, f"DROP TABLE IF EXISTS {fqn}")
             context.log.info(f"Dropped {fqn} (if it existed)")
@@ -784,7 +776,8 @@ def build_reset_job(cfg: JobotronConfig):
         context.log.info("Cleared the location cache (the tables moved)")
 
     @op(name=f"{BASE}_drop_postgres_tables", ins={"start": In(Nothing)})
-    def drop_postgres_tables(context: OpExecutionContext, postgres: PostgresResource) -> None:
+    def drop_postgres_tables(context: OpExecutionContext) -> None:
+        postgres = connections.state_postgres()
         _assert_reset_allowed(cfg)
         conn = postgres.connect()
         try:

@@ -13,8 +13,8 @@ from typing import Any
 import requests
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from . import reverse_etl_connections as connections
 from .reverse_etl_config import PostgresTargetConfig
-from .reverse_etl_resources import HttpResource
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
 
@@ -79,7 +79,7 @@ def _connector_config(cfg: PostgresTargetConfig) -> dict[str, str]:
     return config
 
 
-def _wait_for_connect(http: HttpResource, timeout_s: int = 120) -> None:
+def _wait_for_connect(http, timeout_s: int = 120) -> None:
     deadline = time.monotonic() + timeout_s
     while True:
         try:
@@ -93,7 +93,7 @@ def _wait_for_connect(http: HttpResource, timeout_s: int = 120) -> None:
 
 
 def _wait_for_running(
-    http: HttpResource, context: AssetExecutionContext, cfg: PostgresTargetConfig, timeout_s: int = 90
+    http, context: AssetExecutionContext, cfg: PostgresTargetConfig, timeout_s: int = 90
 ) -> dict[str, Any]:
     name = cfg.connector_name
     deadline = time.monotonic() + timeout_s
@@ -128,7 +128,8 @@ def build_debezium_sink_asset(cfg: PostgresTargetConfig):
             "See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md."
         ),
     )
-    def debezium_jdbc_sink(context: AssetExecutionContext, http: HttpResource):
+    def debezium_jdbc_sink(context: AssetExecutionContext):
+        http = connections.http()
         _wait_for_connect(http)
 
         name = cfg.connector_name

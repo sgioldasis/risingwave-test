@@ -23,9 +23,10 @@ from dagster import (
 )
 
 from .databricks_cost_meter import snapshot as meter_snapshot
+from .databricks_cost_meter import reset as meter_reset
 from .reverse_etl_cdf_setup import _rows_as_dicts
 from .reverse_etl_config import ReverseEtlSyncConfig
-from .reverse_etl_resources import DatabricksResource
+from . import reverse_etl_connections as connections
 
 KEY = "id"
 # Per-commit row ceiling for the bulk generator: chunk_versions=1 makes the sync
@@ -191,10 +192,11 @@ def build_change_asset(cfg: ReverseEtlSyncConfig):
         name=f"{cfg.sync_name}_make_change",
         description=f"Change {cfg.source_fqn}: insert/update/delete a row, add/rename/drop a column, or bulk-load 1,000,000 rows (delta sync). Not synced until {cfg.sync_asset} runs.",
     )
-    def make_change(context: AssetExecutionContext, config: ChangeConfig, databricks: DatabricksResource):
+    def make_change(context: AssetExecutionContext, config: ChangeConfig):
+        databricks = connections.databricks()
         databricks.require_env()
         token = databricks.token()
-        databricks.reset_meter()
+        meter_reset()
         existing = set()
         if config.change in ("add_column", "rename_column", "drop_column"):
             existing = {r["col_name"] for r in _rows_as_dicts(databricks.run_sql(token, f"DESCRIBE TABLE {cfg.source_fqn}"))}

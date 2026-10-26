@@ -7,7 +7,7 @@ import dagster as dg
 import pytest
 
 from orchestration.assets import reverse_etl_notebook_job as notebook
-from tests.fakes import FakeHttp, error_text, make_config
+from tests.fakes import FakeHttp, bind_connections, error_text, make_config
 
 HOST = notebook.DATABRICKS_HOST
 
@@ -68,13 +68,13 @@ def added_columns(monkeypatch):
 
 
 @pytest.fixture
-def trigger(calls, resources):
+def trigger(calls, resources, monkeypatch):
     def run(label="orders", add_risingwave_columns=True, jobs_api=None, **options):
         res = resources(**options)
         res["http"] = jobs_api or FakeJobsApi(calls)
+        bind_connections(monkeypatch, res)
         config = {"label": label, "add_risingwave_columns": add_risingwave_columns}
-        defs = dg.Definitions(jobs=[notebook.reverse_etl_notebook_sync_job], resources=res)
-        job = defs.resolve_job_def("reverse_etl_notebook_sync_job")
+        job = dg.Definitions(jobs=[notebook.reverse_etl_notebook_sync_job]).resolve_job_def("reverse_etl_notebook_sync_job")
         run_config = {"ops": {"reverse_etl_trigger_notebook_sync": {"config": config}}}
         return job.execute_in_process(run_config=run_config, raise_on_error=False), res["http"]
 

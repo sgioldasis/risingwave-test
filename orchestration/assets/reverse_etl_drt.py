@@ -42,9 +42,9 @@ from dagster import (
 from dagster_drt import DagsterDrtResource, DagsterDrtTranslator, drt_assets
 
 from .databricks_optimize import DATABRICKS_HOST, WAREHOUSE_ID
+from . import reverse_etl_connections as connections
 from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig
-from .reverse_etl_resources import DatabricksResource, PostgresResource
 
 PROJECT_SOURCE = Path(__file__).resolve().parent.parent / "drt_demo"
 # drt writes state next to the project and the source mount is read-only, so it runs from a copy.
@@ -152,7 +152,8 @@ def _build_asset(cfg: ReverseEtlSyncConfig, names: DrtNames):
         dagster_drt_translator=_Translator(),
         name=names.asset,
     )
-    def drt_to_postgres(context: AssetExecutionContext, drt: DagsterDrtResource, databricks: DatabricksResource):
+    def drt_to_postgres(context: AssetExecutionContext, drt: DagsterDrtResource):
+        databricks = connections.databricks()
         databricks.require_env()
         _check_sync_file(cfg, names)
         WORKDIR.mkdir(parents=True, exist_ok=True)
@@ -175,7 +176,8 @@ def _build_asset(cfg: ReverseEtlSyncConfig, names: DrtNames):
 def _build_setup_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
     # drt never creates or alters its destination, so this job creates it.
     @op(name=f"{names.sync_name}_target_setup")
-    def setup_target(context: OpExecutionContext, postgres: PostgresResource, databricks: DatabricksResource) -> None:
+    def setup_target(context: OpExecutionContext) -> None:
+        postgres, databricks = connections.state_postgres(), connections.databricks()
         databricks.require_env()
         token = databricks.token()
         columns = []
@@ -209,7 +211,8 @@ def _build_setup_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
 
 def _build_reset_job(cfg: ReverseEtlSyncConfig, names: DrtNames):
     @op(name=f"{names.sync_name}_target_reset")
-    def reset_target(context: OpExecutionContext, postgres: PostgresResource) -> None:
+    def reset_target(context: OpExecutionContext) -> None:
+        postgres = connections.state_postgres()
         # Same idea as the allowlist in reverse_etl_reset.py: only drop a table that looks like ours.
         if not names.target_table.startswith(cfg.reset_name_prefixes):
             raise RuntimeError(f"Refusing to reset: {names.target_table} does not start with {cfg.reset_name_prefixes}")
