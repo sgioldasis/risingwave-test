@@ -154,7 +154,9 @@ class JobotronRunMode(Config):
     """The per-run mode switch. None (the default) means the YAML decides; a value
     overrides it for this run only -- the contract's own IsDryRun is a per-run widget, so
     the mode is flippable at launch time, logged and recorded in the metadata. The YAML
-    value still governs schedules and blank launches."""
+    value still governs schedules and blank launches. The launchpad meets this switch
+    through _run_mode_for(cfg), which re-defaults it to the instance's YAML value so the
+    scaffold shows the effective mode rather than a blank."""
 
     dry_run: bool | None = None
 
@@ -166,6 +168,18 @@ def _effective_dry_run(cfg: JobotronConfig, config: JobotronRunMode, context) ->
     if config.dry_run != cfg.dry_run:
         context.log.info(f"Run-config override: dry_run={config.dry_run} (the YAML value is {cfg.dry_run})")
     return config.dry_run
+
+
+def _run_mode_for(cfg: JobotronConfig) -> type:
+    """The launchpad-facing mode switch: JobotronRunMode re-defaulted to this instance's
+    YAML value. The scaffold button then shows the effective mode (false for a live-pinned
+    instance, true for the safe default) instead of a blank, and launching with it lands
+    exactly where a blank launch would. Typing null restores the YAML-decides escape
+    hatch; the runtime semantics are untouched (_effective_dry_run still arbitrates)."""
+    class RunMode(JobotronRunMode):
+        dry_run: bool | None = cfg.dry_run
+
+    return RunMode
 
 
 # --- the envelope (D2-D4, D7) ---------------------------------------------------
@@ -459,6 +473,8 @@ def _ensure_delta_scan_secret(connection: duckdb.DuckDBPyConnection, location: s
 
 
 def build_setup_asset(cfg: JobotronConfig):
+    run_mode = _run_mode_for(cfg)
+
     @asset(
         name=cfg.setup_asset,
         group_name=cfg.group_name,
@@ -468,7 +484,7 @@ def build_setup_asset(cfg: JobotronConfig):
             "is a no-op -- zero side effects, not even a Kafka connection."
         ),
     )
-    def setup(context: AssetExecutionContext, config: JobotronRunMode):
+    def setup(context: AssetExecutionContext, config: run_mode):
         dry_run = _effective_dry_run(cfg, config, context)
         if dry_run:
             # Zero side effects in dry-run: not even a Kafka connection. The topic
@@ -512,6 +528,8 @@ def build_setup_asset(cfg: JobotronConfig):
 
 
 def build_publish_asset(cfg: JobotronConfig):
+    run_mode = _run_mode_for(cfg)
+
     @asset(
         name=cfg.publish_asset,
         group_name=cfg.group_name,
@@ -522,7 +540,7 @@ def build_publish_asset(cfg: JobotronConfig):
             "every message is built and hashed and nothing is sent."
         ),
     )
-    def publish(context: AssetExecutionContext, config: JobotronRunMode):
+    def publish(context: AssetExecutionContext, config: run_mode):
         dry_run = _effective_dry_run(cfg, config, context)
         databricks, kafka = connections.databricks(), connections.kafka()
         databricks.require_env()

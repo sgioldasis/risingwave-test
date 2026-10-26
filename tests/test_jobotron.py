@@ -657,6 +657,16 @@ class TestRunSwitch:
         assert result.success and env.produced() == []
         assert metadata(result)["dry_run"].value is True
 
+    def test_the_launchpad_scaffold_defaults_to_the_yaml_mode(self, env):
+        """The launchpad-facing switch is JobotronRunMode re-defaulted to the instance's
+        YAML value, so the scaffold button prefills the effective mode instead of a blank;
+        null keeps YAML-decides and an explicit value still overrides."""
+        for cfg in (env.cfg, dataclasses.replace(env.cfg, dry_run=False)):
+            mode = jobotron._run_mode_for(cfg)
+            assert mode().dry_run is cfg.dry_run
+            assert mode(dry_run=None).dry_run is None
+            assert mode(dry_run=not cfg.dry_run).dry_run is not cfg.dry_run
+
     def test_setup_respects_the_run_switch(self, env):
         env.kafka.admin.topics = set()
         result = env.run(jobotron.build_setup_asset(env.cfg), dry_run=False)
