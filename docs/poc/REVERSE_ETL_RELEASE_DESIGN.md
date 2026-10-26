@@ -91,7 +91,8 @@ reset job, `reset_name_prefixes`, `reset_schema`.
 (`last_commit_version`, `last_schema`) is runtime data in that store, never config — the YAML
 is read once at code-location load, and the watermark advances every run. The backend is the
 sync author's explicit choice (consequence-bearing: restart semantics, a postgres dependency,
-the DuckDB single-writer rule); which Postgres *instance* is never the YAML's business — the
+the DuckDB single-writer rule; SQLite was considered for that rule and deferred — see Deferred);
+which Postgres *instance* is never the YAML's business — the
 library's connection function reads the instance from the environment, and Vault supplies the
 values (the env contract below). Each run:
 `require()` (Postgres fails with the DDL if the table is absent; DuckDB creates its file),
@@ -519,3 +520,14 @@ dependencies (builders' configs before components, components before connections
   above), and extraction moves there once a real consumer exists. The import-hygiene test keeps
   that cheap.
 - **Reset/teardown for teams** — demo scaffolding; add only if a team asks.
+- **SQLite as a third state backend** — considered (2026-10-26) as a fix for the DuckDB
+  backend's lock pain: DuckDB's file lock is process-wide, so one read-write connection bars
+  every other process entirely (even readers — DBeaver blocks the sync and vice versa), while
+  SQLite in WAL mode lets readers never block the writer and concurrent writers wait a few ms
+  (`busy_timeout`) instead of failing; the sync's access pattern (one append-only row per run)
+  is SQLite's OLTP shape, and `sqlite3` is stdlib. Deferred because the pain only bites where
+  Postgres is already available — and postgres is the default backend, one config field away;
+  DuckDB's niche ("no Postgres at all, one sync, one writer, disposable file") is safe with
+  discipline. Revisit when a team without Postgres hits the lock wall: a contained addition
+  (~80 lines plus tests) with WAL + `busy_timeout` as design requirements (WAL needs the
+  `-wal`/`-shm` sidecars on a writable mount and does not work on NFS).
