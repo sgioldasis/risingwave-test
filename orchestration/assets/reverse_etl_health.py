@@ -103,8 +103,9 @@ def build_sink_health_check(cfg: PostgresTargetConfig):
     return sink_healthy
 
 
-def build_sink_health_job_and_schedule(cfg: PostgresTargetConfig, check):
-    """A job that runs only the sink check, and a schedule that runs it every few minutes. Pause the schedule
+def build_sink_health_job_and_schedule(cfg: PostgresTargetConfig, check, cron: str = HEALTH_CRON):
+    """A job that runs only the sink check, and a schedule that runs it every few minutes (the
+    library's 5-minute cron unless the component's health_cron says otherwise). Pause the schedule
     in the Dagster UI to stop it."""
     job = define_asset_job(
         name=cfg.health_job_name,
@@ -115,7 +116,7 @@ def build_sink_health_job_and_schedule(cfg: PostgresTargetConfig, check):
     schedule = ScheduleDefinition(
         name=cfg.health_schedule_name,
         job=job,
-        cron_schedule=HEALTH_CRON,
+        cron_schedule=cron,
         # Opt-in on purpose: auto-starting four */5 health jobs made every demo
         # launch compete with background runs (and a stack rebuild or instance
         # wipe would re-enable them silently). Start them from the Dagster UI
