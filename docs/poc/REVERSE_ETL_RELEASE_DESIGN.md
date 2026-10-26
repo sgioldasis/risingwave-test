@@ -387,8 +387,9 @@ dependencies (builders' configs before components, components before connections
    `ReverseEtlSyncConfig`; and the sync asset retypes from `ReverseEtlSyncConfig` to
    `CdfSyncConfig` (its body is already base-clean — verified attribute-by-attribute; the one
    demo-only access, `cfg.propagate_drops`, lives in `_propagate_column_drops`, which moves to
-   the demo-hooks side in this step). The sync asset declares **no resource keys** — the
-   env contract (below) replaces them. The base keeps its
+   the demo-hooks side in this step). (The sync asset keeps its resource keys for now — the
+   demo hooks still reach their connections through them; they drop with the env-direct
+   conversion in step 7.) The base keeps its
    `state_backend` default for the demo path; the component does not. Tests: the derivation
    matrix (omitted → derived, given → verbatim, `state_backend` missing → load error,
    `state_backend: duckdb` without `state_path` → load error);
@@ -465,16 +466,23 @@ dependencies (builders' configs before components, components before connections
    effective defaults) so the helpers stop guessing them; the entrypoint keeps owning
    `HOST_POSTGRES_URL` (it bakes the resolved host IP into the connector config). The sync
    asset, the target builders, and the demo hooks drop `required_resource_keys` /
-   `context.resources` entirely and call the functions directly; the demo's six inline
-   bindings (`orchestration/definitions.py:1042-1048`) are deleted. The cost meter becomes an
+   `context.resources` entirely and call the functions directly — and so do the
+   staying-behind demo modules that inject today's resource classes as Dagster parameters
+   (`reverse_etl_drt`, `reverse_etl_notebook_job`, `reverse_etl_change`, `reverse_etl_demo_assets`,
+   the demo defs' Kafka asset): with the bindings gone, Dagster refuses to build an asset whose
+   annotated resource parameter has no resource under that key, so they convert in the same
+   step and `reverse_etl_resources.py` dissolves (the hygiene test asserts nothing imports it).
+   The demo's six inline bindings (`orchestration/definitions.py:1042-1048`) are deleted. The cost meter becomes an
    optional capability: when its env is unset the sync degrades to unmetered (metadata
    omitted) instead of raising. The env contract lands as the module docstring — including
    the sync's own storage credentials (`DATABRICKS_AZURE_CLIENT_ID`/`TENANT_ID`/`CLIENT_SECRET`,
    which delta-rs needs and no resource carries today; service principal, never SAS) and the
    connector's (`KAFKA_OUTPUT_BOOTSTRAP` is required — the assembly raises without it — plus
-   the optional SASL variables). Gate: the existing suite unchanged except the fakes — tests
+   the optional SASL variables). Gate: the existing suite unchanged except the fakes (tests
    switch from resource-binding to patching the connection functions
-   (`reverse_etl_connections.<fn>`) — plus a definitions-build smoke.
+   `reverse_etl_connections.<fn>`) and the connection-default tests
+   (`test_postgres_setup.py`'s defaults assertions flip to the required-`POSTGRES_HOST`
+   contract) — plus a definitions-build smoke.
 
 8. **Hygiene and compatibility.** The import-hygiene test — a static source scan (import
    lines) over the port surface asserting the component-reachable modules import no
