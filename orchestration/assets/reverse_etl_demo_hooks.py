@@ -21,7 +21,7 @@ from typing import Any
 from dagster import AssetExecutionContext
 
 from .reverse_etl_cdf_setup import RowField, SyncHooks, get_column_ids
-from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config
 from .reverse_etl_resources import (
     HttpResource,
     PostgresResource,
@@ -110,13 +110,17 @@ def _propagate_column_drops(
     if not renames and not dropped_fields:
         return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
     result: dict[str, Any] = {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+    # The RisingWave helpers take the slim target config (release design step 4): the demo
+    # bridge composes it from the merged config, source_fqn included (the Avro registration
+    # re-derives the envelope from it).
+    risingwave_cfg = risingwave_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn)
     if renames:
         log.info(f"Source renamed column(s) {[f'{old} -> {new}' for old, new in renames]} — propagating to the targets")
         from .reverse_etl_postgres_setup import rename_columns_in_postgres
         from .reverse_etl_risingwave_setup import rename_columns_in_risingwave
 
         result["renamed"] = [f"{old} -> {new}" for old, new in renames]
-        result["dropped"]["risingwave"] += rename_columns_in_risingwave(risingwave, registry, cfg, renames, row_fields)
+        result["dropped"]["risingwave"] += rename_columns_in_risingwave(risingwave, registry, risingwave_cfg, renames, row_fields)
         result["dropped"]["postgres"] += rename_columns_in_postgres(postgres, http, cfg, renames)
     if dropped_fields:
         log.info(f"Source dropped column(s) {dropped_fields} — propagating to the targets")
@@ -125,7 +129,7 @@ def _propagate_column_drops(
         )
         from .reverse_etl_risingwave_setup import drop_columns_from_risingwave
 
-        result["dropped"]["risingwave"] += drop_columns_from_risingwave(risingwave, cfg, dropped_fields)
+        result["dropped"]["risingwave"] += drop_columns_from_risingwave(risingwave, risingwave_cfg, dropped_fields)
         result["dropped"]["postgres"] += drop_from_postgres(postgres, cfg, current)
     return result
 
@@ -139,7 +143,12 @@ class DemoSyncHooks(SyncHooks):
             # The RisingWave table is a target (plan section 12, option A): unselected, there is
             # no table to keep ahead of the messages.
             return {"risingwave_columns_added": []}
-        added = add_missing_columns(context.resources.risingwave, context.resources.registry, cfg, row_fields)
+        added = add_missing_columns(
+            context.resources.risingwave,
+            context.resources.registry,
+            risingwave_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn),
+            row_fields,
+        )
         if added:
             context.log.info(f"Added column(s) to the RisingWave table: {added}")
         return {"risingwave_columns_added": added}

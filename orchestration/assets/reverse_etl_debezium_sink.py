@@ -13,7 +13,7 @@ from typing import Any
 import requests
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .reverse_etl_config import ReverseEtlTargetsConfig
+from .reverse_etl_config import PostgresTargetConfig
 from .reverse_etl_resources import HttpResource
 
 CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://kafka-connect:8083")
@@ -24,7 +24,7 @@ _JSON_CONVERTER = "org.apache.kafka.connect.json.JsonConverter"
 _AVRO_CONVERTER = "io.confluent.connect.avro.AvroConverter"
 
 
-def _connector_config(cfg: ReverseEtlTargetsConfig) -> dict[str, str]:
+def _connector_config(cfg: PostgresTargetConfig) -> dict[str, str]:
     bootstrap = os.environ.get("KAFKA_OUTPUT_BOOTSTRAP", "")
     if not bootstrap:
         raise ValueError("KAFKA_OUTPUT_BOOTSTRAP must be set in .env")
@@ -93,7 +93,7 @@ def _wait_for_connect(http: HttpResource, timeout_s: int = 120) -> None:
 
 
 def _wait_for_running(
-    http: HttpResource, context: AssetExecutionContext, cfg: ReverseEtlTargetsConfig, timeout_s: int = 90
+    http: HttpResource, context: AssetExecutionContext, cfg: PostgresTargetConfig, timeout_s: int = 90
 ) -> dict[str, Any]:
     name = cfg.connector_name
     deadline = time.monotonic() + timeout_s
@@ -116,11 +116,11 @@ def _wait_for_running(
         time.sleep(3)
 
 
-def build_debezium_sink_asset(cfg: ReverseEtlTargetsConfig):
+def build_debezium_sink_asset(cfg: PostgresTargetConfig):
     @asset(
         name=cfg.sink_asset,
         group_name=cfg.group_name,
-        deps=[AssetKey(cfg.topic_asset), AssetKey(cfg.sync_asset)],
+        deps=[AssetKey(dep) for dep in cfg.deps],
         description=(
             f"Create/update the Debezium JDBC sink connector that upserts and deletes rows "
             f"from the {cfg.kafka_topic} Kafka topic into the host Postgres table "

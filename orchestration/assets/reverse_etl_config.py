@@ -370,3 +370,216 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
             # bootstrap_job is build-only (the released component's); see the dagster_names docstring.
             **{k: v for k, v in dagster_names(name).items() if k != "bootstrap_job"},
         )
+
+
+# --- the slim per-target configs (release design) ---------------------------------------------
+#
+# One dataclass per target, each carrying only that target's fields: a team takes only the
+# targets it wants, and a target cannot know things its target does not need (the postgres and
+# duckdb targets carry no source knowledge at all). Names the target mints derive from the label
+# (reverse_etl_<label>[_<role>]); every derived field keeps an explicit override — including the
+# Dagster-internal ones, which the released components simply never expose in YAML but the demo
+# bridge passes through (the demo's naming rule keeps its per-name overrides).
+
+
+@dataclass(frozen=True, kw_only=True)
+class RisingwaveTargetConfig:
+    """The RisingWave target only: the seam fields plus the one composition input `source_fqn`
+    (its CREATE reads the source's columns and types once — the seam's single composition input)
+    and nothing about the sync's state, reset or demo."""
+
+    # --- identity ---
+    label: str
+
+    # --- the seam (section 13.2): what the sync puts on the topic, plus the composition input ---
+    # The envelope's prefix: the envelope schema name composes from it and the source's last two
+    # components — the same formula the sync side uses, so the Avro registration byte-matches by
+    # arithmetic, not discipline (the wire contract).
+    sync_name: str
+    kafka_topic: str
+    key_column: str
+    source_fqn: str
+
+    # --- overrides (empty derives from the label) ---
+    risingwave_table: str = ""
+    group_name: str = ""
+    risingwave_asset: str = ""
+    encoding: str = "json"
+    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+
+    # --- ordering: asset-key names this target's asset runs after ---
+    deps: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.encoding not in ("json", "avro"):
+            raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+        if not self.risingwave_table:
+            object.__setattr__(self, "risingwave_table", f"reverse_etl_{self.label}_target")
+        if not self.group_name:
+            object.__setattr__(self, "group_name", dagster_names(self.label)["group_name"])
+        if not self.risingwave_asset:
+            object.__setattr__(self, "risingwave_asset", dagster_names(self.label)["risingwave_asset"])
+
+    @property
+    def envelope_schema_name(self) -> str:
+        # Debezium's <server>.<schema>.<table> convention over the source's last two components —
+        # CdfSyncConfig.envelope_schema_name is the same formula on the sync side.
+        schema, table = self.source_fqn.rsplit(".", 2)[-2:]
+        return f"{self.sync_name}.{schema}.{table}"
+
+    @property
+    def key_subject(self) -> str:
+        return avro_key_subject(self.kafka_topic)
+
+    @property
+    def value_subject(self) -> str:
+        return avro_value_subject(self.kafka_topic)
+
+
+@dataclass(frozen=True, kw_only=True)
+class PostgresTargetConfig:
+    """The Debezium JDBC sink target plus the sink health check with its job and schedule (D19:
+    the check watches the connector and its lag, so it exists only when this target does). The
+    connector's Postgres coordinates are deliberately absent — the connector opens the JDBC
+    connection itself and reads them from the environment (the env contract)."""
+
+    # --- identity ---
+    label: str
+
+    # --- the seam: what the sync puts on the topic ---
+    kafka_topic: str
+    key_column: str
+
+    # --- overrides (empty derives from the label) ---
+    connector_name: str = ""
+    postgres_table: str = ""
+    group_name: str = ""
+    sink_asset: str = ""
+    sink_tasks_max: int = 1
+    encoding: str = "json"
+    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+
+    # --- ordering ---
+    deps: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.encoding not in ("json", "avro"):
+            raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+        if self.sink_tasks_max < 1:
+            raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
+        if not self.connector_name:
+            object.__setattr__(self, "connector_name", f"reverse_etl_{self.label}_sink")
+        if not self.postgres_table:
+            object.__setattr__(self, "postgres_table", f"reverse_etl_{self.label}_target")
+        if not self.group_name:
+            object.__setattr__(self, "group_name", dagster_names(self.label)["group_name"])
+        if not self.sink_asset:
+            object.__setattr__(self, "sink_asset", dagster_names(self.label)["sink_asset"])
+
+    @property
+    def consumer_group(self) -> str:
+        return connect_consumer_group(self.connector_name)
+
+    @property
+    def health_job_name(self) -> str:
+        return f"reverse_etl_{self.label}_sink_health_job"
+
+    @property
+    def health_schedule_name(self) -> str:
+        return f"reverse_etl_{self.label}_sink_health_schedule"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DuckdbTargetConfig:
+    """The stateless local mirror: drains the topic, keeps the latest event per key, tombstones on
+    op=="d", table named after the topic. The path is typed — a deployment decision, not a minted
+    name. It re-reads the whole topic every run (no committed offsets), so it is a dev mirror with
+    a stated ceiling: PoC-volume topics, not a high-rate production topic."""
+
+    # --- identity ---
+    label: str
+
+    # --- the seam ---
+    kafka_topic: str
+    key_column: str
+    # Defaulted empty so omitting it fails with the explanation below, not a TypeError.
+    duckdb_target_path: str = ""
+
+    # --- overrides (empty derives from the label) ---
+    group_name: str = ""
+    duckdb_asset: str = ""
+    encoding: str = "json"
+    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+
+    # --- ordering ---
+    deps: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.encoding not in ("json", "avro"):
+            raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
+        if not self.duckdb_target_path:
+            raise ValueError("duckdb_target_path is required: the mirror's file is a deployment decision, not a minted name")
+        if not self.group_name:
+            object.__setattr__(self, "group_name", dagster_names(self.label)["group_name"])
+        if not self.duckdb_asset:
+            object.__setattr__(self, "duckdb_asset", f"reverse_etl_{self.label}_duckdb_target")
+
+    @property
+    def consumer_group(self) -> str:
+        # Rename-safe on purpose: the mirror reads from earliest and never commits offsets, so a
+        # renamed label does not strand a group's committed state.
+        return f"{self.label}-duckdb-target"
+
+
+def risingwave_target_config(cfg: ReverseEtlTargetsConfig, source_fqn: str = "") -> RisingwaveTargetConfig:
+    """The demo bridge (release design): the slim RisingWave config composed from the demo's
+    merged targets config. The label strips the minted prefix (every demo sync_name conforms to
+    reverse_etl_<label>), the table and encoding pass through, and the deps pin today's ordering
+    (topic then sync) — the demo's target assets keep their upstream edges byte-identically."""
+    return RisingwaveTargetConfig(
+        label=cfg.sync_name.removeprefix("reverse_etl_"),
+        source_fqn=source_fqn,
+        sync_name=cfg.sync_name,
+        kafka_topic=cfg.kafka_topic,
+        key_column=cfg.key_column,
+        risingwave_table=cfg.risingwave_table,
+        group_name=cfg.group_name,
+        risingwave_asset=cfg.risingwave_asset,
+        encoding=cfg.encoding,
+        schema_registry_url=cfg.schema_registry_url,
+        deps=(cfg.topic_asset, cfg.sync_asset),
+    )
+
+
+def postgres_target_config(cfg: ReverseEtlTargetsConfig) -> PostgresTargetConfig:
+    """The demo bridge's postgres half: same label rule, the connector and table names pass
+    through (byte-identical demo names), the health job and schedule keep theirs via the label."""
+    return PostgresTargetConfig(
+        label=cfg.sync_name.removeprefix("reverse_etl_"),
+        kafka_topic=cfg.kafka_topic,
+        key_column=cfg.key_column,
+        connector_name=cfg.connector_name,
+        postgres_table=cfg.postgres_table,
+        group_name=cfg.group_name,
+        sink_asset=cfg.sink_asset,
+        sink_tasks_max=cfg.sink_tasks_max,
+        encoding=cfg.encoding,
+        schema_registry_url=cfg.schema_registry_url,
+        deps=(cfg.topic_asset, cfg.sync_asset),
+    )
+
+
+def duckdb_target_config(cfg: ReverseEtlTargetsConfig) -> DuckdbTargetConfig:
+    """The demo bridge's duckdb half. One accepted demo delta: the consumer group becomes
+    <label>-duckdb-target (was <sync_name>-duckdb-target) — rename-safe, the mirror never
+    commits offsets."""
+    return DuckdbTargetConfig(
+        label=cfg.sync_name.removeprefix("reverse_etl_"),
+        kafka_topic=cfg.kafka_topic,
+        key_column=cfg.key_column,
+        duckdb_target_path=cfg.duckdb_target_path,
+        group_name=cfg.group_name,
+        encoding=cfg.encoding,
+        schema_registry_url=cfg.schema_registry_url,
+        deps=(cfg.sync_asset,),
+    )

@@ -13,6 +13,7 @@ import dagster as dg
 import pytest
 
 from orchestration.assets import reverse_etl_risingwave_setup as rw
+from orchestration.assets.reverse_etl_config import risingwave_target_config
 from tests.fakes import FakeSchemaRegistry, error_text, fake_resources, make_config
 
 FIELDS = [
@@ -24,8 +25,13 @@ FIELDS = [
 
 
 def cfg_for(encoding="json", **overrides):
-    return make_config(
-        source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid", **overrides
+    """The slim RisingWave config the builders take (release design step 4), composed through
+    the demo bridge — the same path the demo's builder uses."""
+    return risingwave_target_config(
+        make_config(
+            source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid", **overrides
+        ).targets_config(),
+        source_fqn="de_dev.sr_poc.external",
     )
 
 
@@ -363,7 +369,7 @@ class TestTableAsset:
         resources = fake_resources(calls, registry=FakeSchemaRegistry(calls))
         resources["risingwave"] = table
         return dg.materialize(
-            [rw.build_risingwave_table_asset(cfg_for(encoding), "de_dev.sr_poc.external")], resources=resources, raise_on_error=False
+            [rw.build_risingwave_table_asset(cfg_for(encoding))], resources=resources, raise_on_error=False
         )
 
     def test_the_table_is_created_from_the_sources_columns(self):

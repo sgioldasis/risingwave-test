@@ -6,10 +6,20 @@ builder composes it with the targets half of its config (cfg.targets_config()).
 Run from the repo root:  .venv/bin/python -m pytest
 """
 
+import dataclasses
+
 import dagster as dg
 import pytest
 
-from orchestration.assets.reverse_etl_config import ReverseEtlTargetsConfig
+from orchestration.assets.reverse_etl_config import (
+    DuckdbTargetConfig,
+    PostgresTargetConfig,
+    ReverseEtlTargetsConfig,
+    RisingwaveTargetConfig,
+    duckdb_target_config,
+    postgres_target_config,
+    risingwave_target_config,
+)
 from orchestration.assets.reverse_etl_defs import build_target_defs
 from orchestration.assets.reverse_etl_risingwave_setup import build_risingwave_table_asset
 from tests.fakes import fake_resources, make_config
@@ -106,7 +116,7 @@ class TestTheSeam:
 
     def test_the_risingwave_builder_refuses_a_missing_source_location(self):
         with pytest.raises(ValueError, match="source_fqn is required"):
-            build_risingwave_table_asset(targets_cfg(), "")
+            build_risingwave_table_asset(risingwave_target_config(targets_cfg(), source_fqn=""))
 
 
 class TestBuildTargetDefs:
@@ -146,3 +156,77 @@ class TestBuildTargetDefs:
             targets_cfg(encoding="xml")
         with pytest.raises(ValueError, match="sink_tasks_max must be at least 1"):
             targets_cfg(sink_tasks_max=0)
+
+
+class TestTheSlimConfigs:
+    """The per-target configs (release design step 4): each carries only its target's fields,
+    names minted by the target derive from the label, and the bridge composes them from the
+    demo's merged config with byte-identical names."""
+
+    def test_the_risingwave_config_derives_its_names_from_the_label(self):
+        cfg = RisingwaveTargetConfig(
+            label="orders", source_fqn="de_dev.their_schema.orders_source",
+            sync_name="reverse_etl_orders", kafka_topic="reverse_etl_orders_topic", key_column="Company_ID",
+        )
+        assert (cfg.risingwave_table, cfg.risingwave_asset, cfg.group_name) == (
+            "reverse_etl_orders_target", "reverse_etl_orders_risingwave_target", "reverse_etl_orders",
+        )
+        assert (cfg.encoding, cfg.deps) == ("json", ())
+
+    def test_given_names_are_verbatim_and_deps_pass_through(self):
+        cfg = RisingwaveTargetConfig(
+            label="orders", source_fqn="de_dev.s.orders", sync_name="reverse_etl_orders",
+            kafka_topic="orders_cdc", key_column="id", risingwave_table="team_table",
+            deps=("team_upstream",),
+        )
+        assert (cfg.risingwave_table, cfg.deps) == ("team_table", ("team_upstream",))
+
+    def test_the_envelope_formula_matches_the_sync_side_by_arithmetic(self):
+        """The wire contract: the Avro registration byte-matches because both sides compose the
+        same formula over the same inputs, not because anyone kept them in sync by hand."""
+        catalog, schema, table = "de_dev", "their_schema", "dim_company"
+        sync_name = "reverse_etl_company"
+        sync_side = dataclasses.replace(
+            make_config(catalog=catalog, schema=schema), source_table=table, sync_name=sync_name
+        )
+        rw_side = RisingwaveTargetConfig(
+            label="company", source_fqn=f"{catalog}.{schema}.{table}", sync_name=sync_name,
+            kafka_topic="t", key_column="id",
+        )
+        assert rw_side.envelope_schema_name == sync_side.envelope_schema_name == f"{sync_name}.{schema}.{table}"
+
+    def test_the_postgres_config_carries_only_its_own_fields(self):
+        cfg = PostgresTargetConfig(label="orders", kafka_topic="reverse_etl_orders_topic", key_column="id")
+        assert (cfg.connector_name, cfg.postgres_table, cfg.sink_tasks_max) == (
+            "reverse_etl_orders_sink", "reverse_etl_orders_target", 1,
+        )
+        assert (cfg.sink_asset, cfg.consumer_group) == ("reverse_etl_orders_jdbc_sink", "connect-reverse_etl_orders_sink")
+        assert (cfg.health_job_name, cfg.health_schedule_name) == (
+            "reverse_etl_orders_sink_health_job", "reverse_etl_orders_sink_health_schedule",
+        )
+
+    def test_the_duckdb_config_needs_its_path_and_names_from_the_label(self):
+        with pytest.raises(ValueError, match="duckdb_target_path is required"):
+            DuckdbTargetConfig(label="orders", kafka_topic="t", key_column="id")
+        cfg = DuckdbTargetConfig(
+            label="orders", kafka_topic="reverse_etl_orders_topic", key_column="id",
+            duckdb_target_path="/workspace/orders_mirror.duckdb",
+        )
+        assert (cfg.duckdb_asset, cfg.consumer_group) == ("reverse_etl_orders_duckdb_target", "orders-duckdb-target")
+
+    def test_the_bridge_strips_the_minted_prefix_and_pins_the_demo_ordering(self):
+        """The demo bridge: label = sync_name minus the prefix; the deps pin today's ordering
+        (topic then sync for the warehouse targets, sync for the mirror) so the demo's target
+        assets keep their upstream edges byte-identically."""
+        rw_cfg = risingwave_target_config(targets_cfg(), LOCATION)
+        pg_cfg = postgres_target_config(targets_cfg())
+        duck_cfg = duckdb_target_config(targets_cfg(targets=("duckdb",), duckdb_target_path="/tmp/t.duckdb"))
+        for cfg in (rw_cfg, pg_cfg, duck_cfg):
+            assert cfg.label == "unittest"
+        assert rw_cfg.deps == ("reverse_etl_unittest_topic_setup", "reverse_etl_unittest_to_kafka")
+        assert pg_cfg.deps == ("reverse_etl_unittest_topic_setup", "reverse_etl_unittest_to_kafka")
+        assert duck_cfg.deps == ("reverse_etl_unittest_to_kafka",)
+        # Byte-identical demo names through the bridge.
+        assert rw_cfg.risingwave_table == "reverse_etl_unittest_target"
+        assert pg_cfg.connector_name == "reverse_etl_unittest_sink"
+        assert duck_cfg.duckdb_asset == "reverse_etl_unittest_duckdb_target"

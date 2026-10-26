@@ -21,7 +21,7 @@ from dagster import Config, MetadataValue, OpExecutionContext, in_process_execut
 
 from .databricks_optimize import DATABRICKS_HOST
 from .reverse_etl_delta_reader import get_row_fields
-from .reverse_etl_config import ReverseEtlSyncConfig
+from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config
 from .reverse_etl_resources import DatabricksResource, HttpResource, RisingWaveResource, SchemaRegistryResource
 from .reverse_etl_risingwave_setup import add_missing_columns
 
@@ -118,7 +118,7 @@ def trigger_notebook_sync(
         columns_added = add_missing_columns(
             risingwave,
             registry,
-            sync_config,
+            risingwave_target_config(sync_config.targets_config(), source_fqn=sync_config.source_fqn),
             get_row_fields(databricks.table_location_cached(token, sync_config, sync_config.source_fqn)),
         )
         if columns_added:

@@ -20,20 +20,20 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
-from .reverse_etl_config import ReverseEtlTargetsConfig
+from .reverse_etl_config import DuckdbTargetConfig
 from .reverse_etl_resources import KafkaResource, SchemaRegistryResource
 
 _DRAIN_ROUNDS = 10
 
 
-def build_duckdb_target_asset(cfg: ReverseEtlTargetsConfig):
+def build_duckdb_target_asset(cfg: DuckdbTargetConfig):
     """One asset: the topic's mirror in the DuckDB file at cfg.duckdb_target_path."""
     table = cfg.kafka_topic  # the table mirrors the topic
 
     @asset(
-        name=f"{cfg.sync_name}_duckdb_target",
+        name=cfg.duckdb_asset,
         group_name=cfg.group_name,
-        deps=[AssetKey(cfg.sync_asset)],
+        deps=[AssetKey(dep) for dep in cfg.deps],
         description=(
             f"Mirror {cfg.kafka_topic} into the DuckDB file {cfg.duckdb_target_path}: the topic's "
             f"latest event per {cfg.key_column}, deletes removed. A local consumer of the sync's "
@@ -57,7 +57,7 @@ def build_duckdb_target_asset(cfg: ReverseEtlTargetsConfig):
                 return deserializer(getattr(message, field)(), SerializationContext(cfg.kafka_topic, message_field))
             return json.loads(getattr(message, field)())["payload"]
 
-        consumer = kafka.consumer(f"{cfg.sync_name}-duckdb-target", {"auto.offset.reset": "earliest", "enable.auto.commit": "false"})
+        consumer = kafka.consumer(cfg.consumer_group, {"auto.offset.reset": "earliest", "enable.auto.commit": "false"})
         events: dict = {}
         columns: list[str] = []
         read = 0

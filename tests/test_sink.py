@@ -7,6 +7,7 @@ import dagster as dg
 import pytest
 
 from orchestration.assets import reverse_etl_debezium_sink as sink_module
+from orchestration.assets.reverse_etl_config import postgres_target_config
 from tests.fakes import error_text, make_config
 
 
@@ -17,8 +18,12 @@ def kafka_env(monkeypatch):
 
 
 def run_sink(cfg, resources, **options):
+    """The builder takes the slim postgres config (release design step 4): the test composes it
+    through the demo bridge, the same path the demo's builder uses."""
     return dg.materialize(
-        [sink_module.build_debezium_sink_asset(cfg)], resources=resources(**options), raise_on_error=False
+        [sink_module.build_debezium_sink_asset(postgres_target_config(cfg.targets_config()))],
+        resources=resources(**options),
+        raise_on_error=False,
     )
 
 

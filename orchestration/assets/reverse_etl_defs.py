@@ -17,7 +17,13 @@ from dagster import (
 from .reverse_etl_cdf_setup import build_sync_asset
 from .reverse_etl_demo_assets import build_seed_asset, build_table_setup_asset
 from .reverse_etl_duckdb_target import build_duckdb_target_asset
-from .reverse_etl_config import ReverseEtlSyncConfig, ReverseEtlTargetsConfig
+from .reverse_etl_config import (
+    ReverseEtlSyncConfig,
+    ReverseEtlTargetsConfig,
+    duckdb_target_config,
+    postgres_target_config,
+    risingwave_target_config,
+)
 from .reverse_etl_demo_hooks import DemoSyncHooks
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
 from .reverse_etl_health import build_sink_health_check, build_sink_health_job_and_schedule
@@ -33,16 +39,22 @@ def build_target_defs(cfg: ReverseEtlTargetsConfig, source_fqn: str = "") -> Def
     the connector and the lag, so it lives on the targets side). Takes only the targets config --
     no field of it names the source -- plus the one composition input `source_fqn`, which the
     RisingWave builder requires: its CREATE reads the source's columns and types once, the same
-    target-side schema care the demo hooks do inside the sync run."""
+    target-side schema care the demo hooks do inside the sync run.
+
+    The demo bridge (release design step 4): each target builds from its slim config, composed
+    here from the merged one — the label strips the minted prefix, the deps pin today's ordering
+    (topic then sync) — so the demo's names and edges stay byte-identical while the released
+    components compose their own slim configs from YAML."""
     has_postgres_target = "postgres" in cfg.targets
     if has_postgres_target:
-        health_check = build_sink_health_check(cfg)
-        health_job, health_schedule = build_sink_health_job_and_schedule(cfg, health_check)
+        postgres_cfg = postgres_target_config(cfg)
+        health_check = build_sink_health_check(postgres_cfg)
+        health_job, health_schedule = build_sink_health_job_and_schedule(postgres_cfg, health_check)
     return Definitions(
         assets=[
-            *([build_risingwave_table_asset(cfg, source_fqn)] if "risingwave" in cfg.targets else []),
-            *([build_debezium_sink_asset(cfg)] if "postgres" in cfg.targets else []),
-            *([build_duckdb_target_asset(cfg)] if "duckdb" in cfg.targets else []),
+            *([build_risingwave_table_asset(risingwave_target_config(cfg, source_fqn))] if "risingwave" in cfg.targets else []),
+            *([build_debezium_sink_asset(postgres_cfg)] if has_postgres_target else []),
+            *([build_duckdb_target_asset(duckdb_target_config(cfg))] if "duckdb" in cfg.targets else []),
         ],
         asset_checks=[health_check] if has_postgres_target else [],
         jobs=[health_job] if has_postgres_target else [],

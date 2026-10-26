@@ -13,6 +13,7 @@ import dagster as dg
 import duckdb
 import pytest
 
+from orchestration.assets.reverse_etl_config import duckdb_target_config
 from orchestration.assets.reverse_etl_duckdb_target import build_duckdb_target_asset
 from tests.fakes import FakeKafka, FakeSchemaRegistry, make_config
 
@@ -70,7 +71,9 @@ class Topic:
     """A topic with Debezium messages on it, plus the asset run against it."""
 
     def __init__(self, tmp_path, calls):
-        self.cfg = make_config(source_columns=(), key_column="id", duckdb_target_path=str(tmp_path / "mirror.duckdb"))
+        self.cfg = duckdb_target_config(
+            make_config(source_columns=(), key_column="id", duckdb_target_path=str(tmp_path / "mirror.duckdb")).targets_config()
+        )
         self.kafka = TargetKafka(calls)
         self.kafka.quiet_first = False
         self.registry = FakeSchemaRegistry(calls)

@@ -24,14 +24,14 @@ from dagster import (
 )
 
 from .reverse_etl_resources import HttpResource, KafkaResource
-from .reverse_etl_config import ReverseEtlTargetsConfig
+from .reverse_etl_config import PostgresTargetConfig
 from .reverse_etl_debezium_sink import CONNECT_URL
 
 MAX_LAG_MESSAGES = 10_000
 HEALTH_CRON = "*/5 * * * *"
 
 
-def _connector_problems(http: HttpResource, cfg: ReverseEtlTargetsConfig) -> tuple[list[str], dict[str, str]]:
+def _connector_problems(http: HttpResource, cfg: PostgresTargetConfig) -> tuple[list[str], dict[str, str]]:
     """(problems, states) from Connect's status endpoint."""
     try:
         resp = http.get(f"{CONNECT_URL}/connectors/{cfg.connector_name}/status", timeout=10)
@@ -52,7 +52,7 @@ def _connector_problems(http: HttpResource, cfg: ReverseEtlTargetsConfig) -> tup
     return problems, {label: part["state"] for label, part in parts}
 
 
-def _consumer_lag(kafka: KafkaResource, cfg: ReverseEtlTargetsConfig) -> int:
+def _consumer_lag(kafka: KafkaResource, cfg: PostgresTargetConfig) -> int:
     """Messages in the topic the sink's consumer group has not committed yet. A partition with no commit counts
     from its first offset, which is where the connector starts (auto.offset.reset=earliest). The consumer uses
     the sink's group id only to read its committed offsets: it never subscribes, so it does not join the group or
@@ -70,7 +70,7 @@ def _consumer_lag(kafka: KafkaResource, cfg: ReverseEtlTargetsConfig) -> int:
         consumer.close()
 
 
-def build_sink_health_check(cfg: ReverseEtlTargetsConfig):
+def build_sink_health_check(cfg: PostgresTargetConfig):
     @asset_check(
         asset=AssetKey(cfg.sink_asset),
         name="sink_healthy",
@@ -103,17 +103,17 @@ def build_sink_health_check(cfg: ReverseEtlTargetsConfig):
     return sink_healthy
 
 
-def build_sink_health_job_and_schedule(cfg: ReverseEtlTargetsConfig, check):
+def build_sink_health_job_and_schedule(cfg: PostgresTargetConfig, check):
     """A job that runs only the sink check, and a schedule that runs it every few minutes. Pause the schedule
     in the Dagster UI to stop it."""
     job = define_asset_job(
-        name=f"{cfg.sync_name}_sink_health_job",
+        name=cfg.health_job_name,
         selection=AssetSelection.checks(check),
-        description=f"Run the sink health check for {cfg.sync_name}.",
+        description=f"Run the sink health check for {cfg.label}.",
         executor_def=in_process_executor,
     )
     schedule = ScheduleDefinition(
-        name=f"{cfg.sync_name}_sink_health_schedule",
+        name=cfg.health_schedule_name,
         job=job,
         cron_schedule=HEALTH_CRON,
         # Opt-in on purpose: auto-starting four */5 health jobs made every demo
