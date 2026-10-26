@@ -27,15 +27,21 @@ class FakeDatabase:
     `state_rows` is the sync's watermark table, a list of (last_commit_version, last_schema): the sync's state
     read returns it freshest first and its state write appends to it. `state_table_exists` is what the
     sync's to_regclass precondition sees (the core never creates the table, so a test turns it off to
-    get the precondition failure)."""
+    get the precondition failure). `state_identities` is the (sync_name, source_fqn, label) recorded per
+    written row — the watermark guard's lookup reads it; a state_rows entry without one is a legacy
+    pre-guard row, which matches any read (a NULL source matches nothing, but a legacy row has no
+    identity at all). `state_guard_columns=False` is the pre-guard table the guard's column check
+    rejects, until create()'s migration flips it back."""
 
     def __init__(
         self, calls: list, kind: str, columns: list | None = None, state_rows: list | None = None,
-        state_table_exists: bool = True,
+        state_table_exists: bool = True, state_guard_columns: bool = True, state_identities: list | None = None,
     ):
         self.calls, self.kind, self.columns = calls, kind, columns or []
         self.state_rows = state_rows if state_rows is not None else []
         self.state_table_exists = state_table_exists
+        self.state_guard_columns = state_guard_columns
+        self.state_identities = state_identities if state_identities is not None else []
 
     def connect_with_timeout(self):
         return self.connect()
@@ -49,12 +55,32 @@ class FakeDatabase:
             self.calls.append((self.kind, text))
             result.clear()
             if text.startswith("SELECT last_commit_version, last_schema FROM reverse_etl_sync_state"):
-                result.extend(sorted(self.state_rows, key=lambda row: -row[0]))
+                wanted = params[0] if params else None
+                rows = [
+                    state_row
+                    for index, state_row in enumerate(self.state_rows)
+                    if index >= len(self.state_identities) or self.state_identities[index][0] == wanted
+                ]
+                result.extend(sorted(rows, key=lambda row: -row[0]))
+            elif text.startswith("SELECT sync_name, label FROM reverse_etl_sync_state"):
+                result.extend(
+                    (identity[0], identity[2])
+                    for identity in self.state_identities
+                    if identity[1] == (params[0] if params else None)
+                )
             elif text.startswith("SELECT to_regclass("):
                 # to_regclass returns one row whose value is NULL for a missing relation
                 result.extend([("reverse_etl_sync_state",)] if self.state_table_exists else [(None,)])
             elif text.startswith("INSERT INTO reverse_etl_sync_state"):
                 self.state_rows.append((params[1], params[2]))
+                self.state_identities.append((params[0], params[3], params[4]))
+            elif text.startswith("SELECT column_name FROM information_schema.columns WHERE table_name"):
+                names = ["sync_name", "last_commit_version", "last_schema"] + (
+                    ["source_fqn", "label"] if self.state_guard_columns else []
+                )
+                result.extend([(name,) for name in names])
+            elif text.startswith("ALTER TABLE reverse_etl_sync_state"):
+                self.state_guard_columns = True  # the migration ran
             else:
                 result.extend((name, "character varying") for name in self.columns)
 
@@ -252,6 +278,8 @@ def fake_resources(
     risingwave_columns=None,
     state_rows=None,
     state_table_exists=True,
+    state_guard_columns=True,
+    state_identities=None,
     producer_fails=False,
     table_location="abfss://x",
     registry=None,
@@ -260,7 +288,9 @@ def fake_resources(
     **databricks_errors,
 ) -> dict:
     return {
-        "postgres": FakeDatabase(calls, "postgres", postgres_columns, state_rows, state_table_exists),
+        "postgres": FakeDatabase(
+            calls, "postgres", postgres_columns, state_rows, state_table_exists, state_guard_columns, state_identities
+        ),
         "risingwave": FakeDatabase(calls, "risingwave", risingwave_columns),
         "databricks": FakeDatabricks(calls, table_location=table_location, **databricks_errors),
         "kafka": (

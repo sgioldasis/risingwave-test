@@ -299,6 +299,12 @@ MUTATIONS = [
     Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the DDL is dropped from the error", f"{ASSETS}/reverse_etl_state.py", 'f"{self.ddl()}"', '""', "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the duckdb backend is ignored", f"{ASSETS}/reverse_etl_state.py", '    if cfg.state_backend == "duckdb":\n        return DuckDBSyncState(cfg.state_path)', "    if False:", "tests/sync_asset/test_state_backends.py"),
+    # --- the watermark guard (release design step 3): renames must fail loudly ---
+    Mutation("preconditions", "the guard never runs", f"{ASSETS}/reverse_etl_cdf_setup.py", "        check_watermark_identity(state, cfg, context.log)", "        pass", "tests/sync_asset"),
+    Mutation("preconditions", "the rename case is misclassified", f"{ASSETS}/reverse_etl_cdf_setup.py", 'renamed = [(name, label) for name, label in others if label is not None and name == f"reverse_etl_{label}"]', "renamed = []", "tests/sync_asset"),
+    Mutation("preconditions", "the write forgets the source", f"{ASSETS}/reverse_etl_cdf_setup.py", "state.write(cfg.sync_name, version, last_schema, source_fqn=cfg.source_fqn, label=cfg.label)", "state.write(cfg.sync_name, version, last_schema)", "tests/sync_asset"),
+    Mutation("preconditions", "require skips the guard columns", f"{ASSETS}/reverse_etl_state.py", "missing = sorted(set(GUARD_COLUMNS) - columns)", "missing = []", "tests/sync_asset"),
+    Mutation("preconditions", "create skips the migration", f"{ASSETS}/reverse_etl_state.py", "                cur.execute(state_table_migration_ddl(self.table))", "                pass", "tests/sync_asset/test_state_backends.py"),
     # --- the sync's hooks (the demo's extension points) ---
     Mutation("hooks", "before_produce never called", f"{ASSETS}/reverse_etl_cdf_setup.py", "_merge_hook_metadata(hook_metadata, hooks.before_produce(context, cfg, row_fields))", "pass", "tests/sync_asset/test_sync_hooks.py"),
     Mutation(

@@ -362,8 +362,54 @@ def _read_state(state, cfg: CdfSyncConfig) -> tuple[int | None, str | None]:
 def _write_state(state, cfg: CdfSyncConfig, version: int, last_schema: str) -> None:
     # Append-only, matching the deleted Spark backend's write_state: read_state takes the freshest
     # row for the sync_name, so history accumulates harmlessly and the write is a
-    # cheap single-statement insert.
-    state.write(cfg.sync_name, version, last_schema)
+    # cheap single-statement insert. The source and label ride along as the watermark guard's
+    # stable anchor (reverse_etl_state.py): both sync_name and label move on a rename, the
+    # source table does not.
+    state.write(cfg.sync_name, version, last_schema, source_fqn=cfg.source_fqn, label=cfg.label)
+
+
+def check_watermark_identity(state: SyncState, cfg: CdfSyncConfig, log) -> None:
+    """The watermark guard (release design): a derived sync_name that lost its watermark must
+    not silently restart the sync from the source's current version. When read() comes back
+    empty, the run looks up rows for the same source_fqn:
+
+    - this sync_name derived, prior rows also derived-named -> the rename error (a label was
+      renamed, or an override typo minted a new identity);
+    - this sync_name derived, prior rows explicitly named -> the collision error (a deliberate
+      sync already watermarks this source);
+    - this sync_name explicitly pinned -> warn and proceed (a deliberate identity: a pinned
+      rename, or a legitimate second sync on one table);
+    - no prior rows -> genuinely fresh, proceed.
+
+    Legacy rows (NULL source_fqn) match nothing and are repopulated by the next write."""
+    if state.read(cfg.sync_name):
+        return  # this key has a watermark — genuinely continuing
+    others = state.rows_for_source(cfg.source_fqn)
+    if not others:
+        return  # genuinely fresh
+    described = ", ".join(f"sync_name='{name}' (label {label})" for name, label in others)
+    if cfg.sync_name_explicit:
+        log.warning(
+            f"Watermark(s) exist for {cfg.source_fqn} under {described} — this sync's "
+            f"sync_name='{cfg.sync_name}' is explicitly pinned, so it starts fresh."
+        )
+        return
+    # A stored row is derived-named when it matches the derivation formula over its own label:
+    # that reproduces at read time whether the write's sync_name was minted or pinned.
+    renamed = [(name, label) for name, label in others if label is not None and name == f"reverse_etl_{label}"]
+    if renamed:
+        name, label = renamed[0]
+        raise RuntimeError(
+            f"A watermark exists for {cfg.source_fqn} under sync_name='{name}' (label '{label}'), "
+            f"but this instance derives sync_name='{cfg.sync_name}' — the label was renamed. "
+            f"Pin sync_name in the YAML to keep the watermark, or delete the old rows to start fresh."
+        )
+    name, label = others[0]
+    raise RuntimeError(
+        f"A deliberate sync (sync_name='{name}', label '{label}') already watermarks {cfg.source_fqn}, "
+        f"but this instance derives sync_name='{cfg.sync_name}' — this derived name collides with a "
+        f"deliberate sync; set sync_name explicitly."
+    )
 
 
 def _require_topic(kafka: KafkaResource, topic: str) -> None:
@@ -1154,6 +1200,10 @@ def _build_sync_asset_delta_rs(
         # which is local and appears on first run (D15).
         _require_topic(kafka, cfg.kafka_topic)
         state.require()
+        # The rename guard, before anything reads the source: an empty watermark for this
+        # sync's key must not mean a silent fresh start when the source already has one
+        # under another key (check_watermark_identity's decision table).
+        check_watermark_identity(state, cfg, context.log)
         databricks.reset_meter()
         registry_client = registry.client(cfg.schema_registry_url)
         # The token is control-plane only here: it resolves the tables' storage
