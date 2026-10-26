@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jobotron — the team's real contract, updated 2026-10-26</title>
+<style>
+  @page { size: 1280px 720px; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  :root {
+    --bg0: #081120; --bg1: #0c1a2e; --panel: rgba(13, 27, 46, .72); --panel2: rgba(10, 21, 38, .9);
+    --cyan: #38bdf8; --cyan2: #22d3ee; --teal: #2dd4bf; --orange: #f59e0b; --green: #34d399; --purple: #a78bfa; --red: #f87171;
+    --ink: #e6f1fb; --dim: #9fb3c8; --mono: "SF Mono", Menlo, Consolas, monospace;
+  }
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; color: var(--ink); }
+  .slide {
+    position: relative; width: 1280px; height: 720px; overflow: hidden; page-break-after: always;
+    background: radial-gradient(1100px 620px at 50% -10%, #12283f 0%, var(--bg1) 46%, var(--bg0) 100%);
+    padding: 50px 64px 66px;
+  }
+  .slide::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: linear-gradient(rgba(56,189,248,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(56,189,248,.05) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+  .slide > * { position: relative; }
+  .footer { position: absolute; left: 64px; right: 64px; bottom: 24px; display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .2em; color: rgba(159,179,200,.55); }
+  .footer .rule { flex: 1; height: 1px; margin: 0 18px; background: linear-gradient(90deg, rgba(56,189,248,.35), rgba(56,189,248,.06)); }
+  h1.title { font-size: 38px; font-weight: 700; letter-spacing: -.01em; margin-bottom: 20px; }
+  .kicker { font-family: var(--mono); font-size: 12px; letter-spacing: .3em; color: var(--teal); margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid rgba(56,189,248,.35); border-radius: 14px; padding: 16px 18px;
+    box-shadow: 0 0 18px rgba(56,189,248,.08), inset 0 0 24px rgba(56,189,248,.04); }
+  .card.o { border-color: rgba(245,158,11,.45); box-shadow: 0 0 18px rgba(245,158,11,.08), inset 0 0 24px rgba(245,158,11,.04); }
+  .card.g { border-color: rgba(52,211,153,.45); box-shadow: 0 0 18px rgba(52,211,153,.08), inset 0 0 24px rgba(52,211,153,.04); }
+  .card.p { border-color: rgba(167,139,250,.45); box-shadow: 0 0 18px rgba(167,139,250,.08), inset 0 0 24px rgba(167,139,250,.04); }
+  .card.r { border-color: rgba(248,113,113,.45); box-shadow: 0 0 18px rgba(248,113,113,.08), inset 0 0 24px rgba(248,113,113,.04); }
+  .card h3 { font-size: 16.5px; margin-bottom: 7px; }
+  .card p, .card li { font-size: 14px; line-height: 1.45; color: var(--dim); }
+  .card b, .note b { color: var(--ink); }
+  .note { display: flex; gap: 14px; align-items: flex-start; background: rgba(8,17,32,.85); border: 1px solid rgba(56,189,248,.4);
+    border-radius: 14px; padding: 14px 18px; font-size: 14.5px; line-height: 1.5; color: var(--dim); }
+  .note .ic { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px; border: 1px solid rgba(56,189,248,.5);
+    display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--cyan); background: rgba(56,189,248,.08); }
+  .note.warn { border-color: rgba(245,158,11,.5); } .note.warn .ic { color: var(--orange); border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.08); }
+  .note.good { border-color: rgba(52,211,153,.5); } .note.good .ic { color: var(--green); border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.08); }
+  .note.purp { border-color: rgba(167,139,250,.5); } .note.purp .ic { color: var(--purple); border-color: rgba(167,139,250,.5); background: rgba(167,139,250,.08); }
+  .win { background: rgba(6,13,24,.92); border: 1px solid rgba(56,189,248,.3); border-radius: 12px; overflow: hidden; }
+  .win .bar { display: flex; align-items: center; gap: 7px; padding: 9px 14px; border-bottom: 1px solid rgba(56,189,248,.16);
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: .08em; color: var(--dim); }
+  .win .bar i { width: 11px; height: 11px; border-radius: 50%; background: #f87171; } .win .bar i:nth-child(2) { background: #fbbf24; } .win .bar i:nth-child(3) { background: #34d399; }
+  .code { font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 13px 16px; color: #cfe3f5; white-space: pre; overflow: hidden; }
+  .code .k { color: var(--cyan2); } .code .v { color: #7dd3fc; } .code .c { color: #64748b; } .code .o { color: var(--orange); } .code .g { color: var(--green); } .code .m { color: var(--purple); }
+  .chipnum { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px;
+    font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--teal); border: 1.5px solid var(--teal); background: rgba(45,212,191,.07); }
+  .steps { display: flex; gap: 10px; }
+  .step { flex: 1; text-align: center; }
+  .step .n { width: 42px; height: 42px; margin: 0 auto 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 700; border: 2px solid var(--cyan); color: var(--cyan); box-shadow: 0 0 14px rgba(56,189,248,.35); }
+  .step.o .n { border-color: var(--orange); color: var(--orange); box-shadow: 0 0 14px rgba(245,158,11,.35); }
+  .step.g .n { border-color: var(--green); color: var(--green); box-shadow: 0 0 14px rgba(52,211,153,.35); }
+  .step.p .n { border-color: var(--purple); color: var(--purple); box-shadow: 0 0 14px rgba(167,139,250,.35); }
+  .step h4 { font-size: 14px; margin-bottom: 5px; } .step p { font-size: 12.5px; line-height: 1.4; color: var(--dim); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .flow { display: flex; align-items: center; justify-content: center; }
+  .node { text-align: center; }
+  .node .lbl { font-size: 16px; font-weight: 600; margin-top: 8px; }
+  .node .sub { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-top: 3px; }
+  .hop { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 0 6px; }
+  .hop .hlbl { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .stat { flex: 1; text-align: center; padding: 22px 16px; }
+  .stat .big { font-size: 30px; font-weight: 800; letter-spacing: -.01em; }
+  .stat .cap { font-size: 14px; color: var(--dim); margin-top: 8px; line-height: 1.4; }
+  .chip { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 4px 11px; border-radius: 8px;
+    border: 1px solid rgba(45,212,191,.45); color: #99f6e4; background: rgba(45,212,191,.07); margin: 3px 4px 3px 0; }
+  .icontile { width: 46px; height: 46px; border-radius: 12px; border: 1.5px solid rgba(56,189,248,.55); background: rgba(56,189,248,.07);
+    display: flex; align-items: center; justify-content: center; }
+  .icontile.o { border-color: rgba(245,158,11,.6); background: rgba(245,158,11,.07); }
+  .icontile.g { border-color: rgba(52,211,153,.6); background: rgba(52,211,153,.07); }
+  .icontile.p { border-color: rgba(167,139,250,.6); background: rgba(167,139,250,.07); }
+</style>
+</head>
+<body>
+
+<!-- shared isometric artwork -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <filter id="glc" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glg" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glo" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glp" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <linearGradient id="spotg" x1="240" y1="0" x2="240" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8cc8ff" stop-opacity=".30"/><stop offset="1" stop-color="#8cc8ff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- database cylinder stack, green glow (the lakehouse) -->
+    <symbol id="dbstack" viewBox="0 0 120 120">
+      <g filter="url(#glg)" stroke="#34d399">
+        <g><rect x="24" y="94" width="72" height="16" fill="#0a241d"/><ellipse cx="60" cy="110" rx="36" ry="11" fill="#0a241d" stroke-width="2"/>
+           <ellipse cx="60" cy="94" rx="36" ry="11" fill="#14503c" stroke-width="2.2"/></g>
+        <g><rect x="24" y="62" width="72" height="16" fill="#0a241d"/><ellipse cx="60" cy="78" rx="36" ry="11" fill="#0a241d" stroke-width="2"/>
+           <ellipse cx="60" cy="62" rx="36" ry="11" fill="#175c44" stroke-width="2.2"/></g>
+        <g><rect x="24" y="30" width="72" height="16" fill="#0a241d"/><ellipse cx="60" cy="46" rx="36" ry="11" fill="#0a241d" stroke-width="2"/>
+           <ellipse cx="60" cy="30" rx="36" ry="11" fill="#1a6b4f" stroke-width="2.4"/></g>
+      </g>
+    </symbol>
+
+    <!-- isometric CPU chip, amber (the Dagster publisher) -->
+    <symbol id="cpu" viewBox="0 0 120 120">
+      <g filter="url(#glo)" stroke="#f59e0b" stroke-width="2.6">
+        <polygon points="60,28 100,49 60,70 20,49" fill="#3a2a08"/>
+        <polygon points="20,49 60,70 60,100 20,79" fill="#241905"/>
+        <polygon points="100,49 60,70 60,100 100,79" fill="#1a1204"/>
+      </g>
+      <polygon points="60,37 82,48.5 60,60 38,48.5" fill="none" stroke="#fbbf24" stroke-width="1.6" opacity=".9" filter="url(#glo)"/>
+      <polygon points="60,43 70,48.5 60,54 50,48.5" fill="rgba(251,191,36,.35)"/>
+      <path d="M30,72 L30,88 L42,95" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" filter="url(#glo)"/>
+      <path d="M90,72 L90,88 L78,95" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" filter="url(#glo)"/>
+      <path d="M60,104 L60,112" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" filter="url(#glo)"/>
+    </symbol>
+
+    <!-- kafka slab, orange, with purple chevrons -->
+    <symbol id="kafkaslab" viewBox="0 0 120 84">
+      <g filter="url(#glo)" stroke="#f59e0b" stroke-width="2.5">
+        <polygon points="8,34 60,14 112,34 60,54" fill="#2a1c05"/>
+        <polygon points="8,34 60,54 60,68 8,48" fill="#1c1204"/>
+        <polygon points="112,34 60,54 60,68 112,48" fill="#140d03"/>
+      </g>
+      <circle cx="60" cy="34" r="11" fill="none" stroke="#22d3ee" stroke-width="3" stroke-dasharray="20 9" filter="url(#glc)"/>
+      <polygon points="72,26 78,34 66,32" fill="#22d3ee"/>
+    </symbol>
+
+    <!-- purple neon chevrons >>> (the operator topics) -->
+    <symbol id="chev3" viewBox="0 0 96 64">
+      <g fill="none" stroke="#a78bfa" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" filter="url(#glp)">
+        <path d="M12,10 L34,32 L12,54"/><path d="M38,10 L60,32 L38,54"/><path d="M64,10 L86,32 L64,54"/>
+      </g>
+    </symbol>
+
+    <!-- thin platforms -->
+    <symbol id="plat-c" viewBox="0 0 120 84">
+      <g filter="url(#glc)" stroke="#38bdf8" stroke-width="2.5">
+        <polygon points="8,34 60,14 112,34 60,54" fill="#0e2f43"/>
+        <polygon points="8,34 60,54 60,64 8,44" fill="#081c2b"/>
+        <polygon points="112,34 60,54 60,64 112,44" fill="#06141f"/>
+      </g>
+      <ellipse cx="60" cy="34" rx="28" ry="10" fill="#123c56" stroke="#38bdf8" stroke-width="1.2" filter="url(#glc)"/>
+    </symbol>
+    <symbol id="plat-g" viewBox="0 0 120 84">
+      <g filter="url(#glg)" stroke="#34d399" stroke-width="2.5">
+        <polygon points="8,34 60,14 112,34 60,54" fill="#0b2a20"/>
+        <polygon points="8,34 60,54 60,64 8,44" fill="#071c15"/>
+        <polygon points="112,34 60,54 60,64 112,44" fill="#051410"/>
+      </g>
+      <ellipse cx="60" cy="34" rx="28" ry="10" fill="#14503c" stroke="#34d399" stroke-width="1.2" filter="url(#glg)"/>
+    </symbol>
+
+    <!-- connectors -->
+    <symbol id="arrow" viewBox="0 0 90 44">
+      <path d="M6,24 C30,12 58,34 78,22" fill="none" stroke="#22d3ee" stroke-width="4" stroke-linecap="round" filter="url(#glc)"/>
+      <polygon points="88,20 72,14 75,28" fill="#22d3ee"/>
+    </symbol>
+    <symbol id="arrows3" viewBox="0 0 90 110">
+      <path d="M6,22 C30,12 58,30 76,22" fill="none" stroke="#22d3ee" stroke-width="3.4" stroke-linecap="round" filter="url(#glc)"/>
+      <path d="M6,55 C30,45 58,63 76,55" fill="none" stroke="#22d3ee" stroke-width="3.4" stroke-linecap="round" filter="url(#glc)"/>
+      <path d="M6,88 C30,78 58,96 76,88" fill="none" stroke="#22d3ee" stroke-width="3.4" stroke-linecap="round" filter="url(#glc)"/>
+      <polygon points="88,20 74,15 76,28" fill="#22d3ee"/><polygon points="88,53 74,48 76,61" fill="#22d3ee"/><polygon points="88,86 74,81 76,94" fill="#22d3ee"/>
+    </symbol>
+    <symbol id="arrowdown" viewBox="0 0 44 64">
+      <path d="M22,5 C13,20 31,36 22,50" fill="none" stroke="#22d3ee" stroke-width="3.5" stroke-linecap="round" filter="url(#glc)"/>
+      <polygon points="22,60 13,45 31,45" fill="#22d3ee"/>
+    </symbol>
+
+    <!-- coin, reads seconds now -->
+    <symbol id="coin" viewBox="0 0 60 60">
+      <ellipse cx="30" cy="30" rx="21" ry="23" fill="#0a241d" stroke="#34d399" stroke-width="2.6" filter="url(#glg)"/>
+      <ellipse cx="30" cy="30" rx="14" ry="16" fill="none" stroke="#34d399" stroke-width="1.6" opacity=".8"/>
+      <text x="30" y="35" text-anchor="middle" font-family="SF Mono,Menlo,monospace" font-size="13" font-weight="700" fill="#6ee7b7">&#8776;5s</text>
+    </symbol>
+  </defs>
+</svg>
+
+<!-- 1 · TITLE -->
+<section class="slide">
+  <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;">
+    <div class="kicker">DAGSTER&nbsp;&middot;&nbsp;DATABRICKS&nbsp;SQL&nbsp;&middot;&nbsp;JSON&nbsp;&middot;&nbsp;KAFKA</div>
+    <svg width="560" height="240" viewBox="0 0 560 240">
+      <use href="#dbstack" width="130" height="130" transform="translate(0,60)"/>
+      <use href="#arrow" width="90" height="44" transform="translate(128,100)"/>
+      <use href="#cpu" width="150" height="150" transform="translate(205,50)"/>
+      <use href="#arrow" width="90" height="44" transform="translate(352,100)"/>
+      <use href="#kafkaslab" width="130" height="90" transform="translate(428,78)"/>
+    </svg>
+    <h1 style="font-size:46px;font-weight:800;letter-spacing:-.015em;line-height:1.15;max-width:1020px;">Jobotron: the RFC&rsquo;s upstream producer,<br>rebuilt on the team&rsquo;s real contract</h1>
+    <p style="margin-top:18px;font-size:19px;color:var(--dim);max-width:900px;line-height:1.5;">Candidate selection on the team&rsquo;s Databricks lakehouse &mdash; the notebooks&rsquo; SQL verbatim, one JSON message per customer keyed by CustomerId, one market per topic.</p>
+    <p style="margin-top:30px;font-family:var(--mono);font-size:13px;letter-spacing:.14em;color:var(--dim);">THREE INSTANCES: [CY, GR, RO]&nbsp;&nbsp;//&nbsp;&nbsp;VERIFIED LIVE 26.10.2026&nbsp;&nbsp;//&nbsp;&nbsp;CLEARANCE: Open</p>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>01 / 11</span></div>
+</section>
+
+<!-- 2 · TL;DR -->
+<section class="slide">
+  <h1 class="title">The notebooks&rsquo; queries, published per market</h1>
+  <div class="flow" style="margin:22px 0 26px;">
+    <div class="node"><svg width="120" height="120"><use href="#dbstack"/></svg><div class="lbl">Databricks UC</div><div class="sub">de.voperdb &middot; shard views</div></div>
+    <div class="hop"><svg width="86" height="46" style="margin-bottom:38px;"><use href="#arrow"/></svg><div class="hlbl">context-verbatim SQL</div></div>
+    <div class="node"><svg width="130" height="130"><use href="#cpu"/></svg><div class="lbl">Dagster publisher</div><div class="sub">JobotronProducer &middot; 3 instances</div></div>
+    <div class="hop"><svg width="86" height="46" style="margin-bottom:38px;"><use href="#arrow"/></svg><div class="hlbl">1 JSON msg / customer</div></div>
+    <div class="node"><svg width="120" height="84"><use href="#kafkaslab"/></svg><div class="lbl">jobotron_unverified_</div><div class="sub">customers_{cy,gr,ro}</div></div>
+  </div>
+  <div class="win">
+    <div class="bar"><i></i><i></i><i></i>&nbsp;TL;DR EXECUTION SUMMARY</div>
+    <div class="code" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:22px;white-space:normal;font-size:13.5px;line-height:1.5;">
+      <p><b style="color:var(--cyan)">The notebooks&rsquo; SQL, token-verbatim.</b> Submitted to the team&rsquo;s SQL warehouse in its catalog.schema context &mdash; seconds-class statements, real candidates.</p>
+      <p><b style="color:var(--orange)">One JSON message per customer.</b> The 13-field PascalCase envelope; <span class="v">ItemPayloadHash</span> = sha256 over pinned canonical JSON; <span class="v">ItemId = &lt;hash&gt;-&lt;number&gt;</span>, the dedup token.</p>
+      <p><b style="color:var(--green)">Dry-run by default.</b> Every run scans, builds and hashes and sends nothing &mdash; publishing is a deliberate per-run override. Dedup and re-validation stay with the worker.</p>
+    </div>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>02 / 11</span></div>
+</section>
+
+<!-- 3 · THE USE CASE -->
+<section class="slide">
+  <h1 class="title">The use case, per the contract</h1>
+  <div class="grid2" style="margin-bottom:18px;">
+    <div class="card">
+      <h3 style="color:var(--teal)">&ldquo;</h3>
+      <p style="font-size:16px;line-height:1.55;">Scheduling and candidate selection remain externalized to upstream producers. Such producers can be scheduled Databricks jobs that query Data Lake to identify eligible customers and publish individual messages to the relevant operator topic.</p>
+      <p style="margin-top:10px;font-family:var(--mono);font-size:12px;">&mdash; Jobotron RFC, 08.10.2026 (Accounts &amp; Payments / KYC solutions)</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div class="card p"><h3>The Jobotron worker</h3><p>Per-operator Kafka consumers, a Job Status WebAPI and a state database &mdash; Redis idempotency, eligibility re-validation, Iris / CustomerService actions. <b>Owned by Accounts &amp; Payments.</b></p></div>
+      <div class="card g"><h3>This component &mdash; the upstream producer</h3><p>Scheduled candidate selection + publishing on Dagster, one instance per market job. <b>Owned by Big Data.</b> The review thread asked for exactly this: <i>&ldquo;Could the RFC name Dagster as the scheduler and publisher?&rdquo;</i></p></div>
+    </div>
+  </div>
+  <div class="note"><div class="ic">&#9993;</div><div><b>The unit of work:</b> one Kafka message per selected customer. The worker checks <span style="font-family:var(--mono);color:var(--cyan)">ItemId</span> for not-processed-before, re-validates eligibility against live data, executes the actions and records the outcome.</div></div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>03 / 11</span></div>
+</section>
+
+<!-- 4 · THREE INSTANCES -->
+<section class="slide">
+  <h1 class="title">Three market instances, one minimal YAML each</h1>
+  <div style="display:grid;grid-template-columns:520px 1fr;gap:22px;align-items:start;">
+    <div class="win">
+      <div class="bar"><i></i><i></i><i></i>&nbsp;orchestration/defs/unverified_customers_gr/defs.yaml</div>
+      <div class="code"><span class="c"># the GR notebook as a Dagster component instance:
+# one query type x one operator (D9), six typed facts.</span>
+<span class="k">type</span>: <span class="v">orchestration.components.</span>
+      <span class="v">reverse_etl_jobotron.JobotronProducer</span>
+
+<span class="k">attributes</span>:
+  <span class="k">query_type</span>: <span class="v">unverified_customers</span>
+  <span class="k">operator</span>: <span class="v">gr</span>
+  <span class="k">job_name</span>: <span class="v">Send_Email_to_NonVerified_GR_Customers</span>
+  <span class="k">catalog</span>: <span class="v">de</span>
+  <span class="k">schema_name</span>: <span class="v">voperdb</span>
+  <span class="k">query</span>: <span class="o">|</span>
+    <span class="c"># the notebook&rsquo;s SQL, token-verbatim --</span>
+    <span class="c"># qualified to the market&rsquo;s physical shard</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:13px;">
+      <div class="card o"><h3><span class="chipnum">1</span>&nbsp; Everything derives</h3><p>Topic <span style="font-family:var(--mono);color:var(--orange)">jobotron_unverified_customers_gr</span>, assets <span style="font-family:var(--mono);color:var(--orange)">_setup / publish / _consume</span>, group, reset job &mdash; all from the six facts. No routing layer, no templates.</p></div>
+      <div class="card"><h3><span class="chipnum">2</span>&nbsp; dry_run defaults to true</h3><p>The component default (not a YAML fact) &mdash; the first run of a new instance can never send anything.</p></div>
+      <div class="card g"><h3><span class="chipnum">3</span>&nbsp; cy &middot; gr &middot; ro</h3><p>Identical shape, one folder per market: <span style="font-family:var(--mono)">unverified_customers_{cy,gr,ro}</span> &mdash; market isolation by construction, not by routing.</p></div>
+    </div>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>04 / 11</span></div>
+</section>
+
+<!-- 5 · THE REAL QUERY ON THE SHARD -->
+<section class="slide">
+  <h1 class="title">The real query, qualified to the physical shard</h1>
+  <div style="display:grid;grid-template-columns:620px 1fr;gap:22px;align-items:start;">
+    <div class="win">
+      <div class="bar"><i></i><i></i><i></i>&nbsp;the GR notebook&rsquo;s candidate query (token-verbatim)</div>
+      <div class="code" style="font-size:12.5px;line-height:1.55;"><span class="k">select</span> cusCustomerID <span class="k">as</span> CustomerId, cusCompanyID <span class="k">as</span> CompanyId
+<span class="k">from</span> <span class="o">de.voperdb_gr</span>.cCustomer
+<span class="k">inner join</span> de.metadatadb.mVerificationStatus
+       <span class="k">on</span> cusVerificationStatusID = vstVerificationStatusID
+<span class="k">left join</span> <span class="o">de.voperdb_gr</span>.cCustomer_Group
+       <span class="k">on</span> ccgCustomerID = cusCustomerID <span class="k">and</span> ccgGroupID = <span class="m">1425</span>
+<span class="k">where</span> cusCreated <span class="k">between</span> current_timestamp() <span class="o">- interval</span> <span class="m">28</span> <span class="k">days</span>
+                        <span class="k">and</span> current_timestamp() <span class="o">- interval</span> <span class="m">26</span> <span class="k">days</span>
+  <span class="k">and</span> cusTypeID <span class="k">not in</span> (<span class="m">2</span>, <span class="m">5</span>, <span class="m">6</span>, <span class="m">10</span>, <span class="m">11</span>, <span class="m">15</span>)
+  <span class="k">and</span> cusCompanyID = <span class="m">1</span>   <span class="c">-- GML(GREECE) -- guard</span>
+  <span class="k">and</span> cusStatusID = <span class="m">3</span>    <span class="c">-- REAL -- guard</span>
+  <span class="k">and</span> vstVerifiedFL = <span class="o">false</span>
+  <span class="k">and</span> (ccgValue0 <span class="k">is null</span> <span class="k">or</span> ccgValue0 &lt;&gt; <span class="m">1</span>)</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:13px;">
+      <div class="card"><h3>Why the shard</h3><p><span style="font-family:var(--mono);color:var(--cyan)">de.voperdb.cCustomer</span> is a ~29-way UNION view across market schemas. Each physical shard holds exactly one company: <span style="font-family:var(--mono);color:var(--cyan)">cy&rarr;7, gr&rarr;1, ro&rarr;4</span> (verified live 2026-10-26).</p></div>
+      <div class="card o"><h3>Same candidates, seconds-class</h3><p>Qualifying to <span style="font-family:var(--mono);color:var(--orange)">de.voperdb_gr</span> keeps the notebook&rsquo;s semantics (the company/group filters stay as guards) and turns the UNION scan into a <b>5.1 s statement</b> instead of a queue-bound scan.</p></div>
+      <div class="note purp" style="padding:11px 14px;"><div class="ic">&#9635;</div><div><b>Dated deviation, recorded:</b> docs/poc/JOBOTRON_CONTRACT_PARITY.md carries the evidence and the reasoning.</div></div>
+    </div>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>05 / 11</span></div>
+</section>
+
+<!-- 6 · THE ENVELOPE -->
+<section class="slide">
+  <h1 class="title">The 13-field JSON envelope, hashed so the worker can verify</h1>
+  <div style="display:grid;grid-template-columns:600px 1fr;gap:22px;align-items:start;">
+    <div class="win">
+      <div class="bar"><i></i><i></i><i></i>&nbsp;a real message on the wire (run e3e71a73, item 1/313)</div>
+      <div class="code" style="font-size:12.5px;line-height:1.5;">{
+  <span class="k">"JobId"</span>: <span class="v">"Send_Email_to_NonVerified_GR_Customers_1_20261026153607"</span>,
+  <span class="k">"JobName"</span>: <span class="v">"Send_Email_to_NonVerified_GR_Customers"</span>,
+  <span class="k">"JobCreated"</span>: <span class="v">"2026-10-26T15:36:07Z"</span>,
+  <span class="k">"RunId"</span>: <span class="v">"e3e71a73-&hellip;"</span>,
+  <span class="k">"CompanyId"</span>: <span class="m">1</span>,
+  <span class="k">"CustomerId"</span>: <span class="v">"488101304"</span>,
+  <span class="k">"ItemsCount"</span>: <span class="m">313</span>,
+  <span class="k">"ItemNumber"</span>: <span class="m">1</span>,
+  <span class="k">"ItemId"</span>: <span class="v">"63cb9003d855&hellip;7420f-1"</span>,
+  <span class="k">"ItemPayload"</span>: { <span class="k">"CustomerId"</span>: <span class="m">488101304</span>, <span class="k">"CompanyId"</span>: <span class="m">1</span> },
+  <span class="k">"ItemPayloadHash"</span>: <span class="v">"63cb9003d855&hellip;7420f"</span>,
+  <span class="k">"IsDryRun"</span>: <span class="o">false</span>,
+  <span class="k">"SchemaVersion"</span>: <span class="m">1</span>
+}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:13px;">
+      <div class="card g"><h3>Canonical JSON (D3)</h3><p>Compact separators, keys in the result&rsquo;s column order, nulls explicit, non-ASCII kept &mdash; the same rendering that lands in <span style="font-family:var(--mono)">ItemPayload</span>, so the worker recomputes and checks.</p></div>
+      <div class="card o"><h3>ItemId = &lt;hash&gt;-&lt;number&gt;</h3><p>The dedup token. The key is <span style="font-family:var(--mono);color:var(--orange)">CustomerId</span>, cast to string, exactly the contract&rsquo;s. New content means a new hash and so a new <span style="font-family:var(--mono)">ItemId</span>.</p></div>
+      <div class="card p"><h3>JSON, not Avro</h3><p>The demo replaced the Avro/Apicurio path with the pinned PascalCase contract &mdash; byte-verifiable on the wire with nothing but sha256.</p></div>
+    </div>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>06 / 11</span></div>
+</section>
+
+<!-- 7 · ONE PUBLISH RUN -->
+<section class="slide">
+  <h1 class="title">What one publish run does &mdash; six stages</h1>
+  <div class="grid3" style="margin-bottom:16px;">
+    <div class="card"><h3><span class="chipnum">1</span>&nbsp; Resolve the context</h3><p>The YAML&rsquo;s <span style="font-family:var(--mono);color:var(--cyan)">catalog.schema</span> goes into the Statement Execution body &mdash; without it, unqualified names resolve against the warehouse default and <span style="font-family:var(--mono)">cCustomer</span> 404s.</p></div>
+    <div class="card"><h3><span class="chipnum">2</span>&nbsp; Submit verbatim</h3><p>The YAML query, token for token, on the team&rsquo;s warehouse. 50 s inline wait, then polling.</p></div>
+    <div class="card"><h3><span class="chipnum">3</span>&nbsp; Poll, bounded</h3><p>5 s cadence to a 600 s deadline; on timeout the statement is <b>cancelled</b> (this workspace&rsquo;s endpoint is <span style="font-family:var(--mono)">/cancel</span>) &mdash; no orphan billing, no silent hangs.</p></div>
+    <div class="card o"><h3><span class="chipnum">4</span>&nbsp; Build the envelope</h3><p>Sort CustomerId-first, canonical JSON, sha256 per row, <span style="font-family:var(--mono)">ItemId</span>, ItemNumber order.</p></div>
+    <div class="card g"><h3><span class="chipnum">5</span>&nbsp; Gate on dry-run</h3><p>Under the default: &ldquo;built N message(s) &hellip; and sent NOTHING&rdquo; &mdash; not even a Kafka connection on setup.</p></div>
+    <div class="card"><h3><span class="chipnum">6</span>&nbsp; Produce &amp; record</h3><p>Key = CustomerId (string), bounded backpressure; metadata records <span style="font-family:var(--mono)">items_count</span>, <span style="font-family:var(--mono)">statement_seconds</span>, <span style="font-family:var(--mono)">publish_seconds</span>.</p></div>
+  </div>
+  <div class="note warn"><div class="ic">&#9881;</div><div><b>Warehouse-based, seconds-class:</b> the default engine is <span style="font-family:var(--mono);color:var(--orange)">databricks_sql</span> &mdash; the 0-DBU engines (<span style="font-family:var(--mono)">delta_rs</span>, <span style="font-family:var(--mono)">delta_extension</span>) remain shipped behind the <span style="font-family:var(--mono)">scan_engine</span> knob, but UC-managed storage currently denies the service principal direct reads (recorded with the exact error in the parity doc).</div></div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>07 / 11</span></div>
+</section>
+
+<!-- 8 · DRY RUN -->
+<section class="slide">
+  <h1 class="title">dry_run: the blast-radius gate</h1>
+  <div class="grid2" style="margin-bottom:16px;">
+    <div class="card"><h3>Default true &mdash; in the component</h3><p>Not a YAML fact: the safe default lives in <span style="font-family:var(--mono);color:var(--cyan)">JobotronProducer</span> itself, so every future instance starts harmless. It gates <b>setup and publish</b>: zero side effects, not even a Kafka connection.</p></div>
+    <div class="card o"><h3>Per-run override</h3><p>The launch config carries an optional <span style="font-family:var(--mono);color:var(--orange)">dry_run</span> &mdash; the contract&rsquo;s own IsDryRun is a per-run widget. An override is logged and recorded in the materialization metadata; <span style="font-family:var(--mono)">IsDryRun</span> travels in every message.</p></div>
+    <div class="card g"><h3>Visible in the launchpad</h3><p>The per-instance config switch is re-defaulted to the YAML value, so the launchpad&rsquo;s scaffold shows the effective mode instead of a blank &mdash; flip and launch, or leave blank for YAML-decides.</p></div>
+    <div class="card"><h3>Pin it when a market goes live</h3><p><span style="font-family:var(--mono);color:var(--cyan)">dry_run: false</span> under the instance&rsquo;s attributes makes plain Materialize publish; delete the line to fall back to safe. cy and ro stay dry today.</p></div>
+  </div>
+  <div class="note good"><div class="ic">&#10003;</div><div><b>Verified live:</b> a dry run built 13 messages and sent nothing; the live GR runs&rsquo; wire messages carried <span style="font-family:var(--mono);color:var(--green)">"IsDryRun": false</span> end to end.</div></div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>08 / 11</span></div>
+</section>
+
+<!-- 9 · THE DEMO, VERIFIED LIVE -->
+<section class="slide">
+  <h1 class="title">The demo &mdash; built and verified live, 26.10.2026</h1>
+  <div style="display:flex;gap:16px;margin-bottom:18px;">
+    <div class="card stat" style="border-color:rgba(56,189,248,.45);"><div class="big" style="color:var(--cyan)">5.1 s</div><div class="cap">candidate statement on the team&rsquo;s warehouse<br>(context-verbatim, shard form)</div></div>
+    <div class="card stat g"><div class="big" style="color:var(--green)">331 items</div><div class="cap">latest run &middot; every one keyed by CustomerId,<br>hashed, ItemId-dedupable</div></div>
+    <div class="card stat o"><div class="big" style="color:var(--orange)">1,302 msgs</div><div class="cap">on the topic across 4 live runs<br>(313 + 328 + 330 + 331)</div></div>
+  </div>
+  <div class="flow" style="margin-bottom:16px;">
+    <div class="node"><svg width="104" height="104"><use href="#cpu"/></svg><div class="lbl">publish</div><div class="sub">4 live runs</div></div>
+    <div class="hop"><svg width="80" height="40" style="margin-bottom:34px;"><use href="#arrow"/></svg></div>
+    <div class="node"><svg width="118" height="82"><use href="#kafkaslab"/></svg><div class="lbl">jobotron_unverified_customers_gr</div><div class="sub">1,302 messages</div></div>
+    <div class="hop"><svg width="80" height="40" style="margin-bottom:34px;"><use href="#arrow"/></svg><div class="hlbl">dedup on ItemId</div></div>
+    <div class="node"><svg width="104" height="76"><use href="#plat-g"/></svg><div class="lbl">Postgres mirror</div><div class="sub">331 rows &mdash; exact match</div></div>
+  </div>
+  <div class="note"><div class="ic">&#8646;</div><div><b>The sliding window is the demo:</b> <span style="font-family:var(--mono);color:var(--cyan)">cusCreated between now-28d and now-26d</span> &mdash; runs through the day went 313&rarr;328&rarr;330&rarr;331 as customers aged in. Overlapping customers keep <b>byte-identical ItemIds</b>, so dedup collapses 1,302 messages to exactly 331 mirror rows &mdash; verified in both directions.</div></div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>09 / 11</span></div>
+</section>
+
+<!-- 10 · RUNS ANYWHERE -->
+<section class="slide">
+  <h1 class="title">Runs anywhere &mdash; with or without the containers</h1>
+  <div class="grid2" style="margin-bottom:16px;">
+    <div class="card"><h3>In the stack</h3><p><span style="font-family:var(--mono);color:var(--cyan)">./bin/1_up.sh</span> &rarr; Dagster on :3000, the helper panel on :4002 driving setup / publish / consume / reset per market, with the per-run dry-run checkbox.</p></div>
+    <div class="card g"><h3>Bare, on the host</h3><p><span style="font-family:var(--mono);color:var(--green)">devbox shell; dg dev</span> &mdash; the identical asset catalog from the project dir. <span style="font-family:var(--mono)">PYTHONPATH</span> pinned in devbox.json, <span style="font-family:var(--mono)">.env</span> auto-loaded, <span style="font-family:var(--mono)">POSTGRES_HOST</span> split per context (localhost here, host.docker.internal in compose).</p></div>
+  </div>
+  <div class="note"><div class="ic">&#9635;</div><div><b>Self-healing manifest:</b> a missing or corrupt <span style="font-family:var(--mono);color:var(--cyan)">dbt/target/manifest.json</span> now regenerates via <span style="font-family:var(--mono)">dbt parse</span> at load &mdash; a wiped target used to bootstrap a 0-node skeleton that failed the whole code location; today it self-heals or fails loudly naming the cause.</div></div>
+  <div style="display:flex;gap:16px;margin-top:16px;">
+    <div class="note good" style="flex:1;padding:11px 14px;"><div class="ic">&#10003;</div><div><b>Verified both ways:</b> the full live chain &mdash; Databricks &rarr; Kafka &rarr; mirror &mdash; ran on the host instance the same day the container stack ran it.</div></div>
+    <div class="note purp" style="flex:1;padding:11px 14px;"><div class="ic">&#9993;</div><div><b>Same contract either way:</b> one component, one set of YAML folders &mdash; the runtime choice never touches the wire.</div></div>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>10 / 11</span></div>
+</section>
+
+<!-- 11 · TRADE-OFFS -->
+<section class="slide">
+  <h1 class="title">Critical trade-offs &amp; implementation notes</h1>
+  <div class="grid3" style="margin-bottom:18px;">
+    <div class="card"><h3>Full set, no tombstones</h3><p>Every run republishes whoever matches <b>right now</b>. A customer leaving the segment is silence, not a delete &mdash; the worker&rsquo;s dedup and re-validation make that correct by construction.</p></div>
+    <div class="card o"><h3>Sliding window, drifting counts</h3><p>313&rarr;331 in one day is the design, not drift: each run snapshots the current window. ItemId stability across four runs is what makes the worker&rsquo;s dedup sound &mdash; and it held byte-for-byte.</p></div>
+    <div class="card r"><h3>Zero-DBU engines, blocked for now</h3><p>The SP authenticates to storage but is denied reads on UC-managed <span style="font-family:var(--mono)">__unitystorage</span> paths &mdash; needs storage RBAC. The engine seam ships and waits.</p></div>
+  </div>
+  <div class="win" style="margin-bottom:18px;">
+    <div class="bar"><i></i><i></i><i></i>&nbsp;OPEN QUESTIONS</div>
+    <div class="code" style="white-space:normal;font-size:13.5px;line-height:1.55;">storage RBAC for the SP (unlocks the 0-DBU engines) &middot; worker-side dedup semantics at scale &middot; schedule + alerting for the three instances &middot; gr/ro set-level equivalence proof in a quiet warehouse window</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px;">
+    <svg width="54" height="54"><use href="#coin"/></svg>
+    <div style="font-family:var(--mono);font-size:13.5px;letter-spacing:.12em;color:var(--green);">VERIFICATION: SECONDS-CLASS &middot; CONTRACT-CORRECT MESSAGES &middot; DRY-RUN-SAFE &middot; E2E ON A LAPTOP &middot; RUNS WITH OR WITHOUT CONTAINERS</div>
+  </div>
+  <div class="footer"><span>JOBOTRON_PRODUCER&nbsp;//&nbsp;REAL&nbsp;CONTRACT&nbsp;26.10.2026</span><span class="rule"></span><span>11 / 11</span></div>
+</section>
+
+</body>
+</html>
