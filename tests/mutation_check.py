@@ -306,6 +306,8 @@ MUTATIONS = [
     # --- the env contract (release design step 7): connections from the environment, meter optional ---
     Mutation("env-connections", "the cost meter is always emitted", f"{ASSETS}/reverse_etl_cdf_setup.py", '    if not os.environ.get("DBT_DATABRICKS_HOST", ""):\n        return {}', "    if False:", "tests/test_types.py"),
     Mutation("env-connections", "the state Postgres host is defaulted", f"{ASSETS}/reverse_etl_connections.py", '    host = os.environ.get("POSTGRES_HOST", "")\n    if not host:', '    host = os.environ.get("POSTGRES_HOST", "host.docker.internal")\n    if not host:', "tests/test_postgres_setup.py"),
+    # --- hygiene and compatibility (release design step 8): the scan must flag what it forbids ---
+    Mutation("hygiene", "the scan misses a demo import", "tests/components/hygiene/test_import_hygiene.py", 'FORBIDDEN = re.compile(r"reverse_etl_(demo_\\w+|change|reset|resources)$")', 'FORBIDDEN = re.compile(r"reverse_etl_(demoX_\\w+|change|reset|resources)$")', "tests/components/hygiene"),
     # --- the core's preconditions: the topic and the state table are the team's (D1, D5) ---
     Mutation("preconditions", "the topic check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "if topic not in kafka.admin_client().list_topics(timeout=15).topics:", "if False:", "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),
