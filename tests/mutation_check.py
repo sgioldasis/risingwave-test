@@ -305,6 +305,9 @@ MUTATIONS = [
     Mutation("target-components", "the RisingWave's deps are dropped", "orchestration/components/reverse_etl_targets.py", '            deps=tuple(self.deps or ()),\n            **overrides,', "            deps=(),\n            **overrides,", "tests/components/targets"),
     Mutation("target-components", "the health check is dropped", "orchestration/components/reverse_etl_targets.py", "            asset_checks=[check],", "            asset_checks=[],", "tests/components/targets"),
     Mutation("target-components", "the health job and schedule are dropped", "orchestration/components/reverse_etl_targets.py", "            jobs=[job],\n            schedules=[schedule],", "            jobs=[],\n            schedules=[],", "tests/components/targets"),
+    # --- the connector's coordinates (release design step 6): env only, password untouched ---
+    Mutation("connector-coords", "the schema qualifier is dropped", f"{ASSETS}/reverse_etl_debezium_sink.py", '        "collection.name.format": cfg.postgres_table,', '        "collection.name.format": cfg.postgres_table.rsplit(".", 1)[-1],', "tests/test_types.py"),
+    Mutation("connector-coords", "the password is interpolated", f"{ASSETS}/reverse_etl_debezium_sink.py", '        "connection.password": "${env:POSTGRES_PASSWORD}",', '        "connection.password": os.environ.get("POSTGRES_PASSWORD", "${env:POSTGRES_PASSWORD}"),', "tests/test_types.py"),
     # --- the core's preconditions: the topic and the state table are the team's (D1, D5) ---
     Mutation("preconditions", "the topic check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "if topic not in kafka.admin_client().list_topics(timeout=15).topics:", "if False:", "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),

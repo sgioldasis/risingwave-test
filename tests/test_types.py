@@ -18,7 +18,7 @@ from orchestration.assets import reverse_etl_debezium_sink as sink
 from orchestration.assets import reverse_etl_delta_reader as reader
 from orchestration.assets import reverse_etl_drt as drt
 from orchestration.assets import reverse_etl_risingwave_setup as rw
-from orchestration.assets.reverse_etl_config import ReverseEtlSyncConfig
+from orchestration.assets.reverse_etl_config import PostgresTargetConfig, ReverseEtlSyncConfig
 
 DAY = datetime.date(2012, 1, 1)
 DAY_NUMBER = 15340  # days from 1970-01-01 to 2012-01-01
@@ -157,6 +157,46 @@ def test_connector_quotes_identifiers_and_keys_on_the_configured_column():
     assert config["insert.mode"] == "upsert"
     assert config["delete.enabled"] == "true"
     assert config["value.converter"] == "io.confluent.connect.avro.AvroConverter"
+
+
+# --- the connector's coordinates: environment only (release design step 6) --------
+
+
+def sink_config(monkeypatch, **table_overrides):
+    """The connector config from the slim postgres target, with every coordinate env var pointed
+    at throwaway values — including POSTGRES_PASSWORD, so a test can prove the secret never lands
+    in the config dict."""
+    monkeypatch.setenv("KAFKA_OUTPUT_BOOTSTRAP", "kafka.invalid:9093")
+    monkeypatch.setenv("HOST_POSTGRES_URL", "jdbc:postgresql://db.invalid:5432/theirdb")
+    monkeypatch.setenv("POSTGRES_USER", "their_user")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "their_secret_password")
+    cfg = PostgresTargetConfig(
+        label="company", kafka_topic="reverse_etl_company_topic", key_column="Company_ID", **table_overrides
+    )
+    return sink._connector_config(cfg)
+
+
+def test_the_coordinates_come_from_the_environment_only(monkeypatch):
+    config = sink_config(monkeypatch)
+    assert config["connection.url"] == "jdbc:postgresql://db.invalid:5432/theirdb"
+    assert config["connection.username"] == "their_user"
+    assert config["consumer.override.bootstrap.servers"] == "kafka.invalid:9093"
+
+
+def test_a_schema_qualified_table_flows_through_collection_name_format_verbatim(monkeypatch):
+    """Verified live against the Debezium JDBC sink 3.7.0 (2026-10-26): a schema-qualified
+    collection name creates the table in the named schema (reverse_etl_check.<table>), rows
+    included — so the component needs no postgres_schema field."""
+    config = sink_config(monkeypatch, postgres_table="their_schema.dim_company")
+    assert config["collection.name.format"] == "their_schema.dim_company"
+
+
+def test_the_password_is_never_interpolated_into_the_config(monkeypatch):
+    config = sink_config(monkeypatch)
+    # The placeholder stays verbatim: the Connect worker resolves it, so the secret never
+    # passes through Dagster or this process's config dict.
+    assert config["connection.password"] == "${env:POSTGRES_PASSWORD}"
+    assert "their_secret_password" not in json.dumps(config)
 
 
 def test_reader_turns_dates_into_iso_strings_and_keeps_timestamps_formatted():
