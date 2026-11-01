@@ -140,7 +140,10 @@ class TestTheJob:
         from orchestration.definitions import defs
 
         job = defs.resolve_job_def("reverse_etl_consumer_job")
+        # The demo's topic-setup asset rides in the selection: the sync component creates
+        # no infrastructure, so the consumer job owns the topic.
         assert {node.name for node in job.nodes} == {
+            "reverse_etl_delta_topic_setup",
             "reverse_etl_delta_postgres_target",
             "reverse_etl_delta_json_jdbc_sink",
             "reverse_etl_delta_consumer_report",

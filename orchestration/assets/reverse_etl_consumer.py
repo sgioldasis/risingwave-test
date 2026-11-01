@@ -117,21 +117,24 @@ def reverse_etl_delta_consumer_report(context: AssetExecutionContext) -> str:
     return f"connector={connector_state}, rows={row_count}"
 
 
-# The one-click path: create the table, create/update the connector (JSON, matching the
-# inverness sync), then report. The sink asset's own upstream (topic, sync) is outside this
-# selection: it configures the connector, it does not produce to the topic. Run after the
-# sync has produced to reverse_etl_delta_topic.
+# The one-click path: create the topic (the demo's setup asset — the sync component no
+# longer creates infrastructure), the table, the connector (JSON, matching the inverness
+# sync), then report. The sink asset's upstream (sync) is outside this selection: it
+# configures the connector, it does not produce to the topic. Run after the sync has
+# produced to reverse_etl_delta_topic.
 reverse_etl_consumer_job = define_asset_job(
     name="reverse_etl_consumer_job",
     selection=AssetSelection.assets(
         reverse_etl_delta_postgres_target,
         reverse_etl_delta_json_jdbc_sink,
         reverse_etl_delta_consumer_report,
-    ),
+    )
+    | AssetSelection.assets(AssetKey("reverse_etl_delta_topic_setup")),
     description=(
-        "Bring up the delta sync's Postgres target: create reverse_etl_delta_target, "
-        "create/update the reverse_etl_delta_sink connector (JSON encoding, matching the "
-        "inverness sync) and wait for it to be RUNNING, then report the connector's state "
-        "and the table's row count. Run after the sync has produced to reverse_etl_delta_topic."
+        "Bring up the delta sync's Postgres target: create reverse_etl_delta_topic (compact) "
+        "if missing, create reverse_etl_delta_target, create/update the reverse_etl_delta_sink "
+        "connector (JSON encoding, matching the inverness sync) and wait for it to be RUNNING, "
+        "then report the connector's state and the table's row count. Run after the sync has "
+        "produced to reverse_etl_delta_topic."
     ),
 )
