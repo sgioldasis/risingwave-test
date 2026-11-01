@@ -43,6 +43,11 @@ from .assets.databricks_optimize import databricks_optimize
 from .assets.databricks_turnover_views import databricks_turnover_latest_view
 from .assets.landing_to_bronze import casino_landing_to_bronze
 from .assets.kafka_topics_setup import kafka_output_topics_setup
+from .assets.reverse_etl_consumer import (
+    reverse_etl_consumer_job,
+    reverse_etl_delta_consumer_report,
+    reverse_etl_delta_postgres_target,
+)
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 from .assets.wallet_direct_kafka_setup import (
     wallet_transactions_direct_kafka,
@@ -1000,6 +1005,9 @@ defs = Definitions.merge(
             # One-shot warm-up refresh for the Query Rewrite Demo's
             # MANUAL-refresh MV
             refresh_mv_funnel_daily_country_rollup,
+            # Delta sync's Postgres target: table setup + consumer report
+            reverse_etl_delta_postgres_target,
+            reverse_etl_delta_consumer_report,
         ],
         jobs=[
             dbt_build_job,
@@ -1012,6 +1020,7 @@ defs = Definitions.merge(
             wallet_pipeline_setup_job,
             starrocks_demo_setup_job,
             kafka_topics_setup_job,
+            reverse_etl_consumer_job,
             reverse_etl_notebook_sync_job,
             casino_prd_full_job,
             casino_stg_job,
