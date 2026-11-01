@@ -140,11 +140,25 @@ class TestTheJob:
         from orchestration.definitions import defs
 
         job = defs.resolve_job_def("reverse_etl_consumer_job")
-        # Selecting the sink asset pulls its attached sink_healthy check with it — the job
-        # verifies the connector right after creating it.
         assert {node.name for node in job.nodes} == {
             "reverse_etl_delta_postgres_target",
-            "reverse_etl_delta_jdbc_sink",
-            "reverse_etl_delta_jdbc_sink_sink_healthy",
+            "reverse_etl_delta_json_jdbc_sink",
             "reverse_etl_delta_consumer_report",
         }
+
+    def test_the_consumer_connector_is_json_not_the_demos_avro(self, monkeypatch):
+        from orchestration.assets.reverse_etl_debezium_sink import _connector_config
+
+        monkeypatch.setenv("KAFKA_OUTPUT_BOOTSTRAP", "kafka:9092")
+        # The consumer's sink config (what build_debezium_sink_asset sends for this label):
+        # JSON encoding, no registry — matching the inverness sync, not the demo's avro.
+        config = _connector_config(
+            consumer.PostgresTargetConfig(
+                label="delta",
+                kafka_topic="reverse_etl_delta_topic",
+                key_column="rid",
+                sink_asset=consumer.SINK_ASSET,
+            )
+        )
+        assert config["value.converter"] == "org.apache.kafka.connect.json.JsonConverter"
+        assert "key.converter.schema.registry.url" not in config

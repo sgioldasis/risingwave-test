@@ -10,7 +10,8 @@ import requests
 from dagster import AssetExecutionContext, AssetKey, AssetSelection, asset, define_asset_job
 
 from . import reverse_etl_connections as connections
-from .reverse_etl_debezium_sink import CONNECT_URL
+from .reverse_etl_config import PostgresTargetConfig
+from .reverse_etl_debezium_sink import CONNECT_URL, build_debezium_sink_asset
 
 # The demo's delta sync (orchestration/defs/reverse_etl_delta/defs.yaml): the source is
 # rid BIGINT GENERATED ALWAYS AS IDENTITY (see docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md),
@@ -18,9 +19,22 @@ from .reverse_etl_debezium_sink import CONNECT_URL
 # upserts by the record key (primary.key.fields = rid), so rid is the primary key here.
 TARGET_TABLE = "reverse_etl_delta_target"
 CONNECTOR_NAME = "reverse_etl_delta_sink"
-# The connector-creation asset: the demo's, built from the delta defs.yaml targets block
-# (reverse_etl_defs.build_target_defs -> build_debezium_sink_asset) — not rebuilt here.
-CONNECTOR_ASSET = "reverse_etl_delta_jdbc_sink"
+SINK_ASSET = "reverse_etl_delta_json_jdbc_sink"
+
+# The connector asset for THIS consumer: built from the demo's builder but with JSON
+# encoding, matching the inverness sync that produces to the stg topic. The demo's own
+# reverse_etl_delta_jdbc_sink (encoding: avro, its registry exercise) and this asset both
+# drive the same physical connector — the wire contract rule: never mix encodings across
+# the assets pointing at one topic, the one-sided change silently splits the stream.
+reverse_etl_delta_json_jdbc_sink = build_debezium_sink_asset(
+    PostgresTargetConfig(
+        label="delta",
+        kafka_topic="reverse_etl_delta_topic",
+        key_column="rid",
+        sink_asset=SINK_ASSET,
+        deps=("reverse_etl_delta_postgres_target",),
+    )
+)
 
 TARGET_TABLE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
@@ -61,7 +75,7 @@ def reverse_etl_delta_postgres_target(context: AssetExecutionContext) -> str:
     group_name="reverse_etl",
     compute_kind="python",
     description="Reports the sink connector's state and the target table's row count",
-    deps=["reverse_etl_delta_postgres_target", CONNECTOR_ASSET],
+    deps=["reverse_etl_delta_postgres_target", SINK_ASSET],
 )
 def reverse_etl_delta_consumer_report(context: AssetExecutionContext) -> str:
     """What the consumer sees: the connector's task states and the target's row count.
@@ -103,20 +117,21 @@ def reverse_etl_delta_consumer_report(context: AssetExecutionContext) -> str:
     return f"connector={connector_state}, rows={row_count}"
 
 
-# The one-click path: create the table, create/update the connector (the demo's sink asset,
-# selected by key — it lives in the merged defs), then report. The sink asset's own upstream
-# (topic, sync) is outside this selection: it configures the connector from the YAML, it does
-# not produce to the topic. Run after the sync has produced to reverse_etl_delta_topic.
+# The one-click path: create the table, create/update the connector (JSON, matching the
+# inverness sync), then report. The sink asset's own upstream (topic, sync) is outside this
+# selection: it configures the connector, it does not produce to the topic. Run after the
+# sync has produced to reverse_etl_delta_topic.
 reverse_etl_consumer_job = define_asset_job(
     name="reverse_etl_consumer_job",
     selection=AssetSelection.assets(
-        reverse_etl_delta_postgres_target, reverse_etl_delta_consumer_report
-    )
-    | AssetSelection.assets(AssetKey(CONNECTOR_ASSET)),
+        reverse_etl_delta_postgres_target,
+        reverse_etl_delta_json_jdbc_sink,
+        reverse_etl_delta_consumer_report,
+    ),
     description=(
         "Bring up the delta sync's Postgres target: create reverse_etl_delta_target, "
-        "create/update the reverse_etl_delta_sink connector and wait for it to be RUNNING, "
-        "then report the connector's state and the table's row count. Run after the sync has "
-        "produced to reverse_etl_delta_topic."
+        "create/update the reverse_etl_delta_sink connector (JSON encoding, matching the "
+        "inverness sync) and wait for it to be RUNNING, then report the connector's state "
+        "and the table's row count. Run after the sync has produced to reverse_etl_delta_topic."
     ),
 )

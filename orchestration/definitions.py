@@ -46,6 +46,7 @@ from .assets.kafka_topics_setup import kafka_output_topics_setup
 from .assets.reverse_etl_consumer import (
     reverse_etl_consumer_job,
     reverse_etl_delta_consumer_report,
+    reverse_etl_delta_json_jdbc_sink,
     reverse_etl_delta_postgres_target,
 )
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
@@ -1005,8 +1006,9 @@ defs = Definitions.merge(
             # One-shot warm-up refresh for the Query Rewrite Demo's
             # MANUAL-refresh MV
             refresh_mv_funnel_daily_country_rollup,
-            # Delta sync's Postgres target: table setup + consumer report
+            # Delta sync's Postgres target: table setup + JSON sink connector + consumer report
             reverse_etl_delta_postgres_target,
+            reverse_etl_delta_json_jdbc_sink,
             reverse_etl_delta_consumer_report,
         ],
         jobs=[
