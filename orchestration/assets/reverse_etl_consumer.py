@@ -7,7 +7,7 @@ so "is the data there?" is one Dagster materialization instead of three shell co
 """
 
 import requests
-from dagster import AssetExecutionContext, AssetSelection, asset, define_asset_job
+from dagster import AssetExecutionContext, AssetKey, AssetSelection, asset, define_asset_job
 
 from . import reverse_etl_connections as connections
 from .reverse_etl_debezium_sink import CONNECT_URL
@@ -18,6 +18,9 @@ from .reverse_etl_debezium_sink import CONNECT_URL
 # upserts by the record key (primary.key.fields = rid), so rid is the primary key here.
 TARGET_TABLE = "reverse_etl_delta_target"
 CONNECTOR_NAME = "reverse_etl_delta_sink"
+# The connector-creation asset: the demo's, built from the delta defs.yaml targets block
+# (reverse_etl_defs.build_target_defs -> build_debezium_sink_asset) — not rebuilt here.
+CONNECTOR_ASSET = "reverse_etl_delta_jdbc_sink"
 
 TARGET_TABLE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
@@ -58,14 +61,14 @@ def reverse_etl_delta_postgres_target(context: AssetExecutionContext) -> str:
     group_name="reverse_etl",
     compute_kind="python",
     description="Reports the sink connector's state and the target table's row count",
-    deps=["reverse_etl_delta_postgres_target"],
+    deps=["reverse_etl_delta_postgres_target", CONNECTOR_ASSET],
 )
 def reverse_etl_delta_consumer_report(context: AssetExecutionContext) -> str:
     """What the consumer sees: the connector's task states and the target's row count.
 
-    A missing connector is reported, not raised — creating it is the inverness
-    reverse_etl_delta_jdbc_sink asset's job (or the demo's), not this report's.
-    Connect itself being unreachable is raised: the stack is not up.
+    A missing connector is reported, not raised — creating it is the sink asset's job,
+    which runs just before this in the consumer job. Connect itself being unreachable
+    is raised: the stack is not up.
     """
     try:
         response = requests.get(f"{CONNECT_URL}/connectors/{CONNECTOR_NAME}/status", timeout=10)
@@ -100,16 +103,20 @@ def reverse_etl_delta_consumer_report(context: AssetExecutionContext) -> str:
     return f"connector={connector_state}, rows={row_count}"
 
 
-# The one-click path: create the table, then report. Materialize this after the sync has run
-# (reverse_etl_delta_to_kafka over in inverness, or the demo's delta_setup_job here).
+# The one-click path: create the table, create/update the connector (the demo's sink asset,
+# selected by key — it lives in the merged defs), then report. The sink asset's own upstream
+# (topic, sync) is outside this selection: it configures the connector from the YAML, it does
+# not produce to the topic. Run after the sync has produced to reverse_etl_delta_topic.
 reverse_etl_consumer_job = define_asset_job(
     name="reverse_etl_consumer_job",
     selection=AssetSelection.assets(
         reverse_etl_delta_postgres_target, reverse_etl_delta_consumer_report
-    ),
+    )
+    | AssetSelection.assets(AssetKey(CONNECTOR_ASSET)),
     description=(
-        "Bring up the delta sync's Postgres target: create reverse_etl_delta_target, then "
-        "report the reverse_etl_delta_sink connector's state and the table's row count. "
-        "Run after the sync has produced to reverse_etl_delta_topic."
+        "Bring up the delta sync's Postgres target: create reverse_etl_delta_target, "
+        "create/update the reverse_etl_delta_sink connector and wait for it to be RUNNING, "
+        "then report the connector's state and the table's row count. Run after the sync has "
+        "produced to reverse_etl_delta_topic."
     ),
 )

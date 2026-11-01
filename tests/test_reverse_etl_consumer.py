@@ -8,6 +8,12 @@ import pytest
 from dagster import build_asset_context
 
 from orchestration.assets import reverse_etl_consumer as consumer
+from orchestration.constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
+
+DBT_MANIFESTS = [
+    dbt_PROJECT_PATH / "target" / "manifest.json",
+    dbt_STARROCKS_PROJECT_PATH / "target" / "manifest.json",
+]
 
 
 class FakeConnection:
@@ -123,3 +129,22 @@ class TestConsumerReport:
         monkeypatch.setattr(consumer.requests, "get", boom)
         with pytest.raises(RuntimeError, match="KAFKA_CONNECT_URL"):
             consumer.reverse_etl_delta_consumer_report(build_asset_context())
+
+
+@pytest.mark.skipif(
+    not all(path.exists() for path in DBT_MANIFESTS),
+    reason="resolving the job needs orchestration.definitions, which needs the dbt manifests",
+)
+class TestTheJob:
+    def test_the_job_is_table_then_connector_then_report(self):
+        from orchestration.definitions import defs
+
+        job = defs.resolve_job_def("reverse_etl_consumer_job")
+        # Selecting the sink asset pulls its attached sink_healthy check with it — the job
+        # verifies the connector right after creating it.
+        assert {node.name for node in job.nodes} == {
+            "reverse_etl_delta_postgres_target",
+            "reverse_etl_delta_jdbc_sink",
+            "reverse_etl_delta_jdbc_sink_sink_healthy",
+            "reverse_etl_delta_consumer_report",
+        }
