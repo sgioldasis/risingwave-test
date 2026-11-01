@@ -1396,7 +1396,7 @@ wheels = [
 
 [[package]]
 name = "drt-core"
-version = "1.0.0"
+version = "1.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1407,9 +1407,9 @@ dependencies = [
     { name = "rich" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/dc/04ee98be458d5bae9892166f16d7cea12b4353c09fd4bff567e468feb1ba/drt_core-1.0.0.tar.gz", hash = "sha256:dfb31ec96c141e5c678d39ce83fe9581d99b31bcfdc998f9ff78006ff4f78fd0", size = 2739744, upload-time = "2026-09-22T13:26:51.941Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/15/feff4a979ab2d5f267c6bf1dbfa35e0ede54642a942f9e36597189cc4b7a/drt_core-1.2.1.tar.gz", hash = "sha256:2270a7c1838cb927e8e871bb112df8241a35d195383533275f201a806249fade", size = 4125826, upload-time = "2026-10-23T04:51:03.389Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/3f/2b08486c59604fd117d07cc639b99ee0e463681ecc1a56c1c14873883ccb/drt_core-1.0.0-py3-none-any.whl", hash = "sha256:8294c23c05f34f3eb38acdcf2b970849406f05bef8fe2125ba96e6bda2e095a3", size = 690279, upload-time = "2026-09-22T13:26:49.833Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/17/fb8bf9e9003bc275e57d78faa5fe85359890f6a38be88e816e64d093f779/drt_core-1.2.1-py3-none-any.whl", hash = "sha256:b079b2d84ef0ef1208f952746a0b2919bc2ec080249e10fbeafbe1c7dc3e9179", size = 801108, upload-time = "2026-10-23T04:51:01.293Z" },
 ]
 
 [package.optional-dependencies]
@@ -3882,7 +3882,7 @@ requires-dist = [
     { name = "dbt-risingwave", specifier = ">=1.11.6" },
     { name = "dbt-starrocks", specifier = "==1.12.2" },
     { name = "deltalake", specifier = ">=1.6.0" },
-    { name = "drt-core", extras = ["databricks", "postgres"], specifier = "==1.0.0" },
+    { name = "drt-core", extras = ["databricks", "postgres"], specifier = "==1.2.1" },
     { name = "duckdb", specifier = ">=1.2.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastavro", specifier = ">=1.9.0" },
