@@ -68,7 +68,10 @@ root_module = "orchestration"
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.9",
-    "pytest>=8",
+    # <9.2: dash 4.5's pytest plugin configures hookimpls the old way, and pytest 9.2
+    # rejects that at plugin load ("Error while loading plugin pytest11") — every run
+    # dies before any test. Unpin when dash ships a new-style plugin.
+    "pytest>=8,<9.2",
     "pytest-cov>=7.1.0",
     "pytest-randomly>=5.0.0",
     "pytest-timeout>=2.4.0",
