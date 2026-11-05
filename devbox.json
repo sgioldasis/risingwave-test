@@ -14,7 +14,7 @@
     "ADLS_ACCOUNT_NAME":              "stkznneusrpoccdddevstd"
   },
   "packages": [
-    "python@3.13",
+    "python@3.14",
     "uv@latest",
     "nodejs@22.23.2",
     "jdk@21",

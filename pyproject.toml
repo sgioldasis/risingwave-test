@@ -3,7 +3,7 @@ name = "risingwave-test"
 version = "0.1.0"
 description = "Real-time E-commerce Conversion Funnel with RisingWave, dbt, and Iceberg"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "confluent-kafka[protobuf,avro]>=2.12.2",
     "fastavro>=1.9.0",
@@ -29,14 +29,12 @@ dependencies = [
     "dagster-dg-cli>=1.13.26",
     "dagster-webserver>=1.13.3",
     "marimo>=0.10.0",
-    # NOTE: Spark version is gated by two jars that must match it:
-    # - Delta 4.0.0 (the latest Delta release) is built for Spark 4.0 — on 4.1 every
-    #   Delta read fails with ClassNotFoundException TimeAdd. Needed by the zero-DBU
-    #   change-feed reader, scripts/spark_cdf_zero_dbu_prototype.py (see
-    #   docs/poc/REVERSE_ETL_DBU_COST_NOTES.md).
-    # - Iceberg publishes a Spark-4.0 runtime jar: iceberg-spark-runtime-4.0_2.13,
-    #   staged in Dockerfile.dagster and loaded by the compaction job.
-    "pyspark>=4.0.0,<4.1.0",
+    # NOTE: Spark version is gated by the Iceberg runtime jar: Iceberg publishes
+    # iceberg-spark-runtime-4.1_2.13 (staged in Dockerfile.dagster, loaded by the
+    # compaction job) but no Spark-4.2 runtime yet — bump the ceiling when it does.
+    # (The old Delta 4.0.0 gate is gone: the archived Spark CDF prototype provisions
+    # its own delta-spark via `uv run --with` and never touches this pin.)
+    "pyspark>=4.1.0,<4.2",
     # delta-rs (no JVM): the reverse-ETL syncs read the change feed, the source's
     # current version and the state table's watermark with it, in-process.
     "deltalake>=1.6.0",

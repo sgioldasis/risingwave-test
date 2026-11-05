@@ -102,7 +102,7 @@ def _():
         # needed: master=local[*] runs executors in the driver JVM.
         .config("spark.driver.extraJavaOptions", java_opts)
         # Add Iceberg packages (Spark 4.0 ships with Scala 2.13 only)
-        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
+        .config("spark.jars.packages", f"org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}")
         # Reproducible Ivy cache (independent of $HOME, survives container runs)
         .config("spark.jars.ivy", "/tmp/.ivy2")
         # Iceberg extensions
