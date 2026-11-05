@@ -466,7 +466,8 @@ Function contract, mirroring the deleted Spark module:
   version so the read range matches the watermark exactly. Every `TIMESTAMP`
   column is rendered into a microsecond UTC string before comparison, so a
   datetime-vs-formatted-string mismatch can never read as a change.
-- `read_state` — the state read through the `SyncState` backend
+- `_read_state` (in `reverse_etl_cdf_setup.py`, not here) — the state read through the
+  `SyncState` backend
   (`reverse_etl_state.py`: the delta backend is the demo default — the ported
   library's `DeltaSyncState` at the sync's own UC Delta table `cfg.state_fqn`;
   Postgres and a local DuckDB file remain for other deployments — plan §12; same
@@ -707,5 +708,5 @@ isolation for free, and the in-process setup job resets at every asset entry.
   Databricks defaults delta-rs can neither read nor write; §8's setup statement
   does this). Before the delta state backend (2026-11-05) the constraint was
   dual-writer access, and the conversion script
-  `scripts/convert_state_tables_plain_delta.py` was the workaround that migrated
+  `scripts/archive/convert_state_tables_plain_delta.py` was the workaround that migrated
   the first two tables.

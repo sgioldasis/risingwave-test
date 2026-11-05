@@ -388,10 +388,14 @@ Databricks.
 
 ### Step 9 — Reset (start over)
 
-Jobs → `reverse_etl_demo_reset_job` → **Launch run**. It drops the source
-table, the state table, the Kafka topic and registry subjects, the connector
-and both target tables — allowed because every name matches the
-`reverse_etl_` prefix allowlist. Then Step 1 and Step 4 again to start fresh.
+Jobs → `reverse_etl_demo_reset_job` → **Launch run**. It drops the state
+table, the Kafka topic and registry subjects, the connector and both target
+tables — allowed because every name matches the `reverse_etl_` prefix
+allowlist. The source table **stays**: an existing-table sync (no
+`source_columns`) has a source the setup cannot recreate, so since
+2026-11-05 the reset leaves it alone (dropping it bricked the sync until a
+manual CTAS brought it back). Then Step 4 again to start fresh (the state
+table is gone, so the first sync backfills from version 0).
 
 ## Safety notes
 

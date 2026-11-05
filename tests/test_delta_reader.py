@@ -283,40 +283,6 @@ class TestEarliestVersionSearch:
         assert reader.get_earliest_available_version("anywhere") == 0 and stub.loaded == []
 
 
-# --- the watermark read --------------------------------------------------------------------------------------------------
-
-
-class TestReadState:
-    def write(self, tmp_path, rows):
-        path = str(tmp_path / "state")
-        schema = pa.schema([("sync_name", pa.string()), ("last_commit_version", pa.int64()), ("last_schema", pa.string())])
-        write_deltalake(path, pa.Table.from_pylist(rows, schema=schema))
-        return path
-
-    @pytest.fixture(autouse=True)
-    def local(self, monkeypatch):
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
-
-    def test_the_freshest_row_of_this_sync_wins(self, tmp_path):
-        path = self.write(
-            tmp_path,
-            [
-                {"sync_name": CFG.sync_name, "last_commit_version": 3, "last_schema": "old"},
-                {"sync_name": CFG.sync_name, "last_commit_version": 9, "last_schema": "new"},
-                {"sync_name": "someone_else", "last_commit_version": 99, "last_schema": "x"},
-            ],
-        )
-        assert reader.read_state(CFG, path) == (9, "new")
-
-    def test_a_sync_with_no_row_has_no_state(self, tmp_path):
-        path = self.write(tmp_path, [{"sync_name": "someone_else", "last_commit_version": 1, "last_schema": "x"}])
-        assert reader.read_state(CFG, path) == (None, None)
-
-    def test_a_row_with_no_version_has_no_watermark_but_keeps_its_schema(self, tmp_path):
-        path = self.write(tmp_path, [{"sync_name": CFG.sync_name, "last_commit_version": None, "last_schema": "s"}])
-        assert reader.read_state(CFG, path) == (None, "s")
-
-
 # --- the schema ----------------------------------------------------------------------------------------------------------
 
 

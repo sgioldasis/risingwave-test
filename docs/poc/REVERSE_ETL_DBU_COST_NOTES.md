@@ -286,7 +286,7 @@ table, recreated with the new DDL (`scripts/archive/option_a_plain_state_verific
 Both writers interoperate on the plain table, so the watermark stays shared
 between the Dagster asset and the notebook while the sync's writes cost zero
 DBUs. The `orders` and `avro` state tables were converted the same way on
-2026-10-14 (`scripts/convert_state_tables_plain_delta.py`: drop, recreate plain,
+2026-10-14 (`scripts/archive/convert_state_tables_plain_delta.py`: drop, recreate plain,
 preserve the watermark rows; avro had the UniForm property, orders came back
 empty — consistent with a pre-demo state, the next sync replays and upserts
 converge). Alternative without touching the state table: keep only the one

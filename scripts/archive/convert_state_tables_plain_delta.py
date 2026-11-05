@@ -1,4 +1,11 @@
-"""Convert the orders/avro watermark (state) tables to plain Delta.
+"""Retired one-shot (kept for the record): converts the orders/avro watermark (state)
+tables to plain Delta. Its premise no longer arises -- the Spark watermark MERGE it
+served is gone (the sync writes via delta-rs) and setup creates every state table with
+the library's plain-Delta DDL, so a fresh table can never carry the old properties.
+
+Original 2026-10-14 notes:
+
+Convert the orders/avro watermark (state) tables to plain Delta.
 
 The cdf state table was already recreated as plain Delta (Option A, verified in
 option_a_plain_state_verification.py). The orders/avro state tables still carry

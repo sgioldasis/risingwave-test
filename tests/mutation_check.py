@@ -156,10 +156,6 @@ MUTATIONS = [
     ),
     # --- the Delta reader ---
     Mutation("reader", "any load failure treated as missing", f"{ASSETS}/reverse_etl_delta_reader.py", "if not _VERSION_LOAD_FAILURE.search(str(e)):", "if False:", "tests/test_delta_reader.py"),
-    Mutation(
-        "reader", "the stalest state row wins", f"{ASSETS}/reverse_etl_delta_reader.py", 'freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))',
-        'freshest = min(rows, key=lambda r: int(r["last_commit_version"] or 0))', "tests/test_delta_reader.py",
-    ),
     Mutation("reader", "deletion-vector mask length unchecked", f"{ASSETS}/reverse_etl_delta_reader.py", "if len(mask) != file_table.num_rows:", "if False:", "tests/test_delta_reader.py"),
     Mutation("reader", "deletion-vector mask not applied", f"{ASSETS}/reverse_etl_delta_reader.py", "file_table = file_table.filter(pa.array(mask))", "pass", "tests/test_delta_reader.py"),
     Mutation(
