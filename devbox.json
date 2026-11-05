@@ -6,6 +6,8 @@
     "DATABRICKS_AUTH_TYPE":         "azure-client-secret",
     "RW_LICENSE_KEY":               "$RISINGWAVE_LICENSE_KEY",
     "DBT_DATABRICKS_HOST":          "https://adb-1608121643336927.7.azuredatabricks.net",
+    "KAFKA_CONNECT_URL":            "http://localhost:8083",
+    "POSTGRES_HOST":                "localhost",
     "DATABRICKS_CATALOG":           "de_dev",
     "DATABRICKS_SCHEMA":            "risingwave_poc",
     "DATABRICKS_AZURE_TENANT_ID":   "78395483-9425-447a-ba64-60b90f6bb16e",

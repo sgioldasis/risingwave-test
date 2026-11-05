@@ -919,6 +919,11 @@ services:
       # The env-fed state/schema connections require it (reverse_etl_connections):
       # inside the containers the state Postgres is the host-mapped one.
       - POSTGRES_HOST=host.docker.internal
+      # Context-specific values must NOT live in the repo .env: definitions.py loads
+      # .env into every run process, where localhost would be the container itself.
+      # Containers get their values here; host terminal runs get the localhost
+      # values from devbox.json's env block (POSTGRES_HOST, KAFKA_CONNECT_URL).
+      - KAFKA_CONNECT_URL=http://kafka-connect:8083
       - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
       - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
       - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
@@ -1001,6 +1006,7 @@ services:
       - RISINGWAVE_HOST=${RISINGWAVE_HOST:-frontend-node-0}
       # The env-fed state/schema connections require it (see dagster-webserver above).
       - POSTGRES_HOST=host.docker.internal
+      - KAFKA_CONNECT_URL=http://kafka-connect:8083
       - ENABLE_PYTHON_UDFS=${ENABLE_PYTHON_UDFS:-1}
       - ENABLE_LAKEKEEPER=${ENABLE_LAKEKEEPER:-1}
       - SCHEMA_REGISTRY_URL=${SCHEMA_REGISTRY_URL:-http://redpanda:8081}
