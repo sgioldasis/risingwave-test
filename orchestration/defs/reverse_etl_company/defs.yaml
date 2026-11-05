@@ -23,7 +23,7 @@ attributes:
     catalog: de_dev
     schema_name: sr_poc_external
     key_column: Company_ID
-    encoding: avro
+    encoding: json
     propagate_drops: false
 
   # The downstream side of the seam: the target names and the selection. The targets are

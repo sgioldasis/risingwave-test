@@ -76,7 +76,8 @@ attributes:
   catalog: de_dev
   schema_name: sr_poc_external
   key_column: Company_ID
-  encoding: avro
+  state_backend: delta
+  encoding: json
   propagate_drops: false
 ```
 
@@ -213,6 +214,6 @@ so on a large table the gap would shrink or flip. Two trials, one row, one table
 - **Timestamps** are `timestamptz` in Postgres; RisingWave on Avro reads them as `varchar` plus a generated
   `<column>_ts`. This table has none.
 - **Rebuild after a type or quoting change.** Existing targets keep their old column types and names. Run
-  `reverse_etl_company_reset_job` (it drops the source copy too), recreate the source copy (step 1), then run the
-  setup job again.
+  `reverse_etl_company_reset_job` (since 2026-11-05 it keeps the source copy — drop that yourself if the rebuild
+  needs a fresh copy), then run the setup job again.
 - **Snapshot drift.** The copy does not follow the view until it is refreshed (step 6).
