@@ -417,7 +417,7 @@ function applyEncoding() {
     const o = JSON_STEP_OVERRIDES[s.num];
     if (!o) continue;
     if (!s.base) s.base = { t: s.t, d: s.d, n: s.n, e: s.e };
-    const over = enc === 'json' ? { ...s.base, ...o } : s.base;
+    const over = json ? { ...s.base, ...o } : s.base;
     s.t = over.t; s.d = over.d; s.n = over.n; s.e = over.e;
   }
   [...list.children].forEach((li, k) => {
