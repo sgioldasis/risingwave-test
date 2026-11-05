@@ -164,7 +164,13 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         databricks.require_env()
         token = databricks.token()
         meter_reset()
-        for table in (cfg.source_fqn, cfg.state_fqn):
+        # An existing-table sync (source_columns unset) has a source the demo did not create
+        # and its setup only verifies — dropping it here would brick the sync until a manual
+        # CTAS brings it back (bit us live: the company reset dropped the source its setup
+        # cannot recreate). Such a reset tears down everything around the source and leaves
+        # the source itself.
+        tables = (cfg.source_fqn, cfg.state_fqn) if cfg.source_columns else (cfg.state_fqn,)
+        for table in tables:
             databricks.run_sql(token, f"DROP TABLE IF EXISTS {table}")
             context.log.info(f"Dropped {table} (if it existed)")
 
@@ -173,8 +179,12 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         description=(
             f"Tear down the {cfg.sync_name} reverse-ETL CDF sync: the Debezium JDBC sink connector, "
             "the RisingWave and Postgres tables, the Kafka topic and consumer group, the registry subjects (Avro), and the "
-            f"Databricks source and watermark tables. Then run {cfg.setup_job} and "
-            "the seed script for a fresh demo with the original schema."
+            + (
+                f"Databricks source and watermark tables. Then run {cfg.setup_job} and "
+                "the seed script for a fresh demo with the original schema."
+                if cfg.source_columns
+                else f"Databricks watermark table (the source stays: it was created outside the demo). Then run {cfg.setup_job} for a fresh sync."
+            )
         ),
         executor_def=in_process_executor,
     )

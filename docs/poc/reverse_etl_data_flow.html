@@ -156,7 +156,7 @@
       <div class="slabel">Source table</div>
       <select id="sync-select" aria-label="Choose the sync's source table"></select>
     </div>
-    <div class="sgroup">
+    <div class="sgroup" id="change-group">
       <div class="slabel">Changes · Databricks</div>
       <select id="change-select">
         <option value="insert">insert a row</option>
@@ -743,16 +743,26 @@ const SYNC_LABELS = {
   cdf: 'cdf (UniForm · JSON)',
   orders: 'orders (UniForm · JSON)',
   delta: 'delta (plain Delta · Avro)',
+  company: 'company (existing table · Avro)',
 };
 // The source tables' flavors, matching each sync's defs.yaml (uniform: true is
 // the config default; the delta sync sets uniform: false — plain Delta with
-// column mapping, no UniForm).
+// column mapping, no UniForm). company's source is a manual CTAS copy: plain
+// Delta whatever its defs default says, since its setup never creates it.
 const SOURCE_SUBTITLES = {
   avro: 'Delta + Iceberg (UniForm)',
   cdf: 'Delta + Iceberg (UniForm)',
   orders: 'Delta + Iceberg (UniForm)',
   delta: 'Plain Delta (no UniForm)',
+  company: 'Plain Delta (no UniForm)',
 };
+// Syncs whose source is an existing table: no make-change jobs, so the change
+// controls make no sense for them (change the table with SQL in Databricks).
+const CHANGELESS_SYNCS = new Set(['company']);
+function setChangeGroup() {
+  const group = $('change-group');
+  if (group) group.style.display = CHANGELESS_SYNCS.has(SYNC) ? 'none' : '';
+}
 function setSourceSubtitle(name) {
   const el = document.querySelector('#n-src .ts');
   if (el) el.textContent = SOURCE_SUBTITLES[name] || '';
@@ -796,6 +806,7 @@ syncSelect.onchange = () => {
   history.replaceState(null, '', '?sync=' + SYNC);
   setSourceSubtitle(SYNC);
   setStateBackend(SYNC);
+  setChangeGroup();
   $('bar-msg').textContent = helper ? 'helper connected · sync: ' + SYNC : $('bar-msg').textContent;
   $('result').textContent = '';
   costSession.warehouse = 0;
@@ -828,7 +839,7 @@ async function refreshHelperPill() {
 }
 refreshHelperPill();
 setInterval(refreshHelperPill, 10000);
-show(0); setSourceSubtitle(SYNC); setStateBackend(SYNC);
+show(0); setSourceSubtitle(SYNC); setStateBackend(SYNC); setChangeGroup();
 </script>
 </body>
 </html>

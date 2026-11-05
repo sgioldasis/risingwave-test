@@ -64,6 +64,16 @@ def test_both_databricks_tables_are_dropped_on_success(calls, run_reset):
     assert drops == [f"DROP TABLE IF EXISTS {cfg.source_fqn}", f"DROP TABLE IF EXISTS {cfg.state_fqn}"]
 
 
+def test_an_existing_table_sync_keeps_its_source(calls, run_reset):
+    """source_columns unset: the source was created outside the demo and its setup only
+    verifies it, so the reset drops just the state table — dropping the source would brick
+    the sync until a manual CTAS brings it back (bit us live with the company sync)."""
+    cfg = make_config(source_columns=())
+    run_reset(cfg)
+    drops = [sql for kind, sql in calls if kind == "databricks"]
+    assert drops == [f"DROP TABLE IF EXISTS {cfg.state_fqn}"]
+
+
 def test_a_failed_drop_still_leaves_the_watermark_cleared_and_fails_the_run(calls, run_reset):
     result = run_reset(make_config(), sql_error=RuntimeError("PERMISSION_DENIED: does not have MANAGE"))
     assert not result.success

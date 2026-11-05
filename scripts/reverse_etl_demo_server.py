@@ -44,7 +44,7 @@ CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL_HOST", "http://localhost:8083")
 PORT = int(os.environ.get("PORT", "4002"))
 PAGE = Path(__file__).resolve().parent.parent / "docs" / "poc" / "reverse_etl_data_flow.html"
 JOBOTRON_PAGE = PAGE.parent / "jobotron_data_flow.html"
-SYNCS = ("avro", "cdf", "orders", "delta")
+SYNCS = ("avro", "cdf", "orders", "delta", "company")
 CHANGES = ("insert", "update", "delete", "add_column", "rename_column", "drop_column", "bulk_1m")
 MARKETS = ("cy", "gr", "ro")
 # action -> the instance asset's suffix ("" is the publish asset itself); "reset" is the
@@ -184,6 +184,10 @@ def launch(
     if action == "sync":
         params["selector"] = {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [f"reverse_etl_{sync}_to_kafka"]}]}
     elif action == "change":
+        if sync == "company":
+            # company's source is an existing table (source_columns unset): the component
+            # defines no make_change assets or jobs for it — change the table with SQL.
+            raise ValueError("company's source is an existing table: change it with SQL in Databricks (no make-change jobs)")
         if change not in CHANGES:
             raise ValueError(f"change for {sync} must be one of {CHANGES}")
         if change == "bulk_1m" and sync != "delta":
