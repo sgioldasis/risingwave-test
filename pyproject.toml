@@ -5,6 +5,13 @@ description = "Real-time E-commerce Conversion Funnel with RisingWave, dbt, and 
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    # The batch reverse-ETL engine (Delta change feed -> Kafka, zero DBU), ported
+    # to dagster-workspace under APR-302. Vendored as a wheel (vendor/, built from
+    # the dagster-workspace checkout) so the repo has NO GitLab dependency: clones,
+    # CI and image builds install it offline. When the library changes, rebuild and
+    # replace: cd dagster-workspace/libraries/kaizen-dagster-reverse-etl &&
+    # uv build && cp dist/*.whl <this repo>/vendor/
+    "kaizen-dagster-reverse-etl",
     "confluent-kafka[protobuf,avro]>=2.12.2",
     "fastavro>=1.9.0",
     "grpcio-tools>=1.66.0,<1.80.0",
@@ -52,6 +59,11 @@ dependencies = [
     "drt-core[databricks,postgres]==1.0.0",
     "dagster-drt>=0.5.0,<0.6",
 ]
+
+[tool.uv.sources]
+# The vendored wheel (see the dependency comment above): a plain file in the repo,
+# so uv sync --frozen never needs network access to Kaizen systems.
+kaizen-dagster-reverse-etl = { path = "vendor/kaizen_dagster_reverse_etl-0.1.0-py3-none-any.whl" }
 
 [tool.dagster]
 module_name = "orchestration.definitions"
