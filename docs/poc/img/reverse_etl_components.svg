@@ -11,7 +11,7 @@
 <text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">UniForm + Change Data Feed, key rid</text>
 <path d="M60,1010 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
 <text x="200.0" y="1036.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_sync_state</text>
-<text x="200.0" y="1054.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">watermark (Postgres): last version synced</text>
+<text x="200.0" y="1054.0" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="400">watermark (Postgres; delta sync: UC Delta)</text>
 <rect x="600" y="70" width="300" height="70" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
 <text x="750.0" y="101.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION B: Databricks job</text>
 <text x="750.0" y="119.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync</text>
