@@ -32,15 +32,17 @@ _to_debezium_events() and everything downstream is unchanged):
   _to_debezium_events() groups preimages/postimages by key and pairs them
   positionally.
 
-Writes stay out of this module by design: the watermark state lives in Postgres
-(reverse_etl_sync_state -- private bookkeeping nothing in Databricks reads), so a
-sync has ZERO Databricks warehouse touches: reads (the expensive part) are
-delta-rs and free, and the watermark advances through one small Postgres INSERT
-(_write_state() in reverse_etl_cdf_setup). The state used to be a Delta table
-next to the source -- delta-rs could read but not commit to the warehouse-created
-table (this runtime stamps rowTracking and domainMetadata writer features
-delta-rs 1.6 refuses), which is why the write was SQL and metered; the Postgres
-move deleted that last cost along with the table's protocol constraints.
+Writes stay out of this module by design: the watermark state is private
+bookkeeping nothing in Databricks reads, so a sync has ZERO Databricks warehouse
+touches: reads (the expensive part) are delta-rs and free, and the watermark
+advances through a delta-rs append into the sync's own UC Delta state table
+(recreated by setup with one metered warehouse statement -- the vendored
+DeltaSyncState does the reading and writing). The state once moved to Postgres
+because delta-rs could not commit to the warehouse-created table (that runtime
+stamped rowTracking and domainMetadata writer features delta-rs 1.6 refuses);
+since 2026-11-05 it is back on Delta -- setup creates the table with
+deletionVectors and rowTracking disabled, which is what lets delta-rs be both
+reader and writer again.
 
 Memory profile, two paths: an **append-only commit reads only its new files**
 (constant memory per version -- the 1M-row bulk load syncs at ~100k rows of
@@ -143,21 +145,6 @@ def get_row_fields(location: str, version: int | None = None) -> list[RowField]:
     if not row_fields:
         raise RuntimeError(f"No columns found in the Delta schema at {location}")
     return row_fields
-
-
-def read_state(cfg: CdfSyncConfig, state_location: str) -> tuple[int | None, str | None]:
-    """(watermark, last_schema) for this sync's state row -- the delta-rs read
-    precheck_versions() does for the no-op case, as the full path's fallback when
-    the pre-check thread failed. The table can carry duplicate rows for one
-    sync_name; the freshest row wins, not an arbitrary scan order."""
-    state = _open(state_location).to_pyarrow_table()
-    rows = [row for row in state.to_pylist() if row.get("sync_name") == cfg.sync_name]
-    if not rows:
-        return None, None
-    freshest = max(rows, key=lambda r: int(r["last_commit_version"] or 0))
-    version = int(freshest["last_commit_version"]) if freshest["last_commit_version"] is not None else None
-    return version, freshest.get("last_schema")
-
 
 def get_current_version(location: str) -> int:
     """The table's latest committed version (DESCRIBE HISTORY LIMIT 1 equivalent)."""

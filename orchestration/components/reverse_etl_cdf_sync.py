@@ -12,8 +12,9 @@ class ReverseEtlCdfSync(dg.Component, dg.Model, dg.Resolvable):
 
     The reusable reverse-ETL component (docs/poc/REVERSE_ETL_COMPONENT_DECOUPLING_PLAN.md, section
     3.2): it builds exactly one Dagster asset, the sync. The sync reads an existing Delta table with
-    delta-rs (no Spark, no Databricks compute), keeps its watermark in the Postgres table
-    reverse_etl_sync_state, and produces Debezium-style events to an existing Kafka topic in Connect
+    delta-rs (no Spark, no Databricks compute), keeps its watermark in the state backend the
+    YAML's state_backend names (delta -- a UC Delta table per sync -- postgres, or a local DuckDB
+    file), and produces Debezium-style events to an existing Kafka topic in Connect
     JSON or Confluent Avro.
 
     With create_topic (the default) it also builds an asset that creates the topic -- compact

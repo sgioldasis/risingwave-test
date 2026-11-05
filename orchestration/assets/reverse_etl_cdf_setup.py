@@ -251,8 +251,7 @@ def _resolve_backfill_version() -> int | None:
     """Explicit first-run override, e.g. to force starting from the exact
     version CDF was enabled at even though earlier history has already aged
     out of retention. Takes precedence over the automatic
-    _get_earliest_available_version()-based decision in
-    reverse_etl_cdf_to_kafka.
+    get_earliest_available_version()-based decision in cdf_to_kafka.
     """
     value = os.environ.get("REVERSE_ETL_BACKFILL_FROM_VERSION")
     return int(value) if value else None
@@ -290,6 +289,15 @@ def _run_sql_unmetered(token: str, statement: str) -> dict:
     if data.get("status", {}).get("state") != "SUCCEEDED":
         raise RuntimeError(f"Statement failed: {data.get('status', {})}")
     return _with_all_chunks(token, data)
+
+
+def _state_home(cfg: CdfSyncConfig) -> str:
+    """Where the sync's watermark lives, for the run metadata (the demo page renders it)."""
+    if cfg.state_backend == "delta":
+        return f"its UC Delta state table ({cfg.state_fqn}, read and written by delta-rs)"
+    if cfg.state_backend == "duckdb":
+        return f"its local DuckDB file ({cfg.state_path})"
+    return "the Postgres state table"
 
 
 def _cost_metadata() -> dict:
@@ -418,9 +426,6 @@ def _require_topic(kafka, topic: str) -> None:
     absent. It never creates one -- the demo's topic asset runs before the sync."""
     if topic not in kafka.admin_client().list_topics(timeout=15).topics:
         raise RuntimeError(f"Kafka topic {topic!r} does not exist -- create it before running the sync")
-
-
-_MICROSECOND_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
 
 
 def _version_chunks(start: int, end: int, size: int) -> list[tuple[int, int]]:
@@ -1013,7 +1018,7 @@ def _flush_producer(cfg: CdfSyncConfig, producer: Producer, delivery_errors: lis
     """Wait for everything enqueued so far to reach the broker, then fail the run
     if any delivery was rejected. Called once per produce site — the chunked read
     loop flushes only after the LAST chunk, so the broker transfers while the next
-    chunk's Spark read runs instead of every chunk paying its own round-trip."""
+    chunk's delta-rs read runs instead of every chunk paying its own round-trip."""
     undelivered = producer.flush(timeout=120)
     if undelivered or delivery_errors:
         raise RuntimeError(
@@ -1104,7 +1109,8 @@ def _require_databricks_env() -> None:
 class SyncHooks(Protocol):
     """The sync's extension points, called by the sync asset at two fixed points. The demo passes
     DemoSyncHooks (reverse_etl_demo_hooks.py); a sync run without hooks touches only Databricks
-    storage, Kafka and the Postgres state table — that is the reusable component's behaviour.
+    storage, Kafka and the sync's watermark state (the backend the config names) — that is the
+    reusable component's behaviour.
 
     Ordering contract (pinned by tests/sync_asset/test_sync_hooks.py):
 
@@ -1248,7 +1254,7 @@ def _build_sync_asset_delta_rs(cfg: CdfSyncConfig, hooks: SyncHooks | None, deps
                     "kafka_messages_truncated": MetadataValue.bool(False),
                     "kafka_messages_raw": MetadataValue.json([]),
                     "extraction": MetadataValue.text("delta_rs"),
-                    "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; the watermark state lives in Postgres"),
+                    "databricks_compute": MetadataValue.text(f"none — delta-rs reads storage directly; the watermark state lives in {_state_home(cfg)}"),
                     **_cost_metadata(),
                 })
                 return
@@ -1348,7 +1354,7 @@ def _build_sync_asset_delta_rs(cfg: CdfSyncConfig, hooks: SyncHooks | None, deps
             # collect->dict conversion and the main thread's events/serialization
             # are both GIL-bound, so they contend instead of overlapping. The
             # overlap that DOES pay is flush=False's: the broker transfers while
-            # the next chunk's Spark read runs (GIL-free there).
+            # the next chunk's delta-rs read runs.
             chunks = _version_chunks(chunk_start, current_version, _CDF_CHUNK_VERSIONS)
             chunks = _split_at_schema_changes(chunks, lambda version: get_row_fields(source_location, version=version))
             for index, (chunk_from, chunk_to) in enumerate(chunks):
@@ -1484,7 +1490,7 @@ def _build_sync_asset_delta_rs(cfg: CdfSyncConfig, hooks: SyncHooks | None, deps
             "kafka_messages_truncated": MetadataValue.bool(events_synced > MESSAGE_PREVIEW_LIMIT),
             "kafka_messages_raw": MetadataValue.json(raw_preview_events),
             "extraction": MetadataValue.text("delta_rs"),
-            "databricks_compute": MetadataValue.text("none — delta-rs reads storage directly; the watermark state lives in Postgres"),
+            "databricks_compute": MetadataValue.text(f"none — delta-rs reads storage directly; the watermark state lives in {_state_home(cfg)}"),
             **_cost_metadata(),
         })
 

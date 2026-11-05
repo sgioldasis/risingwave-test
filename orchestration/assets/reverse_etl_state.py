@@ -2,13 +2,14 @@
 
 Three backends behind one small interface (plan section 12):
 
-- `PostgresSyncState` — the default: the shared Postgres table `reverse_etl_sync_state`, keyed by
+- `DeltaSyncState` — the demo default (2026-11-05): the UC-named Delta table
+  (`kaizen_dagster_reverse_etl.core.state`, the ported library's implementation, imported rather
+  than copied): resolved to storage through the Unity Catalog lookup, read and written by delta-rs
+  with zero warehouse compute.
+- `PostgresSyncState` — the shared Postgres table `reverse_etl_sync_state`, keyed by
   sync_name, that the team creates (D1). The precondition fails with the DDL when it is absent.
 - `DuckDBSyncState` — a local file, single writer, created on first run (D15): a local file is not
   shared infrastructure, so the sync may bring it into being itself.
-- `DeltaSyncState` — the UC-named Delta table (`kaizen_dagster_reverse_etl.core.state`, the ported
-  library's implementation, imported rather than copied): resolved to storage through the Unity
-  Catalog lookup, read and written by delta-rs with zero warehouse compute.
 
 All keep the same columns and the same semantics — append-only writes, freshest-row-wins reads —
 so a sync's replay behaviour does not depend on the backend. No imports from the other asset

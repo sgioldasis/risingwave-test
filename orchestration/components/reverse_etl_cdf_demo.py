@@ -33,10 +33,10 @@ class SyncAttributes(dg.Model):
     # "json" (default) or "avro"; see ReverseEtlSyncConfig.encoding.
     encoding: str | None = None
     schema_registry_url: str | None = None
-    # The watermark state (reverse_etl_state.py): "postgres" (default, the shared table
-    # `state_table`), "duckdb" (a local file at `state_path`, created on first run), or
-    # "delta" (a UC-named Delta table, created by setup with one warehouse statement and
-    # resolved to storage through UC at run time).
+    # The watermark state (reverse_etl_state.py): "delta" (the demo default, a UC-named
+    # Delta table created by setup with one warehouse statement and resolved to storage
+    # through UC at run time), "postgres" (the shared table `state_table`), or "duckdb"
+    # (a local file at `state_path`, created on first run).
     state_backend: str | None = None
     state_path: str | None = None
     # The delta backend's table placement; empty inherits the source's catalog/schema.

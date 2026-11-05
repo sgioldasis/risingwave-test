@@ -57,10 +57,11 @@ class CdfSyncConfig:
     sync_asset: str
 
     # --- the watermark state (reverse_etl_state.py) -----------------------------
-    # "postgres" (default): the postgres resource and the shared table `state_table`
+    # "postgres": the postgres resource and the shared table `state_table`
     # (keyed by sync_name), which the team creates -- the sync's precondition fails with
     # the DDL when it is absent. "duckdb": a local file at `state_path`, one sync per
-    # file (DuckDB allows one writer), created on first run (D15). "delta": a UC-named
+    # file (DuckDB allows one writer), created on first run (D15). "delta" (the demo
+    # default, see the NOTE below): a UC-named
     # Delta table at {state_catalog or catalog}.{state_schema or schema}.{state_table},
     # resolved to its storage location through the Unity Catalog lookup at run time —
     # zero Postgres, zero warehouse compute (delta-rs reads and writes ADLS directly).
@@ -91,6 +92,14 @@ class CdfSyncConfig:
             raise ValueError(f"state_backend must be 'postgres', 'duckdb' or 'delta', got {self.state_backend!r}")
         if self.state_backend == "duckdb" and not self.state_path:
             raise ValueError("state_path is required for the duckdb state backend")
+
+    @property
+    def state_fqn(self) -> str:
+        """The watermark state table's fully qualified name. For the delta backend this
+        is the UC name build_sync_state resolves to storage (state_catalog/state_schema
+        inherit the source's when unset). For the SQL backends it is only the reset's
+        DROP cleanup for state tables created before the Postgres move."""
+        return f"{self.state_catalog or self.catalog}.{self.state_schema or self.schema}.{self.state_table}"
 
     @property
     def key_subject(self) -> str:
@@ -299,14 +308,6 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
         _check_targets(self.targets, self.duckdb_target_path)
-
-    @property
-    def state_fqn(self) -> str:
-        """The watermark state table's fully qualified name. For the delta backend this
-        is the UC name build_sync_state resolves to storage (state_catalog/state_schema
-        inherit the source's when unset). For the SQL backends it is only the reset's
-        DROP cleanup for state tables created before the Postgres move."""
-        return f"{self.state_catalog or self.catalog}.{self.state_schema or self.schema}.{self.state_table}"
 
     @property
     def consumer_group(self) -> str:
