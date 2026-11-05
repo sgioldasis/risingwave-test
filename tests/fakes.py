@@ -92,9 +92,15 @@ class FakeDatabase:
 
 
 class FakeDatabricks:
-    def __init__(self, calls: list, sql_error=None, location_error=None, table_location="abfss://x", table_columns=()):
+    def __init__(
+        self, calls: list, sql_error=None, location_error=None, table_location="abfss://x", table_columns=(),
+        state_location=None,
+    ):
         self.calls, self.sql_error, self.location_error = calls, sql_error, location_error
         self.location = table_location
+        # What the UC lookup returns for cfg.state_fqn (the delta state backend); None keeps
+        # every lookup answering with `table_location`, the pre-delta behaviour.
+        self.state_location = state_location
         self.table_columns = table_columns  # what DESCRIBE TABLE reports
 
     def require_env(self):
@@ -127,7 +133,11 @@ class FakeDatabricks:
         return self.location
 
     def table_location_cached(self, token, cfg, fqn):
+        if self.location_error:
+            raise self.location_error
         self.calls.append(("location", fqn))
+        if self.state_location is not None and fqn == cfg.state_fqn:
+            return self.state_location
         return self.location
 
     def clear_location_cache(self):

@@ -25,6 +25,12 @@ attributes:
     sync_name: reverse_etl_delta
     source_table: reverse_etl_delta_source
     state_table: reverse_etl_delta_state
+    # The watermark lives in a UC-named Delta table (this state_table), created by the
+    # setup job with one warehouse statement and resolved to storage through UC at run
+    # time -- no Postgres, no warehouse compute. Its own table on purpose: the library's
+    # inverness instance writes its reverse_etl_sync_state rows keyed by the same
+    # sync_name, and a shared watermark would advance against this demo's runs.
+    state_backend: delta
     kafka_topic: reverse_etl_delta_topic
     # The point of this sync (see the header): create the source as plain Delta --
     # Change Data Feed plus column mapping, no UniForm/Iceberg compat.

@@ -1,13 +1,16 @@
 """The sync's watermark state: where the last synced version and the last-seen schema live.
 
-Two backends behind one small interface (plan section 12):
+Three backends behind one small interface (plan section 12):
 
 - `PostgresSyncState` — the default: the shared Postgres table `reverse_etl_sync_state`, keyed by
   sync_name, that the team creates (D1). The precondition fails with the DDL when it is absent.
 - `DuckDBSyncState` — a local file, single writer, created on first run (D15): a local file is not
   shared infrastructure, so the sync may bring it into being itself.
+- `DeltaSyncState` — the UC-named Delta table (`kaizen_dagster_reverse_etl.core.state`, the ported
+  library's implementation, imported rather than copied): resolved to storage through the Unity
+  Catalog lookup, read and written by delta-rs with zero warehouse compute.
 
-Both keep the same columns and the same semantics — append-only writes, freshest-row-wins reads —
+All keep the same columns and the same semantics — append-only writes, freshest-row-wins reads —
 so a sync's replay behaviour does not depend on the backend. No imports from the other asset
 modules, so any of them can import this one.
 
@@ -19,6 +22,8 @@ the source table does not).
 from typing import Protocol
 
 import psycopg2
+from kaizen_dagster_reverse_etl.core.connections import azure_storage_options
+from kaizen_dagster_reverse_etl.core.state import DeltaSyncState, delta_state_ddl
 
 STATE_TABLE = "reverse_etl_sync_state"
 
@@ -271,11 +276,26 @@ class DuckDBSyncState:
         return f"Cleared {sync_name}'s watermark rows from {self.path} (other syncs' watermarks untouched)"
 
 
-def build_sync_state(cfg, postgres=None) -> SyncState:
+def build_sync_state(cfg, postgres=None, databricks=None) -> SyncState:
     """The state backend the config chose. Postgres needs the postgres resource; DuckDB needs
-    only its file path — a duckdb-state sync never requires the postgres resource."""
+    only its file path — a duckdb-state sync never requires the postgres resource; Delta needs
+    the databricks connection for the UC storage lookup (the table itself is the deployment's
+    one-time setup — the sync never creates it)."""
     if cfg.state_backend == "duckdb":
         return DuckDBSyncState(cfg.state_path)
+    if cfg.state_backend == "delta":
+        if databricks is None:
+            raise ValueError("the delta state backend needs the databricks connection (the UC storage lookup)")
+        token = databricks.cached_token()
+        try:
+            location = databricks.table_location_cached(token, cfg, cfg.state_fqn)
+        except Exception as error:
+            raise RuntimeError(
+                f"The watermark state table {cfg.state_fqn} does not exist -- create it before "
+                f"running the sync (one warehouse statement, then re-run):\n{delta_state_ddl(cfg.state_fqn)}"
+            ) from error
+        options = azure_storage_options(location) if location.startswith("abfss://") else None
+        return DeltaSyncState(location, options)
     if postgres is None:
         raise ValueError("the postgres state backend needs the postgres resource")
     return PostgresSyncState(postgres, cfg.state_table)

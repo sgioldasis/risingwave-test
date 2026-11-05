@@ -138,13 +138,22 @@ def build_reset_job(cfg: ReverseEtlSyncConfig):
         # failed reset stalls the next sync silently once the source is recreated at version 0
         # (docs/poc/REVERSE_ETL_EXISTING_TABLE.md, "The drop+recreate trap"). A watermark cleared
         # while the source survives only makes the next sync backfill, which upserts by key.
-        # The state table lives in Postgres now (reverse_etl_sync_state); the cfg.state_fqn DROP
-        # below is legacy cleanup for state tables created before the move.
+        # The state table lives in Postgres for the SQL backends (reverse_etl_sync_state);
+        # for the delta backend cfg.state_fqn IS the live UC state table (its DROP below is
+        # the teardown, and setup recreates it). For the SQL backends the DROP is legacy
+        # cleanup for state tables created before the move.
         # The Postgres state table is SHARED by every sync (keyed by sync_name),
         # so a reset must delete only this sync's rows — dropping the table
         # would wipe every other sync's watermark too (bit us live: a delta
         # reset erased the avro rows).
-        context.log.info(build_sync_state(cfg, postgres).clear(cfg.sync_name))
+        try:
+            context.log.info(build_sync_state(cfg, postgres, databricks).clear(cfg.sync_name))
+        except RuntimeError as error:
+            # A reset may run before the state table ever existed (first setup, or the delta
+            # backend's UC lookup failing on an unregistered table): nothing to clear is the
+            # expected outcome then, not a failure. The SQL backends' clear() already
+            # tolerate a missing store internally; only the delta lookup can raise here.
+            context.log.info(f"State clear skipped: {str(error).splitlines()[0]}")
         # Dropping + recreating moves the managed tables to new storage locations,
         # so any cached location now points at the DEAD tables — a sync right
         # after this reset would pre-check "no new commits" against them (a green

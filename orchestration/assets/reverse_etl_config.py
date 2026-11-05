@@ -60,11 +60,19 @@ class CdfSyncConfig:
     # "postgres" (default): the postgres resource and the shared table `state_table`
     # (keyed by sync_name), which the team creates -- the sync's precondition fails with
     # the DDL when it is absent. "duckdb": a local file at `state_path`, one sync per
-    # file (DuckDB allows one writer), created on first run (D15). The watermark
-    # semantics are identical either way: append-only, freshest-row-wins.
+    # file (DuckDB allows one writer), created on first run (D15). "delta": a UC-named
+    # Delta table at {state_catalog or catalog}.{state_schema or schema}.{state_table},
+    # resolved to its storage location through the Unity Catalog lookup at run time —
+    # zero Postgres, zero warehouse compute (delta-rs reads and writes ADLS directly).
+    # The watermark semantics are identical either way: append-only, freshest-row-wins.
+    # NOTE: the demo default stays postgres on purpose — the kaizen-dagster-reverse-etl
+    # library (whose CdfSyncConfig this may inherit from) defaults to delta.
     state_backend: str = "postgres"
     state_table: str = "reverse_etl_sync_state"
     state_path: str = ""
+    # The delta backend's table placement; empty inherits the source's catalog/schema.
+    state_catalog: str = ""
+    state_schema: str = ""
 
     # --- message encoding ------------------------------------------------------
     # "json": Kafka Connect JSON with the schema embedded in every message (the default).
@@ -77,8 +85,8 @@ class CdfSyncConfig:
     def __post_init__(self) -> None:
         if self.encoding not in ("json", "avro"):
             raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
-        if self.state_backend not in ("postgres", "duckdb"):
-            raise ValueError(f"state_backend must be 'postgres' or 'duckdb', got {self.state_backend!r}")
+        if self.state_backend not in ("postgres", "duckdb", "delta"):
+            raise ValueError(f"state_backend must be 'postgres', 'duckdb' or 'delta', got {self.state_backend!r}")
         if self.state_backend == "duckdb" and not self.state_path:
             raise ValueError("state_path is required for the duckdb state backend")
 
@@ -292,10 +300,11 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
 
     @property
     def state_fqn(self) -> str:
-        """Legacy: the Delta state table's FQN, pre-Postgres. The watermark state
-        lives in the Postgres table reverse_etl_sync_state now; this FQN remains
-        only so the reset can drop a table created by an older demo run."""
-        return f"{self.catalog}.{self.schema}.{self.state_table}"
+        """The watermark state table's fully qualified name. For the delta backend this
+        is the UC name build_sync_state resolves to storage (state_catalog/state_schema
+        inherit the source's when unset). For the SQL backends it is only the reset's
+        DROP cleanup for state tables created before the Postgres move."""
+        return f"{self.state_catalog or self.catalog}.{self.state_schema or self.schema}.{self.state_table}"
 
     @property
     def consumer_group(self) -> str:

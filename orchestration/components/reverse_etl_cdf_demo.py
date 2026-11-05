@@ -34,9 +34,14 @@ class SyncAttributes(dg.Model):
     encoding: str | None = None
     schema_registry_url: str | None = None
     # The watermark state (reverse_etl_state.py): "postgres" (default, the shared table
-    # `state_table`) or "duckdb" (a local file at `state_path`, created on first run).
+    # `state_table`), "duckdb" (a local file at `state_path`, created on first run), or
+    # "delta" (a UC-named Delta table, created by setup with one warehouse statement and
+    # resolved to storage through UC at run time).
     state_backend: str | None = None
     state_path: str | None = None
+    # The delta backend's table placement; empty inherits the source's catalog/schema.
+    state_catalog: str | None = None
+    state_schema: str | None = None
     # False creates the source table as plain Delta (Change Data Feed only, no
     # UniForm/Iceberg) — see the delta sync's defs.yaml.
     uniform: bool | None = None
@@ -152,7 +157,7 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
         overrides.update(
             {
                 field: getattr(self.sync, field)
-                for field in ("uniform", "propagate_drops", "encoding", "schema_registry_url", "state_backend", "state_path")
+                for field in ("uniform", "propagate_drops", "encoding", "schema_registry_url", "state_backend", "state_path", "state_schema", "state_catalog")
                 if getattr(self.sync, field) is not None
             }
         )

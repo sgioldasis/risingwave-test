@@ -17,23 +17,27 @@ from tests.fakes import FakeDatabase, make_config
 from tests.sync_asset.support import row
 
 
-@pytest.fixture(params=["postgres", "duckdb"], ids=["postgres", "duckdb"])
+@pytest.fixture(params=["postgres", "duckdb", "delta"], ids=["postgres", "duckdb", "delta"])
 def backend(request) -> str:
     return request.param
 
 
 def state_options(backend: str, tmp_path) -> dict:
-    """The sync options that select the backend: a real file for DuckDB, the fake's default for
-    Postgres."""
+    """The sync options that select the backend: a real file for DuckDB; for Delta the sync
+    fixture's UC-lookup fake answers with a local path (set up in conftest)."""
     if backend == "duckdb":
         return {"state_backend": "duckdb", "state_path": str(tmp_path / "state.duckdb")}
+    if backend == "delta":
+        return {"state_backend": "delta"}
     return {}
 
 
 def read_back(backend: str, res, tmp_path):
     """The watermark rows, freshest first, read through the same backend interface the sync uses —
-    never the fakes' internals, so both backends are proven to behave the same."""
+    never the fakes' internals, so every backend is proven to behave the same."""
     cfg = make_config(**state_options(backend, tmp_path))
+    if backend == "delta":
+        return build_sync_state(cfg, None, res["databricks"]).read(cfg.sync_name)
     state = build_sync_state(cfg, res["postgres"] if backend == "postgres" else None)
     return state.read(cfg.sync_name)
 
@@ -44,10 +48,12 @@ def watermark(res, backend: str, cfg) -> list[tuple[int | None, str | None]]:
         from orchestration.assets.reverse_etl_state import DuckDBSyncState
 
         return DuckDBSyncState(cfg.state_path).read(cfg.sync_name)
+    if backend == "delta":
+        return build_sync_state(cfg, None, res["databricks"]).read(cfg.sync_name)
     return sorted(res["postgres"].state_rows, key=lambda row: -(row[0] or 0))
 
 
-class TestBothBackends:
+class TestAllBackends:
     def test_the_first_run_records_the_watermark_and_the_schema(self, backend, sync, source, tmp_path):
         source.create(row(1, "a"))
         result, res, produced = sync(**state_options(backend, tmp_path))
@@ -79,7 +85,11 @@ class TestBothBackends:
         result, res, produced = sync(**state_options(backend, tmp_path))
         assert result.success and len(produced) == 1
         cfg = make_config(**state_options(backend, tmp_path))
-        state = build_sync_state(cfg, res["postgres"] if backend == "postgres" else None)
+        state = build_sync_state(
+            cfg,
+            res["postgres"] if backend == "postgres" else None,
+            res["databricks"] if backend == "delta" else None,
+        )
         assert state.rows_for_source(cfg.source_fqn) == [(cfg.sync_name, cfg.label)]
 
 
@@ -96,9 +106,43 @@ class TestDuckDBOnly:
         with pytest.raises(ValueError, match="state_path is required"):
             make_config(state_backend="duckdb")
 
-    def test_only_postgres_and_duckdb_are_backends(self):
+    def test_only_postgres_duckdb_and_delta_are_backends(self):
         with pytest.raises(ValueError, match="state_backend must be"):
             make_config(state_backend="sqlite")
+
+
+class TestDeltaOnly:
+    """The delta backend's own surface: the UC lookup wiring, the failure that carries the
+    warehouse DDL, and the demo's postgres default staying put."""
+
+    def test_the_delta_backend_needs_the_databricks_connection(self):
+        cfg = make_config(state_backend="delta")
+        with pytest.raises(ValueError, match="databricks"):
+            build_sync_state(cfg)
+
+    def test_a_missing_state_table_fails_with_the_warehouse_ddl(self, sync, source, tmp_path):
+        """The UC lookup failing (table not registered) fails the run with the one warehouse
+        statement that creates the table — the fix travels with the failure."""
+        source.create(row(1, "a"))
+        result, _, produced = sync(
+            state_backend="delta", location_error=RuntimeError("not registered"), kafka_admin_topics=()
+        )
+        assert not result.success and produced == []
+        from tests.fakes import error_text
+
+        message = error_text(result)
+        assert "does not exist" in message and "TBLPROPERTIES" in message and "reverse_etl_sync_state" in message
+
+    def test_the_demo_default_backend_stays_postgres(self):
+        """The demo config inherits nothing from the library's delta default: every existing
+        YAML without a state_backend keeps its Postgres watermark."""
+        assert make_config().state_backend == "postgres"
+
+    def test_state_fqn_inherits_the_source_namespace(self):
+        cfg = make_config(state_backend="delta")
+        assert cfg.state_fqn == "de_dev.sr_poc_external.reverse_etl_sync_state"
+        placed = make_config(state_backend="delta", state_catalog="other_cat", state_schema="other_schema")
+        assert placed.state_fqn == "other_cat.other_schema.reverse_etl_sync_state"
 
 
 class Log:
@@ -115,8 +159,17 @@ class Log:
 
 
 def guard_state(backend: str, tmp_path):
-    """(state, cfg) for the guard tests: the fake Postgres, or a real DuckDB file."""
+    """(state, cfg) for the guard tests: the fake Postgres, a real DuckDB file, or a real
+    local Delta table behind the fake's UC lookup."""
     cfg = make_config(**state_options(backend, tmp_path))
+    if backend == "delta":
+        from tests.sync_asset.conftest import _ensure_delta_state
+
+        location = str(tmp_path / "state_delta")
+        _ensure_delta_state(location)
+        from tests.fakes import FakeDatabricks
+
+        return build_sync_state(cfg, None, FakeDatabricks([], state_location=location)), cfg
     return build_sync_state(cfg, FakeDatabase([], "postgres") if backend == "postgres" else None), cfg
 
 

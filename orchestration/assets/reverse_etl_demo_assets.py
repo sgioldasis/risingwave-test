@@ -6,6 +6,7 @@ existing table brings their own table and their own state, and gets neither asse
 """
 
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
+from kaizen_dagster_reverse_etl.core.state import delta_state_ddl
 
 from . import reverse_etl_connections as connections
 from .databricks_cost_meter import reset as meter_reset
@@ -85,11 +86,20 @@ def build_table_setup_asset(cfg: ReverseEtlSyncConfig):
         # The sync's watermark state lives outside the lakehouse (private bookkeeping
         # nothing in Databricks reads), in the backend the config chose: the shared
         # Postgres table (the team creates it in production; the demo setup creates it
-        # here) or a local DuckDB file, which appears on first run (D15). Same columns
-        # and semantics either way: append-only, freshest-row-wins.
+        # here), a local DuckDB file, which appears on first run (D15), or the UC-named
+        # Delta table, created here with one warehouse statement (managed UC tables
+        # cannot be created through the UC REST API from outside Databricks — the
+        # statement-execution path is the one that works, and it costs no dedicated
+        # compute). Same columns and semantics either way: append-only, freshest-row-wins.
         if cfg.state_backend == "duckdb":
             DuckDBSyncState(cfg.state_path).create()
             state_desc = f"{cfg.state_path} (DuckDB)"
+        elif cfg.state_backend == "delta":
+            # IF NOT EXISTS keeps re-runs green; the library's DDL carries the TBLPROPERTIES
+            # that keep delta-rs able to read and write the table (deletionVectors and
+            # RowTracking off — both Databricks defaults break delta-rs).
+            databricks.run_sql(token, delta_state_ddl(cfg.state_fqn).replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+            state_desc = f"{cfg.state_fqn} (Delta, resolved through UC at run time)"
         else:
             PostgresSyncState(postgres, cfg.state_table).create()
             state_desc = f"{cfg.state_table} (Postgres)"

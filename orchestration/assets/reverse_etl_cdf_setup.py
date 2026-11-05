@@ -1184,7 +1184,9 @@ def _build_sync_asset_delta_rs(cfg: CdfSyncConfig, hooks: SyncHooks | None, deps
     def cdf_to_kafka(context: AssetExecutionContext):
         databricks, kafka = connections.databricks(), connections.kafka()
         state: SyncState = build_sync_state(
-            cfg, connections.state_postgres() if cfg.state_backend == "postgres" else None
+            cfg,
+            connections.state_postgres() if cfg.state_backend == "postgres" else None,
+            connections.databricks() if cfg.state_backend == "delta" else None,
         )
         # The topic and the state store are the team's to provide (D1, D5): both are checked
         # before anything else runs. Neither is ever created here -- except the DuckDB file,

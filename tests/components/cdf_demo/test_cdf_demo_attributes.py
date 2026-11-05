@@ -167,6 +167,9 @@ OVERRIDES = {
     # pins the default; the duckdb selection is covered in tests/sync_asset/test_state_backends.py.
     "sync__state_backend": "postgres",
     "sync__state_path": "/tmp/demo/state.duckdb",
+    # The delta backend's table placement (empty inherits the source's catalog/schema).
+    "sync__state_catalog": "other_catalog",
+    "sync__state_schema": "other_schema",
     # "duckdb" would need its duckdb_target_path alongside, so the row selects the risingwave
     # target; the duckdb-only shape is covered in tests/components/cdf_demo/test_cdf_demo_defs.py.
     "targets__targets": ("risingwave",),

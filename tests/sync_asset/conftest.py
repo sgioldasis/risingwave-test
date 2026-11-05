@@ -5,6 +5,7 @@ See support.py for the two storage modes.
 """
 
 import json
+from pathlib import Path
 
 import dagster as dg
 import pytest
@@ -66,8 +67,17 @@ def registry(calls) -> FakeSchemaRegistry:
     return FakeSchemaRegistry(calls)
 
 
+def _ensure_delta_state(path: str) -> None:
+    """The delta state backend's require() is check-only (the table is shared infrastructure),
+    so the tests create it before the run — the stand-in for setup's one warehouse statement."""
+    from kaizen_dagster_reverse_etl.core.state import DeltaSyncState
+
+    if not (Path(path) / "_delta_log").exists():
+        DeltaSyncState(path).create()
+
+
 @pytest.fixture
-def sync(source, calls, resources, state_rows, registry, encoding, monkeypatch):
+def sync(source, calls, resources, state_rows, registry, encoding, monkeypatch, tmp_path):
     """Run the sync asset once; returns (result, the fake resources, the messages produced, decoded).
     Keyword options go to the fakes; `propagate_drops` turns on schema-change propagation to the targets."""
     deserializer = AvroDeserializer(registry.mock_client)
@@ -98,6 +108,11 @@ def sync(source, calls, resources, state_rows, registry, encoding, monkeypatch):
             targets=targets, duckdb_target_path=duckdb_target_path,
             **(cfg_overrides or {}),
         )
+        if state_backend == "delta":
+            # The fake's UC lookup answers cfg.state_fqn with a local path; the real run's
+            # storage options never come into play (the fake never returns abfss:// here).
+            options.setdefault("state_location", str(tmp_path / "state_delta"))
+            _ensure_delta_state(options["state_location"])
         # The sync's precondition asks the admin for the sync's topic; a test overrides
         # kafka_admin_topics=() to get the missing-topic failure.
         options.setdefault("kafka_admin_topics", (cfg.kafka_topic,))
