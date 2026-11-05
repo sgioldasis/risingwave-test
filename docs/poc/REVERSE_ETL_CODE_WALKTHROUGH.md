@@ -1,6 +1,6 @@
 # Reverse-ETL sync: a code walkthrough (Dagster side)
 
-*Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in). Updated 2026-10-19 for the delta-rs reconstruction backend — the OSS-Spark and SQL-warehouse branches described in the original are gone ([`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md) has the why and the measurements).*
+*Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in). Updated 2026-10-19 for the delta-rs reconstruction backend — the OSS-Spark and SQL-warehouse branches described in the original are gone ([`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md) has the why and the measurements). Updated 2026-11-05 for the delta state backend — every demo sync keeps its watermark in its own UC Delta table (see §3, §6, §8).*
 
 This walks through the Dagster implementation of the reverse-ETL sync: how one
 Databricks Delta table's changes flow to Kafka and on to RisingWave and Postgres,
@@ -35,7 +35,7 @@ The other docs cover behaviour and evidence; this one covers structure:
 | `orchestration/assets/reverse_etl_defs.py` | The demo's builder (`build_demo_defs`): turns one config into assets, jobs, checks and schedules |
 | `orchestration/assets/reverse_etl_demo_assets.py` | The demo's own assets: table setup and seed — they create infrastructure, so they are not part of the reusable sync |
 | `orchestration/assets/reverse_etl_cdf_setup.py` | The heart: the sync asset, event building, Kafka production, the watermark state |
-| `orchestration/assets/reverse_etl_state.py` | The watermark's storage interface: Postgres (default) or a local DuckDB file, behind one small protocol |
+| `orchestration/assets/reverse_etl_state.py` | The watermark's storage interface: a UC Delta table per sync (the demo default, the ported library's `DeltaSyncState`), Postgres, or a local DuckDB file, behind one small protocol |
 | `orchestration/assets/reverse_etl_delta_reader.py` | The delta-rs backend: per-commit-version snapshot diffs reconstruct the change feed — no Spark, no CDF read, no Databricks compute |
 | `orchestration/assets/reverse_etl_change.py` | Demo changes (insert / update / delete / add column) |
 | `orchestration/assets/reverse_etl_risingwave_setup.py` | The RisingWave target table + schema evolution |
@@ -56,6 +56,38 @@ version, reshapes CDF rows into Debezium envelopes, produces them to one Kafka
 topic (Avro or JSON), then moves the watermark — and both targets converge by
 consuming that topic independently.**
 
+### The engine is a vendored wheel
+
+Since 2026-11-05 the engine (`DeltaSyncState`, `delta_state_ddl`, `azure_storage_options`,
+`SyncState`) does not live in this repo: it is the
+`kaizen-dagster-reverse-etl` library from the dagster-workspace checkout
+(APR-302), vendored as a wheel in `vendor/` so clones, CI and image builds
+install it offline — no GitLab dependency. `pyproject.toml` points
+`[tool.uv.sources]` at the wheel file and `uv.lock` records that path, so a
+plain `uv sync --frozen` works everywhere.
+
+When the library changes, rebuild and replace (from this repo's parent
+directory; the wheel lands in the library's `dist/` first):
+
+```bash
+cd ~/Projects/dagster-workspace/libraries/kaizen-dagster-reverse-etl && uv build
+cp dist/kaizen_dagster_reverse_etl-<version>-py3-none-any.whl \
+   ~/Projects/risingwave-test/vendor/
+```
+
+If the version stayed the same, force the venv to pick up the new file (uv
+cannot tell a replaced wheel from a cached one):
+
+```bash
+uv sync --reinstall-package kaizen-dagster-reverse-etl
+```
+
+If the version changed, also update the wheel filename in `pyproject.toml`
+(`[tool.uv.sources]`) and run `uv lock` (a plain `uv sync` updates the lock).
+The Dagster containers install the wheel at image-build time, so a new wheel
+only reaches them after `1_up.sh` rebuilds the image (the containers mount
+`/workspace` for code, but the venv is baked into the image).
+
 ---
 
 ## 1. One config object generates everything
@@ -69,9 +101,9 @@ class ReverseEtlSyncConfig:
     catalog: str
     schema: str
     source_table: str         # "reverse_etl_avro_source"
-    state_table: str          # "reverse_etl_avro_state" — this sync's own watermark table
-                              # (Postgres backend); explicit per sync since the
-                              # explicit-names refactor (decoupling plan §11)
+    state_table: str          # "reverse_etl_avro_state" — this sync's own watermark table,
+                              # explicit per sync since the explicit-names refactor
+                              # (decoupling plan §11)
     key_column: str           # "rid" (identity column, see below)
     source_columns: tuple[str, ...]  # empty for an existing table: the setup then only checks it exists
     kafka_topic: str          # "reverse_etl_avro_topic"
@@ -80,8 +112,13 @@ class ReverseEtlSyncConfig:
     risingwave_table: str     # "reverse_etl_avro_target"
     ...
     encoding: str = "avro"          # or "json"
-    state_backend: str = "postgres" # or "duckdb": the watermark lives in a local file at
-                                    # state_path instead (reverse_etl_state.py, plan §12)
+    state_backend: str = "delta"    # the demo default (2026-11-05, every demo sync opted in
+                                    # via its defs.yaml): the watermark lives in this sync's own
+                                    # UC Delta table {catalog}.{schema}.{state_table}, read and
+                                    # written by delta-rs over ADLS — zero warehouse compute.
+                                    # "postgres" (the shared reverse_etl_sync_state table) and
+                                    # "duckdb" (a local file at state_path) remain for other
+                                    # deployments (reverse_etl_state.py, plan §12)
     targets: tuple = ("risingwave", "postgres")  # which target assets the demo builds;
                                     # "duckdb" adds a local file mirror (needs duckdb_target_path)
 ```
@@ -192,9 +229,14 @@ The asset skeleton:
    bounded by a 5s watchdog and fails open — any problem with it simply runs
    the full sync.
 1. **Read the watermark** from the state backend (`reverse_etl_state.py`: the
-   Postgres table `cfg.state_table` by default, or a local DuckDB file with
-   `state_backend: duckdb` — both keep one append-only row per run and read the
-   freshest). `last_commit_version` for this `sync_name`. `None` means first run. The state
+   delta backend is the demo default (2026-11-05) — this sync's own UC Delta
+   table `cfg.state_fqn` (e.g. `de_dev.sr_poc_external.reverse_etl_avro_state`),
+   resolved to its storage location through the Unity Catalog lookup and read and
+   written by delta-rs directly over ADLS: zero warehouse compute, zero Postgres.
+   The library's Postgres backend (the shared `reverse_etl_sync_state` table) and
+   the local DuckDB file (`state_backend: duckdb`) remain for other deployments.
+   All backends keep one append-only row per run and read the freshest.
+   `last_commit_version` for this `sync_name`. `None` means first run. The state
    is **append-only**: every
    sync appends one row (a cheap single-commit insert — the read-modify-write
    `MERGE` this replaced cost ~2s per real sync), and the read takes the *freshest*
@@ -425,8 +467,10 @@ Function contract, mirroring the deleted Spark module:
   column is rendered into a microsecond UTC string before comparison, so a
   datetime-vs-formatted-string mismatch can never read as a change.
 - `read_state` — the state read through the `SyncState` backend
-  (`reverse_etl_state.py`: Postgres by default, a local DuckDB file with
-  `state_backend: duckdb` — plan §12; same append-only rows, freshest wins),
+  (`reverse_etl_state.py`: the delta backend is the demo default — the ported
+  library's `DeltaSyncState` at the sync's own UC Delta table `cfg.state_fqn`;
+  Postgres and a local DuckDB file remain for other deployments — plan §12; same
+  append-only rows, freshest wins),
   watermark + `last_schema`, only the fail-open fallback when the delta-rs
   pre-check could not run. The watermark WRITE goes through the same backend, a
   small INSERT (`_write_state()` in `reverse_etl_cdf_setup.py`): the state moved
@@ -438,7 +482,12 @@ Function contract, mirroring the deleted Spark module:
   domainMetadata) delta-rs 1.6 refuses to commit to, so a table could not have
   both writers). Since the state is private bookkeeping nothing in Databricks
   reads, it moved to Postgres — a sync now has **zero** Databricks warehouse
-  touches: delta-rs keeps the reads, Postgres the write.
+  touches. (2026-11-05: the demo moved the watermark again, from Postgres back
+  to Delta — the same per-sync UC table the 2026-10-22 blocker concerned. The
+  blocker is gone because the table is now *created* with
+  `delta.enableDeletionVectors = false` and `delta.enableRowTracking = false`
+  — the two Databricks defaults delta-rs cannot read or write — so delta-rs is
+  both readers and writer, and the sync still has zero warehouse touches.)
 - `get_current_version` / `get_earliest_available_version` — `DeltaTable
   .version()` for the latest; a bisection on `load_as_version()` for the
   earliest, where "loadable" means exactly what the reconstruction needs: a
@@ -491,8 +540,14 @@ All factories take the config and return Dagster objects; all names come from it
 - **`build_table_setup_asset`** (`reverse_etl_demo_assets.py`) — creates the source table if absent, with the
   properties the whole design rests on: `delta.enableChangeDataFeed`, column
   mapping, deletion vectors off, UniForm/iceberg compat — plus the identity key —
-  and the Postgres state table (`reverse_etl_sync_state`, created via
-  `get_postgres_connection`). Idempotent (`IF NOT EXISTS` everywhere).
+  and the watermark state table. For the delta backend (the demo default) that is
+  the sync's own UC Delta table `cfg.state_fqn`, created with one warehouse
+  statement — `delta_state_ddl()` with `delta.enableDeletionVectors` and
+  `delta.enableRowTracking` disabled, the Databricks defaults delta-rs cannot
+  read or write — because a managed UC table cannot be created through the UC
+  REST API from outside Databricks; delta-rs does everything after that. The
+  Postgres state table (`reverse_etl_sync_state`, `get_postgres_connection`) is
+  still created for the postgres backend. Idempotent (`IF NOT EXISTS` everywhere).
 - **`build_seed_asset`** — optional demo rows (the YAML's `seed_statements`,
   `{source_table}` substituted), run as the *last* step of the setup job so the
   rows wait in Databricks until the first sync.
@@ -545,23 +600,29 @@ All factories take the config and return Dagster objects; all names come from it
   consumer-group lag via Kafka admin, on a 5-minute schedule. Reads no Databricks
   anything (verified in the cost audit, [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 - **`build_reset_job`** — chained ops: delete connector, drop RisingWave table,
-  drop Postgres table, delete topic + consumer group, drop Databricks tables, delete
-  this sync's rows from the shared `reverse_etl_sync_state` (a `DELETE … WHERE
-  sync_name = %s` — never a `DROP TABLE`, which would wipe every other sync's
-  watermark; bit us live when a delta reset erased the avro rows). Every
-  name must match the config's `reset_name_prefixes`/`reset_schema` allowlist or
-  the op raises before touching anything.
+  drop Postgres table, delete topic + consumer group, drop Databricks tables, clear
+  this sync's watermark rows. For the delta backend (the demo default) the rows
+  go from the sync's own UC Delta state table — cleared best-effort before the
+  drops: skipped with a log line when the table does not exist yet (a reset may
+  run before the first setup, or before the table is registered in UC); the
+  `DROP TABLE` of `cfg.state_fqn` below is then the teardown, and setup recreates
+  the table. For the SQL backends it is a `DELETE … WHERE sync_name = %s` on the
+  shared `reverse_etl_sync_state` — never a `DROP TABLE`, which would wipe every
+  other sync's watermark; bit us live when a delta reset erased the avro rows.
+  Every name must match the config's `reset_name_prefixes`/`reset_schema`
+  allowlist or the op raises before touching anything.
 - **Option B** (`reverse_etl_notebook_job.py`) — `reverse_etl_notebook_sync_job`
   finds the `reverse_etl_notebook_sync` Databricks job by name, optionally adds
   missing RisingWave columns first, runs it with the sync's label as a parameter,
   and waits. The notebook repeats the config's Databricks-side values as widget
   defaults (it cannot import this repo) — the config is the source of truth.
-  It shares the watermark through the same Postgres state row
-  (`reverse_etl_sync_state`, keyed by `sync_name`). Option B caveat: the
-  Databricks notebook still expects the dropped Delta state table, so it cannot
-  run against the current stack — reviving it means teaching the notebook to
-  reach Postgres (JDBC), which the demo's devbox Postgres does not allow from a
-  Databricks cluster.
+  Since 2026-11-05 it is no longer legacy: it derives the same per-sync state
+  table name the asset uses (`reverse_etl_<label>_state`, the widget's default),
+  so it runs against the current stack for every label as a comparison path.
+  Caveat worth keeping: never trigger the notebook and the asset on fresh source
+  changes at once — they share the watermark. The notebook upserts its watermark
+  row (`MERGE`) while the asset appends; both reads take the freshest row
+  (`ORDER BY last_commit_version DESC LIMIT 1` on the notebook side).
 
 ## 9. The cost meter — `databricks_cost_meter.py`
 
@@ -569,8 +630,11 @@ A per-process accumulator. `_run_sql` records every warehouse statement's wall
 time; every instrumented asset/op calls `meter_reset()` at entry and emits
 `databricks_warehouse_seconds` / `databricks_statements` (+ `databricks_compute`,
 and `databricks_cluster_seconds` on the notebook path) as run metadata. The
-delta-rs sync emits `0.0` for reads **structurally** — it makes no compute calls
-(only the watermark write meters a second or two). The demo
+delta-rs sync emits `0.0` for reads **structurally** — it makes no compute calls.
+With the delta state backend (the demo default since 2026-11-05) the watermark
+write is delta-rs too, so every sync run meters `0.0` exactly; the only
+warehouse use in the demo loop is the one `CREATE TABLE IF NOT EXISTS` statement
+that setup runs to create the state table. The demo
 helper reads the metadata back through GraphQL and shows it as the "Databricks
 cost" chip; the semantics (seconds, not DBUs) are in
 [`REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md). Per-process is deliberate: multiprocess steps get
@@ -581,12 +645,12 @@ isolation for free, and the in-process setup job resets at every asset entry.
 | Step | Where |
 |---|---|
 | Demo change (e.g. `UPDATE`) commits → new source version | `reverse_etl_change.py` `make_change` |
-| Sync materializes: watermark + `last_schema` read | delta-rs `precheck_versions` (reused); SQL `_read_state` only as the fail-open fallback |
+| Sync materializes: watermark + `last_schema` read | delta-rs `precheck_versions` (reused); `_read_state` through the state backend only as the fail-open fallback |
 | CDF rows read since `last_version + 1` | `reverse_etl_delta_reader.read_changes` (reconstructed: file sets per commit, new files only for appends) |
 | Rows → Debezium envelopes | `_to_debezium_events` |
 | Source schema read (pinned to the chunk's top commit); RisingWave columns added | `get_row_fields(location, version=chunk_to)` (delta-rs) → `reverse_etl_risingwave_setup.add_missing_columns` |
 | Avro schemas registered; events produced, delivery verified | `_register_avro_schemas` → `_produce_to_kafka` |
-| Watermark + `last_schema` written to the state table | `_write_state` (the one small SQL statement; delta-rs cannot commit to the v7 state table) |
+| Watermark + `last_schema` written to the state table | `_write_state` (a delta-rs append into the sync's UC Delta state table — the demo default; the Postgres backend writes a plain INSERT instead) |
 | RisingWave applies the change (native Debezium + Avro) | RisingWave `reverse_etl_avro_target` |
 | Postgres upserts/deletes via the JDBC sink | `reverse_etl_debezium_sink` (created) → connector |
 | Health checked every 5 min | `reverse_etl_health.sink_healthy` |
@@ -637,7 +701,11 @@ isolation for free, and the in-process setup job resets at every asset entry.
 - **Watermark + inclusive `startingVersion`**: any new reader of the state table
   must resume at `last_version + 1`, or the last synced version is re-delivered
   (harmless for upserts, wrong for deletes' audit trail).
-- **UniForm split**: source tables stay UniForm (Iceberg readers); the state table
-  must stay plain Delta (OSS commits). The setup assets create them that way; the
-  conversion script `scripts/convert_state_tables_plain_delta.py` migrated the
-  first two.
+- **UniForm split**: source tables stay UniForm (Iceberg readers); the state
+  table must keep a delta-rs-compatible protocol — created plain Delta with
+  `delta.enableDeletionVectors` and `delta.enableRowTracking` disabled (the two
+  Databricks defaults delta-rs can neither read nor write; §8's setup statement
+  does this). Before the delta state backend (2026-11-05) the constraint was
+  dual-writer access, and the conversion script
+  `scripts/convert_state_tables_plain_delta.py` was the workaround that migrated
+  the first two tables.

@@ -7,6 +7,11 @@ sync/targets seam (section 13), the state backends (section 12, D15), the health
 on the targets side (D19). It **revises** the plan's naming rule (section 11) for the release
 components — see the derivation policy below; the demo keeps the explicit blocks.
 
+*2026-11-05: the demo default `state_backend` flipped to `delta` after this was written — every demo
+sync now keeps its watermark in its own UC Delta table (`reverse_etl_<label>_state`, read and written
+by delta-rs over ADLS with no warehouse compute beyond the one-time DDL statement); the postgres and
+duckdb backends remain for other deployments. The text below is unchanged.*
+
 ## Goal
 
 A team in another project wants one Databricks table's changes on a Kafka topic — and,
@@ -62,6 +67,10 @@ attributes:
   key_column: Company_ID           # required, no default outside the demo
   state_backend: postgres          # or duckdb — required: the author's decision, not a default
 ```
+
+*(2026-11-05: the backend enum grew a `delta` option and the demo default flipped to it — see the
+note at the top of this doc; `state_table` is now the per-sync `reverse_etl_<label>_state` name,
+resolved through state_catalog/state_schema.)*
 
 The state's connection is deliberately absent from this file: the library's connection function
 reads the Postgres variables from the environment (the env contract below), and the

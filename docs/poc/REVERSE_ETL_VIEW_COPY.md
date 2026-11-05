@@ -145,15 +145,22 @@ Find the ID with `databricks service-principals list --profile personal`.
 
 ### If a reset fails halfway
 
-The reset clears this sync's watermark row in `reverse_etl_sync_state` **before** it touches Databricks (changed
-2026-10-25; it used to clear it after the drops). Earlier, a failed drop left the old watermark behind, and
+The reset clears this sync's watermark rows in its own UC Delta state table, `de_dev.sr_poc_external.reverse_etl_company_state`,
+**before** it touches Databricks (changed 2026-10-25; it used to clear it after the drops). The clear is best-effort:
+if the table does not exist yet (a reset before the first setup), the reset logs "State clear skipped" and carries
+on instead of failing. Earlier, a failed drop left the old watermark behind, and
 once the source was recreated at version 0 the next sync found nothing new and loaded nothing, silently:
 Dagster showed a green run with `events_synced` empty, and the targets stayed empty. If you ever see that,
-delete the row by hand and sync again:
+delete the sync's rows by hand and sync again — a warehouse `DELETE` in a Databricks SQL editor (delta-rs clears
+the table too):
 
 ```sql
-DELETE FROM reverse_etl_sync_state WHERE sync_name = 'reverse_etl_company';
+DELETE FROM de_dev.sr_poc_external.reverse_etl_company_state
+WHERE sync_name = 'reverse_etl_company';
 ```
+
+The library's Postgres backend (`reverse_etl_sync_state`) remains for other deployments; there the manual
+clear is `DELETE FROM reverse_etl_sync_state WHERE sync_name = 'reverse_etl_company';`.
 
 ## 5. The same copy through drt
 

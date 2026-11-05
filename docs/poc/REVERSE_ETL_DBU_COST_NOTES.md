@@ -239,6 +239,14 @@ section 4).
 
 ### 2026-10-22 addendum: the watermark state left Databricks entirely
 
+(2026-11-05: the demo default flipped to delta — every demo sync now keeps its
+watermark in its **own UC Delta state table** (`reverse_etl_<label>_state`),
+created at setup with one `CREATE TABLE IF NOT EXISTS` warehouse statement and
+then read and written by delta-rs directly over ADLS, with no Spark and no
+warehouse scans. The sync's own path still meters **0.0 Databricks seconds** —
+in fact the only warehouse use left in the demo loop is that one setup
+statement. What follows records the 2026-10-22 move to Postgres.)
+
 The two rows above that still touched Databricks — **read the watermark** and
 **write the watermark** — are gone. The state moved to a Postgres table
 (`reverse_etl_sync_state`, keyed by `sync_name`, append-only with the same
@@ -500,6 +508,10 @@ CDF feature; per-version diffing is required so a key deleted in one commit and
 reinserted in the next emits both events. The watermark write stays the one
 small SQL statement (delta-rs cannot commit to the warehouse's v7 protocol
 state table): a full sync now meters ~1.5-2 warehouse seconds and nothing else.
+(2026-11-05: the watermark write went delta-rs too — the demo syncs now append
+it to their own UC Delta state table, created with the Databricks defaults
+delta-rs cannot commit to switched off — so a full sync meters **0.0**
+warehouse seconds, not ~1.5-2.)
 
 Two verified findings worth keeping:
 

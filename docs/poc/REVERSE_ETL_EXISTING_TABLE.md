@@ -151,8 +151,9 @@ reload definitions), then run `reverse_etl_customers_setup_job`. It creates
 everything *around* the table:
 
 - the watermark state table (`reverse_etl_customers_state`, deliberately plain
-  Delta — no column mapping, DVs off, single SQL writer) — note it lands in the
-  same `catalog.schema` as the source, clearly namespaced;
+  Delta — no column mapping, DVs off, RowTracking off, so delta-rs can read and
+  write it directly with no warehouse compute) — note it lands in the same
+  `catalog.schema` as the source, clearly namespaced;
 - the Kafka topic, the RisingWave target, and the Debezium JDBC sink connector;
 - the registry subjects, when `encoding: avro`.
 
@@ -163,15 +164,27 @@ The state table the job creates (exactly what to expect in your schema):
 
 ```sql
 CREATE TABLE IF NOT EXISTS de_dev.my_schema.reverse_etl_customers_state (
-    sync_name STRING, last_commit_version BIGINT, last_schema STRING
-) USING DELTA
-TBLPROPERTIES ('delta.enableDeletionVectors' = 'false')
+    sync_name STRING NOT NULL,
+    last_commit_version BIGINT NOT NULL,
+    last_schema STRING,
+    source_fqn STRING,
+    label STRING,
+    updated_at TIMESTAMP
+)
+TBLPROPERTIES (
+    'delta.enableDeletionVectors' = false,
+    'delta.enableRowTracking' = false
+)
 ```
 
-It is deliberately plain Delta, single-writer: the sync's delta-rs no-op
-pre-check reads the watermark from it, and delta-rs cannot commit to
-Databricks-written v7 protocol tables — so the only writer is one small SQL
-`INSERT` per sync (below). Verify after the job:
+It is deliberately plain Delta, with both Databricks default-on table features
+disabled: delta-rs (the sync's reader and writer) can neither read a table whose
+protocol carries the deletionVectors reader feature nor write one carrying
+RowTracking — and an empty state table needs neither. The setup runs the DDL as
+one warehouse statement (managed UC tables cannot be created through the UC REST
+API from outside Databricks); after that delta-rs reads and writes the table
+directly over ADLS — zero Databricks compute, no Spark, no warehouse scans.
+Verify after the job:
 
 ```sql
 SHOW TABLES IN de_dev.my_schema LIKE 'reverse_etl_customers*';
@@ -201,12 +214,14 @@ LIMIT 1;
 DESCRIBE HISTORY de_dev.my_schema.customers_raw LIMIT 5;
 ```
 
-For reference, the one SQL statement the sync itself runs on Databricks at the
-end of every run (append-only; readers take the freshest row per `sync_name`):
+For reference, the append the sync itself makes at the end of every run — a
+delta-rs write over ADLS, no warehouse statement involved (append-only; readers
+take the freshest row per `sync_name`); the SQL equivalent, should you want to
+inspect or hand-write a row:
 
 ```sql
 INSERT INTO de_dev.my_schema.reverse_etl_customers_state
-VALUES ('customers', <new_version>, '<last_schema-json>');
+VALUES ('customers', <new_version>, '<last_schema-json>', '<source_fqn>', 'customers', current_timestamp());
 ```
 
 ## 5. Schedule it
@@ -323,8 +338,9 @@ curl -s localhost:4002/api/check/demo/postgres
 ```
 
 Three rows each. The setup run's metadata shows the backfill (3 insert
-events) and ~0 warehouse seconds — delta-rs reads storage directly; the only
-warehouse touch a sync ever makes is one small SQL write.
+events) and ~0 warehouse seconds — delta-rs reads storage directly, and the
+watermark move is a delta-rs append too: a sync touches no warehouse compute at
+all (beyond the setup's one-time state-table DDL statement).
 
 ### Step 6 — Make changes and sync incrementally
 
@@ -400,18 +416,21 @@ and both target tables — allowed because every name matches the
 `reverse_etl_<name>_state` is the sync's only Databricks-side bookkeeping:
 `sync_name`, `last_commit_version` (the watermark), and `last_schema` (JSON of
 the source's columns with their `delta.columnMapping.id`s — the evidence the
-drop-propagation pass diffs against).
+drop-propagation pass diffs against), plus `source_fqn` and `label` (the rename
+guard's stable anchor: both `sync_name` and `label` move on a rename, the source
+does not) and `updated_at`.
 
-- **Write pattern: append-only.** One `INSERT` per sync run; readers take the
-  freshest row per `sync_name` (`max(last_commit_version)` wins). History
-  accumulates harmlessly — one row per run, a few hundred rows a year on a
-  daily schedule.
-- **Single writer, by constraint.** The sync's delta-rs no-op pre-check *reads*
-  this table, and delta-rs cannot commit to Databricks-written v7 protocol
-  tables — so the only writer is the one small SQL `INSERT` at the end of each
-  sync. This is why the table must stay plain Delta (no column mapping, no
-  deletion vectors — delta-rs rejects those reader features) and must never be
-  `CREATE OR REPLACE`d (that would inherit the source's bumped protocol).
+- **Write pattern: append-only.** One delta-rs append per sync run, written
+  straight to the table's ADLS location — no Databricks compute, no Spark, no
+  warehouse scans; readers take the freshest row per `sync_name`
+  (`max(last_commit_version)` wins). History accumulates harmlessly — one row
+  per run, a few hundred rows a year on a daily schedule.
+- **Why the table must stay plain Delta.** delta-rs cannot read a table whose
+  protocol carries the deletionVectors reader feature or write one carrying
+  RowTracking — so the DDL disables both Databricks defaults (an empty state
+  table needs neither). The setup's one DDL statement is the table's only
+  warehouse touch, and the table must never be `CREATE OR REPLACE`d (that would
+  inherit the source's bumped protocol).
 - **The watermark key is `sync_name`.** Change a sync's `name`/`sync_name` and
   its state rows stop matching: the next sync finds no watermark and starts
   from 0 — a full backfill.
@@ -429,8 +448,11 @@ synced.**
 The reset job clears the watermark before it drops anything in Databricks (since
 2026-10-25), so a reset that fails on a Databricks error no longer leaves this trap behind. A
 hand-made table also needs `MANAGE` granted to the service principal, or the reset's drop is refused
-([REVERSE_ETL_VIEW_COPY.md](REVERSE_ETL_VIEW_COPY.md)). The state now lives in Postgres
-(`reverse_etl_sync_state`); the SQL below is the legacy Delta form, and the Postgres equivalent is
+([REVERSE_ETL_VIEW_COPY.md](REVERSE_ETL_VIEW_COPY.md)). The state lives in the sync's own UC Delta
+table (since 2026-11-05 the demo default state backend is delta — one
+`reverse_etl_<label>_state` table per sync, written by delta-rs); the `DELETE`
+below is the current form. The library's Postgres backend (`reverse_etl_sync_state`) remains for
+other deployments — there the equivalent is
 `DELETE FROM reverse_etl_sync_state WHERE sync_name = '<sync_name>'`.
 
 Re-baseline by clearing the state (the next sync then backfills from v0 —
@@ -439,7 +461,8 @@ safe, the targets upsert by key):
 ```sql
 DELETE FROM de_dev.my_schema.reverse_etl_customers_state
 WHERE sync_name = 'customers';
--- or drop the table entirely; the setup job recreates it
+-- a warehouse DELETE in a Databricks SQL editor (delta-rs clears it too);
+-- or drop the table entirely — the setup job recreates it
 ```
 
 Related: a manual drop+recreate also moves a managed table to fresh storage,

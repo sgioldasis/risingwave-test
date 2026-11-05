@@ -92,7 +92,7 @@ the Kaizen STG box (consumer group lag).
 | Object | What it is |
 |---|---|
 | `reverse_etl_avro_source` | The Databricks table you change in the demo. It is also a UniForm table, so Iceberg readers can query it (see section 6). Change Data Feed is on, and `rid` is an identity column Databricks assigns on insert; it is the key everywhere downstream. |
-| `reverse_etl_avro_state` | The watermark table: one row per sync with the last table version already synced. The next run reads from the version after it. |
+| `reverse_etl_avro_state` | The watermark table — a UC Delta table per sync (the `delta` state backend, the demo default since 2026-11-05). Append-only watermark rows, freshest row wins, with the last table version already synced; the next run reads from the version after it. delta-rs reads and writes it over ADLS, so a sync run touches no warehouse — the one `CREATE TABLE` at setup is the only warehouse use. |
 | Notebook `reverse_etl_cdf_to_kafka` | The sync as a PySpark notebook, one notebook for every label (the `label` and `encoding` widgets choose the sync and the format). |
 | Databricks job `reverse_etl_notebook_sync` | Runs that notebook, with `label` and `encoding` as job parameters. It runs on the author's cluster and exists only in the DEV workspace. |
 
@@ -169,9 +169,10 @@ the Kaizen STG box (consumer group lag).
 
 ## 1. Start clean (skip the first time)
 
-Run **`reverse_etl_avro_reset_job`**. It drops the connector, both target tables, the topic, the Databricks
-source and watermark tables, and the two registry subjects. It only touches objects named `reverse_etl_*` in the
-scratch schema `sr_poc_external`.
+Run **`reverse_etl_avro_reset_job`**. It clears this sync's watermark rows in its UC Delta state table first
+(best-effort: skipped with a log line if the table does not exist yet, e.g. before the first setup), then drops
+the connector, both target tables, the topic, the Databricks source and watermark tables, and the two registry
+subjects. It only touches objects named `reverse_etl_*` in the scratch schema `sr_poc_external`.
 
 Reset and setup are opposites. Reset only removes things, and refuses to run if a name it would drop does not match
 the allowed prefix and schema. Setup only builds: its table creation is skipped when a table already exists, so it
@@ -206,7 +207,9 @@ Before any of that, a no-op check reads the source's current version and the sta
 when they are equal the run ends there. The check's token and storage locations come from a
 small disk cache, and the heavy imports sit at module level so they never land in the run's measured seconds.
 The state tables are plain Delta on purpose (no
-column mapping, deletion vectors off), because delta-rs rejects tables carrying those reader features. The change
+column mapping, deletion vectors off), because delta-rs rejects tables carrying those reader features — and since
+2026-11-05 they are where the watermark lives: each sync's own UC Delta table (the `delta` state backend,
+setup creates it with one warehouse statement), written as a delta-rs append with no Postgres in the path. The change
 feed is read from the version after the watermark — one chunk at a time (10
 commits by default, tunable via `REVERSE_ETL_CDF_CHUNK_VERSIONS` in `.env`), so a
 backlog streams read → produce through the driver and memory stays bounded by
@@ -363,8 +366,9 @@ targets. The registry stays at its current version, because the notebook builds 
 The source tables of `avro`, `cdf` and `orders` are created as UniForm tables: Delta with Iceberg
 metadata generated next to it. The `delta` sync's source is deliberately plain Delta — Change Data Feed plus
 column mapping, no UniForm — as the counterexample: the sync reads it exactly the same way, but it does not
-appear in `databricks_uc` below. The watermark (state) tables are plain Delta too, since OSS Delta writes their
-watermarks (see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5). The UniForm tables can be read by another engine
+appear in `databricks_uc` below. The watermark (state) tables are plain Delta too — the `delta` state backend
+(2026-11-05): the notebook writes them with Spark, the asset with delta-rs, which rejects the default-on table
+features (see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5). The UniForm tables can be read by another engine
 through Unity Catalog's Iceberg REST API, with no copy
 and no pipeline. StarRocks already has that catalog (`databricks_uc`), so in a SQL client on StarRocks:
 

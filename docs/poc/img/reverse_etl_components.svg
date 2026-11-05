@@ -10,12 +10,12 @@
 <text x="1260.0" y="106.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_avro_source</text>
 <text x="1260.0" y="124.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">UniForm + Change Data Feed, key rid</text>
 <path d="M60,1010 v60 a140.0,10 0 0 0 280,0 v-60 a140.0,10 0 0 0 -280,0 a140.0,10 0 0 0 280,0" fill="#2563eb" stroke="#1e3a8a" stroke-width="2"/>
-<text x="200.0" y="1036.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_sync_state</text>
-<text x="200.0" y="1054.0" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="400">watermark (Postgres; delta sync: UC Delta)</text>
+<text x="200.0" y="1036.0" font-size="14" text-anchor="middle" fill="#ffffff" font-weight="400">reverse_etl_&lt;label&gt;_state</text>
+<text x="200.0" y="1054.0" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="400">watermark — one UC Delta table per sync (delta-rs)</text>
 <rect x="600" y="70" width="300" height="70" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
 <text x="750.0" y="101.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION B: Databricks job</text>
 <text x="750.0" y="119.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync</text>
-<text x="750.0" y="134.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">legacy — its Delta state table is gone</text>
+<text x="750.0" y="134.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">comparison path — derives the sync's state table name</text>
 <rect x="600" y="200" width="300" height="80" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="750.0" y="236.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">Notebook reverse_etl_cdf_to_kafka</text>
 <text x="750.0" y="254.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(one notebook for every label)</text>
@@ -26,7 +26,7 @@
 <rect x="560" y="430" width="320" height="100" rx="4" fill="#fff3bf" stroke="#b45309" stroke-width="3"/>
 <text x="720.0" y="467.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="700">OPTION A: asset</text>
 <text x="720.0" y="485.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_avro_to_kafka</text>
-<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(option B is legacy — see its note)</text><text x="720.0" y="522.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">extraction: OSS Delta — zero Databricks compute</text>
+<text x="720.0" y="503.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(option B is the comparison path — see its note)</text><text x="720.0" y="522.0" font-size="12" text-anchor="middle" fill="#b45309" font-weight="400">extraction: OSS Delta — zero Databricks compute</text>
 <rect x="1000" y="430" width="280" height="70" rx="4" fill="#e8f0fe" stroke="#1d4ed8" stroke-width="2"/>
 <text x="1140.0" y="461.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">reverse_etl_notebook_sync_job</text>
 <text x="1140.0" y="479.0" font-size="14" text-anchor="middle" fill="#0f172a" font-weight="400">(starts option B)</text>

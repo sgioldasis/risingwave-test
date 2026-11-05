@@ -122,7 +122,9 @@ Databricks Delta (de_dev.sr_poc_external.reverse_etl_delta_source)
   ▼
 inverness sync asset (libraries/kaizen-dagster-reverse-etl)          dagster-workspace
   │  Debezium-style JSON envelopes, key = rid
-  │  watermark: append-only rows in Postgres (reverse_etl_sync_state)
+  │  watermark: append-only rows in its own UC Delta state table
+  │  (reverse_etl_delta_state; the Postgres and DuckDB backends remain for
+  │  other deployments)
   ▼
 STG Kafka topic (reverse_etl_delta_topic, compacted)                 external infrastructure
   │
@@ -174,8 +176,10 @@ sync replayed safely.
   run; there is no continuous CDC. Big backfills re-read versions in chunks
   (bounded, but not free).
 - **Infrastructure prerequisites stay with the deployment** — the compacted
-  topic and the `reverse_etl_sync_state` table (one DDL per deployment) must
-  exist before the first run. Deliberate, but it is setup someone must do.
+  topic and the watermark state table (one DDL per deployment; the delta
+  backend default creates one UC Delta table per sync,
+  `reverse_etl_<label>_state`) must exist before the first run. Deliberate,
+  but it is setup someone must do.
 - **JSON payloads carry their schema in every message** — larger than
   registry-based Avro for high-volume topics (Avro encoding remains available
   when that matters).

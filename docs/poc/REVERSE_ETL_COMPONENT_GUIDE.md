@@ -28,8 +28,9 @@ jobs; that is the PoC's business, not the component's.
 - **Keeps the watermark** and the last-seen schema in the sync's state — one append-only row per
   run that moved. A failed run moves nothing, so the next run replays the same versions — upsert
   your targets by the key column and a replay is safe. The state lives behind a small backend
-  interface (`orchestration/assets/reverse_etl_state.py`): Postgres by default, or a local DuckDB
-  file (see The watermark state below).
+  interface (`orchestration/assets/reverse_etl_state.py`): Delta by default (the demo's choice —
+  one UC-named Delta table per sync), or Postgres or a local DuckDB file for other deployments
+  (see The watermark state below).
 
 ## What you provide
 
@@ -38,9 +39,30 @@ jobs; that is the PoC's business, not the component's.
 | A Delta table in Unity Catalog | must exist. The component never creates or alters it |
 | A key column | identifies a row downstream. One column — see Limits |
 | A Kafka topic | must exist before the first sync. The sync checks and fails fast otherwise; it never creates one |
-| The watermark state | the shared Postgres table `reverse_etl_sync_state` (DDL below) by default — checked at the start of every sync, a missing one fails with the DDL in the error. With `state_backend: duckdb` instead: nothing, the state file is created on first run |
+| The watermark state | with the default `state_backend: delta`: the sync's own UC Delta table `{catalog}.{schema}.reverse_etl_<name>_state` — created once by one Databricks warehouse statement (DDL below), then read and written by delta-rs over ADLS with zero warehouse compute; a registered-but-empty table fails the first sync with the fix in the error. With `postgres` or `duckdb`: the shared Postgres table (DDL below) or a local file created on first run |
 | A schema registry | only for `encoding: avro` |
 | The environment | no Dagster resources — the components declare none. Connections come from env-fed functions (`reverse_etl_connections.py`), read at call time; see **The env contract** below and the full table in that module's docstring |
+
+The delta backend's table — the demo default. The setup asset runs this as one Databricks warehouse
+statement (managed UC tables cannot be created from outside); both TBLPROPERTIES switch off Databricks
+defaults that delta-rs can neither read nor write:
+
+```sql
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.reverse_etl_<name>_state (
+    sync_name STRING NOT NULL,
+    last_commit_version BIGINT NOT NULL,
+    last_schema STRING,
+    source_fqn STRING,
+    label STRING,
+    updated_at TIMESTAMP
+)
+TBLPROPERTIES (
+    'delta.enableDeletionVectors' = false,
+    'delta.enableRowTracking' = false
+)
+```
+
+For other deployments, the Postgres backend's shared table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS reverse_etl_sync_state (
@@ -75,18 +97,26 @@ Optional (each has a derivation — see the naming policy in **Releasing to a te
 | `group_name` | `reverse_etl_<name>` | the asset's Dagster group |
 | `sync_asset` | `reverse_etl_<name>_to_kafka` | the asset's name |
 | `deps` | none | upstream asset keys, so the sync can be ordered after your own pipeline's assets |
-| `state_table` | `reverse_etl_sync_state` | Postgres backend only: the state table. One per sync is possible; each must exist |
+| `state_table` | `reverse_etl_<name>_state` (delta) / `reverse_etl_sync_state` (postgres) | the state table's name. delta: the sync's own UC table — `state_catalog`/`state_schema` inherit the source's when unset. postgres: the shared table; one per sync is possible, each must exist |
 | `state_path` | — | DuckDB backend only: the state file's path, required |
 
 ## The watermark state
 
-Both backends keep the same thing — one append-only row per run that moved the
+All three backends keep the same thing — one append-only row per run that moved the
 watermark, freshest row wins, a failed run writes nothing — so replay semantics
 are identical; only the storage differs.
 
-- **`postgres`** (default): the shared table `reverse_etl_sync_state`, keyed by
+- **`delta`** (default; the demo's choice since 2026-11-05): the sync's own UC
+  Delta table `{catalog}.{schema}.reverse_etl_<name>_state` (override `state_table`,
+  `state_catalog`, `state_schema`). Setup creates it with one Databricks warehouse
+  statement — the sync's own path never touches compute: delta-rs resolves the UC
+  name to ADLS and reads and writes the table directly, no Spark, no warehouse
+  scans. The two default-on table features are disabled (DDL under What you
+  provide) because delta-rs cannot read or write them; every run checks the table
+  before it starts.
+- **`postgres`**: the shared table `reverse_etl_sync_state`, keyed by
   `sync_name`, DDL under What you provide. Set `state_table` to give a sync its
-  own table (the demo's syncs each get one).
+  own table.
 - **`duckdb`**: a local DuckDB file at `state_path`, table `reverse_etl_sync_state`,
   created on first run. Needs no `postgres` resource — a sync that only produces
   to Kafka then runs without any Postgres at all.
@@ -113,7 +143,7 @@ attributes:
   schema_name: my_schema
   source_table: dim_company
   key_column: company_id
-  state_backend: postgres
+  state_backend: delta
   kafka_topic: company_changes_cdc   # a topic your platform owns: override + create_topic: false
   create_topic: false
 ```
@@ -219,7 +249,8 @@ attributes:
   schema_name: their_schema
   source_table: dim_company        # must already exist; never created by the component
   key_column: Company_ID           # required, no default outside the demo
-  state_backend: postgres          # or duckdb — required: the author's decision, not a default
+  state_backend: delta             # or postgres or duckdb — required: the author's decision, not a default
+                                   # (the demo default is delta since 2026-11-05)
 ```
 
 Each target is its own component, so a team takes only what it wants — the presence of a
@@ -263,10 +294,11 @@ carry no source knowledge at all.
 **The env contract.** No project binds resources, so nothing conflicts on merge and nothing
 waits to be learned. Connections resolve through env-fed functions
 (`orchestration/assets/reverse_etl_connections.py`), each reading `os.environ` **at call
-time** — never import time. The essentials: the state Postgres needs `POSTGRES_HOST`
+time** — never import time. The essentials: the `postgres` state backend needs `POSTGRES_HOST`
 (**required, no default** — `host.docker.internal` does not resolve on the macOS host, so one
 value cannot serve both the containers and the host), `POSTGRES_PORT`/`_DB`/`_USER`/
-`_PASSWORD`; the sync's Databricks reads use the service principal trio
+`_PASSWORD` (the delta backend's state needs none of these — it is Delta on ADLS); the sync's
+Databricks reads use the service principal trio
 (`DATABRICKS_AZURE_TENANT_ID`/`_CLIENT_ID`/`_CLIENT_SECRET` — service principal, never a SAS
 token); the connector assembly needs `KAFKA_OUTPUT_BOOTSTRAP` (required) with optional
 `KAFKA_OUTPUT_SASL_*`; the connector's JDBC coordinates come from `HOST_POSTGRES_URL` +

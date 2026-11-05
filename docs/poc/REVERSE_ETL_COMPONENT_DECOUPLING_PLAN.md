@@ -15,6 +15,12 @@ delta setup runs on the split YAMLs — the delta run also caught the envelope-n
 as a seam field, see 13.2).** Line
 numbers refer to `orchestration/assets/reverse_etl_cdf_setup.py` as of the writing date.*
 
+*2026-11-05: the demo default `state_backend` flipped to `delta` — every demo sync now keeps its
+watermark in its own UC Delta table `reverse_etl_<label>_state` (delta-rs reads and writes it
+directly over ADLS, no warehouse compute beyond the one-time DDL statement); the postgres and duckdb
+backends remain for other deployments. Sections 3.5 and 12 below record the Postgres-default
+reasoning as written.*
+
 ## 1. Goal
 
 Today one component, `ReverseEtlCdfSync`, builds the sync **and** everything the demo needs around it. A team that
@@ -129,6 +135,10 @@ class SyncHooks(Protocol):
   idempotent).
 
 ### 3.5 Watermark state
+
+*(2026-11-05: the demo default flipped to delta — every demo sync now keeps its watermark in its own
+UC Delta table `reverse_etl_<label>_state`; the postgres backend remains for other deployments. The
+text below records the reasoning as written.)*
 
 The sync stores its watermark and last-seen schema in the Postgres table `reverse_etl_sync_state` and reads it with
 the `postgres` resource. That table is created today by the demo's `table_setup` asset. Decision D1 below covers where
@@ -357,6 +367,9 @@ Two things are hardwired today that a team may want to choose:
   Postgres). Which target stack to build is not a choice; it is the demo's shape.
 
 ### 12.2 The state backend (well-defined, recommend doing)
+
+*(2026-11-05: a third backend, `delta`, is now the demo default — see the note at the top of this
+doc; "default, today's behaviour" in the table below refers to the time of writing.)*
 
 A small `SyncState` interface replaces the direct psycopg2 calls: `require()` (the precondition,
 with the backend's DDL in the error), `read(sync_name)`, `write(sync_name, version, schema)`, and

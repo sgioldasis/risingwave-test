@@ -279,7 +279,7 @@
       <div class="card g" style="text-align:center;padding:10px;"><div style="display:flex;align-items:center;justify-content:center;gap:8px;"><svg width="58" height="42" viewBox="0 0 120 84"><use href="#plat-g"/></svg><div style="text-align:left;"><div style="font-weight:700;font-size:15px;">RisingWave</div><p style="font-size:12px;color:var(--dim);">FORMAT DEBEZIUM</p></div></div></div>
     </div>
   </div>
-  <div class="note"><div class="ic">&#9635;</div><div><b>Watermark:</b> one appended row per sync in <span style="font-family:var(--mono);color:var(--cyan)">reverse_etl_sync_state</span> — postgres by default, or a local DuckDB file (<span style="font-family:var(--mono);color:var(--cyan)">state_backend</span>). Rows carry the guard columns <span style="font-family:var(--mono);color:var(--cyan)">source_fqn</span> and <span style="font-family:var(--mono);color:var(--cyan)">label</span>. Nothing about sync state lives in Databricks.</div></div>
+  <div class="note"><div class="ic">&#9635;</div><div><b>Watermark:</b> one appended row per sync in the sync's own UC Delta table <span style="font-family:var(--mono);color:var(--cyan)">reverse_etl_&lt;label&gt;_state</span> — the <span style="font-family:var(--mono);color:var(--cyan)">state_backend</span> default is delta; postgres and a local DuckDB file remain for other deployments. Rows carry the guard columns <span style="font-family:var(--mono);color:var(--cyan)">source_fqn</span> and <span style="font-family:var(--mono);color:var(--cyan)">label</span>. delta-rs reads and writes the table over ADLS — no Spark, no warehouse; the one CREATE TABLE at setup is the only warehouse use.</div></div>
   <div class="footer"><span>ZERO-DBU REVERSE ETL</span><span class="rule"></span><span>05 / 18</span></div>
 </section>
 
@@ -293,7 +293,7 @@
 <span class="k">schema_name</span>: <span class="v">sr_poc_external</span>
 <span class="k">source_table</span>: <span class="v">reverse_etl_delta_source</span>
 <span class="k">key_column</span>: <span class="v">id</span>
-<span class="k">state_backend</span>: <span class="v">postgres</span>   <span class="c"># required, no default</span>
+<span class="k">state_backend</span>: <span class="v">delta</span>      <span class="c"># the demo default (2026-11-05)</span>
 <span class="k">encoding</span>: <span class="v">avro</span>            <span class="c"># optional: json | avro</span></div>
     <div style="display:flex;justify-content:center;"><svg width="60" height="34" viewBox="0 0 90 44"><use href="#arrow"/></svg></div>
     <div style="display:flex;flex-direction:column;align-items:center;">
@@ -360,7 +360,7 @@
   <h1 class="title">The watermark is one row, written last</h1>
   <div style="display:grid;grid-template-columns:440px 1fr;gap:20px;align-items:start;">
     <div class="card">
-      <h3 style="font-family:var(--mono);font-size:15px;color:var(--cyan)">reverse_etl_sync_state</h3>
+      <h3 style="font-family:var(--mono);font-size:15px;color:var(--cyan)">reverse_etl_avro_state <span style="color:var(--dim);font-size:12px;">— one UC Delta table per sync</span></h3>
       <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;font-family:var(--mono);font-size:13.5px;">
         <div style="border:1px solid rgba(56,189,248,.25);border-radius:8px;padding:9px 14px;display:flex;justify-content:space-between;color:var(--dim);"><span>reverse_etl_avro</span><span>v(n-2)</span></div>
         <div style="border:1px solid rgba(56,189,248,.25);border-radius:8px;padding:9px 14px;display:flex;justify-content:space-between;color:var(--dim);"><span>reverse_etl_avro</span><span>v(n-1)</span></div>
@@ -374,7 +374,7 @@
       <div class="card g"><p><b>Written last.</b> Only after produce succeeded and the version moved. A failed run replays.</p></div>
     </div>
   </div>
-  <div class="note" style="margin-top:26px;"><div class="ic">&#128161;</div><div>The state used to be a Delta table. Moving it to Postgres on 2026-10-22 left a sync with zero Databricks warehouse touches.</div></div>
+  <div class="note" style="margin-top:26px;"><div class="ic">&#128161;</div><div>The state moved off Delta to Postgres on 2026-10-22, and back on 2026-11-05 — one UC-named Delta table per sync now, read and written by delta-rs over ADLS. Still zero warehouse touches per sync: the one CREATE TABLE at setup is the only warehouse use.</div></div>
   <div class="footer"><span>ZERO-DBU REVERSE ETL</span><span class="rule"></span><span>09 / 18</span></div>
 </section>
 
@@ -495,7 +495,7 @@ undelivered = producer.flush(
 <span class="k">schema_name</span>: <span class="v">their_schema</span>
 <span class="k">source_table</span>: <span class="v">dim_company</span>
 <span class="k">key_column</span>: <span class="v">Company_ID</span>
-<span class="k">state_backend</span>: <span class="v">postgres</span>
+<span class="k">state_backend</span>: <span class="v">delta</span>
 
 # each target is its own YAML — presence = selection
 <span class="k">type</span>: <span class="o">ReverseEtlRisingwaveTarget</span>
@@ -517,7 +517,7 @@ undelivered = producer.flush(
 <section class="slide">
   <h1 class="title">What the numbers say</h1>
   <div class="grid3" style="margin:30px 0 26px;text-align:center;">
-    <div class="big"><div style="width:180px;height:180px;margin:0 auto;border-radius:50%;border:3px solid var(--green);box-shadow:0 0 34px rgba(52,211,153,.3);display:flex;flex-direction:column;align-items:center;justify-content:center;"><div style="font-size:56px;font-weight:800;color:var(--green);">0.0</div><div style="font-family:var(--mono);font-size:12px;letter-spacing:.25em;color:var(--green);">SECONDS</div></div><div class="cap" style="margin-top:16px;">Warehouse time per sync</div><div class="sub">A sync that moves data meters none. The watermark write is a Postgres insert.</div></div>
+    <div class="big"><div style="width:180px;height:180px;margin:0 auto;border-radius:50%;border:3px solid var(--green);box-shadow:0 0 34px rgba(52,211,153,.3);display:flex;flex-direction:column;align-items:center;justify-content:center;"><div style="font-size:56px;font-weight:800;color:var(--green);">0.0</div><div style="font-family:var(--mono);font-size:12px;letter-spacing:.25em;color:var(--green);">SECONDS</div></div><div class="cap" style="margin-top:16px;">Warehouse time per sync</div><div class="sub">A sync that moves data meters none. The watermark write is a delta-rs append.</div></div>
     <div class="big"><div style="width:180px;height:180px;margin:0 auto;border-radius:50%;border:3px solid var(--cyan);box-shadow:0 0 34px rgba(56,189,248,.3);display:flex;flex-direction:column;align-items:center;justify-content:center;"><div style="font-size:56px;font-weight:800;color:var(--cyan);">120</div><div style="font-family:var(--mono);font-size:12px;letter-spacing:.25em;color:var(--cyan);">SECONDS</div></div><div class="cap" style="margin-top:16px;">One million rows</div><div class="sub">Ten 100k-row commits with the append fast path. Down from 215 s without it.</div></div>
     <div class="big"><div style="width:180px;height:180px;margin:0 auto;border-radius:50%;border:3px solid var(--orange);box-shadow:0 0 34px rgba(245,158,11,.3);display:flex;flex-direction:column;align-items:center;justify-content:center;"><div style="font-size:56px;font-weight:800;color:var(--orange);">8</div><div style="font-family:var(--mono);font-size:12px;letter-spacing:.25em;color:var(--orange);">SECONDS</div></div><div class="cap" style="margin-top:16px;">No-op sync</div><div class="sub">The delta-rs pre-check ends an unchanged run. It was about 17 s when a Spark start set the floor.</div></div>
   </div>
