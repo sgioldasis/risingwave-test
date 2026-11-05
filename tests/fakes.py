@@ -20,7 +20,10 @@ def make_config(source_columns=("description STRING",), key_column="rid", **over
     cfg = ReverseEtlSyncConfig.for_name(
         "unittest", catalog="de_dev", schema="sr_poc_external", source_columns=source_columns, key_column=key_column
     )
-    return dataclasses.replace(cfg, **overrides) if overrides else cfg
+    # The test helper pins postgres unless a test names another backend: the fakes were
+    # built for it, while the demo config's default is delta (every demo sync opted in).
+    overrides.setdefault("state_backend", "postgres")
+    return dataclasses.replace(cfg, **overrides)
 
 
 class FakeDatabase:

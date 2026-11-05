@@ -65,9 +65,11 @@ class CdfSyncConfig:
     # resolved to its storage location through the Unity Catalog lookup at run time —
     # zero Postgres, zero warehouse compute (delta-rs reads and writes ADLS directly).
     # The watermark semantics are identical either way: append-only, freshest-row-wins.
-    # NOTE: the demo default stays postgres on purpose — the kaizen-dagster-reverse-etl
-    # library (whose CdfSyncConfig this may inherit from) defaults to delta.
-    state_backend: str = "postgres"
+    # NOTE: the demo default is delta (2026-11-05, every demo sync opted in): each sync
+    # keeps its watermark in its own UC Delta table — the same name the comparison
+    # notebook derives (reverse_etl_<label>_state), so the notebook works for every
+    # label. The library's postgres backend remains for deployments that prefer it.
+    state_backend: str = "delta"
     state_table: str = "reverse_etl_sync_state"
     state_path: str = ""
     # The delta backend's table placement; empty inherits the source's catalog/schema.

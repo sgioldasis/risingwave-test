@@ -29,7 +29,8 @@ def state_options(backend: str, tmp_path) -> dict:
         return {"state_backend": "duckdb", "state_path": str(tmp_path / "state.duckdb")}
     if backend == "delta":
         return {"state_backend": "delta"}
-    return {}
+    # Explicit: the demo config's default is delta now, so postgres must be named.
+    return {"state_backend": "postgres"}
 
 
 def read_back(backend: str, res, tmp_path):
@@ -133,10 +134,17 @@ class TestDeltaOnly:
         message = error_text(result)
         assert "does not exist" in message and "TBLPROPERTIES" in message and "reverse_etl_sync_state" in message
 
-    def test_the_demo_default_backend_stays_postgres(self):
-        """The demo config inherits nothing from the library's delta default: every existing
-        YAML without a state_backend keeps its Postgres watermark."""
-        assert make_config().state_backend == "postgres"
+    def test_the_demo_default_backend_is_delta(self):
+        """The demo default follows the library (2026-11-05, every sync opted in): each
+        sync's watermark lives in its own UC Delta table — the name the comparison
+        notebook derives too. (make_config pins postgres for the fakes, so the
+        production default is asserted at the config class itself.)"""
+        from orchestration.assets.reverse_etl_config import ReverseEtlSyncConfig
+
+        cfg = ReverseEtlSyncConfig.for_name(
+            "unittest", catalog="de_dev", schema="sr_poc_external", source_columns=(), key_column="rid"
+        )
+        assert cfg.state_backend == "delta"
 
     def test_state_fqn_inherits_the_source_namespace(self):
         cfg = make_config(state_backend="delta")

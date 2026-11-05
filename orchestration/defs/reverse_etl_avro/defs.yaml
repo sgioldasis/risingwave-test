@@ -21,6 +21,9 @@ attributes:
     sync_name: reverse_etl_avro
     source_table: reverse_etl_avro_source
     state_table: reverse_etl_avro_state
+    # The watermark lives in this UC-named Delta table (setup creates it with one
+    # warehouse statement); the comparison notebook derives the same name.
+    state_backend: delta
     kafka_topic: reverse_etl_avro_topic
     # The Kafka message format: "avro" = Confluent wire format with the schemas in
     # the staging registry (one <topic>-key and <topic>-value subject per topic);

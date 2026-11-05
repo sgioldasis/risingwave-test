@@ -16,6 +16,9 @@ attributes:
     sync_name: reverse_etl_company
     source_table: reverse_etl_company_source
     state_table: reverse_etl_company_state
+    # The watermark lives in this UC-named Delta table (setup creates it with one
+    # warehouse statement); the comparison notebook derives the same name.
+    state_backend: delta
     kafka_topic: reverse_etl_company_topic
     catalog: de_dev
     schema_name: sr_poc_external

@@ -24,6 +24,9 @@ attributes:
     sync_name: reverse_etl_cdf
     source_table: reverse_etl_cdf_source
     state_table: reverse_etl_cdf_state
+    # The watermark lives in this UC-named Delta table (setup creates it with one
+    # warehouse statement); the comparison notebook derives the same name.
+    state_backend: delta
     kafka_topic: reverse_etl_cdf_topic
     # Same drop propagation as avro (see that defs.yaml).
     propagate_drops: true

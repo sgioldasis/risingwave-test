@@ -124,8 +124,13 @@ print("Columns:", ROW_FIELDS)
 
 # COMMAND ----------
 
-# Watermark and first-run decision (same logic as the asset).
-state_rows = spark.sql(f"SELECT last_commit_version FROM {STATE} WHERE sync_name = '{SYNC_NAME}'").collect()
+# Watermark and first-run decision (same logic as the asset). The state table is
+# append-only (the asset appends one row per run), so the read must order and take
+# the freshest — a bare .first() could resume from a stale row.
+state_rows = spark.sql(
+    f"SELECT last_commit_version FROM {STATE} WHERE sync_name = '{SYNC_NAME}' "
+    "ORDER BY last_commit_version DESC LIMIT 1"
+).collect()
 last_version = int(state_rows[0].last_commit_version) if state_rows else None
 
 history = spark.sql(f"DESCRIBE HISTORY {SOURCE}")
@@ -432,11 +437,19 @@ else:
 
 spark.sql(f"""
     MERGE INTO {STATE} AS target
-    USING (SELECT '{SYNC_NAME}' AS sync_name, {new_version} AS last_commit_version) AS source
+    USING (SELECT
+             '{SYNC_NAME}' AS sync_name,
+             {new_version} AS last_commit_version,
+             '{SOURCE}' AS source_fqn,
+             '{LABEL}' AS label
+           ) AS source
     ON target.sync_name = source.sync_name
-    WHEN MATCHED THEN UPDATE SET target.last_commit_version = source.last_commit_version
-    WHEN NOT MATCHED THEN INSERT (sync_name, last_commit_version)
-        VALUES (source.sync_name, source.last_commit_version)
+    WHEN MATCHED THEN UPDATE SET
+        target.last_commit_version = source.last_commit_version,
+        target.source_fqn = source.source_fqn,
+        target.label = source.label
+    WHEN NOT MATCHED THEN INSERT (sync_name, last_commit_version, source_fqn, label)
+        VALUES (source.sync_name, source.last_commit_version, source.source_fqn, source.label)
 """)
 print(f"Watermark: {last_version} -> {new_version}")
 
