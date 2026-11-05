@@ -59,6 +59,11 @@
   .rentry .rsub { margin-top: 4px; overflow-wrap: anywhere; }
   .rentry .rsub.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
   .rentry .rsub.strong { color: var(--text); font-weight: 600; }
+  .rentry .rtablewrap { margin-top: 6px; max-width: 100%; max-height: 340px; overflow: auto; border: 0.5px solid var(--card-border); border-radius: 8px; background: var(--card); }
+  .rentry .rtable { border-collapse: collapse; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: nowrap; }
+  .rentry .rtable th, .rentry .rtable td { padding: 4px 10px; text-align: left; border-bottom: 0.5px solid var(--card-border); }
+  .rentry .rtable th { position: sticky; top: 0; background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 0.5px 0 var(--card-border); }
+  .rentry .rtable td { color: var(--muted); }
   .caprun { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--active); margin: 6px 0 0; }
   .caprun .icon.run { width: 11px; height: 11px; margin-right: 0; }
   .caprun .phase { color: var(--muted); font-weight: 400; }
@@ -403,6 +408,19 @@ function say(text, url, state, r = $('result'), subs = null, entry = null) {
   e.append(text);
   if (url) { e.append(' '); const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.textContent = 'Open in Dagster'; e.append(a); }
   if (subs) for (const s of subs) {
+    if (s.table) {
+      const wrap = document.createElement('div');
+      wrap.className = 'rtablewrap';
+      const t = document.createElement('table');
+      t.className = 'rtable';
+      const head = t.createTHead().insertRow();
+      for (const c of s.table.columns) { const th = document.createElement('th'); th.textContent = c; head.append(th); }
+      const body = t.createTBody();
+      for (const r of s.table.rows) { const tr = body.insertRow(); for (const v of r) { const td = tr.insertCell(); td.textContent = v ?? ''; } }
+      wrap.append(t);
+      e.append(wrap);
+      continue;
+    }
     const d = document.createElement('div');
     d.className = 'rsub' + (s.mono ? ' mono' : '') + (s.strong ? ' strong' : '');
     d.textContent = s.text;
@@ -716,15 +734,11 @@ $('act-schema').onclick = async () => {
 $('act-readers').onclick = () => check('readers', d => ({ text: 'Kafka Connect: ' + (d.kafka_connect.error ? d.kafka_connect.error : d.kafka_connect.connector + ', tasks ' + d.kafka_connect.tasks.join(', ')) + '. RisingWave rows: ' + (d.risingwave_rows.error || d.risingwave_rows) + '.' }), 6, ['kafka', 'connect', 'rw']);
 $('act-postgres').onclick = () => check('postgres', d => {
   if (d.error) return { text: 'Postgres check failed: ' + d.error };
-  // Column headings from the query itself (the set moves with the demo's
-  // schema changes), every column padded to its widest cell so the rows line up.
+  // Column headings come from the query itself (the set moves with the demo's
+  // schema changes). A real table with scrollbars — the wide targets (company
+  // has 16 columns) were unreadable as padded pipe text.
   const cols = d.columns || [];
-  const cells = d.latest.map(r => r.map(v => String(v)));
-  const width = cols.map((c, j) => Math.max(String(c).length, ...cells.map(r => (r[j] || '').length)));
-  const line = cells => cells.map((c, j) => (c || '').padEnd(width[j])).join(' | ');
-  const subs = [];
-  if (cols.length) subs.push({ text: line(cols), mono: true, strong: true });
-  for (const r of cells) subs.push({ text: line(r), mono: true });
+  const subs = cols.length ? [{ table: { columns: cols, rows: d.latest } }] : [];
   if (d.rows > d.latest.length) subs.push({ text: '… and ' + (d.rows - d.latest.length) + ' more', mono: true });
   return { text: d.rows + ' row(s) in the target — latest ' + d.latest.length + ', newest first:', subs };
 }, 7, ['connect', 'pg']);
