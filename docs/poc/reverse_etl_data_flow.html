@@ -218,7 +218,7 @@
       <g id="n-src" class="node coral"><rect x="10" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="41" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" id="src-sub" x="85" y="60" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
       <g id="n-state" class="node coral"><rect x="10" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="261" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" id="state-sub" x="85" y="280" text-anchor="middle" dominant-baseline="central">Watermark · Delta (UC)</text></g>
       <g id="n-sync" class="node purple"><rect x="10" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="151" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="85" y="170" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
-      <g id="n-reg" class="node teal"><rect x="410" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" x="485" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
+      <g id="n-reg" class="node teal"><rect x="410" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" id="reg-sub" x="485" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
       <g id="n-kafka" class="node teal"><rect x="410" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="261" text-anchor="middle" dominant-baseline="central">Kafka topic</text><text class="ts" x="485" y="280" text-anchor="middle" dominant-baseline="central">Debezium change events</text></g>
       <g id="n-connect" class="node teal"><rect x="410" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="151" text-anchor="middle" dominant-baseline="central">Kafka Connect</text><text class="ts" x="485" y="170" text-anchor="middle" dominant-baseline="central">Debezium JDBC sink</text></g>
       <g id="n-pg" class="node blue"><rect x="210" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="285" y="151" text-anchor="middle" dominant-baseline="central">Postgres</text><text class="ts" x="285" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
@@ -252,7 +252,7 @@
 
 <section class="notes">
   <h2>The Databricks source table</h2>
-  <p class="sub">What the table behind step 1 needs, and how to define it. The setup job creates it for you from <code>orchestration/defs/reverse_etl_avro/defs.yaml</code>; this is the DDL it runs.</p>
+  <p class="sub">What the table behind step 1 needs, and how to define it. The setup job creates it for you from <code>orchestration/defs/reverse_etl_avro/defs.yaml</code>; this is the DDL it runs. Company is the exception: its source is an existing table (a manual CTAS copy, plain Delta, no UniForm) that setup only verifies.</p>
   <div class="grid">
     <div>
       <ul>
@@ -359,6 +359,74 @@ S.forEach((s, k) => {
   list.appendChild(li);
 });
 
+// Encoding-specific narration: the avro syncs (avro, delta) check key/value
+// schemas against the registry on every run; the JSON syncs (cdf, orders,
+// company) embed the schema in every message, so steps 2.3 and parts of
+// 2.4/3 read differently. applyEncoding() swaps the affected steps' text and
+// rewires their nodes/edges, and re-renders the list and the caption.
+const SYNC_ENCODING = { avro: 'avro', cdf: 'json', orders: 'json', delta: 'avro', company: 'json' };
+const JSON_STEP_OVERRIDES = {
+  '2.3': {
+    t: 'No registry step',
+    d: 'The schema rides inside every message: Kafka Connect JSON embeds it, so this sync never touches the registry — nothing to register, no lookup cost, and a new column needs no schema version before its first message.',
+    n: ['sync'], e: [],
+  },
+  '2.4': {
+    d: 'The sync produces one JSON message per change, in the Debezium format: before, after, op and source, with the schema embedded in the message itself — no registry lookup at produce time.',
+  },
+  '3': {
+    d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Every message carries its schema, so both decode it without the registry. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE JSON), so it applies each change to its table here, with no connector. For a new column, the sync adds it to the RisingWave table first, because RisingWave only fills a column from messages read after the column exists.',
+    n: ['kafka', 'connect', 'rw'], e: ['e5', 'e7'],
+  },
+};
+// The dedicated JSON diagram: the Registry leaves the canvas entirely (a JSON
+// sync never touches it) and Postgres and Kafka Connect take its row. Edge
+// endpoints are re-pinned per mode — the badges read the rect attributes and
+// the comets clone the line geometry, so both move with the nodes.
+const EDGE_JSON = { e3: null, e9: null, e10: null, e5: [485, 240, 485, 76], e6: [410, 48, 360, 48] };
+const NODE_JSON_DY = { pg: -110, connect: -110 };
+const EDGE_BASE = {}, NODE_BASE = {};
+function setDiagram(json) {
+  for (const e of EDGES) {
+    const line = $(e), flow = flowEls[e];
+    if (!(e in EDGE_BASE)) EDGE_BASE[e] = [+line.getAttribute('x1'), +line.getAttribute('y1'), +line.getAttribute('x2'), +line.getAttribute('y2')];
+    const target = json ? (e in EDGE_JSON ? EDGE_JSON[e] : EDGE_BASE[e]) : EDGE_BASE[e];
+    const hidden = target === null;
+    line.style.display = flow.style.display = hidden ? 'none' : '';
+    if (hidden) continue;
+    const [x1, y1, x2, y2] = target;
+    for (const el of [line, flow]) {
+      el.setAttribute('x1', x1); el.setAttribute('y1', y1); el.setAttribute('x2', x2); el.setAttribute('y2', y2);
+      el.style.setProperty('--len', Math.hypot(x2 - x1, y2 - y1) + 'px');
+    }
+  }
+  for (const n of NODES) {
+    const g = $('n-' + n);
+    const rect = g.querySelector('rect');
+    if (!(n in NODE_BASE)) NODE_BASE[n] = { rect: +rect.getAttribute('y'), texts: [...g.querySelectorAll('text')].map(t => +t.getAttribute('y')) };
+    const dy = json ? (NODE_JSON_DY[n] || 0) : 0;
+    rect.setAttribute('y', NODE_BASE[n].rect + dy);
+    [...g.querySelectorAll('text')].forEach((t, k) => t.setAttribute('y', NODE_BASE[n].texts[k] + dy));
+    g.style.display = json && n === 'reg' ? 'none' : '';
+  }
+}
+function applyEncoding() {
+  const json = (SYNC_ENCODING[SYNC] || 'avro') === 'json';
+  setDiagram(json);
+  for (const s of S) {
+    const o = JSON_STEP_OVERRIDES[s.num];
+    if (!o) continue;
+    if (!s.base) s.base = { t: s.t, d: s.d, n: s.n, e: s.e };
+    const over = enc === 'json' ? { ...s.base, ...o } : s.base;
+    s.t = over.t; s.d = over.d; s.n = over.n; s.e = over.e;
+  }
+  [...list.children].forEach((li, k) => {
+    li.querySelector('.t').textContent = S[k].t;
+    li.querySelector('.d').textContent = S[k].d;
+  });
+  show(i);
+}
+
 function show(k) {
   i = (k + S.length) % S.length;
   const s = S[i];
@@ -445,7 +513,7 @@ function stagesClear() { $('badges').innerHTML = ''; NODES.forEach(n => $('n-' +
 function stagesRun(names, state) {
   $('badges').innerHTML = '';
   for (const n of names) {
-    const g = $('n-' + n); if (!g) continue;
+    const g = $('n-' + n); if (!g || g.style.display === 'none') continue;
     const rect = g.querySelector('rect');
     const cx = +rect.getAttribute('x') + +rect.getAttribute('width') - 9;
     const cy = +rect.getAttribute('y') + 9;
@@ -821,6 +889,7 @@ syncSelect.onchange = () => {
   setSourceSubtitle(SYNC);
   setStateBackend(SYNC);
   setChangeGroup();
+  applyEncoding();
   $('bar-msg').textContent = helper ? 'helper connected · sync: ' + SYNC : $('bar-msg').textContent;
   $('result').textContent = '';
   costSession.warehouse = 0;
@@ -853,7 +922,7 @@ async function refreshHelperPill() {
 }
 refreshHelperPill();
 setInterval(refreshHelperPill, 10000);
-show(0); setSourceSubtitle(SYNC); setStateBackend(SYNC); setChangeGroup();
+show(0); setSourceSubtitle(SYNC); setStateBackend(SYNC); setChangeGroup(); applyEncoding();
 </script>
 </body>
 </html>
