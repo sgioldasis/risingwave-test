@@ -1437,6 +1437,7 @@ services:
       - DATABRICKS_AZURE_CLIENT_ID=27a78a40-69f4-40e0-9768-ba39d58a6a55
       - DATABRICKS_AZURE_TENANT_ID=${DATABRICKS_AZURE_TENANT_ID-}
       - DATABRICKS_AZURE_CLIENT_SECRET=${DATABRICKS_AZURE_CLIENT_SECRET-}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD-}
     volumes:
       - "./starrocks/init_catalog.sh:/init_catalog.sh:ro"
     command: sh /init_catalog.sh

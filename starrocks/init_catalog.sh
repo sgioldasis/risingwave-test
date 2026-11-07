@@ -4,6 +4,10 @@ set -e
 : "${DATABRICKS_AZURE_CLIENT_ID:?DATABRICKS_AZURE_CLIENT_ID must be set}"
 : "${DATABRICKS_AZURE_TENANT_ID:?DATABRICKS_AZURE_TENANT_ID must be set}"
 : "${DATABRICKS_AZURE_CLIENT_SECRET:?DATABRICKS_AZURE_CLIENT_SECRET must be set}"
+# POSTGRES_PASSWORD may legitimately be empty (the devbox Postgres trusts local
+# connections), so unlike the Databricks secrets it only needs to be present
+# ($VAR?msg fails on unset only; $VAR:?msg would also fail on empty).
+: "${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}"
 
 apk add --no-cache mysql-client >/dev/null
 
@@ -99,6 +103,25 @@ PROPERTIES (
 );
 SQL
 
+echo "Creating demo Postgres JDBC catalog (postgres_demo)..."
+mysql -h starrocks -P 9030 -u root <<SQL
+DROP CATALOG IF EXISTS postgres_demo;
+CREATE EXTERNAL CATALOG postgres_demo
+COMMENT "Demo Postgres target (Debezium JDBC sink) via JDBC federation"
+PROPERTIES (
+  "type"            = "jdbc",
+  "user"            = "postgres",
+  "password"        = "${POSTGRES_PASSWORD}",
+  # binaryTransfer=false for the same reason as the risingwave catalog above:
+  # the Postgres JDBC driver's binary protocol misdecodes timestamps in the
+  # CN's native scanner.
+  "jdbc_uri"        = "jdbc:postgresql://0.250.250.254:5432/postgres?binaryTransfer=false",
+  "driver_url"      = "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar",
+  "driver_class"    = "org.postgresql.Driver",
+  "schema_resolver" = "postgresql"
+);
+SQL
+
 # NOTE: this project tried three different mechanisms to get "hot" RisingWave
 # data into StarRocks without a live per-query JDBC touch: a 10s-refresh
 # local MV mirror, a StarRocks Routine Load job off RisingWave's `funnel`
@@ -129,5 +152,5 @@ echo "Raising planner optimize timeout for external-catalog queries..."
 mysql -h starrocks -P 9030 -u root -e "SET GLOBAL new_planner_optimize_timeout = 15000;"
 
 echo "Verifying catalogs..."
-mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave';"
+mysql -h starrocks -P 9030 -u root -e "SHOW CATALOGS LIKE 'databricks_uc'; SHOW CATALOGS LIKE 'lakekeeper_local'; SHOW CATALOGS LIKE 'risingwave'; SHOW CATALOGS LIKE 'postgres_demo';"
 echo "StarRocks init complete."
