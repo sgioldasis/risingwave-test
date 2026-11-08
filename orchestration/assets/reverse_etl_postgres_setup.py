@@ -23,9 +23,11 @@ def rename_columns_in_postgres(postgres, http, cfg: ReverseEtlSyncConfig, rename
     its committed offsets, the task rebuilds the cache from the real table.
     Idempotent: a rename already applied is detected and not re-attempted, but
     the restart still runs so a retried run cannot leave the stale cache
-    behind. When BOTH columns exist — the new one created empty by the sink's
-    schema evolution while the rename was pending — the data is copied across
-    and the old column dropped, mirroring the RisingWave dance."""
+    behind. When BOTH columns exist — the new one created by the sink's schema
+    evolution while the rename was pending — the old column's values backfill
+    only the NULLs of the new one (the sink may already have written fresh
+    values into it; see the comment at the copy) and the old column is dropped,
+    mirroring the RisingWave dance."""
     conn = postgres.connect()
     ensured: list[str] = []
     try:
@@ -40,7 +42,16 @@ def rename_columns_in_postgres(postgres, http, cfg: ReverseEtlSyncConfig, rename
                 return []
             for old, new in renames:
                 if old in existing and new in existing:
-                    cur.execute(f'UPDATE {cfg.postgres_table} SET "{new}" = "{old}"')
+                    # Backfill only the NULLs: the sink may have already applied fresh
+                    # values into the new column (schema evolution re-creates it the
+                    # moment a post-rename message arrives, which can precede this DDL
+                    # by seconds within the same sync). Copying unconditionally would
+                    # clobber those with the old column's stale data (seen live
+                    # 2026-11-08: an update synced in the same run as the rename lost
+                    # its value). A genuinely fresh NULL is indistinguishable from an
+                    # untouched column and gets backfilled -- accepted, the demo never
+                    # writes NULLs.
+                    cur.execute(f'UPDATE {cfg.postgres_table} SET "{new}" = COALESCE("{new}", "{old}")')
                     cur.execute(f'ALTER TABLE {cfg.postgres_table} DROP COLUMN "{old}"')
                     ensured.append(f"{old} -> {new}")
                 elif old in existing and new not in existing:

@@ -85,11 +85,13 @@ class TestRename:
         assert alter_statements(calls) == [f'ALTER TABLE {TABLE} RENAME COLUMN "name" TO "title"']
         assert [c for c in calls if c[0] == "http"] == [("http", f"POST http://kafka-connect:8083/connectors/{CFG.connector_name}/tasks/0/restart")]
 
-    def test_both_columns_present_copies_the_values_then_drops_the_old_one(self, calls):
+    def test_both_columns_present_backfills_only_the_nulls_then_drops_the_old_one(self, calls):
         ensured, _ = self.rename(calls, ["id", "name", "title"], [("name", "title")])
         assert ensured == ["name -> title"]
+        # COALESCE keeps values the sink already wrote into the new column
+        # (schema-evolution race) and only backfills the untouched ones.
         assert alter_statements(calls) == [
-            f'UPDATE {TABLE} SET "title" = "name"',
+            f'UPDATE {TABLE} SET "title" = COALESCE("title", "name")',
             f'ALTER TABLE {TABLE} DROP COLUMN "name"',
         ]
 

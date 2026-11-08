@@ -295,7 +295,7 @@ class TestRenameColumns:
         assert applied == ["name -> title"]
         assert table.ddl() == [
             f'ALTER TABLE {self.table_name} ADD COLUMN "title" VARCHAR',
-            f'UPDATE {self.table_name} SET "title" = "name"',
+            f'UPDATE {self.table_name} SET "title" = COALESCE("title", "name")',
             f'ALTER TABLE {self.table_name} DROP COLUMN "name"',
         ]
         assert set(table.columns) == {"id", "title"}
@@ -334,11 +334,13 @@ class TestRenameColumns:
         applied, _ = self.run(table, [("name", "title")], [("id", "int64", False)])
         assert applied == [] and table.ddl() == [] and "name" in table.columns
 
-    def test_a_new_column_the_add_path_already_created_empty_is_still_filled_from_the_old_one(self):
+    def test_a_new_column_the_add_path_already_created_empty_is_still_backfilled_from_the_old_one(self):
         table = StatefulRisingWave({"id": "bigint", "name": "varchar", "title": "varchar"})
         applied, _ = self.run(table, [("name", "title")], self.TITLE_FIELDS)
         assert applied == ["name -> title"]
-        assert table.ddl() == [f'UPDATE {self.table_name} SET "title" = "name"', f'ALTER TABLE {self.table_name} DROP COLUMN "name"']
+        # COALESCE, not a plain copy: a post-rename message may already have
+        # filled the new column with fresh values (schema-evolution race).
+        assert table.ddl() == [f'UPDATE {self.table_name} SET "title" = COALESCE("title", "name")', f'ALTER TABLE {self.table_name} DROP COLUMN "name"']
 
     def test_the_key_column_is_never_dropped_by_a_rename(self):
         fields = [("ident", "int64", False)]

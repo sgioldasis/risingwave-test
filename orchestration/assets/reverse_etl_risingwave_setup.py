@@ -239,9 +239,9 @@ def rename_columns_in_risingwave(
     Each DDL commits before the next statement runs, keeping a partially failed
     run resumable. Idempotent: a rename already applied (new exists, old gone)
     is skipped, so a retried run cannot re-add a half-built column; and when the
-    add path has already created the new column empty (a rename pending while
-    events were produced), the UPDATE copy still runs and fills it before the
-    old column goes away."""
+    add path has already created the new column (a rename pending while events
+    were produced), the UPDATE copy still runs and fills only its NULL values
+    before the old column goes away."""
     conn = risingwave.connect()
     fields_by_name = {field[0]: field for field in row_fields}
     applied: list[str] = []
@@ -280,7 +280,15 @@ def rename_columns_in_risingwave(
                         cur.execute(f"ALTER TABLE {cfg.risingwave_table} ADD COLUMN {column_def}")
                         conn.commit()
                         existing = table_columns(cur)
-                cur.execute(f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = {_quote(old)}")
+                # Backfill only the NULLs, for the same reason as the Postgres dance
+                # (see reverse_etl_postgres_setup.py): a message carrying the
+                # post-rename schema may already have filled the new column with
+                # fresh values before this DDL ran -- copying unconditionally would
+                # clobber them with the old column's stale data (seen live
+                # 2026-11-08).
+                cur.execute(
+                    f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = COALESCE({_quote(new)}, {_quote(old)})"
+                )
                 conn.commit()
                 for gone in (f"{old}_ts", old):
                     if gone in existing and gone != cfg.key_column:
