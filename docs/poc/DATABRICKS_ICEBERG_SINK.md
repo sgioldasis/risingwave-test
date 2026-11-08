@@ -1385,3 +1385,62 @@ ADLS (reverse-ETL pattern) and Trino's Delta connector.
   schema-level grants is missing.
 - The `v3.2.0-alpha` image is required for the read path; stable v3.2.0 will
   carry PR #27407. Revert by removing the `RW_IMAGE` line from `.env`.
+
+### 20.5 Schema-change behavior of the UC read path — verified live (2026-11-08)
+
+Setup for the test: a Delta+UniForm probe table in `de_dev.sr_poc_external`,
+read by an RW `FULL_RELOAD` table (`refresh_interval_sec = '20'`), with data
+changes injected via Databricks SQL. Both the `ADD COLUMN` and `DROP COLUMN`
+cases were exercised end to end; all probe objects were dropped afterward.
+
+FULL_RELOAD DDL gotchas found on the way:
+
+- Refreshable tables **must have a primary key** (`Refreshable tables must
+  have a PRIMARY KEY`), but the Iceberg connector **infers the schema** and
+  rejects a column list. The syntax that works is a PK-only column spec:
+
+  ```sql
+  CREATE TABLE rw_probe_src (PRIMARY KEY (id)) WITH (
+    connector = 'iceberg', catalog.type = 'rest_rust', …,
+    refresh_mode = 'FULL_RELOAD', refresh_interval_sec = '20'
+  );
+  ```
+
+  (`primary_key = 'id'` inside `WITH` is rejected as an unknown field.)
+
+Findings:
+
+- **Row changes (insert/update):** picked up automatically on the next
+  refresh. Non-event.
+- **`ADD COLUMN` on the UC table: benign.** Refreshes keep succeeding; the RW
+  table keeps its creation-time schema; the new column and its values are
+  silently ignored. It only surfaces if you recreate the RW table.
+- **`DROP COLUMN` (breaking change): three phases.**
+  1. *Lag phase (minutes, healthy):* Databricks regenerates UniForm Iceberg
+     metadata asynchronously; until it does, refreshes keep succeeding
+     against the pre-change snapshot.
+  2. *Failure phase (semi-silent):* once the metadata catches up, the reload
+     fails with `IcebergV2 error: DataInvalid => Column name not found in
+     table`, retried every ~2 s **forever**. `rw_refresh_table_state` sticks
+     on `REFRESHING` — psql surfaces no error; detection is only via a stale
+     `last_success_time` or compute-node logs.
+  3. *Serving side: unaffected.* The table stays fully queryable with the
+     last good snapshot. No corruption, no impact on streaming objects, and
+     `DROP TABLE` completes instantly (no sink-style zombie).
+- **Recovery:** drop + recreate the RW table (and any refresh MV on top of
+  it). Full recompute, instant at demo scale.
+- **RW-side upstream schema changes are blocked outright:** with a refresh MV
+  depending on a table, `ALTER TABLE` fails with "replacing a table with
+  dependent batch refresh materialized views is not supported" — no silent
+  drift possible on the RW side; the evolution path is drop MV → alter →
+  recreate MV (verified working).
+- **Refresh MV placement constraints (docs):** a refresh MV cannot depend
+  directly on a source, and cannot feed downstream streaming MVs — it is a
+  terminal object in the chain.
+
+Operational conclusion: a UC schema change can never corrupt data or break
+streaming — worst case the enrichment table freezes on its last good snapshot
+while a quiet retry loop spins. Because the failure is semi-silent, anything
+built on `FULL_RELOAD`/refresh MVs should alert on `last_success_time` going
+stale (older than N × refresh interval) rather than trusting the refresh to
+announce failure.
