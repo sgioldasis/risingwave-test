@@ -12,6 +12,8 @@ RisingWave streams casino UC1 (Real Bet Amount) and UC2 (Turnover Percentage) in
 > **Update (2026-06-13):** Added the turnover flow (`mv_casino_turnover_90d` → `sink_casino_turnover_90d_databricks` → `rw_casino_turnover_90d`) as a worked example of **upsert semantics without delete files** — append-only sink + read-side `QUALIFY` view `v_casino_turnover_latest` (verified: 1,093 event rows collapse to 569 latest-per-customer). See §1 architecture, §15 step 1e for the table DDL, and [`DATABRICKS_ICEBERG_READ.md`](DATABRICKS_ICEBERG_READ.md) §6 for the view.
 >
 > **Update (2026-09-02):** Newly created managed Iceberg tables in the current workspace receive the `delta.feature.catalogManaged` protocol feature. RisingWave, StarRocks, and Trino IRC commits failed with `ErrorCode: 2012` while that feature was enabled. Running `ALTER TABLE ... DROP FEATURE catalogManaged` on an isolated probe restored RisingWave and StarRocks writes while preserving `Provider = iceberg`, managed-table status, ownership, and predictive optimization. See §19 for the evidence and migration guardrails.
+>
+> **Update (2026-11-08):** Full retest on RW `v3.2.0-alpha`. **Read path fixed** — UC Iceberg sources work via direct ADLS service-principal auth (`adlsgen2.*` + `catalog.type='rest_rust'`), which v3.1.1 silently drops. **Write path fully blocked** — the June "append-only works" rule no longer holds: IRC table creation is now 403 for everyone and IRC commits 500 for append and upsert alike (§20 has the full matrix). The only working upsert road into UC is Delta-direct over ADLS (delta-rs, the reverse-ETL pattern).
 
 ---
 
@@ -1268,3 +1270,118 @@ Databricks-owned data, not for RisingWave, StarRocks, or Trino writer targets.
 Future table provisioning for external writers must include a post-create
 compatibility check. If Databricks adds `catalogManaged`, convert and validate
 the table before creating the RisingWave sink.
+
+---
+
+## 20. 2026-11-08 retest on RW 3.2.0-alpha — read path fixed, write path fully blocked
+
+Full retest of the Databricks UC integration on RisingWave
+`v3.2.0-alpha.20261107` (set via `RW_IMAGE` in `.env`; v3.1.1 is the last
+release without the fix below), against `de_dev.sr_poc_external` with SP
+`27a78a40-…` (`DATABRICKS_AZURE_CLIENT_ID` / `ADLS_CLIENT_ID` in `.env`).
+
+### 20.1 Read path FIXED — direct ADLS service-principal auth
+
+RW v3.1.1 cannot read Databricks UC Iceberg tables on ADLS Gen2, for two
+stacked reasons:
+
+1. UC cannot vend credentials from **managed-identity** storage credentials
+   (the external location `stkznneusrpoccdddevstd_sr-poc-cont1` is backed by
+   `storage-connector`): Iceberg REST LoadTable with
+   `X-Iceberg-Access-Delegation: vended-credentials` returns `config: {}` for
+   everyone, including principals with MANAGE.
+2. v3.1.1 silently drops the direct `adlsgen2.*` properties on the native REST
+   path (`build_native_rest_catalog_props` has no `adls_file_io_props()`; PR
+   #27407 landed on main 2026-10-08, after the `release-3.1` branch cut).
+   Every data-plane read therefore dies as a quiet 10 s `io timeout`
+   ("Failed to load manifest list") while the catalog plane works.
+
+Working configuration (on v3.2.0-alpha, ~3 s for a 20-row count):
+
+```sql
+CREATE SOURCE src_uc_countries WITH (
+  connector = 'iceberg',
+  catalog.type = 'rest_rust',
+  catalog.uri = 'https://<workspace>/api/2.1/unity-catalog/iceberg-rest',
+  catalog.credential = '<client_id>:<client_secret>',
+  catalog.oauth2_server_uri = 'https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token',
+  catalog.scope = '2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default',
+  warehouse.path = 'de_dev',
+  adlsgen2.account_name = '<account>',
+  adlsgen2.tenant_id = '<tenant>',
+  adlsgen2.client_id = '<client_id>',
+  adlsgen2.client_secret = '<secret>',
+  database.name = 'sr_poc_external',
+  table.name = 'iceberg_countries'
+);
+```
+
+Required grants: `READ FILES` on the external location, plus
+`USE_SCHEMA`/`EXTERNAL_USE_SCHEMA` at schema level if the table is outside
+the SP's usual schema. Facts verified by direct testing: the SP holds Azure
+RBAC on the container and CAN read `__unitystorage/` managed-table files;
+network egress, IPv6, and proxies were all ruled out. RW issue #26711
+documents this whole failure family.
+
+### 20.2 Write path — full matrix, nothing works
+
+| # | Path | Result |
+|---|------|--------|
+| 1 | IRC **table creation** (worked Sept 2026) | 403 "Not authorized to make this request" — for the SP **and** the user with MANAGE |
+| 2 | Delta+UniForm table (`delta.universalFormat.enabledFormats`) | 400 "not a Managed Iceberg table" |
+| 3 | Native Iceberg table (SQL `USING ICEBERG`) + **append-only** | 500 "An unknown server-side problem occurred; the commit state is unknown" |
+| 4 | Native Iceberg table + upsert **merge-on-read** (delete files, `main`) | same 500 |
+| 5 | Native Iceberg table + upsert **copy-on-write** | 400 "Branching or tagging is not allowed. Found: 'branch' with name 'ingestion'" — RW hardcodes the branch (`commit_branch`); promotion tracked in RW #24723 (open) |
+| 6 | Old recipe (`de_dev.rw_poc`, MANAGED LOCATION on old account `stkznneurwpoccdddevstd`) | unreachable — current SP has no Azure RBAC on the old account (`AuthorizationPermissionMismatch`); the old PoC ran under SP `3b7f531f-…` |
+| 7 | `adlsgen2.account_name` + `account_key` (shared key) | 403 PermissionDenied at the data-file write into `__unitystorage/` — shared key appears disabled/restricted on this account |
+
+Controls that sharpen the diagnosis:
+
+- The SP **uploads data files successfully** (3 parquet files reached the
+  committer on every test) — storage write RBAC is fine via OAuth.
+- `DESCRIBE HISTORY` shows zero landed commits — the 500 is a real rejection,
+  not a timeout after success ("commit state is unknown" is misleading).
+- A Databricks SQL `INSERT` into the very same table succeeds.
+- `WRITE FILES` on the external location did **not** fix the 500.
+- Both `catalog.type = 'rest'` (JNI) and `'rest_rust'` commit 500 identically.
+
+**Conclusion:** the blocker is Databricks' IRC commit endpoint (500 on any
+external commit to SQL-created native Iceberg tables) plus the 403 on IRC
+table creation — both changed between June/September and November 2026. The
+June "append-only is the workaround" rule no longer holds. Escalation case:
+Databricks SQL INSERT works / external IRC commit 500s on the same table.
+
+### 20.3 What still works — Delta-direct over ADLS
+
+External writes to UC tables are **not** all blocked — only the Iceberg REST
+commit path is. The reverse-ETL demo writes
+`de_dev.sr_poc_external.reverse_etl_delta_state` from the local stack via
+delta-rs (`write_deltalake` over ADLS, SP OAuth token), confirmed working
+2026-11-08 06:27, including upsert-shaped writes (delta-rs MERGE/overwrite).
+Delta transaction logs go straight to storage; UC tracks them with no commit
+endpoint involved. Trino's Delta connector uses the same road (that is how
+`iceberg_countries` was written). RW's **Delta Lake sink**
+(`connector='deltalake'`) is NOT a workaround: it only accepts
+`s3://`, `gs://`, `file://` locations (no ADLS) and only issues
+`SaveMode::Append` (no MERGE/upsert).
+
+The only upsert roads into Databricks from this stack remain delta-rs over
+ADLS (reverse-ETL pattern) and Trino's Delta connector.
+
+### 20.4 Operational notes
+
+- **Sink zombie cleanup:** a sink stuck in commit-retry holds `DROP SINK` open
+  indefinitely (the client can be killed; the drop completes logically).
+  Reliable cleanup: restart `meta-node-0`/`compute-node-0`/`frontend-node-0`,
+  then `DROP SINK` immediately after recovery — a fresh restart replays the
+  pending commit, so the drop must follow right away.
+- **Testing pitfall:** `docker exec -e T="$STOKEN" … curl -H "Authorization:
+  Bearer $T"` expands `$T` on the HOST (empty token → misleading 401/403).
+  Wrap in `sh -c '… $T …'` so the container shell expands it.
+- Grants recipe that got an external writer as far as the commit step:
+  `USE_SCHEMA` + `EXTERNAL_USE_SCHEMA` on the schema, `MODIFY` + `SELECT` on
+  the table, `READ FILES` + `WRITE FILES` on the external location.
+  `ErrorCode: 3001` "Permission denied accessing table" means one of the
+  schema-level grants is missing.
+- The `v3.2.0-alpha` image is required for the read path; stable v3.2.0 will
+  carry PR #27407. Revert by removing the `RW_IMAGE` line from `.env`.
