@@ -23,6 +23,7 @@ from .reverse_etl_config import (
     duckdb_target_config,
     postgres_target_config,
     risingwave_target_config,
+    starrocks_target_config,
 )
 from .reverse_etl_demo_hooks import DemoSyncHooks
 from .reverse_etl_debezium_sink import build_debezium_sink_asset
@@ -30,6 +31,7 @@ from .reverse_etl_health import build_sink_health_check, build_sink_health_job_a
 from .reverse_etl_change import build_change_asset, build_change_job
 from .reverse_etl_reset import build_reset_job
 from .reverse_etl_risingwave_setup import build_risingwave_table_asset
+from .reverse_etl_starrocks_target import build_starrocks_target_asset
 from .reverse_etl_topic import build_topic_asset
 
 
@@ -55,6 +57,7 @@ def build_target_defs(cfg: ReverseEtlTargetsConfig, source_fqn: str = "") -> Def
             *([build_risingwave_table_asset(risingwave_target_config(cfg, source_fqn))] if "risingwave" in cfg.targets else []),
             *([build_debezium_sink_asset(postgres_cfg)] if has_postgres_target else []),
             *([build_duckdb_target_asset(duckdb_target_config(cfg))] if "duckdb" in cfg.targets else []),
+            *([build_starrocks_target_asset(starrocks_target_config(cfg, source_fqn))] if "starrocks" in cfg.targets else []),
         ],
         asset_checks=[health_check] if has_postgres_target else [],
         jobs=[health_job] if has_postgres_target else [],
@@ -100,6 +103,7 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         *([cfg.risingwave_asset] if "risingwave" in cfg.targets else []),
         *([cfg.sink_asset] if "postgres" in cfg.targets else []),
         *([f"{cfg.sync_name}_duckdb_target"] if "duckdb" in cfg.targets else []),
+        *([f"{cfg.sync_name}_starrocks_target"] if "starrocks" in cfg.targets else []),
     ]
     if cfg.seed_statements:
         job_assets.append(cfg.seed_asset)
@@ -109,8 +113,8 @@ def build_demo_defs(cfg: ReverseEtlSyncConfig) -> Definitions:
         selection=selection,
         description=(
             f"Create {cfg.sync_name}'s Databricks tables and Kafka topic, run the first sync, then "
-            "build the selected targets (RisingWave table, Debezium JDBC sink, DuckDB mirror), and last "
-            "seed the demo rows if the sync has seed statements."
+            "build the selected targets (RisingWave table, Debezium JDBC sink, DuckDB mirror, StarRocks "
+            "table + Routine Load), and last seed the demo rows if the sync has seed statements."
         ),
         executor_def=in_process_executor,
     )

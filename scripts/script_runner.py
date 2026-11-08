@@ -38,7 +38,8 @@ BIN_DIR = PROJECT_ROOT / "bin"
 SCRIPTS = [
     ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies", None,
      [{"label": "Offline (skip Dagster build, reuse cached image)", "flag": "--offline"}]),
-    ("3_run_reverse_etl_demo.sh", "🔁 Reverse-ETL Demo", "Serve the reverse-ETL animation with buttons that launch each step (port 4002)"),
+    ("3_run_reverse_etl_demo.sh", "🔁 Reverse-ETL Demo", "Serve the reverse-ETL animation with buttons that launch each step (port 4002)", None,
+     [{"label": "Also start StarRocks (FE + CN + catalog init)", "flag": "--starrocks"}]),
     ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
     ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
     ("3_run_wallet_producer.sh", "💳 Start Wallet Producer", "Run the synthetic wallet transaction producer (StarRocks upsert demo)", True),

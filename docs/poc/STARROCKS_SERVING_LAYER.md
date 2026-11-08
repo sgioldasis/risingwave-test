@@ -610,9 +610,11 @@ safe to re-run).
   (`before`/`after`/`op`/`source`) — nothing matches; every row fails.
 - A (re)created Routine Load starts at the topic END; events published while
   the job was absent/misconfigured are not replayed. Recovery = re-produce
-  (new CDF versions), which the key-idempotent pipeline makes safe. A
-  `kafka_default_offsets` override was rejected by 4.1.7 (untested beyond
-  that).
+  (new CDF versions), which the key-idempotent pipeline makes safe — or pin
+  `kafka_partitions` + `kafka_offsets` (all zeros) in the CREATE's FROM
+  KAFKA, which is what the Dagster asset does (superseded the ALTER path).
+  `kafka_default_offsets = OFFSET_BEGINNING` is rejected by 4.1.7 both as a
+  FROM KAFKA custom property and as a PROPERTIES entry.
 - `DROP ROUTINE LOAD FOR db.name` prints a parser error ("No viable
   statement") but takes effect — a following CREATE with the same name works.
 - `updated_at` is mapped to VARCHAR on purpose: the wire is Debezium
@@ -629,13 +631,80 @@ safe to re-run).
 
 ### Live state after the test (left running on purpose)
 
-- `reverse_etl.reverse_etl_delta_target` — recreated with `updated_at DATETIME`
-  (the recommended variant for a serving layer).
-- Routine Load `reverse_etl.rldt_dt` — RUNNING, with the `str_to_date` cast
-  and the before-image fallback mapping. (`rldt_a`, the VARCHAR variant, was
-  dropped when the DATETIME table replaced it.)
+- `reverse_etl.reverse_etl_delta_target` — now owned by the Dagster asset
+  `reverse_etl_delta_starrocks_target` (see below); `updated_at DATETIME`.
+- The manual test loads (`rldt_dt`, `rldt_a`, `rldt_min`) are dropped; only
+  the asset's `reverse_etl_delta_rl` remains.
 - SR containers (`starrocks`, `starrocks-cn`) up; catalogs `databricks_uc`,
   `lakekeeper_local`, `risingwave` initialized. The `4_run_starrocks.sh`
   post-init metadata check exits 1 on the stale `databricks_uc.rw_poc`
   schema (old ADLS account, unreachable for the current SP) — harmless;
   catalogs are created before that point.
+
+### From consumer test to first-class target (2026-11-08, later)
+
+The recipe became a Dagster asset (`orchestration/assets/reverse_etl_starrocks_target.py`),
+wired into the demo's setup job like the RisingWave and Postgres targets.
+Semantics: **rebuild on every materialization** — drop the Routine Load and
+table, recreate both, and pin the new load's start offsets to each partition's
+beginning **in the CREATE itself** (`kafka_partitions` + `kafka_offsets`, taken
+from the old job's state), so replay through the PK table converges on the
+topic's full state. This is deliberate: the reset job cannot see StarRocks, so
+a table it never touches keeps rows whose deletes were consumed from the old
+topic and never re-emitted (observed live: an inserted Databricks row survived
+a reset+setup in SR while Postgres, whose table the reset recreates, correctly
+dropped it). Schema changes behave like the RW target's: a column added after
+setup needs one asset re-materialization — the rebuild recreates the table
+from the source's current columns and the replayed events populate the new
+field (verified live with `new_col_1`).
+
+**Column renames are silent on the wire, but the hooks propagate them
+(2026-11-08, verified live).** A Delta `ALTER TABLE RENAME COLUMN` is a
+metadata-only commit: CDF returns no rows, so the sync emits nothing and no
+event ever carries the new field name — on the wire (Avro/Debezium) a rename
+is drop+add, there is no rename. RisingWave and Postgres still follow renames
+correctly because the demo's sync hooks do it explicitly
+(`reverse_etl_demo_hooks`): each sync records the source schema with Delta's
+`delta.columnMapping` ids in the state table, and an id reappearing under a
+new name is propagated — RW ALTERs in place, Postgres renames the column and
+restarts the sink task (`propagate_drops: true` gates this; ids are how a
+rename is told apart from a drop). As of today StarRocks is in the same paths:
+
+- **add** (`before_produce`): `add_missing_columns_to_starrocks` ALTERs the
+  column in before the events are produced and rebuilds the Routine Load
+  replaying from the topic's beginning — old events map the new jsonpath to
+  NULL (which can only overwrite the column's starting NULLs) and the new
+  events' values land in the same sync (verified live: `new_col_1` populated).
+- **rename/drop** (`after_delivery`): `propagate_schema_changes_to_starrocks`
+  native-renames the column (data preserved) and rebuilds the Routine Load
+  pinned at the old job's progress so nothing replays (replaying pre-rename
+  events would overwrite the preserved values with NULLs — their after-images
+  carry the old name).
+
+Rows not touched since a rename still hold their pre-rename wire state until
+the next data change re-emits them; a reset+setup+sync re-baselines all rows.
+
+Three more SR 4.1.7 quirks the asset encodes:
+
+- `ALTER ROUTINE LOAD ... kafka_offsets` **only works on PAUSED jobs**
+  ("Only supports modification of PAUSED jobs"). The asset pauses first,
+  alters, then resumes — replaying a few tail events is safe (at-least-once
+  + PK dedup).
+- A fresh CREATE starts at the topic END, and the partition list only appears
+  in the job's state after an async broker round-trip — seconds when the
+  topic has data, **never** when it is empty (the job waits in
+  NEED_SCHEDULE; its creation offsets on an empty topic are the beginning).
+  `kafka_default_offsets = OFFSET_BEGINNING` is rejected in FROM KAFKA
+  (invalid custom property) *and* in PROPERTIES (invalid property), so the
+  asset polls briefly for partitions and alters as soon as they appear.
+- **The FE routine-load scheduler can wedge globally**: every task fails with
+  `task has been abandoned when scheduling task`, jobs show RUNNING with
+  `committedTaskNum: 0` forever, and pause/resume does not clear it (even a
+  trivial PLAINTEXT job on a local topic stops consuming). The scheduler
+  drops a dequeued task that is no longer in the job's task list and never
+  re-queues it — an abandoned task strands the job in STABLE permanently. A
+  FE container restart fixes it — jobs and offsets survive (verified live
+  twice). If a Routine Load is RUNNING but `committedTaskNum` stays 0 across
+  several task intervals, restart the FE before touching the job. This is
+  also why the asset pins start offsets in the CREATE instead of via the
+  pause/ALTER/resume churn, whose state transitions can orphan queued tasks.

@@ -61,11 +61,14 @@ class TargetsAttributes(dg.Model):
     connector_name: str
     postgres_table: str
     risingwave_table: str
+    # The StarRocks target's table (required when "starrocks" is in targets); the Primary
+    # Key table lives in the reverse_etl database and is fed by a Routine Load on the topic.
+    starrocks_table: str | None = None
     # tasks.max of the Debezium JDBC sink (default 1, enough for a daily load); raise it for a backfill.
     sink_tasks_max: int | None = None
     # Which target stacks to build, as consumers of the topic (plan section 12, option A):
-    # any of "risingwave", "postgres", "duckdb". Default: risingwave and postgres, the
-    # demo's shape so far. The Debezium sink's health check follows the postgres target.
+    # any of "risingwave", "postgres", "duckdb", "starrocks". Default: risingwave and postgres,
+    # the demo's shape so far. The Debezium sink's health check follows the postgres target.
     targets: list[str] | None = None
     # The DuckDB target's file (required when "duckdb" is selected); one target per file.
     duckdb_target_path: str | None = None
@@ -163,7 +166,7 @@ class ReverseEtlCdfDemo(dg.Component, dg.Model, dg.Resolvable):
         )
         targets_overrides = {
             field: getattr(self.targets, field)
-            for field in ("sink_tasks_max", "duckdb_target_path")
+            for field in ("sink_tasks_max", "duckdb_target_path", "starrocks_table")
             if getattr(self.targets, field) is not None
         }
         if self.targets.targets is not None:

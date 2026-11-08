@@ -94,6 +94,42 @@ class FakeDatabase:
         return connection
 
 
+class FakeStarrocks:
+    """Stands in for the connections module's starrocks connectable: records each statement
+    under the "starrocks" kind. `columns` is what the information_schema.columns query
+    returns (the table's current columns); `routine_load` is the SHOW ROUTINE LOAD row as a
+    {column name: value} dict (None means the job is absent — the 1064 path)."""
+
+    def __init__(self, calls: list, columns: list | None = None, routine_load: dict | None = None):
+        self.calls, self.kind, self.columns = calls, "starrocks", columns or []
+        self.routine_load = routine_load
+
+    def connect(self):
+        cursor = mock.MagicMock()
+        result: list = []
+
+        def execute(sql, params=None):
+            text = " ".join(str(sql).split())
+            self.calls.append((self.kind, text))
+            result.clear()
+            if text.startswith("SELECT column_name FROM information_schema.columns WHERE table_schema"):
+                result.extend([(name,) for name in self.columns])
+            elif text.startswith("DROP ROUTINE LOAD"):
+                self.routine_load = None
+            elif text.startswith("SHOW ROUTINE LOAD FOR"):
+                if self.routine_load is not None:
+                    names = list(self.routine_load)
+                    result.append(tuple(self.routine_load[name] for name in names))
+                    cursor.description = [(name,) for name in names]
+
+        cursor.execute.side_effect = execute
+        cursor.fetchall.side_effect = lambda: list(result)
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value.__enter__.return_value = cursor
+        return connection
+
+
 class FakeDatabricks:
     def __init__(
         self, calls: list, sql_error=None, location_error=None, table_location="abfss://x", table_columns=(),
@@ -288,6 +324,8 @@ def fake_resources(
     lag=0,
     postgres_columns=None,
     risingwave_columns=None,
+    starrocks_columns=None,
+    starrocks_routine_load=None,
     state_rows=None,
     state_table_exists=True,
     state_guard_columns=True,
@@ -304,6 +342,7 @@ def fake_resources(
             calls, "postgres", postgres_columns, state_rows, state_table_exists, state_guard_columns, state_identities
         ),
         "risingwave": FakeDatabase(calls, "risingwave", risingwave_columns),
+        "starrocks": FakeStarrocks(calls, starrocks_columns, starrocks_routine_load),
         "databricks": FakeDatabricks(calls, table_location=table_location, **databricks_errors),
         "kafka": (
             kafka if kafka is not None else FakeKafka(calls, lag, producer_fails, admin_topics=kafka_admin_topics or ())
@@ -331,6 +370,7 @@ def bind_connections(monkeypatch, res: dict) -> None:
     monkeypatch.setattr(connections, "kafka", lambda: res["kafka"])
     monkeypatch.setattr(connections, "registry", lambda: res["registry"])
     monkeypatch.setattr(connections, "http", lambda: res["http"])
+    monkeypatch.setattr(connections, "starrocks", lambda: res["starrocks"])
 
 
 def error_text(result) -> str:

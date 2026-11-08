@@ -254,8 +254,11 @@ The asset skeleton:
 4. **Group CDF rows into Debezium envelopes** (`_to_debezium_events`, §4).
 5. **Schema evolution (adds)**: for every event-bearing chunk, read the source's
    columns *pinned to that chunk's top commit* (`get_row_fields(source_location,
-   version=chunk_to)`) and `add_missing_columns()` on RisingWave *before*
-   producing — RisingWave only fills a column from messages read after the
+   version=chunk_to)`) and `add_missing_columns()` on RisingWave (and, when the
+   sync selects the `starrocks` target, `add_missing_columns_to_starrocks` — the
+   column ALTERed in, then the Routine Load rebuilt replaying from the topic's
+   beginning so already-consumed events land) *before*
+   producing — a reader only fills a column from messages read after the
    column exists. Per chunk, not once for the run: a schema change between
    chunks must reach the later chunks' envelopes, or the projection silently
    drops those values (verified live 2026-10-19, findings doc §2.7). The pin
@@ -289,6 +292,11 @@ The asset skeleton:
    gets `rename_columns_in_postgres` — a native `RENAME COLUMN`, or a copy of
    the data plus a drop of the old column when the sink's schema evolution
    already created the new one (empty) while the rename was pending — followed
+   (when the sync selects the `starrocks` target, as the demo's `delta` sync
+   does) by `propagate_schema_changes_to_starrocks` for StarRocks: a native
+   rename, plus the Routine Load rebuilt pinned at the old job's progress so
+   nothing replays — see [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md)
+   §12 —
    by a sink connector task restart: the JDBC sink caches the table schema in
    memory, and a rename behind its back fails the next message exactly like a
    manual column drop. In the copy-and-drop case the new column stays where the

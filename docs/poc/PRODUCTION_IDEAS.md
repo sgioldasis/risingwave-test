@@ -334,7 +334,15 @@ tables (native upserts, PK dedup). The one integration shim: deletes need the
 before-image fallback + `__op = if(op = 'd', 1, 0)` in the COLUMNS mapping
 (see STARROCKS_SERVING_LAYER.md §12 for the exact DDL). Live federated reads
 back into UC happen via SR's Delta external catalog — no refresh semantics,
-none of the RW refresh-MV schema-change caveats.
+none of the RW refresh-MV schema-change caveats. Since the same day this
+variant is a first-class demo target (`orchestration/assets/reverse_etl_
+starrocks_target.py`, the `starrocks` target selection): the setup job
+rebuilds table + load (pinning start offsets in the CREATE), and the sync
+hooks keep it in step with schema changes — adds before the messages, renames
+and drops after delivery. Two SR 4.1.7 ops caveats in §12: the FE
+routine-load scheduler can wedge (jobs RUNNING, `committedTaskNum: 0`
+forever — restart the FE), and an offsets ALTER is only accepted on PAUSED
+jobs (the asset pins offsets in the CREATE instead).
 
 ### Hardening checklist (demo → production)
 

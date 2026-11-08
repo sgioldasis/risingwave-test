@@ -31,7 +31,14 @@ Names are for the `avro` sync. Every name is `reverse_etl_<label>_<role>`, so fo
 The demo also has a `delta` sync whose source table is created as **plain Delta** (`uniform: false` in its
 `defs.yaml` — Change Data Feed only, no UniForm/Iceberg/column-mapping properties): it shows the pipeline is
 UniForm-agnostic end to end. The trade-off is visible in StarRocks, whose `databricks_uc` catalog reads tables
-through UniForm's Iceberg metadata — `reverse_etl_delta_source` does not appear there.
+through UniForm's Iceberg metadata — `reverse_etl_delta_source` does not appear there. The `delta` sync is also
+the one with a **third target**: a StarRocks Primary Key table fed by a Routine Load (Debezium Avro, the
+`starrocks` target in its `defs.yaml`), rebuilt by the setup job and kept in step with the source's schema
+changes by the same sync hooks that care for RisingWave and Postgres — adds before the messages, renames/drops
+after delivery; see [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) §12 for the ingestion DDL and the
+schema-change semantics. The `avro`/`cdf`/`orders` syncs remain two-target (RisingWave + Postgres), so the
+schema-change sections below describe those two; on the `delta` sync every statement about the targets holds
+for StarRocks as well.
 
 ### Diagram
 

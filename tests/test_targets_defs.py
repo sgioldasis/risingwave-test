@@ -92,7 +92,7 @@ class TestTheSeam:
             "group_name", "sync_asset", "topic_asset", "risingwave_asset", "sink_asset",
             "connector_name", "postgres_table", "risingwave_table",
             # the selection (section 12)
-            "sink_tasks_max", "targets", "duckdb_target_path",
+            "sink_tasks_max", "targets", "duckdb_target_path", "starrocks_table",
         }
         assert not any("source" in name or name in ("catalog", "schema") for name in map(str, dir(ReverseEtlTargetsConfig)))
 

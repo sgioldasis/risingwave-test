@@ -157,14 +157,16 @@ def avro_value_subject(kafka_topic: str) -> str:
     return f"{kafka_topic}-value"
 
 
-def _check_targets(targets: tuple[str, ...], duckdb_target_path: str) -> None:
+def _check_targets(targets: tuple[str, ...], duckdb_target_path: str, starrocks_table: str = "") -> None:
     """The target selection (plan section 12, option A), validated identically wherever it
     appears: both the sync config and the targets config carry it."""
-    unknown = set(targets) - {"risingwave", "postgres", "duckdb"}
+    unknown = set(targets) - {"risingwave", "postgres", "duckdb", "starrocks"}
     if unknown:
-        raise ValueError(f"unknown target(s) {sorted(unknown)} -- targets may contain 'risingwave', 'postgres', 'duckdb'")
+        raise ValueError(f"unknown target(s) {sorted(unknown)} -- targets may contain 'risingwave', 'postgres', 'duckdb', 'starrocks'")
     if "duckdb" in targets and not duckdb_target_path:
         raise ValueError("duckdb_target_path is required when the duckdb target is selected")
+    if "starrocks" in targets and not starrocks_table:
+        raise ValueError("starrocks_table is required when the starrocks target is selected")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -206,13 +208,16 @@ class ReverseEtlTargetsConfig:
     sink_tasks_max: int = 1
     targets: tuple[str, ...] = ("risingwave", "postgres")
     duckdb_target_path: str = ""
+    # The StarRocks target's table (typed like postgres_table): a PK table fed by a
+    # Routine Load on the topic. Required when "starrocks" is in targets.
+    starrocks_table: str = ""
 
     def __post_init__(self) -> None:
         if self.encoding not in ("json", "avro"):
             raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
-        _check_targets(self.targets, self.duckdb_target_path)
+        _check_targets(self.targets, self.duckdb_target_path, self.starrocks_table)
 
     @property
     def consumer_group(self) -> str:
@@ -238,6 +243,8 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
     connector_name: str
     postgres_table: str
     risingwave_table: str
+    # StarRocks target table; empty = the sync has no StarRocks target.
+    starrocks_table: str = ""
 
     # --- the rest of the Dagster definitions built for it ----------------------
     table_setup_asset: str
@@ -307,7 +314,7 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
         super().__post_init__()
         if self.sink_tasks_max < 1:
             raise ValueError(f"sink_tasks_max must be at least 1, got {self.sink_tasks_max}")
-        _check_targets(self.targets, self.duckdb_target_path)
+        _check_targets(self.targets, self.duckdb_target_path, self.starrocks_table)
 
     @property
     def consumer_group(self) -> str:
@@ -342,6 +349,7 @@ class ReverseEtlSyncConfig(CdfSyncConfig):
             sink_tasks_max=self.sink_tasks_max,
             targets=self.targets,
             duckdb_target_path=self.duckdb_target_path,
+            starrocks_table=self.starrocks_table,
         )
 
     @classmethod
@@ -594,4 +602,70 @@ def duckdb_target_config(cfg: ReverseEtlTargetsConfig) -> DuckdbTargetConfig:
         encoding=cfg.encoding,
         schema_registry_url=cfg.schema_registry_url,
         deps=(cfg.sync_asset,),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class StarrocksTargetConfig:
+    """The StarRocks target: a Primary Key table fed by a Routine Load on the sync's topic
+    (docs/poc/STARROCKS_SERVING_LAYER.md §12). Native upserts keyed by the sync's key column;
+    Debezium deletes handled in the COLUMNS mapping (before-image fallback + __op marker).
+    Avro encoding only: the JSON syncs embed the schema in every message under a different
+    envelope nesting the mapping below does not address."""
+
+    # --- identity ---
+    label: str
+    sync_name: str
+
+    # --- the seam ---
+    kafka_topic: str
+    key_column: str
+    encoding: str = "json"
+    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
+
+    # --- the target (typed, a deployment decision) ---
+    starrocks_table: str = ""
+    starrocks_database: str = "reverse_etl"
+    # The table needs the source's current columns and types once, like the RisingWave
+    # target — the one composition input the seam allows (plan section 13.2).
+    source_fqn: str = ""
+
+    # --- overrides (empty derives from the label) ---
+    group_name: str = ""
+    starrocks_asset: str = ""
+
+    # --- ordering ---
+    deps: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.encoding != "avro":
+            raise ValueError(f"the starrocks target supports encoding='avro' only, got {self.encoding!r}")
+        if not self.starrocks_table:
+            raise ValueError("starrocks_table is required: the table name is a deployment decision, not a minted name")
+        if not self.source_fqn:
+            raise ValueError("source_fqn is required for the starrocks target: the CREATE reads the source's columns")
+        if not self.group_name:
+            object.__setattr__(self, "group_name", dagster_names(self.label)["group_name"])
+        if not self.starrocks_asset:
+            object.__setattr__(self, "starrocks_asset", f"reverse_etl_{self.label}_starrocks_target")
+
+    @property
+    def routine_load_name(self) -> str:
+        return f"reverse_etl_{self.label}_rl"
+
+
+def starrocks_target_config(cfg: ReverseEtlTargetsConfig, source_fqn: str = "") -> StarrocksTargetConfig:
+    """The demo bridge's starrocks half: same label rule as the other slim configs, the table
+    and encoding pass through, deps pin today's ordering (topic then sync)."""
+    return StarrocksTargetConfig(
+        label=cfg.sync_name.removeprefix("reverse_etl_"),
+        sync_name=cfg.sync_name,
+        kafka_topic=cfg.kafka_topic,
+        key_column=cfg.key_column,
+        encoding=cfg.encoding,
+        schema_registry_url=cfg.schema_registry_url,
+        starrocks_table=cfg.starrocks_table,
+        group_name=cfg.group_name,
+        deps=(cfg.topic_asset, cfg.sync_asset),
+        source_fqn=source_fqn,
     )

@@ -79,3 +79,9 @@ attributes:
     connector_name: reverse_etl_delta_sink
     postgres_table: reverse_etl_delta_target
     risingwave_table: reverse_etl_delta_target
+    # StarRocks serving-layer target (docs/poc/STARROCKS_SERVING_LAYER.md §12): the PK table
+    # lives in the reverse_etl database; the target asset creates the Routine Load and
+    # reconciles it (a topic reset pauses the load with invalid offsets — the asset resets
+    # them and resumes).
+    starrocks_table: reverse_etl_delta_target
+    targets: ["risingwave", "postgres", "starrocks"]

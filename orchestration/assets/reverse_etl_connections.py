@@ -18,6 +18,7 @@ fakes (tests/fakes.py) implement the same shapes, and a test patches these funct
 | `state_postgres` | `POSTGRES_HOST` (**required** — no default: `host.docker.internal` does not resolve on the macOS host, so one value cannot serve both the containers and the host; the demo sets it per-context via compose on the dagster services), `POSTGRES_PORT` (5432), `POSTGRES_DB` (postgres), `POSTGRES_USER` (postgres), `POSTGRES_PASSWORD` ("") |
 | `schema_postgres` | the same variables (the demo's schema-change helpers share the state's credentials; connects to the `postgres` database with a 10 s timeout) |
 | `risingwave` | `RISINGWAVE_HOST` (frontend-node-0), `RISINGWAVE_PORT` (4566), `RISINGWAVE_DB` (dev), `RISINGWAVE_USER` (root), `RISINGWAVE_PASSWORD` ("") |
+| `starrocks` | `STARROCKS_HOST` (starrocks), `STARROCKS_PORT` (9030), `STARROCKS_USER` (root) — the FE's MySQL-wire protocol |
 | `databricks` | `DBT_DATABRICKS_HOST`, `DATABRICKS_AZURE_TENANT_ID`, `DATABRICKS_AZURE_CLIENT_ID`, `DATABRICKS_AZURE_CLIENT_SECRET` — the sync's own storage credentials, which delta-rs needs and no resource ever carried; **service principal, never a SAS token** (a SAS token expires and silently broke every MV refresh once) |
 | `kafka` | the output cluster's `KAFKA_OUTPUT_BOOTSTRAP` (required — the producer config raises without it) plus the optional `KAFKA_OUTPUT_SASL_USERNAME`/`_MECHANISM`/`_PASSWORD`; the topic-asset admin client reads the demo cluster's own variables (`KAFKA_BOOTSTRAP_SERVERS`/`_SASL_*`, see kafka_topics_setup) |
 | `registry` | none — the registry URL is a config field with an org-specific default (everything env-adjacent that is not a credential stays in config) |
@@ -103,6 +104,23 @@ def risingwave() -> _Connectable:
             # the sync fast instead of hanging the run forever — seen live when the
             # zero-DBU sync ran from outside the container network (2026-10-14).
             connect_timeout=10,
+        )
+
+    return _Connectable(open_connection)
+
+
+def starrocks() -> _Connectable:
+    """The StarRocks FE connection (MySQL-wire; the target asset and the schema-change
+    propagation share it)."""
+
+    def open_connection():
+        import pymysql
+
+        return pymysql.connect(
+            host=os.environ.get("STARROCKS_HOST", "starrocks"),
+            port=int(os.environ.get("STARROCKS_PORT", "9030")),
+            user=os.environ.get("STARROCKS_USER", "root"),
+            autocommit=True,
         )
 
     return _Connectable(open_connection)

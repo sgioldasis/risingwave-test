@@ -174,6 +174,7 @@ OVERRIDES = {
     # target; the duckdb-only shape is covered in tests/components/cdf_demo/test_cdf_demo_defs.py.
     "targets__targets": ("risingwave",),
     "targets__duckdb_target_path": "/tmp/demo/target.duckdb",
+    "targets__starrocks_table": "reverse_etl_delta_target",
 }
 
 

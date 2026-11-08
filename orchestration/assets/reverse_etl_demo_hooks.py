@@ -1,11 +1,12 @@
-"""The demo's sync hooks: the RisingWave and Postgres target care the demo adds around the sync.
+"""The demo's sync hooks: the target care the demo adds around the sync.
 
 The sync asset (reverse_etl_cdf_setup.build_sync_asset) takes optional hooks and calls them at two
 fixed points — before each event-bearing chunk is produced, and after the final Kafka flush but before
 the watermark is saved. This module is what the demo passes: it keeps the RisingWave table ahead of the
 messages (a column must exist before the first message that uses it) and propagates column drops and
-renames to both targets, then restarts the JDBC sink task. A sync run without hooks touches neither
-RisingWave nor Kafka Connect (that is the reusable component's behaviour).
+renames to the selected targets — RisingWave, Postgres (then restarts the JDBC sink task) and
+StarRocks (whose Routine Load is rebuilt under the new mapping). A sync run without hooks touches
+neither RisingWave nor Kafka Connect (that is the reusable component's behaviour).
 
 The propagation lives here rather than in the sync asset module because it reads the demo-only
 `cfg.propagate_drops` (release design step 2: the asset is base-clean) — a released sync runs
@@ -22,8 +23,9 @@ from dagster import AssetExecutionContext
 
 from . import reverse_etl_connections as connections
 from .reverse_etl_cdf_setup import RowField, SyncHooks, get_column_ids
-from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config
+from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config, starrocks_target_config
 from .reverse_etl_risingwave_setup import add_missing_columns
+from .reverse_etl_starrocks_target import add_missing_columns_to_starrocks
 
 
 def _parse_last_schema(last_schema: str | None) -> list[tuple[str, int | None]]:
@@ -56,11 +58,13 @@ def _propagate_column_drops(
     last_schema: str | None,
     log: Any,
     column_ids: dict[str, int] | None = None,
+    starrocks=None,
+    starrocks_cfg=None,
 ) -> dict[str, Any]:
     """Follow the source's schema changes onto the targets, when
     cfg.propagate_drops is on. Returns {"renamed": ["old -> new", ...],
-    "dropped": {"risingwave": [...], "postgres": [...]}} (all empty when nothing
-    qualified).
+    "dropped": {"risingwave": [...], "postgres": [...], "starrocks": [... when the
+    starrocks connection is passed]}} (all empty when nothing qualified).
 
     Runs only when the source version advanced since the last sync, and only on
     positive evidence from the state table's last_schema (recorded at the
@@ -78,14 +82,19 @@ def _propagate_column_drops(
     mirrored by the current source schema — the sink creates that table purely
     from message fields, so there are no designed extras, and the broader rule
     additionally self-heals a sink replay re-adding a dropped column from an old
-    message)."""
+    message). StarRocks, when selected, applies both kinds in one pass and
+    rebuilds its Routine Load under the new mapping (propagate_schema_changes_
+    to_starrocks)."""
+    dropped_base = {"risingwave": [], "postgres": []}
+    if starrocks is not None:
+        dropped_base["starrocks"] = []
     if not (cfg.propagate_drops and last_schema and row_fields):
-        return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+        return {"renamed": [], "dropped": dict(dropped_base)}
     previous = _parse_last_schema(last_schema)
     current = {field[0] for field in row_fields}
     if not current:
         log.info("Current source schema read came back empty — skipping drop propagation")
-        return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+        return {"renamed": [], "dropped": dict(dropped_base)}
     ids = column_ids or {}
     renames: list[tuple[str, str]] = []
     dropped_fields: list[str] = []
@@ -103,8 +112,8 @@ def _propagate_column_drops(
         else:
             dropped_fields.append(name)
     if not renames and not dropped_fields:
-        return {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
-    result: dict[str, Any] = {"renamed": [], "dropped": {"risingwave": [], "postgres": []}}
+        return {"renamed": [], "dropped": dict(dropped_base)}
+    result: dict[str, Any] = {"renamed": [], "dropped": dict(dropped_base)}
     # The RisingWave helpers take the slim target config (release design step 4): the demo
     # bridge composes it from the merged config, source_fqn included (the Avro registration
     # re-derives the envelope from it).
@@ -126,6 +135,11 @@ def _propagate_column_drops(
 
         result["dropped"]["risingwave"] += drop_columns_from_risingwave(risingwave, risingwave_cfg, dropped_fields)
         result["dropped"]["postgres"] += drop_from_postgres(postgres, cfg, current)
+    if starrocks is not None and (renames or dropped_fields):
+        from .reverse_etl_starrocks_target import propagate_schema_changes_to_starrocks
+
+        applied = propagate_schema_changes_to_starrocks(starrocks, starrocks_cfg, renames, dropped_fields, row_fields)
+        result["dropped"]["starrocks"] = applied["dropped"]
     return result
 
 
@@ -134,30 +148,49 @@ class DemoSyncHooks(SyncHooks):
     propagation to both targets, and the sink restart that goes with it."""
 
     def before_produce(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> dict:
-        if "risingwave" not in cfg.targets:
-            # The RisingWave table is a target (plan section 12, option A): unselected, there is
-            # no table to keep ahead of the messages.
-            return {"risingwave_columns_added": []}
-        added = add_missing_columns(
-            connections.risingwave(),
-            connections.registry(),
-            risingwave_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn),
-            row_fields,
-        )
-        if added:
-            context.log.info(f"Added column(s) to the RisingWave table: {added}")
-        return {"risingwave_columns_added": added}
+        result: dict = {"risingwave_columns_added": [], "starrocks_columns_added": []}
+        if "risingwave" in cfg.targets:
+            added = add_missing_columns(
+                connections.risingwave(),
+                connections.registry(),
+                risingwave_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn),
+                row_fields,
+            )
+            if added:
+                context.log.info(f"Added column(s) to the RisingWave table: {added}")
+            result["risingwave_columns_added"] = added
+        if "starrocks" in cfg.targets:
+            # The StarRocks table is also kept ahead of the messages: a column must exist (and
+            # the load's mapping must know it) before the first message that uses it. The
+            # rebuilt load replays the topic's beginning, so events consumed before the field
+            # was known land after all.
+            added = add_missing_columns_to_starrocks(
+                connections.starrocks(),
+                starrocks_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn),
+                row_fields,
+            )
+            if added:
+                context.log.info(f"Added column(s) to the StarRocks table: {added}")
+            result["starrocks_columns_added"] = added
+        return result
 
     def after_delivery(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, schema: dict) -> dict:
-        if "risingwave" not in cfg.targets and "postgres" not in cfg.targets:
+        if "risingwave" not in cfg.targets and "postgres" not in cfg.targets and "starrocks" not in cfg.targets:
             return {"columns_dropped": {}, "columns_renamed": []}
         if cfg.propagate_drops and not {"risingwave", "postgres"} <= set(cfg.targets):
-            # _propagate_column_drops cares for BOTH targets and restarts the sink: with one of
-            # them unselected there is no table or connector to change, so the combination fails
-            # loudly instead of half-propagating a schema change.
+            # _propagate_column_drops restarts the sink after changing the connector's table:
+            # with one of them unselected there is no table or connector to change, so the
+            # combination fails loudly instead of half-propagating a schema change. The
+            # StarRocks propagation is additive (its own table and load, no connector).
             raise RuntimeError(
                 f"propagate_drops needs both the risingwave and postgres targets selected, got {list(cfg.targets)}"
             )
+        # The StarRocks branch of the propagation is per-target and self-contained: its
+        # connection and slim config exist only when the target is selected.
+        starrocks = connections.starrocks() if "starrocks" in cfg.targets else None
+        starrocks_cfg = (
+            starrocks_target_config(cfg.targets_config(), source_fqn=cfg.source_fqn) if starrocks is not None else None
+        )
         columns_dropped: dict[str, list[str]] = {}
         columns_renamed: list[str] = []
         schema_changes = _propagate_column_drops(
@@ -170,6 +203,8 @@ class DemoSyncHooks(SyncHooks):
             schema["last_schema"],
             context.log,
             schema["column_ids"],
+            starrocks,
+            starrocks_cfg,
         )
         columns_dropped = schema_changes["dropped"]
         columns_renamed = schema_changes["renamed"]
@@ -204,6 +239,8 @@ class DemoSyncHooks(SyncHooks):
                 json.dumps(event_recorded),
                 context.log,
                 schema["column_ids"],
+                starrocks,
+                starrocks_cfg,
             )
             for target, names in event_changes["dropped"].items():
                 for name in names:
@@ -219,4 +256,4 @@ class DemoSyncHooks(SyncHooks):
         return {"columns_dropped": columns_dropped, "columns_renamed": columns_renamed}
 
     def idle_metadata(self) -> dict:
-        return {"risingwave_columns_added": [], "columns_dropped": {}, "columns_renamed": []}
+        return {"risingwave_columns_added": [], "starrocks_columns_added": [], "columns_dropped": {}, "columns_renamed": []}

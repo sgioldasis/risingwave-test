@@ -581,7 +581,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(
-        f"Reverse-ETL demo at http://localhost:{PORT}/?sync=avro — Jobotron panel at "
+        f"Reverse-ETL demo at http://localhost:{PORT}/?sync=delta — Jobotron panel at "
         f"http://localhost:{PORT}/jobotron (Dagster: {DAGSTER_URL})",
         flush=True,
     )
