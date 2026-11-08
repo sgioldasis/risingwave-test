@@ -25,7 +25,7 @@
   body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
   h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
-  .wrap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 8px; align-items: start; max-width: 1200px; }
+  .wrap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 8px; align-items: start; max-width: 1800px; }
   .wrap > :first-child { grid-column: span 2; }
   @media (max-width: 1150px) { .wrap { grid-template-columns: minmax(0, 1fr); } .wrap > :first-child { grid-column: auto; } }
   .side { position: sticky; top: 16px; }
@@ -33,7 +33,8 @@
   .caption { background: var(--card); border-radius: 12px; padding: 14px 16px; margin: 0 0 12px; min-height: 200px; }
   .caption .ct { font-size: 18px; font-weight: 500; margin: 0 0 8px; }
   .caption .cd { font-size: 15px; color: var(--muted); line-height: 1.65; margin: 0; }
-  svg { width: 100%; height: auto; display: block; }
+  .svgscroll { overflow-x: auto; }
+  svg { width: 100%; min-width: 714px; height: auto; display: block; }
   svg text { font-family: inherit; fill: var(--text); }
   .th { font-size: 14px; font-weight: 500; }
   .ts { font-size: 12px; }
@@ -74,7 +75,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .result a { color: var(--blue-t); }
   .pos { margin-left: auto; font-size: 13px; color: var(--muted); }
-  ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1200px; }
+  ol { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; max-width: 1800px; }
   li { display: grid; grid-template-columns: 28px 1fr; gap: 10px 10px; align-content: start; padding: 10px 12px; border: 0.5px solid var(--card-border); border-radius: 12px; cursor: pointer; opacity: .6; transition: opacity .3s, background .3s; }
   li:hover { opacity: .9; }
   li.on { opacity: 1; background: var(--card); border-color: var(--active); border-width: 1.5px; }
@@ -82,7 +83,7 @@
   li.on .num { background: var(--active); border-color: var(--active); color: #412402; font-weight: 500; }
   .t { font-size: 15px; font-weight: 500; }
   .d { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
-  .notes { max-width: 1200px; margin-top: 32px; padding-top: 20px; border-top: 0.5px solid var(--card-border); }
+  .notes { max-width: 1800px; margin-top: 32px; padding-top: 20px; border-top: 0.5px solid var(--card-border); }
   .notes h2 { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
   .notes .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
   @media (max-width: 1000px) { .notes .grid { grid-template-columns: minmax(0, 1fr); } }
@@ -94,7 +95,7 @@
   .notes pre { margin: 0 0 16px; padding: 12px 14px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.55; overflow-x: auto; }
   .notes .label { font-size: 13px; font-weight: 500; margin: 0 0 6px; }
   /* ── layout: action rail + main (mirrors the Jobotron page's rail) ── */
-  .topbar { max-width: 1200px; margin: 0 auto 18px; display: flex; align-items: flex-start; gap: 14px; }
+  .topbar { max-width: 1800px; margin: 0 auto 18px; display: flex; align-items: flex-start; gap: 14px; }
   .topbar .titles { margin-right: auto; }
   .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: var(--card);
     border: 0.5px solid var(--card-border); border-radius: 999px; padding: 5px 12px; margin-top: 4px; white-space: nowrap; }
@@ -103,7 +104,7 @@
   .pill.warn .dot { background: #e2a336; box-shadow: 0 0 0 3px rgba(226, 163, 54, .18); }
   .pill.ok { color: var(--text); }
   .pill.fail .dot { background: #d64545; }
-  .layout { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 242px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .layout { max-width: 1800px; margin: 0 auto; display: grid; grid-template-columns: 242px minmax(0, 1fr); gap: 20px; align-items: start; }
   .rail { position: sticky; top: 16px; background: var(--card); border: 0.5px solid var(--card-border); border-radius: 12px;
     padding: 14px; display: flex; flex-direction: column; gap: 12px; }
   .sgroup { display: flex; flex-direction: column; gap: 6px; }
@@ -150,7 +151,7 @@
 <header class="topbar">
   <div class="titles">
     <h1>Reverse-ETL data flow</h1>
-    <p class="sub">Syncs changes from the Databricks source table to Postgres and RisingWave through Kafka. Use the rail, click a step, or press the left and right arrow keys.</p>
+    <p class="sub">Syncs changes from the Databricks source table to Postgres, RisingWave and StarRocks through Kafka. Use the rail, click a step, or press the left and right arrow keys.</p>
   </div>
   <div class="pill" id="helper-pill"><span class="dot"></span><span id="bar-msg">checking helper…</span></div>
 </header>
@@ -200,36 +201,39 @@
 
   <main class="maincol">
     <div class="wrap">
-  <div>
-    <svg viewBox="0 0 770 350" role="img" aria-label="Databricks source table and the state table feed a sync, which writes schemas to a registry and messages to Kafka; Kafka Connect writes Postgres and RisingWave reads the topic directly.">
+  <div class="svgscroll">
+    <svg viewBox="0 0 714 350" role="img" aria-label="Databricks source table and the state table feed a sync, which writes schemas to the registry and messages to the Kafka topic (middle column: Registry, Kafka Connect, Kafka topic); the three targets — Postgres via Kafka Connect, RisingWave and StarRocks reading the topic directly — sit in a row on the right.">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 
-      <line id="e1" class="edge" x1="85" y1="76" x2="85" y2="130" marker-end="url(#arrow)"/>
-      <line id="e2" class="edge" x1="65" y1="240" x2="65" y2="186" marker-end="url(#arrow)"/>
+      <line id="e1" class="edge" x1="75" y1="76" x2="75" y2="130" marker-end="url(#arrow)"/>
+      <line id="e2" class="edge" x1="55" y1="240" x2="55" y2="186" marker-end="url(#arrow)"/>
       <line id="e8" class="edge" x1="105" y1="186" x2="105" y2="240" marker-end="url(#arrow)"/>
-      <line id="e3" class="edge" x1="160" y1="130" x2="410" y2="48" marker-end="url(#arrow)"/>
-      <line id="e4" class="edge" x1="160" y1="186" x2="410" y2="268" marker-end="url(#arrow)"/>
-      <line id="e5" class="edge" x1="485" y1="240" x2="485" y2="186" marker-end="url(#arrow)"/>
-      <line id="e6" class="edge" x1="410" y1="158" x2="360" y2="158" marker-end="url(#arrow)"/>
-      <line id="e7" class="edge" x1="560" y1="268" x2="660" y2="186" marker-end="url(#arrow)"/>
-      <line id="e9" class="edge" x1="485" y1="76" x2="485" y2="130" marker-end="url(#arrow)"/>
-      <line id="e10" class="edge" x1="560" y1="48" x2="660" y2="130" marker-end="url(#arrow)"/>
+      <line id="e3" class="edge" x1="160" y1="140" x2="213" y2="76" marker-end="url(#arrow)"/>
+      <line id="e4" class="edge" x1="160" y1="176" x2="213" y2="240" marker-end="url(#arrow)"/>
+      <line id="e5" class="edge" x1="243" y1="240" x2="243" y2="186" marker-end="url(#arrow)"/>
+      <line id="e6" class="edge" x1="308" y1="158" x2="330" y2="158" marker-end="url(#arrow)"/>
+      <line id="e7" class="edge" x1="308" y1="268" x2="500" y2="186" marker-end="url(#arrow)"/>
+      <line id="e9" class="edge" x1="243" y1="76" x2="243" y2="130" marker-end="url(#arrow)"/>
+      <line id="e10" class="edge" x1="308" y1="56" x2="517" y2="130" marker-end="url(#arrow)"/>
+      <line id="e11" class="edge" x1="308" y1="36" x2="639" y2="130" marker-end="url(#arrow)"/>
+      <line id="e12" class="edge" x1="308" y1="282" x2="620" y2="186" marker-end="url(#arrow)"/>
 
       <g id="n-src" class="node coral"><rect x="10" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="41" text-anchor="middle" dominant-baseline="central">Source table</text><text class="ts" id="src-sub" x="85" y="60" text-anchor="middle" dominant-baseline="central">Delta + Iceberg (UniForm)</text></g>
       <g id="n-state" class="node coral"><rect x="10" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="261" text-anchor="middle" dominant-baseline="central">State table</text><text class="ts" id="state-sub" x="85" y="280" text-anchor="middle" dominant-baseline="central">Watermark · Delta (UC)</text></g>
       <g id="n-sync" class="node purple"><rect x="10" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="85" y="151" text-anchor="middle" dominant-baseline="central">Sync</text><text class="ts" x="85" y="170" text-anchor="middle" dominant-baseline="central">Dagster asset</text></g>
-      <g id="n-reg" class="node teal"><rect x="410" y="20" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" id="reg-sub" x="485" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
-      <g id="n-kafka" class="node teal"><rect x="410" y="240" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="261" text-anchor="middle" dominant-baseline="central">Kafka topic</text><text class="ts" x="485" y="280" text-anchor="middle" dominant-baseline="central">Debezium change events</text></g>
-      <g id="n-connect" class="node teal"><rect x="410" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="485" y="151" text-anchor="middle" dominant-baseline="central">Kafka Connect</text><text class="ts" x="485" y="170" text-anchor="middle" dominant-baseline="central">Debezium JDBC sink</text></g>
-      <g id="n-pg" class="node blue"><rect x="210" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="285" y="151" text-anchor="middle" dominant-baseline="central">Postgres</text><text class="ts" x="285" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
-      <g id="n-rw" class="node blue"><rect x="610" y="130" width="150" height="56" rx="4" stroke-width="0.5"/><text class="th" x="685" y="151" text-anchor="middle" dominant-baseline="central">RisingWave</text><text class="ts" x="685" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+      <g id="n-reg" class="node teal"><rect x="178" y="20" width="130" height="56" rx="4" stroke-width="0.5"/><text class="th" x="243" y="41" text-anchor="middle" dominant-baseline="central">Registry</text><text class="ts" id="reg-sub" x="243" y="60" text-anchor="middle" dominant-baseline="central">Apicurio schemas</text></g>
+      <g id="n-kafka" class="node teal"><rect x="178" y="240" width="130" height="56" rx="4" stroke-width="0.5"/><text class="th" x="243" y="261" text-anchor="middle" dominant-baseline="central">Kafka topic</text><text class="ts" x="243" y="280" text-anchor="middle" dominant-baseline="central">Debezium events</text></g>
+      <g id="n-connect" class="node teal"><rect x="178" y="130" width="130" height="56" rx="4" stroke-width="0.5"/><text class="th" x="243" y="151" text-anchor="middle" dominant-baseline="central">Kafka Connect</text><text class="ts" x="243" y="170" text-anchor="middle" dominant-baseline="central">Debezium JDBC sink</text></g>
+      <g id="n-pg" class="node blue"><rect x="330" y="130" width="130" height="56" rx="4" stroke-width="0.5"/><text class="th" x="395" y="151" text-anchor="middle" dominant-baseline="central">Postgres</text><text class="ts" x="395" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+      <g id="n-rw" class="node blue"><rect x="452" y="130" width="130" height="56" rx="4" stroke-width="0.5"/><text class="th" x="517" y="151" text-anchor="middle" dominant-baseline="central">RisingWave</text><text class="ts" x="517" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
+      <g id="n-sr" class="node blue"><rect x="574" y="130" width="130" height="56" rx="4" stroke-width="0.5"/><text class="th" x="639" y="151" text-anchor="middle" dominant-baseline="central">StarRocks</text><text class="ts" x="639" y="170" text-anchor="middle" dominant-baseline="central">Target table</text></g>
 
       <g id="badges"></g>
 
       <g class="coral"><rect x="30" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="46" y="327" dominant-baseline="central">Databricks</text></g>
       <g class="purple"><rect x="140" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="156" y="327" dominant-baseline="central">Dagster</text></g>
       <g class="teal"><rect x="236" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" x="252" y="327" dominant-baseline="central">Kafka side</text></g>
-      <g class="blue"><rect x="336" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" id="legend-blue" x="352" y="327" dominant-baseline="central">Postgres (targets)</text></g>
+      <g class="blue"><rect x="336" y="322" width="10" height="10" rx="2" stroke-width="0.5"/><text class="ts" id="legend-blue" x="352" y="327" dominant-baseline="central">Targets</text></g>
     </svg>
     <div class="runbox">
       <p class="runbox-title">Run status</p>
@@ -312,7 +316,7 @@ TBLPROPERTIES (
   <p class="sub">The same flow as a component map: where everything runs, and the sink-health checks. The sync asset (option A) is the demo's sync path — it reads the change feed with OSS Delta and keeps its watermark in a UC Delta table that delta-rs reads and writes directly, so every run meters <b>0.0</b> Databricks seconds, shown above as the Databricks cost line. Option B (the Databricks notebook) is the comparison path: it derives the same per-sync state table name, so it runs on the same watermarks. Full picture: <code>docs/poc/REVERSE_ETL_LIVE_DEMO.md</code>.</p>
   <details style="margin-top: 12px">
     <summary style="cursor: pointer; font-size: 15px; font-weight: 500">Show the architecture diagram</summary>
-    <img src="img/reverse_etl_components.svg" alt="Reverse-ETL components: the Databricks source table, the state tables and targets, Dagster jobs and the sync asset, the Kafka topic and registry" style="width: 100%; max-width: 1200px; margin-top: 12px; border: 0.5px solid var(--card-border); border-radius: 12px; background: white">
+    <img src="img/reverse_etl_components.svg" alt="Reverse-ETL components: the Databricks source table, the state tables and targets, Dagster jobs and the sync asset, the Kafka topic and registry" style="width: 100%; max-width: 1800px; margin-top: 12px; border: 0.5px solid var(--card-border); border-radius: 12px; background: white">
   </details>
 </section>
 
@@ -324,11 +328,11 @@ const S = [
   { num: '2.3', t: 'Schemas go to the registry', a: 'schema', d: 'Both Avro schemas (key and value) are checked against the registry on every run, and only registered when they are new or changed — unchanged schemas cost one lookup each. A new column makes a new version before any message uses it.', n: ['sync', 'reg'], e: ['e3'] },
   { num: '2.4', t: 'Events go to Kafka', a: 'sync', d: 'The sync produces one Avro message per change, in the Debezium format: before, after, op and source. Each carries only a schema id, not the schema.', n: ['sync', 'kafka'], e: ['e4'] },
   { num: '2.5', t: 'The watermark moves', a: 'sync', d: 'Only after the messages are produced does the sync append the new version to its UC Delta state table (the library\'s postgres backend writes a plain INSERT instead) — no Databricks compute either way. The next run starts after it.', n: ['sync', 'state'], e: ['e8'] },
-  { num: '3', t: 'Three readers take the topic', a: 'readers', d: 'Kafka Connect, RisingWave and StarRocks each read the topic on their own and keep their own place. Each message carries only a schema id; the readers fetch that schema from the registry to decode it. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE AVRO), so it applies each change to its table here, with no connector; StarRocks does the same with a Routine Load into a Primary Key table (deletes via the before-image fallback and the __op marker). For a new column, the sync first adds it to the RisingWave and StarRocks tables — StarRocks\'s load then replays the topic\'s beginning, so events consumed before the column existed land after all — after the new schema version is registered, because a reader only fills a column from messages read after the column exists.', n: ['kafka', 'reg', 'connect', 'rw'], e: ['e5', 'e7', 'e9', 'e10'] },
-  { num: '4', t: 'Postgres applies the change', a: 'postgres', d: 'The Debezium JDBC sink (an open-source Kafka Connect connector, Apache 2.0, running in a local container) reads the topic and upserts or deletes the row in Postgres, keyed on rid. Postgres is only the target of this demo: the sink writes through JDBC, so the target can be SQL Server, which the connector supports, or another supported database. A new column is added to the Postgres table by the sink itself (schema evolution). All three targets now match the source.', n: ['connect', 'pg', 'rw'], e: ['e6'] }
+  { num: '3', t: 'Three readers take the topic', a: 'readers', d: 'Kafka Connect, RisingWave and StarRocks each read the topic on their own and keep their own place. Each message carries only a schema id; the readers fetch that schema from the registry to decode it. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE AVRO), so it applies each change to its table here, with no connector; StarRocks does the same with a Routine Load into a Primary Key table (deletes via the before-image fallback and the __op marker). For a new column, the sync first adds it to the RisingWave and StarRocks tables — StarRocks\'s load then replays the topic\'s beginning, so events consumed before the column existed land after all — after the new schema version is registered, because a reader only fills a column from messages read after the column exists.', n: ['kafka', 'reg', 'connect', 'rw', 'sr'], e: ['e5', 'e6', 'e7', 'e9', 'e10', 'e11', 'e12'] },
+  { num: '4', t: 'Postgres applies the change', a: 'postgres', d: 'The Debezium JDBC sink (an open-source Kafka Connect connector, Apache 2.0, running in a local container) reads the topic and upserts or deletes the row in Postgres, keyed on rid. Postgres is only the target of this demo: the sink writes through JDBC, so the target can be SQL Server, which the connector supports, or another supported database. A new column is added to the Postgres table by the sink itself (schema evolution). All three targets now match the source.', n: ['connect', 'pg', 'rw', 'sr'], e: ['e6'] }
 ];
-const NODES = ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'];
-const EDGES = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'e10'];
+const NODES = ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw', 'sr'];
+const EDGES = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'e10', 'e11', 'e12'];
 const $ = id => document.getElementById(id);
 let i = 0, timer = null;
 
@@ -375,16 +379,16 @@ const JSON_STEP_OVERRIDES = {
     d: 'The sync produces one JSON message per change, in the Debezium format: before, after, op and source, with the schema embedded in the message itself — no registry lookup at produce time.',
   },
   '3': {
-    d: 'Kafka Connect and RisingWave each read the topic on their own and keep their own place. Every message carries its schema, so both decode it without the registry. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE JSON), so it applies each change to its table here, with no connector. For a new column, the sync adds it to the RisingWave table first, because RisingWave only fills a column from messages read after the column exists.',
-    n: ['kafka', 'connect', 'rw'], e: ['e5', 'e7'],
+    d: 'Kafka Connect, RisingWave and StarRocks each read the topic on their own and keep their own place. Every message carries its schema, so all three decode it without the registry. RisingWave handles the Debezium format natively (FORMAT DEBEZIUM ENCODE JSON), so it applies each change to its table here, with no connector, and StarRocks does the same with a Routine Load. For a new column, the sync adds it to the RisingWave and StarRocks tables first, because a reader only fills a column from messages read after the column exists.',
+    n: ['kafka', 'connect', 'rw', 'sr'], e: ['e5', 'e6', 'e7', 'e12'],
   },
 };
-// The dedicated JSON diagram: the Registry leaves the canvas entirely (a JSON
-// sync never touches it) and Postgres and Kafka Connect take its row. Edge
-// endpoints are re-pinned per mode — the badges read the rect attributes and
-// the comets clone the line geometry, so both move with the nodes.
-const EDGE_JSON = { e3: null, e9: null, e10: null, e5: [485, 240, 485, 76], e6: [410, 48, 360, 48] };
-const NODE_JSON_DY = { pg: -110, connect: -110 };
+// The JSON diagram: only the Registry leaves the canvas (a JSON sync never touches it) —
+// everything else keeps the Avro geometry, so no edge is re-pinned and nothing crosses.
+// Badges read the rect attributes and the comets clone the line geometry, so both move with
+// the nodes.
+const EDGE_JSON = { e3: null, e9: null, e10: null, e11: null };
+const NODE_JSON_DY = {};
 const EDGE_BASE = {}, NODE_BASE = {};
 function setDiagram(json) {
   for (const e of EDGES) {
@@ -431,7 +435,7 @@ function show(k) {
   i = (k + S.length) % S.length;
   const s = S[i];
   NODES.forEach(n => { $('n-' + n).style.opacity = s.n.includes(n) ? 1 : 0.4; });
-  EDGES.forEach(e => $(e).classList.toggle('on', s.e.includes(e)));
+  EDGES.forEach(e => { const lit = s.e.includes(e); $(e).classList.toggle('on', lit); flowEls[e].classList.toggle('on', lit); });
   [...list.children].forEach((li, n) => li.classList.toggle('on', n === i));
   $('cap-t').textContent = s.num + '. ' + s.t;
   $('cap-d').textContent = s.d;
@@ -499,14 +503,16 @@ function say(text, url, state, r = $('result'), subs = null, entry = null) {
 function lock(on) { busy = on; document.querySelectorAll('#rail button, #rail select, #rail input').forEach(b => { b.disabled = on || !helper; }); }
 
 // ── run activity: badges on the components in play, comets sweeping the
-// arrows in play. Browsing a step lights it statically; a RUNNING action adds
+// arrows in play. Browsing a step lights it and sweeps the comet; a RUNNING action adds
 // the pulsing nodes, the sweeping comets and the corner badges
 // (spinner while in flight, ✓ / ✗ fading a few seconds after it ends).
 const NS = 'http://www.w3.org/2000/svg';
 let phaseTimer = null, badgeTimer = null;
-function edgesLive(on) {
+function edgesLive() {
+  // The comet mirrors the lit edges, whatever lit them — browsing a step and
+  // a running action both sweep; the argument the callers pass is ignored.
   EDGES.forEach(e => {
-    flowEls[e].classList.toggle('on', !!on && $(e).classList.contains('on'));
+    flowEls[e].classList.toggle('on', $(e).classList.contains('on'));
   });
 }
 function stagesClear() { $('badges').innerHTML = ''; NODES.forEach(n => $('n-' + n).classList.remove('active')); }
@@ -605,15 +611,15 @@ const SYNC_PLAN = {
   // up within seconds of the produce.
   doneWalk: [
     { step: 5, nodes: ['sync', 'state'] },
-    { step: 6, nodes: ['kafka', 'connect', 'rw'] },
-    { step: 7, nodes: ['connect', 'pg', 'rw'] },
+    { step: 6, nodes: ['kafka', 'connect', 'rw', 'sr'] },
+    { step: 7, nodes: ['connect', 'pg', 'rw', 'sr'] },
   ],
-  doneNodes: ['sync', 'connect', 'pg', 'rw'],
+  doneNodes: ['sync', 'connect', 'pg', 'rw', 'sr'],
   failStep: 5,
   failNodes: ['sync', 'state'],
 };
 const CHANGE_PLAN = { phases: [{ step: 0, nodes: ['src'] }] };
-const SETUP_PLAN = { phases: [{ step: 0, nodes: ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw'] }] };
+const SETUP_PLAN = { phases: [{ step: 0, nodes: ['src', 'state', 'sync', 'reg', 'kafka', 'connect', 'pg', 'rw', 'sr'] }] };
 
 async function run(label, body, out = $('result'), plan = null, btn = null) {
   stop(); lock(true);
