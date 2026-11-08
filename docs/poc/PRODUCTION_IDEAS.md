@@ -299,3 +299,72 @@ RisingWave appends small Iceberg files on every checkpoint. A Power BI query run
 - [ ] StarRocks memory sized at ≥4G in production; metadata cache TTL tuned for warm query latency
 - [ ] StarRocks `core-site.xml` injection verified for both FE and BE (required for ADLS scans — see [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) §2)
 - [ ] Power BI reports split: SQL Warehouse for historical Delta tables, RisingWave for live KPIs, StarRocks for ad-hoc analytics, Trino for cross-catalog joins
+
+---
+
+## 9. Reverse-ETL production approach — post-mortem synthesis (2026-11-08)
+
+Conclusion of the November retesting (see [DATABRICKS_ICEBERG_SINK.md](DATABRICKS_ICEBERG_SINK.md)
+§20 and [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) §12). This
+supersedes the Unity-Catalog-sink assumptions in §6 for the reverse-ETL
+direction: the RW Iceberg sink to UC is dead on current Databricks (IRC commit
+500 + create-table 403, RW COW branch hardcoding), so no streaming sink writes
+to UC today.
+
+### The production answer
+
+**Batch reverse ETL through the delta-rs-over-ADLS seam, orchestrated by
+Dagster** — the pattern the vendored `kaizen-dagster-reverse-etl` library
+already implements:
+
+- **Read side:** UC Delta tables via delta-rs (CDF + per-sync watermarks in a
+  UC Delta state table) — zero Databricks compute, no warehouse, no DBUs.
+- **Write side:** `write_deltalake` over ADLS with the SP OAuth token; Delta
+  transaction logs go straight to storage, bypassing the broken IRC commit
+  endpoint entirely. The only tested path that does real upserts into UC.
+- **Why it wins:** it is upstream-agnostic (RW or StarRocks makes no
+  difference), it is the only complete write path that works today, and its
+  failure semantics are the right shape (idempotent by key, state survives
+  rebuilds).
+
+**Validated serving-layer variant (tested end-to-end on the real wire
+contract, same day): UC → Kafka → StarRocks.** The producer's Debezium Avro
+wire survives unchanged; StarRocks Routine Load consumes it into Primary Key
+tables (native upserts, PK dedup). The one integration shim: deletes need the
+before-image fallback + `__op = if(op = 'd', 1, 0)` in the COLUMNS mapping
+(see STARROCKS_SERVING_LAYER.md §12 for the exact DDL). Live federated reads
+back into UC happen via SR's Delta external catalog — no refresh semantics,
+none of the RW refresh-MV schema-change caveats.
+
+### Hardening checklist (demo → production)
+
+1. **Idempotent MERGE + at-least-once:** write data first, commit the
+   watermark second; every sync must be a MERGE keyed on the PK so a replayed
+   window converges. Library invariant, not a per-sync choice.
+2. **Single-writer per table:** delta-rs does not arbitrate concurrent
+   writers — one Dagster asset per target, no overlapping schedules.
+3. **Schema-evolution policy decided once in the library:** additive columns
+   pass through; renames/drops are deliberate (column mapping on the Delta
+   side; `propagate_drops` per sync).
+4. **`catalogManaged` check before first sync:** UC tables with
+   `delta.feature.catalogManaged` silently reject external writes; fix is
+   `ALTER TABLE … DROP FEATURE catalogManaged` (admin dependency).
+5. **Compaction:** every sync appends files — table-level Predictive
+   Optimization where allowed, otherwise a scheduled delta-rs
+   optimize/compact asset.
+6. **Credentials:** SP with OAuth secret, least privilege (`READ FILES` /
+   `WRITE FILES` on the external location, `MODIFY` on targets), rotation in
+   the secrets manager. No PATs, no account keys (shared key is restricted on
+   this account anyway).
+7. **Monitoring = watermark freshness:** alert on per-sync lag in
+   `reverse_etl_*_state` (the SR analogue: Routine Load state + errorRows —
+   both failure modes are semi-silent).
+
+### Revisit triggers
+
+- **Databricks fixes the IRC commit 500** → RW Iceberg *append* to UC becomes
+  viable again (upsert stays gated on RW #24723 branch promotion). Retest on
+  stable RW 3.2.0.
+- **RW ships branch promotion** → COW upsert sinks become an option for
+  append-friendly workloads.
+- Until then: spend nothing on the RW-sink-to-UC path.
