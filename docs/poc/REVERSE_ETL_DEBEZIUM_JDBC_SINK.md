@@ -1422,6 +1422,11 @@ group and both target tables were all absent, as expected.
     delete on the orders table and the seeds reached Postgres and RisingWave in each, both connectors were
     `RUNNING`, and no objects under the old names remained (Databricks, Postgres, RisingWave, Connect). A column
     change on the orders sync was tested later through the notebook trigger (section 10.6).
+  - **The notebook with `label=orders`** (2026-10-04). A one-time Databricks run of the DEV notebook, submitted with
+    `base_parameters = {"label": "orders"}` on a classic cluster (as the author's own user), after updating one
+    orders row in Databricks: the run succeeded, the row changed in both Postgres and RisingWave, the orders
+    watermark moved to the table version, and the POC's watermark and tables were untouched. The STG copy of the
+    notebook was updated to the label version afterwards but not run.
 
 ### 14.5 Protobuf instead of Avro (investigated 2026-11-09, not built)
 
@@ -1464,11 +1469,19 @@ compatibility — the registry rejects it unless compatibility drops to NONE); d
 rename-propagation demo in particular would need a compatibility exception. Registration also goes through a
 different registry API path than the ccompat v6 Avro calls the demo uses today (Apicurio and Redpanda's built-in
 registry both have protobuf support, on separate endpoints).
-  - **The notebook with `label=orders`** (2026-10-04). A one-time Databricks run of the DEV notebook, submitted with
-    `base_parameters = {"label": "orders"}` on a classic cluster (as the author's own user), after updating one
-    orders row in Databricks: the run succeeded, the row changed in both Postgres and RisingWave, the orders
-    watermark moved to the table version, and the POC's watermark and tables were untouched. The STG copy of the
-    notebook was updated to the label version afterwards but not run.
+
+**What protobuf would buy, and why it does not apply here.** Protobuf's real advantages are ecosystem-shaped:
+it is the lingua franca of gRPC and cross-team service APIs (one `.proto` serves both RPC and Kafka, with
+`protoc` codegen in a dozen languages), it distinguishes field-absent from field-default (Avro reaches for
+`["null", T]` unions instead), and its tooling outside the data stack is broader. None of these materialize
+here: the events have no service-side consumers, the targets are data engines where Avro is the first-class
+citizen (RW's `DEBEZIUM ENCODE AVRO`, SR's `format = "avro"`, Connect's `AvroConverter`), and compactness is a
+wash — both are compact binary formats and the produce-path cost was 100% serializer overhead, not format
+(§14.1 and the 2026-11-09 serializer work). The framing: Avro's schema model is "data first, schema describes
+it" — built for pipelines whose shape is discovered at runtime; protobuf's is "contract first, data conforms"
+— built for APIs whose shape is agreed in advance. A reverse-ETL sync whose source schema evolves live is
+squarely the first kind. The calculus would change if the same Debezium events ever gained gRPC /
+Go / Java service consumers.
 
 ---
 
