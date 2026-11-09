@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
+from kaizen_dagster_reverse_etl.components.cdf_sync import sync as cdf_setup
 from tests.sync_asset.support import (
     DAY,
     FAST_PATH,

@@ -10,7 +10,7 @@ Run from the repo root:  .venv/bin/python -m pytest
 
 import pytest
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
+from kaizen_dagster_reverse_etl.components.cdf_sync import sync as cdf_setup
 from orchestration.assets.reverse_etl_demo_hooks import DemoSyncHooks
 import json
 
@@ -215,6 +215,8 @@ class TestWithoutHooks:
         cfg = make_config(source_columns=(), key_column="id", encoding=encoding, schema_registry_url="http://registry.invalid")
         res = resources(table_location=source.location, state_rows=state_rows, registry=registry, kafka_admin_topics=(TOPIC,))
         bind_connections(monkeypatch, res)
+        # The engine resolves the workspace URL from the environment (the control plane's host).
+        monkeypatch.setenv("DATABRICKS_HOST", "https://unittest-workspace")
         result = dg.materialize([cdf_setup.build_sync_asset(cfg)], raise_on_error=False)
         assert result.success
 

@@ -126,25 +126,35 @@ def starrocks() -> _Connectable:
     return _Connectable(open_connection)
 
 
+def _databricks_workspace_url() -> str:
+    """The workspace URL the control-plane calls read: `DATABRICKS_HOST`, falling back to the
+    dbt-prefixed variable the demo sets (same precedence as the library's own bridge)."""
+    return os.environ.get("DATABRICKS_HOST", "") or os.environ.get("DBT_DATABRICKS_HOST", "")
+
+
 class DatabricksApi:
     """The Databricks REST surface the sync and the demo assets reach. The underlying helpers
-    read the service-principal env at call time (their imports are deferred because they live in
-    modules that import this one)."""
+    read the service-principal env at call time. The control-plane methods (token, UC storage
+    locations, their disk cache) delegate to the vendored library's DatabricksApi; the
+    `(token, cfg, fqn)` signatures are kept so the demo callers pass their configs through
+    untouched (the library's methods take no cfg). `run_sql` stays demo-side: Statement
+    Execution is metered by the demo's cost meter, which the library knows nothing about."""
+
+    def _api(self):
+        from kaizen_dagster_reverse_etl.core.connections import DatabricksApi as LibraryDatabricksApi
+
+        return LibraryDatabricksApi(_databricks_workspace_url())
 
     def require_env(self) -> None:
-        from .reverse_etl_cdf_setup import _require_databricks_env
-
-        _require_databricks_env()
+        self._api().require_env()
+        if not _databricks_workspace_url():
+            raise ValueError("Missing required env vars: ['DBT_DATABRICKS_HOST']")
 
     def token(self) -> str:
-        from .databricks_optimize import _get_token
-
-        return _get_token()
+        return self._api().token()
 
     def cached_token(self) -> str:
-        from .reverse_etl_cdf_setup import _get_token_cached
-
-        return _get_token_cached()
+        return self._api().cached_token()
 
     def run_sql(self, token: str, statement: str) -> dict:
         from .reverse_etl_cdf_setup import _run_sql
@@ -152,24 +162,21 @@ class DatabricksApi:
         return _run_sql(token, statement)
 
     def table_location(self, token: str, cfg, fqn: str) -> str:
-        from .reverse_etl_cdf_setup import get_table_location
-
-        return get_table_location(token, cfg, fqn)
+        return self._api().table_location(token, fqn)
 
     def table_location_cached(self, token: str, cfg, fqn: str) -> str:
-        from .reverse_etl_cdf_setup import get_table_location_cached
-
-        return get_table_location_cached(token, cfg, fqn)
+        return self._api().table_location_cached(token, fqn)
 
     def clear_location_cache(self) -> None:
-        from .reverse_etl_cdf_setup import clear_control_plane_cache
-
-        clear_control_plane_cache()
+        self._api().clear_location_cache()
 
 
 class KafkaClients:
     """The Kafka clients: the demo cluster's admin (topic assets, the reset's group deletes) and
-    the output cluster's producer/consumer (the sync, the DuckDB mirror, the health check)."""
+    the output cluster's producer/consumer (the sync, the DuckDB mirror, the health check).
+    The admin client stays demo-side (it reads the demo cluster's own variables,
+    KAFKA_BOOTSTRAP_SERVERS/_SASL_*); the producer/consumer read the output cluster's
+    KAFKA_OUTPUT_* convention, which the library's client config implements identically."""
 
     def admin_client(self):
         from .kafka_topics_setup import _admin_client
@@ -178,18 +185,18 @@ class KafkaClients:
 
     def producer(self):
         """A producer whose TLS/SASL handshake has already started."""
-        from .reverse_etl_cdf_setup import _kafka_producer
+        from kaizen_dagster_reverse_etl.core.connections import KafkaClients as LibraryKafkaClients
 
-        return _kafka_producer()
+        return LibraryKafkaClients().producer()
 
     def consumer(self, group_id: str, extra: dict | None = None):
         """A consumer on the output cluster. With no `extra` it only reads committed offsets (it never
         subscribes); `extra` entries override the defaults."""
         from confluent_kafka import Consumer
 
-        from .reverse_etl_cdf_setup import _kafka_producer_config
+        from kaizen_dagster_reverse_etl.core.connections import kafka_producer_config
 
-        return Consumer({**_kafka_producer_config(), "group.id": group_id, "enable.auto.commit": False, **(extra or {})})
+        return Consumer({**kafka_producer_config(), "group.id": group_id, "enable.auto.commit": False, **(extra or {})})
 
 
 class SchemaRegistry:

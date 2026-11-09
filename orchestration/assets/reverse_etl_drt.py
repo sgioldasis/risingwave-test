@@ -43,7 +43,7 @@ from dagster_drt import DagsterDrtResource, DagsterDrtTranslator, drt_assets
 
 from .databricks_optimize import DATABRICKS_HOST, WAREHOUSE_ID
 from . import reverse_etl_connections as connections
-from .reverse_etl_delta_reader import get_row_fields
+from kaizen_dagster_reverse_etl.core.delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig
 
 PROJECT_SOURCE = Path(__file__).resolve().parent.parent / "drt_demo"

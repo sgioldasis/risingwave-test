@@ -20,7 +20,7 @@ import yaml
 from dagster import Config, MetadataValue, OpExecutionContext, in_process_executor, job, op
 
 from .databricks_optimize import DATABRICKS_HOST
-from .reverse_etl_delta_reader import get_row_fields
+from kaizen_dagster_reverse_etl.core.delta_reader import get_row_fields
 from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config
 from . import reverse_etl_connections as connections
 from .reverse_etl_risingwave_setup import add_missing_columns

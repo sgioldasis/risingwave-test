@@ -54,14 +54,14 @@ from dagster import (
 )
 from deltalake import DeltaTable
 
+from kaizen_dagster_reverse_etl.core.connections import azure_storage_options
+
 from .databricks_cost_meter import record as meter_record
 from .databricks_cost_meter import reset as meter_reset
+from .databricks_optimize import DATABRICKS_HOST, _poll
 from .kafka_topics_setup import _DEFAULT_REPLICATION
 from .reverse_etl_cdf_setup import (
-    DATABRICKS_HOST,
-    _azure_storage_options,
     _cost_metadata,
-    _poll,
     _rows_as_dicts,
     _with_all_chunks,
 )
@@ -423,7 +423,7 @@ def _scan(cfg: JobotronConfig, databricks, token: str, context) -> tuple[pa.Tabl
             _ensure_delta_scan_secret(connection, next(iter(locations.values())))
             for alias, (fqn, columns) in cfg.sources.items():
                 location = locations[alias]
-                version = DeltaTable(location, storage_options=_azure_storage_options(location)).version()
+                version = DeltaTable(location, storage_options=azure_storage_options(location)).version()
                 projection = ", ".join(columns) if columns else "*"
                 connection.execute(f"CREATE VIEW {alias} AS SELECT {projection} FROM delta_scan('{location}')")
                 context.log.info(f"Scanned {fqn} via delta_scan at version {version} (streaming view): {projection}")
@@ -431,7 +431,7 @@ def _scan(cfg: JobotronConfig, databricks, token: str, context) -> tuple[pa.Tabl
             # delta-rs scans each source column-pruned into a pyarrow snapshot; DuckDB
             # registers it zero-copy (in-process, the only SQL engine in the whole path).
             for alias, (fqn, columns) in cfg.sources.items():
-                delta = DeltaTable(locations[alias], storage_options=_azure_storage_options(locations[alias]))
+                delta = DeltaTable(locations[alias], storage_options=azure_storage_options(locations[alias]))
                 snapshot = delta.to_pyarrow_table(columns=list(columns))
                 connection.register(alias, snapshot)
                 context.log.info(

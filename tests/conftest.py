@@ -18,7 +18,8 @@ def isolated_control_plane_cache(tmp_path, monkeypatch):
     directory so no test reads a developer's real cache or leaves one behind."""
     from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
 
-    monkeypatch.setattr(cdf_setup, "_CONTROL_PLANE_CACHE_PATH", str(tmp_path / "control_plane_cache.json"))
+    from kaizen_dagster_reverse_etl.core import connections as _library_connections
+    monkeypatch.setattr(_library_connections, "_CONTROL_PLANE_CACHE_PATH", str(tmp_path / "control_plane_cache.json"))
 
 
 @pytest.fixture

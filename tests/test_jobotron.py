@@ -315,7 +315,7 @@ def env(cfg, tmp_path, calls, monkeypatch):
         return RealDeltaTable(str(tmp_path / location.rsplit("/", 1)[1]))
 
     monkeypatch.setattr(jobotron, "DeltaTable", local_table)
-    monkeypatch.setattr(jobotron, "_azure_storage_options", lambda location: {})
+    monkeypatch.setattr(jobotron, "azure_storage_options", lambda location: {})
     return Env(cfg, tmp_path, calls, monkeypatch)
 
 
@@ -327,7 +327,7 @@ def delta_env(delta_cfg, tmp_path, calls, monkeypatch):
         return RealDeltaTable(str(tmp_path / location.rsplit("/", 1)[1]))
 
     monkeypatch.setattr(jobotron, "DeltaTable", local_table)
-    monkeypatch.setattr(jobotron, "_azure_storage_options", lambda location: {})
+    monkeypatch.setattr(jobotron, "azure_storage_options", lambda location: {})
     return Env(delta_cfg, tmp_path, calls, monkeypatch, delta=True)
 
 

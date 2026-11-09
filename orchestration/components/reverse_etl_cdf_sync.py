@@ -2,7 +2,8 @@ import dataclasses
 
 import dagster as dg
 
-from ..assets.reverse_etl_cdf_setup import build_sync_asset
+from kaizen_dagster_reverse_etl.components.cdf_sync.sync import build_sync_asset
+
 from ..assets.reverse_etl_config import CdfSyncConfig, dagster_names
 from ..assets.reverse_etl_topic import build_topic_asset
 

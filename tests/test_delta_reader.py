@@ -1,4 +1,4 @@
-"""The Delta reader (orchestration/assets/reverse_etl_delta_reader.py) on its own, against real delta-rs tables in tmp
+"""The Delta reader (the vendored library: kaizen_dagster_reverse_etl.core.delta_reader -- the demo's fork of the same code was retired 2026-11-09) on its own, against real delta-rs tables in tmp
 dirs: the reconstructed change rows for both read paths, the version functions, the state read and the helpers that
 only deletion-vector, partitioned and column-mapped tables reach.
 
@@ -23,7 +23,7 @@ import pyarrow.fs as pafs
 import pytest
 from deltalake import DeltaTable, write_deltalake
 
-from orchestration.assets import reverse_etl_delta_reader as reader
+from kaizen_dagster_reverse_etl.core import delta_reader as reader
 from tests.fakes import make_config, use_local_azure, use_local_paths
 
 ABFS_ROOT = "abfss://testcontainer@testaccount.dfs.core.windows.net/table"
@@ -288,7 +288,7 @@ class TestEarliestVersionSearch:
 
 class TestRowFields:
     def test_delta_types_map_to_connect_types_and_anything_compound_is_a_string(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
+        monkeypatch.setattr(reader, "azure_storage_options", lambda location: {})
         table = pa.table(
             {
                 "tiny": pa.array([1], pa.int8()),
@@ -323,7 +323,7 @@ class TestRowFields:
         }
 
     def test_the_schema_can_be_read_at_an_earlier_version(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
+        monkeypatch.setattr(reader, "azure_storage_options", lambda location: {})
         path = str(tmp_path / "t")
         write_deltalake(path, pa.table({"id": pa.array([1], pa.int64())}))
         write_deltalake(path, pa.table({"id": pa.array([2], pa.int64()), "extra": pa.array(["x"])}), mode="append", schema_mode="merge")
@@ -521,7 +521,7 @@ class DeletionVectorTable:
 
 class TestDeletionVectorGuards:
     def test_a_deltalake_that_cannot_read_them_is_refused_before_any_read(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
+        monkeypatch.setattr(reader, "azure_storage_options", lambda location: {})
         path = str(tmp_path / "t")
         write_deltalake(path, pa.Table.from_pylist([row(1, "a")], schema=SCHEMA))
         monkeypatch.setattr(reader, "_open", lambda location: DeletionVectorTable(DeltaTable(path), can_read=False))
@@ -529,7 +529,7 @@ class TestDeletionVectorGuards:
             reader.read_changes(CFG, path, 0, 0)
 
     def test_without_an_azure_filesystem_they_are_refused_with_the_reason(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(reader, "_azure_storage_options", lambda location: {})
+        monkeypatch.setattr(reader, "azure_storage_options", lambda location: {})
         path = str(tmp_path / "t")
         write_deltalake(path, pa.Table.from_pylist([row(1, "a")], schema=SCHEMA))
         monkeypatch.setattr(reader, "_open", lambda location: DeletionVectorTable(DeltaTable(path)))

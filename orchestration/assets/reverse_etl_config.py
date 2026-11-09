@@ -6,6 +6,8 @@ Two frozen dataclasses split the configuration by audience:
 - `CdfSyncConfig` holds exactly what the sync asset needs: the Databricks source
   and key column, the Kafka topic, the Dagster names, and the message encoding.
   This is the configuration a team using the reverse-ETL component provides.
+  It lives in the vendored library (kaizen_dagster_reverse_etl) and is re-exported
+  here; the sync asset itself is the library's build_sync_asset.
 - `ReverseEtlSyncConfig(CdfSyncConfig)` adds everything the demo needs around the
   sync: the tables and connector it creates, the targets, the reset allowlist, the
   seed. The demo's modules take this one; the sync's pure helpers take the base.
@@ -29,95 +31,7 @@ No imports from the asset modules, so any of them can import this one.
 
 from dataclasses import dataclass
 
-
-@dataclass(frozen=True, kw_only=True)
-class CdfSyncConfig:
-    # --- what is synced -------------------------------------------------------
-    sync_name: str
-    catalog: str
-    schema: str
-    source_table: str
-    # Surrogate key: an identity column Databricks assigns on insert and never
-    # changes, so rows sharing a business `id` (the table does not enforce
-    # uniqueness) stay distinct downstream. Must exist from table creation.
-    key_column: str
-    # The single topic both consumers read: RisingWave (FORMAT DEBEZIUM) and the
-    # Debezium JDBC sink.
-    kafka_topic: str
-
-    # --- identity (the release design's naming policy) -------------------------
-    # The YAML label every derived name comes from, and whether the watermark key was
-    # pinned or derived. The watermark guard reads the latter: a label rename moves a
-    # derived sync_name, a pinned one survives it.
-    label: str
-    sync_name_explicit: bool
-
-    # --- the Dagster definitions built for it ----------------------------------
-    group_name: str
-    sync_asset: str
-
-    # --- the watermark state (reverse_etl_state.py) -----------------------------
-    # "postgres": the postgres resource and the shared table `state_table`
-    # (keyed by sync_name), which the team creates -- the sync's precondition fails with
-    # the DDL when it is absent. "duckdb": a local file at `state_path`, one sync per
-    # file (DuckDB allows one writer), created on first run (D15). "delta" (the demo
-    # default, see the NOTE below): a UC-named
-    # Delta table at {state_catalog or catalog}.{state_schema or schema}.{state_table},
-    # resolved to its storage location through the Unity Catalog lookup at run time —
-    # zero Postgres, zero warehouse compute (delta-rs reads and writes ADLS directly).
-    # The watermark semantics are identical either way: append-only, freshest-row-wins.
-    # NOTE: the demo default is delta (2026-11-05, every demo sync opted in): each sync
-    # keeps its watermark in its own UC Delta table — the same name the comparison
-    # notebook derives (reverse_etl_<label>_state), so the notebook works for every
-    # label. The library's postgres backend remains for deployments that prefer it.
-    state_backend: str = "delta"
-    state_table: str = "reverse_etl_sync_state"
-    state_path: str = ""
-    # The delta backend's table placement; empty inherits the source's catalog/schema.
-    state_catalog: str = ""
-    state_schema: str = ""
-
-    # --- message encoding ------------------------------------------------------
-    # "json": Kafka Connect JSON with the schema embedded in every message (the default).
-    # "avro": Confluent wire format, schemas in the registry under <topic>-key and <topic>-value
-    # (a Confluent-compatible API: the shared staging Apicurio's /apis/ccompat/v7). Section 14.1 of
-    # docs/poc/REVERSE_ETL_DEBEZIUM_JDBC_SINK.md. The notebook gets `encoding` as a job parameter.
-    encoding: str = "json"
-    schema_registry_url: str = "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
-
-    def __post_init__(self) -> None:
-        if self.encoding not in ("json", "avro"):
-            raise ValueError(f"encoding must be 'json' or 'avro', got {self.encoding!r}")
-        if self.state_backend not in ("postgres", "duckdb", "delta"):
-            raise ValueError(f"state_backend must be 'postgres', 'duckdb' or 'delta', got {self.state_backend!r}")
-        if self.state_backend == "duckdb" and not self.state_path:
-            raise ValueError("state_path is required for the duckdb state backend")
-
-    @property
-    def state_fqn(self) -> str:
-        """The watermark state table's fully qualified name. For the delta backend this
-        is the UC name build_sync_state resolves to storage (state_catalog/state_schema
-        inherit the source's when unset). For the SQL backends it is only the reset's
-        DROP cleanup for state tables created before the Postgres move."""
-        return f"{self.state_catalog or self.catalog}.{self.state_schema or self.schema}.{self.state_table}"
-
-    @property
-    def key_subject(self) -> str:
-        return avro_key_subject(self.kafka_topic)
-
-    @property
-    def value_subject(self) -> str:
-        return avro_value_subject(self.kafka_topic)
-
-    @property
-    def source_fqn(self) -> str:
-        return f"{self.catalog}.{self.schema}.{self.source_table}"
-
-    @property
-    def envelope_schema_name(self) -> str:
-        # Debezium's `<server>.<schema>.<table>` convention, which is what the sink
-        # uses to recognise a Debezium event.
-        return f"{self.sync_name}.{self.schema}.{self.source_table}"
+from kaizen_dagster_reverse_etl.components.cdf_sync.config import CdfSyncConfig
 
 
 def dagster_names(label: str) -> dict:

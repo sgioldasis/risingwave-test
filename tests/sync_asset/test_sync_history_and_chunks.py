@@ -6,7 +6,7 @@ Run from the repo root:  .venv/bin/python -m pytest
 
 import pytest
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
+from kaizen_dagster_reverse_etl.components.cdf_sync import sync as cdf_setup
 from tests.sync_asset.support import (
     FAST_PATH,
     events,

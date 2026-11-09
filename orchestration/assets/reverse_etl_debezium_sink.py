@@ -1,7 +1,7 @@
 """Register the Debezium JDBC sink connector: reverse-ETL CDF topic -> host Postgres.
 
-Consumes KAFKA_TOPIC (schema-embedded Debezium envelopes produced by
-reverse_etl_cdf_setup.py, also read by the RisingWave table) from the external
+Consumes KAFKA_TOPIC (schema-embedded Debezium envelopes produced by the
+sync asset, also read by the RisingWave table) from the external
 SASL_SSL cluster and upserts / deletes into a Postgres table.
 See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md.
 """

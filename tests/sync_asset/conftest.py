@@ -12,8 +12,9 @@ import pytest
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
-from orchestration.assets import reverse_etl_delta_reader as reader
+from kaizen_dagster_reverse_etl.components.cdf_sync import sync as cdf_setup
+from kaizen_dagster_reverse_etl.core import delta_reader as reader
+from kaizen_dagster_reverse_etl.core import state as state_module
 from orchestration.assets.reverse_etl_demo_hooks import DemoSyncHooks
 from tests.fakes import FakeSchemaRegistry, bind_connections, make_config, use_local_azure, use_local_paths
 from tests.sync_asset.support import (
@@ -45,13 +46,13 @@ def source(tmp_path, storage, monkeypatch) -> SourceTable:
     """The source table, with the reader pointed at it: a local path, or an abfss:// location backed by a local
     directory."""
     if storage == SNAPSHOT_DIFF:
-        use_local_paths(monkeypatch, (cdf_setup, reader))
+        use_local_paths(monkeypatch, (reader, state_module))
         path = tmp_path / "source_table"
         return SourceTable(path, str(path), column_mapping=False)
 
     path = tmp_path / "testcontainer" / "table"
     path.parent.mkdir()
-    use_local_azure(monkeypatch, tmp_path, (cdf_setup, reader))
+    use_local_azure(monkeypatch, tmp_path, (reader, state_module))
     return SourceTable(path, ABFS_LOCATION, column_mapping=True)
 
 
@@ -112,6 +113,7 @@ def sync(source, calls, resources, state_rows, registry, encoding, monkeypatch, 
             # The fake's UC lookup answers cfg.state_fqn with a local path; the real run's
             # storage options never come into play (the fake never returns abfss:// here).
             options.setdefault("state_location", str(tmp_path / "state_delta"))
+            options.setdefault("state_fqn", cfg.state_fqn)
             _ensure_delta_state(options["state_location"])
         # The sync's precondition asks the admin for the sync's topic; a test overrides
         # kafka_admin_topics=() to get the missing-topic failure.
@@ -125,6 +127,8 @@ def sync(source, calls, resources, state_rows, registry, encoding, monkeypatch, 
             **options,
         )
         bind_connections(monkeypatch, res)
+        # The engine resolves the workspace URL from the environment (the control plane's host).
+        monkeypatch.setenv("DATABRICKS_HOST", "https://unittest-workspace")
         result = dg.materialize(
             [cdf_setup.build_sync_asset(cfg, hooks=hooks)], raise_on_error=False
         )

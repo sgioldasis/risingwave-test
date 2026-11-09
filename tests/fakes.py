@@ -133,13 +133,16 @@ class FakeStarrocks:
 class FakeDatabricks:
     def __init__(
         self, calls: list, sql_error=None, location_error=None, table_location="abfss://x", table_columns=(),
-        state_location=None,
+        state_location=None, state_fqn=None,
     ):
         self.calls, self.sql_error, self.location_error = calls, sql_error, location_error
         self.location = table_location
-        # What the UC lookup returns for cfg.state_fqn (the delta state backend); None keeps
-        # every lookup answering with `table_location`, the pre-delta behaviour.
+        # What the UC lookup returns for the state fqn (the delta state backend); None keeps
+        # every lookup answering with `table_location`, the pre-delta behaviour. The fqn comes
+        # either from the cfg argument (the demo wrapper's (token, cfg, fqn) calls) or from
+        # state_fqn (the library sync's (token, fqn) calls, which pass no cfg).
         self.state_location = state_location
+        self.state_fqn = state_fqn
         self.table_columns = table_columns  # what DESCRIBE TABLE reports
 
     def require_env(self):
@@ -165,17 +168,22 @@ class FakeDatabricks:
             }
         return {}
 
-    def table_location(self, token, cfg, fqn):
+    def table_location(self, token, cfg=None, fqn=None, **_):
         if self.location_error:
             raise self.location_error
+        fqn = fqn if fqn is not None else cfg
         self.calls.append(("location", fqn))
         return self.location
 
-    def table_location_cached(self, token, cfg, fqn):
+    def table_location_cached(self, token, cfg=None, fqn=None, **_):
+        # Two callers, two shapes: the demo wrapper passes (token, cfg, fqn); the library's
+        # sync passes (token, fqn) -- there cfg lands in the `cfg` slot and IS the fqn.
         if self.location_error:
             raise self.location_error
+        fqn = fqn if fqn is not None else cfg
         self.calls.append(("location", fqn))
-        if self.state_location is not None and fqn == cfg.state_fqn:
+        state_fqn = self.state_fqn if self.state_fqn is not None else getattr(cfg, "state_fqn", None)
+        if self.state_location is not None and fqn == state_fqn:
             return self.state_location
         return self.location
 
@@ -371,6 +379,15 @@ def bind_connections(monkeypatch, res: dict) -> None:
     monkeypatch.setattr(connections, "registry", lambda: res["registry"])
     monkeypatch.setattr(connections, "http", lambda: res["http"])
     monkeypatch.setattr(connections, "starrocks", lambda: res["starrocks"])
+    # The vendored library's sync asset resolves its connections through its own
+    # connections module (core/connections.py); the same fakes serve both — its
+    # databricks() takes the workspace URL, which the fake ignores.
+    from kaizen_dagster_reverse_etl.core import connections as library_connections
+
+    monkeypatch.setattr(library_connections, "state_postgres", lambda: res["postgres"])
+    monkeypatch.setattr(library_connections, "databricks", lambda workspace_url: res["databricks"])
+    monkeypatch.setattr(library_connections, "kafka", lambda: res["kafka"])
+    monkeypatch.setattr(library_connections, "registry", lambda: res["registry"])
 
 
 def error_text(result) -> str:
@@ -385,9 +402,11 @@ AZURE_CREDENTIALS = {"account_name": "testaccount", "client_id": "id", "tenant_i
 
 def use_local_paths(monkeypatch, modules) -> None:
     """Read Delta tables from plain local paths: no storage options, so the reader finds no Azure filesystem and takes
-    its snapshot-diff fallback."""
+    its snapshot-diff fallback. The library modules carry the name without the fork's leading
+    underscore; both spellings are patched so repo A modules keep working too."""
     for module in modules:
-        monkeypatch.setattr(module, "_azure_storage_options", lambda location: {})
+        monkeypatch.setattr(module, "azure_storage_options", lambda location: {}, raising=False)
+        monkeypatch.setattr(module, "_azure_storage_options", lambda location: {}, raising=False)
 
 
 def use_local_azure(monkeypatch, root, modules) -> None:
@@ -399,6 +418,7 @@ def use_local_azure(monkeypatch, root, modules) -> None:
         return DeltaTable(str(root / "testcontainer" / location.split(".dfs.core.windows.net/", 1)[1]), version=version)
 
     for module in modules:
-        monkeypatch.setattr(module, "DeltaTable", local_table)
-        monkeypatch.setattr(module, "_azure_storage_options", lambda location: AZURE_CREDENTIALS)
+        monkeypatch.setattr(module, "DeltaTable", local_table, raising=False)
+        monkeypatch.setattr(module, "azure_storage_options", lambda location: AZURE_CREDENTIALS, raising=False)
+        monkeypatch.setattr(module, "_azure_storage_options", lambda location: AZURE_CREDENTIALS, raising=False)
     monkeypatch.setattr(pafs, "AzureFileSystem", lambda **options: pafs.SubTreeFileSystem(str(root), pafs.LocalFileSystem()))

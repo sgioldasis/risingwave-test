@@ -24,7 +24,7 @@ import pytest
 from deltalake import DeltaTable
 from deltalake.exceptions import DeltaProtocolError
 
-from orchestration.assets import reverse_etl_delta_reader as reader
+from kaizen_dagster_reverse_etl.core import delta_reader as reader
 from tests.fakes import make_config, use_local_azure, use_local_paths
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "delta_dv"

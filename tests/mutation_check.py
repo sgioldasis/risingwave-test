@@ -155,88 +155,8 @@ MUTATIONS = [
         "tests/test_jobotron.py",
     ),
     # --- the Delta reader ---
-    Mutation("reader", "any load failure treated as missing", f"{ASSETS}/reverse_etl_delta_reader.py", "if not _VERSION_LOAD_FAILURE.search(str(e)):", "if False:", "tests/test_delta_reader.py"),
-    Mutation("reader", "deletion-vector mask length unchecked", f"{ASSETS}/reverse_etl_delta_reader.py", "if len(mask) != file_table.num_rows:", "if False:", "tests/test_delta_reader.py"),
-    Mutation("reader", "deletion-vector mask not applied", f"{ASSETS}/reverse_etl_delta_reader.py", "file_table = file_table.filter(pa.array(mask))", "pass", "tests/test_delta_reader.py"),
-    Mutation(
-        "reader", "dates left as dates", f"{ASSETS}/reverse_etl_delta_reader.py", "if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):", "if False:",
-        "tests/test_delta_reader.py",
-    ),
-    Mutation("reader", "aware timestamps not converted to UTC", f"{ASSETS}/reverse_etl_delta_reader.py", "if value.tzinfo is not None:", "if False:", "tests/test_delta_reader.py"),
-    Mutation(
-        "reader", "all-null snapshots not re-read", f"{ASSETS}/reverse_etl_delta_reader.py", "if rows and all(value is None for row in rows for value in row.values()):", "if False:",
-        "tests/test_delta_reader.py",
-    ),
-    Mutation(
-        "reader", "snapshot not keyed", f"{ASSETS}/reverse_etl_delta_reader.py", "return {tuple(row[name] for name in key_columns): row for row in rows}", "return {}",
-        "tests/test_delta_reader.py",
-    ),
-    Mutation(
-        "reader", "deletion vectors read without an Azure filesystem", f"{ASSETS}/reverse_etl_delta_reader.py", "if dv_enabled and azure is None:", "if False:",
-        "tests/test_delta_reader.py",
-    ),
-    Mutation(
-        "reader", "a column present on one side counts as drift", f"{ASSETS}/reverse_etl_delta_reader.py", "for name in (set(old_row) | set(new_row)) - skip", "for name in set(old_row) - skip",
-        "tests/test_delta_reader.py",
-    ),
-    Mutation("reader-dv", "DV tables take the snapshot path", f"{ASSETS}/reverse_etl_delta_reader.py", "use_fast = fast_path or (dv_enabled and azure is not None)", "use_fast = fast_path", "tests/test_delta_reader_dv.py"),
-    Mutation(
-        "reader-dv", "pre-images read through no mask", f"{ASSETS}/reverse_etl_delta_reader.py", "pre_masks = dv_masks_at(version - 1) if dv_enabled and version > 0 else None",
-        "pre_masks = None", "tests/test_delta_reader_dv.py",
-    ),
-    Mutation(
-        "reader-dv", "post-images read through no mask", f"{ASSETS}/reverse_etl_delta_reader.py", "post_masks = dv_masks_at(version) if dv_enabled and added_with_dv else None",
-        "post_masks = None", "tests/test_delta_reader_dv.py",
-    ),
-    Mutation(
-        "reader-dv", "pre-image masks taken from the same version", f"{ASSETS}/reverse_etl_delta_reader.py", "dv_masks_at(version - 1) if dv_enabled and version > 0",
-        "dv_masks_at(version) if dv_enabled and version > 0", "tests/test_delta_reader_dv.py",
-    ),
-    Mutation(
-        "reader-dv", "a DV-only commit read from the file set", f"{ASSETS}/reverse_etl_delta_reader.py", "adds, removes_actions = _commit_actions(azure, log_dir, version)",
-        "adds, removes_actions = [], []", "tests/test_delta_reader_dv.py",
-    ),
-    Mutation(
-        "reader-dv", "partition values not injected", f"{ASSETS}/reverse_etl_delta_reader.py", "added_pv = partition_values_at(version, set(added)) if partition_columns and dv_enabled else None",
-        "added_pv = None", "tests/test_delta_reader_dv.py",
-    ),
-    Mutation(
-        "reader-dv", "removed files' partition values not injected", f"{ASSETS}/reverse_etl_delta_reader.py", "if partition_columns and dv_enabled and removed and version > 0",
-        "if False", "tests/test_delta_reader_dv.py",
-    ),
     # --- the wire formats ---
-    Mutation("wire", "Avro schema text no longer compact", f"{ASSETS}/reverse_etl_cdf_setup.py", 'return json.dumps(schema, separators=(",", ":"))', "return json.dumps(schema)", "tests/test_wire_format.py"),
-    Mutation(
-        "wire", "date loses its logical type", f"{ASSETS}/reverse_etl_cdf_setup.py", 'return {"type": "int", "logicalType": "date"}', 'return "int"', "tests/test_wire_format.py",
-    ),
-    Mutation(
-        "wire", "payload fields not nullable in Avro", f"{ASSETS}/reverse_etl_cdf_setup.py", '{"name": n, "type": ["null", _avro_value_type(t)], "default": None} for n, t, _ in row_fields',
-        '{"name": n, "type": _avro_value_type(t)} for n, t, _ in row_fields', "tests/test_wire_format.py",
-    ),
-    Mutation(
-        "wire", "Connect key not sorted", f"{ASSETS}/reverse_etl_cdf_setup.py", "json.dumps(key, default=str, sort_keys=True).encode", "json.dumps(key, default=str).encode", "tests/test_wire_format.py",
-    ),
-    Mutation(
-        "wire", "Connect date loses its name", f"{ASSETS}/reverse_etl_cdf_setup.py", 'return {"field": name, "type": "int32", "name": _DATE_SCHEMA_NAME, "optional": optional}',
-        'return {"field": name, "type": "int32", "optional": optional}', "tests/test_wire_format.py",
-    ),
-    Mutation("wire", "dates not turned into epoch days", f"{ASSETS}/reverse_etl_cdf_setup.py", "return (datetime.date.fromisoformat(str(value)[:10]) - _EPOCH).days", "return str(value)", "tests/test_wire_format.py"),
-    Mutation(
-        "wire", "envelope fields reordered", f"{ASSETS}/reverse_etl_cdf_setup.py", '{"field": "before", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},\n            {"field": "after", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},',
-        '{"field": "after", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},\n            {"field": "before", **_connect_row_schema(cfg, optional=True, row_fields=row_fields)},', "tests/test_wire_format.py",
-    ),
     # --- properties ---
-    Mutation(
-        "props", "chunks one version too long", f"{ASSETS}/reverse_etl_cdf_setup.py", "min(version + size - 1, end)", "min(version + size, end)", "tests/test_properties.py",
-    ),
-    Mutation("props", "split halves overlap", f"{ASSETS}/reverse_etl_cdf_setup.py", "visit(middle + 1, last)", "visit(middle, last)", "tests/test_properties.py"),
-    Mutation("props", "chunks are always split", f"{ASSETS}/reverse_etl_cdf_setup.py", "if first == last or schema_at(first) == schema_at(last):", "if first == last:", "tests/test_properties.py"),
-    Mutation("props", "watermark is the last version seen", f"{ASSETS}/reverse_etl_cdf_setup.py", "    return max(versions)\n", "    return versions[-1]\n", "tests/test_properties.py"),
-    Mutation("props", "updates not paired positionally", f"{ASSETS}/reverse_etl_cdf_setup.py", "for pre, post in zip_longest(preimages, postimages):", "for pre, post in zip(preimages, postimages):", "tests/test_properties.py"),
-    Mutation("props", "dates cut short", f"{ASSETS}/reverse_etl_cdf_setup.py", "str(value)[:10]", "str(value)[:9]", "tests/test_properties.py"),
-    Mutation("props", "booleans read case-sensitively", f"{ASSETS}/reverse_etl_cdf_setup.py", 'str(value).lower() == "true"', 'str(value) == "true"', "tests/test_properties.py"),
-    Mutation("props", "timestamps lose their UTC conversion", f"{ASSETS}/reverse_etl_delta_reader.py", "value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)", "value = value.replace(tzinfo=None)", "tests/test_properties.py"),
-    Mutation("props", "row comparison one-sided", f"{ASSETS}/reverse_etl_delta_reader.py", "for name in (set(old_row) | set(new_row)) - skip", "for name in set(new_row) - skip", "tests/test_properties.py"),
     # --- the notebook must stay in step with the asset ---
     Mutation("notebook-parity", "notebook Avro schema text not compact", "notebooks/reverse_etl_cdf_to_kafka.py", 'return json.dumps(schema, separators=(",", ":"))', "return json.dumps(schema)", "tests/test_notebook_parity.py"),
     Mutation("notebook-parity", "notebook maps TINYINT differently", "notebooks/reverse_etl_cdf_to_kafka.py", '"TINYINT": "int8"', '"TINYINT": "int16"', "tests/test_notebook_parity.py"),
@@ -262,20 +182,20 @@ MUTATIONS = [
     Mutation("risingwave", "rename drops the column before its companion", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'for gone in (f"{old}_ts", old):', 'for gone in (old, f"{old}_ts"):', "tests/test_risingwave_setup.py"),
     Mutation("risingwave", "rename not idempotent", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if old not in existing and new in existing:", "if False:", "tests/test_risingwave_setup.py"),
     Mutation(
-        "risingwave", "rename does not copy the data", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'cur.execute(f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = {_quote(old)}")', "pass", "tests/test_risingwave_setup.py",
+        "risingwave", "rename does not copy the data", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'f"UPDATE {cfg.risingwave_table} SET {_quote(new)} = COALESCE({_quote(new)}, {_quote(old)})"', "pass", "tests/test_risingwave_setup.py",
     ),
     Mutation("risingwave", "companions registered as columns", f"{ASSETS}/reverse_etl_risingwave_setup.py", 'if name in known or name.endswith("_ts"):', "if name in known:", "tests/test_risingwave_setup.py"),
     Mutation("risingwave", "connect timeout changed", f"{ASSETS}/reverse_etl_connections.py", "            # zero-DBU sync ran from outside the container network (2026-10-14).\n            connect_timeout=10,", "            # zero-DBU sync ran from outside the container network (2026-10-14).\n            connect_timeout=60,", "tests/test_risingwave_setup.py"),
     Mutation("risingwave", "topic read from the end", f"{ASSETS}/reverse_etl_risingwave_setup.py", "\"scan.startup.mode = 'earliest'\",", "\"scan.startup.mode = 'latest'\",", "tests/test_risingwave_setup.py"),
     Mutation("risingwave", "missing bootstrap accepted", f"{ASSETS}/reverse_etl_risingwave_setup.py", "if not bootstrap:", "if False:", "tests/test_risingwave_setup.py"),
     # --- the Postgres setup ---
-    Mutation("postgres", "rename with both columns skips the copy", f"{ASSETS}/reverse_etl_postgres_setup.py", 'cur.execute(f\'UPDATE {cfg.postgres_table} SET "{new}" = "{old}"\')', "pass", "tests/test_postgres_setup.py"),
+    Mutation("postgres", "rename with both columns skips the copy", f"{ASSETS}/reverse_etl_postgres_setup.py", 'UPDATE {cfg.postgres_table} SET "{new}" = COALESCE("{new}", "{old}")', "pass", "tests/test_postgres_setup.py"),
     Mutation("postgres", "sink not restarted after a rename", f"{ASSETS}/reverse_etl_postgres_setup.py", "    if ensured:\n        restart_sink_task(http, cfg)\n", "    pass\n", "tests/test_postgres_setup.py"),
     Mutation("postgres", "drop may remove the key column", f"{ASSETS}/reverse_etl_postgres_setup.py", "- {cfg.key_column})", ")", "tests/test_postgres_setup.py"),
     Mutation("postgres", "failed restart accepted", f"{ASSETS}/reverse_etl_postgres_setup.py", "(200, 201, 202, 204)", "(200, 201, 202, 204, 500)", "tests/test_postgres_setup.py"),
     # --- the demo component (the reusable core's mutations are under the core signature) ---
     Mutation("component", "a sync override is ignored", "orchestration/components/reverse_etl_cdf_demo.py", '"uniform", "propagate_drops", "encoding", "schema_registry_url", "state_backend", "state_path"', '"uniform", "encoding", "schema_registry_url", "state_backend", "state_path"', "tests/components"),
-    Mutation("component", "a targets override is ignored", "orchestration/components/reverse_etl_cdf_demo.py", 'for field in ("sink_tasks_max", "duckdb_target_path")', 'for field in ("sink_tasks_max",)', "tests/components"),
+    Mutation("component", "a targets override is ignored", "orchestration/components/reverse_etl_cdf_demo.py", 'for field in ("sink_tasks_max", "duckdb_target_path", "starrocks_table")', 'for field in ("sink_tasks_max",)', "tests/components"),
     Mutation("component", "a false override is ignored", "orchestration/components/reverse_etl_cdf_demo.py", "if getattr(self, field) is not None", "if getattr(self, field)", "tests/components"),
     Mutation("component", "reset prefixes left as a list", "orchestration/components/reverse_etl_cdf_demo.py", 'overrides["reset_name_prefixes"] = tuple(self.reset_name_prefixes)', 'overrides["reset_name_prefixes"] = self.reset_name_prefixes', "tests/components"),
     Mutation("component", "key column not passed", "orchestration/components/reverse_etl_cdf_demo.py", "key_column=self.sync.key_column,\n            seed_statements", "seed_statements", "tests/components"),
@@ -291,12 +211,10 @@ MUTATIONS = [
     Mutation("component", "state_backend requiredness sneaks back", "orchestration/components/reverse_etl_cdf_sync.py", "    state_backend: str\n", '    state_backend: str = "postgres"\n', "tests/components"),
     # Two sites read cfg.state_backend (the resource-key guard and the state build); this
     # anchors on the state build. Either one alone is caught statically (test_config_surface).
-    Mutation("component", "the asset reads a demo-only field", f"{ASSETS}/reverse_etl_cdf_setup.py", 'connections.state_postgres() if cfg.state_backend == "postgres" else None', 'connections.state_postgres() if cfg.propagate_drops == "postgres" else None', "tests/sync_asset"),
     Mutation("component", "topic asset always built", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.create_topic_asset:\n", "    if True:\n", "tests/components"),
     Mutation("component", "seed not part of the setup job", f"{ASSETS}/reverse_etl_defs.py", "    if cfg.seed_statements:\n        job_assets.append(cfg.seed_asset)\n", "", "tests/components"),
     Mutation("component", "make_change built without source columns", f"{ASSETS}/reverse_etl_defs.py", "build_change_asset(cfg) if cfg.source_columns else None", "build_change_asset(cfg)", "tests/components"),
     # --- the core signature: no resources (the env contract), the demo wires its deps in ---
-    Mutation("component", "the demo's upstream deps are dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "deps=list(deps) or None,", "deps=None,", "tests/components"),
     # --- the target selection (plan section 12, option A): each gate is pinned by a selection's exact asset set ---
     Mutation("targets", "the RisingWave target is built anyway", f"{ASSETS}/reverse_etl_defs.py", '*([build_risingwave_table_asset(risingwave_target_config(cfg, source_fqn))] if "risingwave" in cfg.targets else []),', "*([build_risingwave_table_asset(risingwave_target_config(cfg, source_fqn))]),", "tests/components"),
     Mutation("targets", "the JDBC sink is built anyway", f"{ASSETS}/reverse_etl_defs.py", '*([build_debezium_sink_asset(postgres_cfg)] if has_postgres_target else []),', "*([build_debezium_sink_asset(postgres_cfg)]),", "tests/components"),
@@ -304,11 +222,11 @@ MUTATIONS = [
     Mutation("targets", "the RisingWave target joins the setup job anyway", f"{ASSETS}/reverse_etl_defs.py", '*([cfg.risingwave_asset] if "risingwave" in cfg.targets else []),', "*([cfg.risingwave_asset]),", "tests/components"),
     Mutation("targets", "the DuckDB mirror joins the setup job anyway", f"{ASSETS}/reverse_etl_defs.py", '*([f"{cfg.sync_name}_duckdb_target"] if "duckdb" in cfg.targets else []),', "*([f\"{cfg.sync_name}_duckdb_target\"]),", "tests/components"),
     Mutation("targets", "the health check follows no target", f"{ASSETS}/reverse_etl_defs.py", 'has_postgres_target = "postgres" in cfg.targets', "has_postgres_target = True", "tests/components"),
-    Mutation("targets", "before_produce feeds an unselected RisingWave", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if "risingwave" not in cfg.targets:', "if False:", "tests/sync_asset"),
-    Mutation("targets", "after_delivery touches targets it was not given", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if "risingwave" not in cfg.targets and "postgres" not in cfg.targets:', "if False:", "tests/sync_asset"),
+    Mutation("targets", "before_produce feeds an unselected RisingWave", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if "risingwave" in cfg.targets:', "if False:", "tests/sync_asset"),
+    Mutation("targets", "after_delivery touches targets it was not given", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if "risingwave" not in cfg.targets and "postgres" not in cfg.targets and "starrocks" not in cfg.targets:', "if False:", "tests/sync_asset"),
     Mutation("targets", "propagate_drops accepts a half selection", f"{ASSETS}/reverse_etl_demo_hooks.py", 'if cfg.propagate_drops and not {"risingwave", "postgres"} <= set(cfg.targets):', "if False:", "tests/sync_asset"),
     Mutation("targets", "tombstones keep the key", f"{ASSETS}/reverse_etl_duckdb_target.py", 'if envelope["op"] == "d":', "if False:", "tests/test_duckdb_target.py"),
-    Mutation("targets", "unknown targets pass the config", f"{ASSETS}/reverse_etl_config.py", 'unknown = set(targets) - {"risingwave", "postgres", "duckdb"}', "unknown = set()", "tests/components"),
+    Mutation("targets", "unknown targets pass the config", f"{ASSETS}/reverse_etl_config.py", 'unknown = set(targets) - {"risingwave", "postgres", "duckdb", "starrocks"}', "unknown = set()", "tests/components"),
     Mutation("targets", "the split keeps the sync's selection", f"{ASSETS}/reverse_etl_config.py", "            sink_tasks_max=self.sink_tasks_max,\n            targets=self.targets,\n", "            sink_tasks_max=self.sink_tasks_max,\n            targets=(\"risingwave\", \"postgres\"),\n", "tests/test_targets_defs.py"),
     # --- the slim per-target configs (release design step 4) ---
     Mutation("targets", "a derived name is ignored", f"{ASSETS}/reverse_etl_config.py", 'object.__setattr__(self, "risingwave_table", f"reverse_etl_{self.label}_target")', 'object.__setattr__(self, "risingwave_table", "reverse_etl_moved_target")', "tests/test_targets_defs.py"),
@@ -325,84 +243,18 @@ MUTATIONS = [
     Mutation("connector-coords", "the schema qualifier is dropped", f"{ASSETS}/reverse_etl_debezium_sink.py", '        "collection.name.format": cfg.postgres_table,', '        "collection.name.format": cfg.postgres_table.rsplit(".", 1)[-1],', "tests/test_types.py"),
     Mutation("connector-coords", "the password is interpolated", f"{ASSETS}/reverse_etl_debezium_sink.py", '        "connection.password": "${env:POSTGRES_PASSWORD}",', '        "connection.password": os.environ.get("POSTGRES_PASSWORD", "${env:POSTGRES_PASSWORD}"),', "tests/test_types.py"),
     # --- the env contract (release design step 7): connections from the environment, meter optional ---
-    Mutation("env-connections", "the cost meter is always emitted", f"{ASSETS}/reverse_etl_cdf_setup.py", '    if not os.environ.get("DBT_DATABRICKS_HOST", ""):\n        return {}', "    if False:", "tests/test_types.py"),
     Mutation("env-connections", "the state Postgres host is defaulted", f"{ASSETS}/reverse_etl_connections.py", '    host = os.environ.get("POSTGRES_HOST", "")\n    if not host:', '    host = os.environ.get("POSTGRES_HOST", "host.docker.internal")\n    if not host:', "tests/test_postgres_setup.py"),
     # --- hygiene and compatibility (release design step 8): the scan must flag what it forbids ---
     Mutation("hygiene", "the scan misses a demo import", "tests/components/hygiene/test_import_hygiene.py", 'FORBIDDEN = re.compile(r"reverse_etl_(demo_\\w+|change|reset|resources)$")', 'FORBIDDEN = re.compile(r"reverse_etl_(demoX_\\w+|change|reset|resources)$")', "tests/components/hygiene"),
     # --- the core's preconditions: the topic and the state table are the team's (D1, D5) ---
-    Mutation("preconditions", "the topic check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "if topic not in kafka.admin_client().list_topics(timeout=15).topics:", "if False:", "tests/sync_asset/test_preconditions.py"),
-    Mutation("preconditions", "the state check is dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "        state.require()", "        pass", "tests/sync_asset/test_preconditions.py"),
-    Mutation("preconditions", "the DDL is dropped from the error", f"{ASSETS}/reverse_etl_state.py", 'f"{self.ddl()}"', '""', "tests/sync_asset/test_preconditions.py"),
     Mutation("preconditions", "the duckdb backend is ignored", f"{ASSETS}/reverse_etl_state.py", '    if cfg.state_backend == "duckdb":\n        return DuckDBSyncState(cfg.state_path)', "    if False:", "tests/sync_asset/test_state_backends.py"),
     # --- the watermark guard (release design step 3): renames must fail loudly ---
-    Mutation("preconditions", "the guard never runs", f"{ASSETS}/reverse_etl_cdf_setup.py", "        check_watermark_identity(state, cfg, context.log)", "        pass", "tests/sync_asset"),
-    Mutation("preconditions", "the rename case is misclassified", f"{ASSETS}/reverse_etl_cdf_setup.py", 'renamed = [(name, label) for name, label in others if label is not None and name == f"reverse_etl_{label}"]', "renamed = []", "tests/sync_asset"),
-    Mutation("preconditions", "the write forgets the source", f"{ASSETS}/reverse_etl_cdf_setup.py", "state.write(cfg.sync_name, version, last_schema, source_fqn=cfg.source_fqn, label=cfg.label)", "state.write(cfg.sync_name, version, last_schema)", "tests/sync_asset"),
     Mutation("preconditions", "require skips the guard columns", f"{ASSETS}/reverse_etl_state.py", "missing = sorted(set(GUARD_COLUMNS) - columns)", "missing = []", "tests/sync_asset"),
     Mutation("preconditions", "create skips the migration", f"{ASSETS}/reverse_etl_state.py", "                cur.execute(state_table_migration_ddl(self.table))", "                pass", "tests/sync_asset/test_state_backends.py"),
     # --- the sync's hooks (the demo's extension points) ---
-    Mutation("hooks", "before_produce never called", f"{ASSETS}/reverse_etl_cdf_setup.py", "_merge_hook_metadata(hook_metadata, hooks.before_produce(context, cfg, row_fields))", "pass", "tests/sync_asset/test_sync_hooks.py"),
-    Mutation(
-        "hooks", "after_delivery never called", f"{ASSETS}/reverse_etl_cdf_setup.py",
-        """            if hooks is not None:
-                # Here: AFTER the flush above succeeded, BEFORE the watermark
-                # write below -- a failing hook fails the run before the
-                # watermark moves, and the next run replays the same versions
-                # and re-runs it (every hook operation is idempotent).
-                _merge_hook_metadata(
-                    hook_metadata,
-                    hooks.after_delivery(
-                        context,
-                        cfg,
-                        {
-                            "row_fields": row_fields,
-                            "column_ids": column_ids,
-                            "last_schema": last_schema,
-                            "event_row_fields": event_row_fields,
-                            "event_fields_version": event_fields_version,
-                            "source_location": source_location,
-                        },
-                    ),
-                )
-""",
-        "            pass\n",
-        "tests/sync_asset/test_sync_hooks.py",
-    ),
-    Mutation(
-        "hooks", "watermark written before the hook", f"{ASSETS}/reverse_etl_cdf_setup.py",
-        """            if hooks is not None:
-                # Here: AFTER the flush above succeeded""",
-        """            _write_state(postgres, cfg, new_version, _last_schema_json(row_fields, column_ids))
-            if hooks is not None:
-                # Here: AFTER the flush above succeeded""",
-        "tests/sync_asset/test_sync_hooks.py",
-    ),
-    Mutation("hooks", "idle metadata dropped", f"{ASSETS}/reverse_etl_cdf_setup.py", "**(hooks.idle_metadata() if hooks else {}),", "**{},", "tests/sync_asset/test_sync_hooks.py"),
-    Mutation("hooks", "hook metadata dropped from the output", f"{ASSETS}/reverse_etl_cdf_setup.py", "            **hook_metadata,\n", "", "tests/sync_asset/test_sync_hooks.py"),
     # --- the reset job ---
     Mutation("reset", "a missing group is retried", f"{ASSETS}/reverse_etl_reset.py", "GROUP_ID_NOT_FOUND", "NEVER_MATCHES", "tests/test_reset.py"),
     # --- the sync asset ---
-    Mutation(
-        "sync", "chunks not split at schema changes", f"{ASSETS}/reverse_etl_cdf_setup.py",
-        "            chunks = _split_at_schema_changes(chunks, lambda version: get_row_fields(source_location, version=version))\n", "",
-        "tests/sync_asset",
-    ),
-    Mutation(
-        "sync", "watermark moves only for chunks with rows", f"{ASSETS}/reverse_etl_cdf_setup.py",
-        "                new_version = chunk_watermark if new_version is None else max(new_version, chunk_watermark)\n"
-        "                if not rows:\n                    continue\n",
-        "                if not rows:\n                    continue\n"
-        "                new_version = chunk_watermark if new_version is None else max(new_version, chunk_watermark)\n",
-        "tests/sync_asset",
-    ),
-    Mutation(
-        "sync", "producer never flushed", f"{ASSETS}/reverse_etl_cdf_setup.py", "                _flush_producer(cfg, producer, delivery_errors)\n",
-        "                pass\n", "tests/sync_asset",
-    ),
-    Mutation(
-        "sync", "aged-out history not recognised", f"{ASSETS}/reverse_etl_delta_reader.py", "|expired|No files in log segment", "|expired",
-        "tests/sync_asset",
-    ),
 ]
 
 

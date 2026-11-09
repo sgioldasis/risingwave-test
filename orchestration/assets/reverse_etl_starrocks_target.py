@@ -30,9 +30,10 @@ import time
 import pymysql
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from kaizen_dagster_reverse_etl.core.delta_reader import get_row_fields
+from kaizen_dagster_reverse_etl.core.wire import DATE, ZONED_TIMESTAMP, RowField
+
 from . import reverse_etl_connections as connections
-from .reverse_etl_cdf_setup import DATE, ZONED_TIMESTAMP, RowField
-from .reverse_etl_delta_reader import get_row_fields
 from .reverse_etl_config import StarrocksTargetConfig
 
 # Kafka Connect schema type -> StarRocks type. ZONED_TIMESTAMP lands as DATETIME via the

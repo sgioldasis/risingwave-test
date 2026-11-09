@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf
+from kaizen_dagster_reverse_etl.core import wire as cdf
 from tests.fakes import FakeSchemaRegistry, make_config
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
@@ -82,23 +82,23 @@ def pretty(raw: bytes) -> str:
 @pytest.mark.parametrize("case", EVENTS)
 class TestConnectJson:
     def test_the_key(self, case):
-        key, _ = cdf._build_connect_json_message(CFG, EVENTS[case], KEY_COLUMNS, ROW_FIELDS)
+        key, _ = cdf.build_connect_json_message(CFG, EVENTS[case], KEY_COLUMNS, ROW_FIELDS)
         check_golden(f"connect_json/{case}.key.json", pretty(key))
         assert key == json.dumps(json.loads(key), default=str, sort_keys=True).encode()  # written with sorted keys
 
     def test_the_value(self, case):
-        _, value = cdf._build_connect_json_message(CFG, EVENTS[case], KEY_COLUMNS, ROW_FIELDS)
+        _, value = cdf.build_connect_json_message(CFG, EVENTS[case], KEY_COLUMNS, ROW_FIELDS)
         check_golden(f"connect_json/{case}.value.json", pretty(value))
 
 
 class TestAvroSchemas:
     def test_the_key_schema_string(self):
-        key_schema, _ = cdf._avro_schemas(CFG, KEY_COLUMNS, ROW_FIELDS)
-        check_golden("avro/key.schema.json", cdf._avro_schema_string(key_schema) + "\n")
+        key_schema, _ = cdf.avro_schemas(CFG, KEY_COLUMNS, ROW_FIELDS)
+        check_golden("avro/key.schema.json", cdf.avro_schema_string(key_schema) + "\n")
 
     def test_the_value_schema_string(self):
-        _, value_schema = cdf._avro_schemas(CFG, KEY_COLUMNS, ROW_FIELDS)
-        check_golden("avro/value.schema.json", cdf._avro_schema_string(value_schema) + "\n")
+        _, value_schema = cdf.avro_schemas(CFG, KEY_COLUMNS, ROW_FIELDS)
+        check_golden("avro/value.schema.json", cdf.avro_schema_string(value_schema) + "\n")
 
     def test_the_subjects_the_schemas_are_registered_under(self):
         check_golden("avro/subjects.txt", f"{CFG.key_subject}\n{CFG.value_subject}\n")
@@ -109,8 +109,8 @@ class TestAvroPayloads:
     @pytest.fixture
     def message(self, case):
         client = FakeSchemaRegistry().client(CFG.schema_registry_url)
-        serializers = cdf._avro_serializers(CFG, KEY_COLUMNS, ROW_FIELDS, client)
-        return cdf._build_avro_message(CFG, EVENTS[case], KEY_COLUMNS, ROW_FIELDS, serializers)
+        serializers = cdf.avro_serializers(CFG, KEY_COLUMNS, ROW_FIELDS, client)
+        return cdf.build_avro_message(CFG, EVENTS[case], KEY_COLUMNS, ROW_FIELDS, serializers)
 
     def test_the_wire_format_header_is_the_magic_byte_and_a_schema_id(self, message):
         for part in message:

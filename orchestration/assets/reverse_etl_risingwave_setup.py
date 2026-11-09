@@ -1,9 +1,9 @@
 """RisingWave table sourced from the reverse-ETL CDF POC's Kafka topic (APR-233).
 
 See docs/poc/REVERSE_ETL_CDF_POC_PLAN.md. Ingests the reverse-ETL topic
-(reverse_etl_cdf_setup.KAFKA_TOPIC) via FORMAT DEBEZIUM ENCODE JSON -- this is
+(the sync's KAFKA_TOPIC, from the library's wire module) via FORMAT DEBEZIUM ENCODE JSON -- this is
 the payoff of producing Debezium-style before/after/op envelopes (see
-reverse_etl_cdf_setup.py's _to_debezium_events): RisingWave applies the
+the library's wire.to_debezium_events): RisingWave applies the
 before/after/op stream as real upserts and deletes against this table's own
 storage, keyed by `id`, rather than needing a window-function MV to
 reconstruct "current state" from an append-only event log. The messages embed
@@ -15,15 +15,11 @@ import os
 
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 
+from kaizen_dagster_reverse_etl.core.delta_reader import get_row_fields
+from kaizen_dagster_reverse_etl.core.wire import DATE, ZONED_TIMESTAMP, RowField, register_avro_schemas
+
 from . import reverse_etl_connections as connections
 from .reverse_etl_config import RisingwaveTargetConfig
-from .reverse_etl_cdf_setup import (
-    DATE,
-    ZONED_TIMESTAMP,
-    RowField,
-    _register_avro_schemas,
-)
-from .reverse_etl_delta_reader import get_row_fields
 
 # Kafka Connect schema type -> RisingWave type. int8 and int16 both map to
 # SMALLINT (RisingWave has no 1-byte integer).
@@ -172,7 +168,7 @@ def add_missing_columns(
                 # RisingWave checks a new column against the registry schema, so the new version comes
                 # first -- and it must keep every column the table still has (a pending rename's old
                 # name, a pending drop), see _registration_fields.
-                _register_avro_schemas(
+                register_avro_schemas(
                     registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing)
                 )
             for field in missing:
@@ -263,7 +259,7 @@ def rename_columns_in_risingwave(
                 # RisingWave rebinds the whole table against the registry's latest schema on ADD, so
                 # the registration keeps every column the table still has -- the old names included
                 # (see _registration_fields).
-                _register_avro_schemas(
+                register_avro_schemas(
                     registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], _registration_fields(cfg, row_fields, existing)
                 )
             for old, new in renames:
@@ -333,7 +329,7 @@ def build_risingwave_table_asset(cfg: RisingwaveTargetConfig):
         token = databricks.token()
         row_fields = get_row_fields(databricks.table_location_cached(token, cfg, cfg.source_fqn))
         if cfg.encoding == "avro":
-            _register_avro_schemas(registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], row_fields)
+            register_avro_schemas(registry.client(cfg.schema_registry_url), cfg, [cfg.key_column], row_fields)
 
         conn = risingwave.connect()
         try:

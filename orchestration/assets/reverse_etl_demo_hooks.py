@@ -1,6 +1,6 @@
 """The demo's sync hooks: the target care the demo adds around the sync.
 
-The sync asset (reverse_etl_cdf_setup.build_sync_asset) takes optional hooks and calls them at two
+The sync asset (kaizen_dagster_reverse_etl.components.cdf_sync.sync.build_sync_asset) takes optional hooks and calls them at two
 fixed points — before each event-bearing chunk is produced, and after the final Kafka flush but before
 the watermark is saved. This module is what the demo passes: it keeps the RisingWave table ahead of the
 messages (a column must exist before the first message that uses it) and propagates column drops and
@@ -12,7 +12,7 @@ The propagation lives here rather than in the sync asset module because it reads
 `cfg.propagate_drops` (release design step 2: the asset is base-clean) — a released sync runs
 without these hooks and never touches the targets.
 
-The ordering these depend on is documented on SyncHooks (reverse_etl_cdf_setup) and pinned by
+The ordering these depend on is documented on SyncHooks (the library's cdf_sync.sync module) and pinned by
 tests/sync_asset/test_sync_hooks.py.
 """
 
@@ -21,8 +21,13 @@ from typing import Any
 
 from dagster import AssetExecutionContext
 
+from kaizen_dagster_reverse_etl.components.cdf_sync.sync import SyncHooks
+from kaizen_dagster_reverse_etl.core.delta_reader import get_column_ids
+from kaizen_dagster_reverse_etl.core.wire import RowField
+
 from . import reverse_etl_connections as connections
-from .reverse_etl_cdf_setup import RowField, SyncHooks, get_column_ids
+from .databricks_cost_meter import reset as meter_reset
+from .reverse_etl_cdf_setup import _cost_metadata
 from .reverse_etl_config import ReverseEtlSyncConfig, risingwave_target_config, starrocks_target_config
 from .reverse_etl_risingwave_setup import add_missing_columns
 from .reverse_etl_starrocks_target import add_missing_columns_to_starrocks
@@ -145,7 +150,12 @@ def _propagate_column_drops(
 
 class DemoSyncHooks(SyncHooks):
     """Target care for the demo syncs: RisingWave columns ahead of the messages, drop/rename
-    propagation to both targets, and the sink restart that goes with it."""
+    propagation to both targets, the sink restart that goes with it, and the Databricks cost
+    meter (reset at run start, surfaced as run metadata after delivery)."""
+
+    def run_start(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig) -> dict:
+        meter_reset()
+        return {}
 
     def before_produce(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, row_fields: list[RowField]) -> dict:
         result: dict = {"risingwave_columns_added": [], "starrocks_columns_added": []}
@@ -176,7 +186,7 @@ class DemoSyncHooks(SyncHooks):
 
     def after_delivery(self, context: AssetExecutionContext, cfg: ReverseEtlSyncConfig, schema: dict) -> dict:
         if "risingwave" not in cfg.targets and "postgres" not in cfg.targets and "starrocks" not in cfg.targets:
-            return {"columns_dropped": {}, "columns_renamed": []}
+            return {"columns_dropped": {}, "columns_renamed": [], **_cost_metadata()}
         if cfg.propagate_drops and not {"risingwave", "postgres"} <= set(cfg.targets):
             # _propagate_column_drops restarts the sink after changing the connector's table:
             # with one of them unselected there is no table or connector to change, so the
@@ -253,7 +263,13 @@ class DemoSyncHooks(SyncHooks):
             context.log.info(f"Renamed column(s) on the targets: {columns_renamed}")
         if columns_dropped:
             context.log.info(f"Dropped column(s) from the targets: {columns_dropped}")
-        return {"columns_dropped": columns_dropped, "columns_renamed": columns_renamed}
+        return {"columns_dropped": columns_dropped, "columns_renamed": columns_renamed, **_cost_metadata()}
 
     def idle_metadata(self) -> dict:
-        return {"risingwave_columns_added": [], "starrocks_columns_added": [], "columns_dropped": {}, "columns_renamed": []}
+        return {
+            "risingwave_columns_added": [],
+            "starrocks_columns_added": [],
+            "columns_dropped": {},
+            "columns_renamed": [],
+            **_cost_metadata(),
+        }

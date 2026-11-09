@@ -13,8 +13,9 @@ import re
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from orchestration.assets import reverse_etl_cdf_setup as cdf
-from orchestration.assets import reverse_etl_delta_reader as reader
+from kaizen_dagster_reverse_etl.components.cdf_sync import sync as cdf
+from kaizen_dagster_reverse_etl.core import wire
+from kaizen_dagster_reverse_etl.core import delta_reader as reader
 
 PROPERTY = settings(deadline=None, max_examples=200)
 
@@ -86,51 +87,51 @@ version_values = st.one_of(st.integers(0, 10**6), st.integers(0, 10**6).map(str)
     current=st.one_of(st.none(), st.integers(0, 10**6)),
 )
 def test_the_watermark_is_the_numerically_highest_version_seen_or_the_current_one(versions, current):
-    rows = [{cdf.COMMIT_VERSION_COLUMN: v} if v is not None else {} for v in versions]
+    rows = [{wire.COMMIT_VERSION_COLUMN: v} if v is not None else {} for v in versions]
     seen = [int(v) for v in versions if v is not None]
     assert cdf._next_watermark(rows, current) == (max(seen) if seen else current)
 
 
 # --- value coercion ----------------------------------------------------------------------------------------------------
 
-CONNECT_TYPES = ["int8", "int16", "int32", "int64", "float", "double", "boolean", "string", cdf.DATE]
+CONNECT_TYPES = ["int8", "int16", "int32", "int64", "float", "double", "boolean", "string", wire.DATE]
 
 
 @PROPERTY
 @given(st.sampled_from(CONNECT_TYPES))
 def test_a_null_stays_null_for_every_type(connect_type):
-    assert cdf._coerce(None, connect_type) is None
+    assert wire.coerce(None, connect_type) is None
 
 
 @PROPERTY
 @given(n=st.integers(-(2**63), 2**63 - 1), connect_type=st.sampled_from(["int8", "int16", "int32", "int64"]))
 def test_integers_arrive_from_the_api_as_strings_and_come_out_as_ints(n, connect_type):
-    assert cdf._coerce(str(n), connect_type) == n and cdf._coerce(n, connect_type) == n
+    assert wire.coerce(str(n), connect_type) == n and wire.coerce(n, connect_type) == n
 
 
 @PROPERTY
 @given(x=st.floats(allow_nan=False, allow_infinity=False), connect_type=st.sampled_from(["float", "double"]))
 def test_floats_survive_the_trip_through_a_string(x, connect_type):
-    assert cdf._coerce(repr(x), connect_type) == x
+    assert wire.coerce(repr(x), connect_type) == x
 
 
 @PROPERTY
 @given(flag=st.booleans(), cased=st.sampled_from([str.lower, str.upper, str.title]))
 def test_booleans_survive_as_bools_or_any_casing_of_their_text(flag, cased):
-    assert cdf._coerce(flag, "boolean") is flag
-    assert cdf._coerce(cased(str(flag)), "boolean") is flag
+    assert wire.coerce(flag, "boolean") is flag
+    assert wire.coerce(cased(str(flag)), "boolean") is flag
 
 
 @PROPERTY
 @given(day=st.dates(), suffix=st.sampled_from(["", "T10:00:00Z", " 23:59:59", "T00:00:00.123456+02:00"]))
 def test_a_date_becomes_its_days_since_the_epoch_whatever_follows_the_date_in_the_text(day, suffix):
-    assert cdf._coerce(day.isoformat() + suffix, cdf.DATE) == (day - datetime.date(1970, 1, 1)).days
+    assert wire.coerce(day.isoformat() + suffix, wire.DATE) == (day - datetime.date(1970, 1, 1)).days
 
 
 @PROPERTY
 @given(text=st.text())
 def test_strings_are_left_alone(text):
-    assert cdf._coerce(text, "string") == text
+    assert wire.coerce(text, "string") == text
 
 
 # --- change events -----------------------------------------------------------------------------------------------------
@@ -140,9 +141,9 @@ change_rows = st.lists(
     st.fixed_dictionaries(
         {
             "id": st.integers(1, 3),
-            cdf.COMMIT_VERSION_COLUMN: st.integers(1, 3),
-            cdf.CHANGE_TYPE_COLUMN: st.sampled_from(CHANGE_TYPES),
-            cdf.COMMIT_TIMESTAMP_COLUMN: st.just("2026-10-18T17:26:36.779212Z"),
+            wire.COMMIT_VERSION_COLUMN: st.integers(1, 3),
+            wire.CHANGE_TYPE_COLUMN: st.sampled_from(CHANGE_TYPES),
+            wire.COMMIT_TIMESTAMP_COLUMN: st.just("2026-10-18T17:26:36.779212Z"),
             "payload": st.integers(0, 9),
         }
     ),
@@ -153,22 +154,22 @@ change_rows = st.lists(
 @PROPERTY
 @given(change_rows)
 def test_events_account_for_every_change_row_and_never_carry_the_cdf_columns(rows):
-    events = cdf._to_debezium_events(rows, ["id"])
+    events = wire.to_debezium_events(rows, ["id"])
 
     groups: dict = {}
     for row in rows:
-        counts = groups.setdefault((row["id"], row[cdf.COMMIT_VERSION_COLUMN]), dict.fromkeys(CHANGE_TYPES, 0))
-        counts[row[cdf.CHANGE_TYPE_COLUMN]] += 1
+        counts = groups.setdefault((row["id"], row[wire.COMMIT_VERSION_COLUMN]), dict.fromkeys(CHANGE_TYPES, 0))
+        counts[row[wire.CHANGE_TYPE_COLUMN]] += 1
     expected = {
         "c": sum(c["insert"] for c in groups.values()),
         "d": sum(c["delete"] for c in groups.values()),
         "u": sum(max(c["update_preimage"], c["update_postimage"]) for c in groups.values()),  # paired positionally
     }
-    assert {op: n for op, n in cdf._summarize_ops(events).items()} == {op: n for op, n in expected.items() if n}
+    assert {op: n for op, n in wire.summarize_ops(events).items()} == {op: n for op, n in expected.items() if n}
 
     for event in events:
         for side in ("before", "after"):
-            assert not (event[side] or {}).keys() & set(cdf.CDF_METADATA_COLUMNS)
+            assert not (event[side] or {}).keys() & set(wire.CDF_METADATA_COLUMNS)
         if event["op"] == "c":
             assert event["before"] is None and event["after"] is not None
         if event["op"] == "d":

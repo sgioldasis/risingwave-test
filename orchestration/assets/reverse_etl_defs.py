@@ -14,7 +14,8 @@ from dagster import (
     in_process_executor,
 )
 
-from .reverse_etl_cdf_setup import build_sync_asset
+from kaizen_dagster_reverse_etl.components.cdf_sync.sync import build_sync_asset
+
 from .reverse_etl_demo_assets import build_seed_asset, build_table_setup_asset
 from .reverse_etl_duckdb_target import build_duckdb_target_asset
 from .reverse_etl_config import (

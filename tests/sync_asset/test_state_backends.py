@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-from orchestration.assets.reverse_etl_cdf_setup import check_watermark_identity
+from kaizen_dagster_reverse_etl.components.cdf_sync.sync import check_watermark_identity
 from orchestration.assets.reverse_etl_state import DuckDBSyncState, PostgresSyncState, build_sync_state
 from tests.fakes import FakeDatabase, make_config
 from tests.sync_asset.support import row

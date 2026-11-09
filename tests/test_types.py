@@ -13,9 +13,10 @@ from unittest import mock
 import fastavro
 import pytest
 
-from orchestration.assets import reverse_etl_cdf_setup as cs
+from kaizen_dagster_reverse_etl.core import wire
+from kaizen_dagster_reverse_etl.core import delta_reader as reader
+from orchestration.assets import reverse_etl_cdf_setup as demo_helpers
 from orchestration.assets import reverse_etl_debezium_sink as sink
-from orchestration.assets import reverse_etl_delta_reader as reader
 from orchestration.assets import reverse_etl_drt as drt
 from orchestration.assets import reverse_etl_risingwave_setup as rw
 from orchestration.assets.reverse_etl_config import PostgresTargetConfig, ReverseEtlSyncConfig
@@ -52,30 +53,31 @@ def avro_round_trip(schema, payload):
     ],
 )
 def test_date_coercion(value, expected):
-    assert cs._coerce(value, cs.DATE) == expected
+    assert wire.coerce(value, wire.DATE) == expected
 
 
 @pytest.mark.parametrize("value, connect_type, expected", [("5", "int32", 5), ("2.5", "double", 2.5), ("x", "string", "x")])
 def test_other_types_are_coerced_as_before(value, connect_type, expected):
-    assert cs._coerce(value, connect_type) == expected
+    assert wire.coerce(value, connect_type) == expected
 
 
 # --- type maps -------------------------------------------------------------------
 
 
-def test_databricks_and_delta_date_map_to_the_date_marker():
-    assert cs._CONNECT_TYPE_BY_DATABRICKS_TYPE["DATE"] == cs.DATE
-    assert reader._CONNECT_TYPE_BY_DELTA_TYPE["date"] == cs.DATE
+def test_delta_date_maps_to_the_date_marker():
+    # The fork era also pinned a Databricks-SQL-name map (the SQL read path's);
+    # the library reads field types from delta-rs, so the delta-typed map is the one.
+    assert reader._CONNECT_TYPE_BY_DELTA_TYPE["date"] == wire.DATE
 
 
 def test_risingwave_maps_date_both_ways():
-    assert rw._RISINGWAVE_TYPE_BY_CONNECT_TYPE[cs.DATE] == "DATE"
-    assert rw._CONNECT_TYPE_BY_RW_DATA_TYPE["date"] == cs.DATE
+    assert rw._RISINGWAVE_TYPE_BY_CONNECT_TYPE[wire.DATE] == "DATE"
+    assert rw._CONNECT_TYPE_BY_RW_DATA_TYPE["date"] == wire.DATE
 
 
 @pytest.mark.parametrize("encoding", ["json", "avro"])
 def test_risingwave_column_is_a_plain_date_for_both_encodings(encoding):
-    field = ("Company_ReleaseDate", cs.DATE, True)
+    field = ("Company_ReleaseDate", wire.DATE, True)
     assert rw._column_defs(types_config(encoding), field) == ['"Company_ReleaseDate" DATE']
 
 
@@ -84,13 +86,13 @@ def test_drt_target_gets_a_date_column():
 
 
 def test_timestamp_marker_is_unchanged():
-    assert cs._CONNECT_TYPE_BY_DATABRICKS_TYPE["TIMESTAMP"] == cs.ZONED_TIMESTAMP
-    assert rw._RISINGWAVE_TYPE_BY_CONNECT_TYPE[cs.ZONED_TIMESTAMP] == "TIMESTAMPTZ"
+    assert reader._CONNECT_TYPE_BY_DELTA_TYPE["timestamp"] == wire.ZONED_TIMESTAMP
+    assert rw._RISINGWAVE_TYPE_BY_CONNECT_TYPE[wire.ZONED_TIMESTAMP] == "TIMESTAMPTZ"
 
 
 # --- wire formats ----------------------------------------------------------------
 
-ROW_FIELDS = [("Release_Date", cs.DATE, False), ("Name", "string", True), ("N", "int32", True)]
+ROW_FIELDS = [("Release_Date", wire.DATE, False), ("Name", "string", True), ("N", "int32", True)]
 EVENT = {
     "op": "u",
     "before": {"Release_Date": "2012-01-01", "Name": "A", "N": 1},
@@ -100,13 +102,13 @@ EVENT = {
 
 
 def test_json_field_names_the_debezium_date_schema():
-    field = cs._connect_field("Company_ReleaseDate", cs.DATE, True)
+    field = wire.connect_field("Company_ReleaseDate", wire.DATE, True)
     assert field == {"field": "Company_ReleaseDate", "type": "int32", "name": "io.debezium.time.Date", "optional": True}
 
 
 def test_json_key_schema_of_a_date_key_names_the_debezium_date_schema():
     cfg = types_config("json", key_column="Release_Date")
-    key, value = cs._build_connect_json_message(cfg, EVENT, ["Release_Date"], ROW_FIELDS)
+    key, value = wire.build_connect_json_message(cfg, EVENT, ["Release_Date"], ROW_FIELDS)
     key = json.loads(key)
     assert key["schema"]["fields"][0]["type"] == "int32"
     assert key["schema"]["fields"][0]["name"] == "io.debezium.time.Date"
@@ -117,19 +119,19 @@ def test_json_key_schema_of_a_date_key_names_the_debezium_date_schema():
 def test_json_key_schema_of_an_integer_key_is_unchanged():
     fields = [("Company_ID", "int32", False), ("Name", "string", True)]
     event = {"op": "c", "before": None, "after": {"Company_ID": 7, "Name": "x"}, "source": {}}
-    key, _ = cs._build_connect_json_message(types_config(), event, ["Company_ID"], fields)
+    key, _ = wire.build_connect_json_message(types_config(), event, ["Company_ID"], fields)
     assert json.loads(key)["schema"]["fields"] == [{"field": "Company_ID", "type": "int32", "optional": False}]
 
 
 def test_avro_date_is_an_int_with_the_date_logical_type():
-    assert cs._avro_value_type(cs.DATE) == {"type": "int", "logicalType": "date"}
+    assert wire.avro_value_type(wire.DATE) == {"type": "int", "logicalType": "date"}
 
 
 def test_avro_round_trip_of_a_date_key_and_date_column():
     cfg = types_config("avro", key_column="Release_Date")
     keys = ["Release_Date"]
-    key_schema, value_schema = cs._avro_schemas(cfg, keys, ROW_FIELDS)
-    key_payload, value_payload = cs._avro_payloads(EVENT, keys, ROW_FIELDS)
+    key_schema, value_schema = wire.avro_schemas(cfg, keys, ROW_FIELDS)
+    key_payload, value_payload = wire.avro_payloads(EVENT, keys, ROW_FIELDS)
 
     assert avro_round_trip(key_schema, key_payload) == {"Release_Date": DAY}
     decoded = avro_round_trip(value_schema, value_payload)
@@ -139,10 +141,10 @@ def test_avro_round_trip_of_a_date_key_and_date_column():
 
 
 def test_avro_null_date_round_trips_as_null():
-    fields = [("Company_ID", "int32", False), ("Company_ReleaseDate", cs.DATE, True)]
+    fields = [("Company_ID", "int32", False), ("Company_ReleaseDate", wire.DATE, True)]
     event = {"op": "c", "before": None, "after": {"Company_ID": 2, "Company_ReleaseDate": None}, "source": {}}
-    _, value_schema = cs._avro_schemas(types_config("avro"), ["Company_ID"], fields)
-    _, payload = cs._avro_payloads(event, ["Company_ID"], fields)
+    _, value_schema = wire.avro_schemas(types_config("avro"), ["Company_ID"], fields)
+    _, payload = wire.avro_payloads(event, ["Company_ID"], fields)
     assert avro_round_trip(value_schema, payload)["after"] == {"Company_ID": 2, "Company_ReleaseDate": None}
 
 
@@ -206,14 +208,14 @@ def test_without_the_databricks_env_the_cost_meter_is_a_noop(monkeypatch):
     """Demo-only telemetry: with the Databricks env absent the sync runs unmetered and omits the
     metadata instead of raising — a released sync must not need the demo's cost chips."""
     monkeypatch.delenv("DBT_DATABRICKS_HOST", raising=False)
-    with mock.patch.object(cs, "meter_snapshot", side_effect=AssertionError("the meter must not be read")):
-        assert cs._cost_metadata() == {}
+    with mock.patch.object(demo_helpers, "meter_snapshot", side_effect=AssertionError("the meter must not be read")):
+        assert demo_helpers._cost_metadata() == {}
 
 
 def test_with_the_databricks_env_the_cost_meter_reports(monkeypatch):
     monkeypatch.setenv("DBT_DATABRICKS_HOST", "adb.invalid")
-    with mock.patch.object(cs, "meter_snapshot", return_value={"warehouse_seconds": 1.5, "statements": 3}):
-        metadata = cs._cost_metadata()
+    with mock.patch.object(demo_helpers, "meter_snapshot", return_value={"warehouse_seconds": 1.5, "statements": 3}):
+        metadata = demo_helpers._cost_metadata()
     assert metadata["databricks_warehouse_seconds"].value == 1.5
     assert metadata["databricks_statements"].value == 3
 
