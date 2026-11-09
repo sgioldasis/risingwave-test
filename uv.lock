@@ -2018,8 +2018,8 @@ wheels = [
 
 [[package]]
 name = "kaizen-dagster-reverse-etl"
-version = "0.1.1"
-source = { path = "vendor/kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl" }
+version = "0.1.4"
+source = { path = "vendor/kaizen_dagster_reverse_etl-0.1.4-py3-none-any.whl" }
 dependencies = [
     { name = "attrs" },
     { name = "authlib" },
@@ -2037,7 +2037,7 @@ dependencies = [
     { name = "requests" },
 ]
 wheels = [
-    { filename = "kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl", hash = "sha256:8a8b1537ff67f379300fe6c3420dc7ccd761690abf56d8b584ced8ff73453583" },
+    { filename = "kaizen_dagster_reverse_etl-0.1.4-py3-none-any.whl", hash = "sha256:a510c0c8d18e332557ea55a21bad2cccf7e83de898761d9c735a723388351c75" },
 ]
 
 [package.metadata]
@@ -3555,7 +3555,7 @@ requires-dist = [
     { name = "grpcio-tools", specifier = ">=1.66.0,<1.80.0" },
     { name = "hmsclient", specifier = ">=0.1.1" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "kaizen-dagster-reverse-etl", path = "vendor/kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl" },
+    { name = "kaizen-dagster-reverse-etl", path = "vendor/kaizen_dagster_reverse_etl-0.1.4-py3-none-any.whl" },
     { name = "marimo", specifier = ">=0.10.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=1.3.0" },
