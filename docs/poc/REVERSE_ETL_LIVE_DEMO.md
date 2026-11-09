@@ -36,9 +36,10 @@ the one with a **third target**: a StarRocks Primary Key table fed by a Routine 
 `starrocks` target in its `defs.yaml`), rebuilt by the setup job and kept in step with the source's schema
 changes by the same sync hooks that care for RisingWave and Postgres — adds before the messages, renames/drops
 after delivery; see [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) §12 for the ingestion DDL and the
-schema-change semantics. The `avro`/`cdf`/`orders` syncs remain two-target (RisingWave + Postgres), so the
-schema-change sections below describe those two; on the `delta` sync every statement about the targets holds
-for StarRocks as well.
+schema-change semantics. The delta source is *also* readable by StarRocks with no pipeline at all — the Delta
+catalog federation (§13 of the same doc, demo button "StarRocks reads Delta in place"). The `avro`/`cdf`/`orders`
+syncs remain two-target (RisingWave + Postgres), so the schema-change sections below describe those two; on the
+`delta` sync every statement about the targets holds for StarRocks as well.
 
 ### Diagram
 
@@ -58,7 +59,10 @@ An animated walkthrough of one change, step by step with a description of each s
 Databricks source table needs and how to define it. For the code behind it — config, assets, both sync
 backends, Kafka production, targets — see [`REVERSE_ETL_CODE_WALKTHROUGH.md`](REVERSE_ETL_CODE_WALKTHROUGH.md).
 
-To run the steps from the page, start `./bin/3_run_reverse_etl_demo.sh` and open `http://localhost:4002/?sync=avro`
+To run the steps from the page, start `./bin/3_run_reverse_etl_demo.sh` and open `http://localhost:4002/?sync=avro`.
+The script starts the demo's containers **and** the StarRocks serving stack (FE + CN, catalog init, and the
+`hms` container for the Delta federation), waiting for both Dagster and StarRocks to be fully ready before
+serving — so every button works from the first click.
 If buttons fail with "Dagster's code server is unreachable" (typical after the Mac slept with the stack up —
 the code server kills itself when heartbeats stop), run `docker compose restart dagster-webserver dagster-daemon`
 and click again.
@@ -373,7 +377,17 @@ targets. The registry stays at its current version, because the notebook builds 
 The source tables of `avro`, `cdf` and `orders` are created as UniForm tables: Delta with Iceberg
 metadata generated next to it. The `delta` sync's source is deliberately plain Delta — Change Data Feed plus
 column mapping, no UniForm — as the counterexample: the sync reads it exactly the same way, but it does not
-appear in `databricks_uc` below. The watermark (state) tables are plain Delta too — the `delta` state backend
+appear in `databricks_uc` below. It is not unreadable from StarRocks, though: since 2026-11-09 the **Delta
+catalog federation** reads it in place — plain Delta, no UniForm needed, no pipeline, no compute:
+
+```sql
+SELECT * FROM delta_federation.delta_fed.reverse_etl_delta_source;
+```
+
+(The catalog is set up by `./bin/3_setup_delta_federation.sh` — an HMS shim, the sync's service principal and
+StarRocks's Delta connector; it registers **every demo sync's source**, not just this one. After any
+reset/rebuild, re-run it or just click the demo page's "StarRocks reads
+Delta in place" button, which re-points the registrations. See [STARROCKS_SERVING_LAYER.md](STARROCKS_SERVING_LAYER.md) §13.) The watermark (state) tables are plain Delta too — the `delta` state backend
 (2026-11-05): the notebook writes them with Spark, the asset with delta-rs, which rejects the default-on table
 features (see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md) §5). The UniForm tables can be read by another engine
 through Unity Catalog's Iceberg REST API, with no copy

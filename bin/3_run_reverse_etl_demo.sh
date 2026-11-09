@@ -3,24 +3,20 @@
 # Serve the reverse-ETL animation and the Jobotron panel with working buttons
 # (launch each step's Dagster run, check the targets).
 # Open http://localhost:4002/?sync=delta or http://localhost:4002/jobotron.
-# First starts ONLY the containers the demo needs — Dagster, RisingWave and
-# Redpanda+kafka-connect — not the whole stack (no StarRocks, Trino, Superset,
-# MinIO/Lakekeeper, Grafana, Prometheus). Needs the VPN on, and a devbox shell
-# for the Postgres check. .env is sourced for the environment the checks read
-# (the Jobotron topic check needs KAFKA_OUTPUT_*).
-# `--starrocks` (script-runner checkbox) adds the StarRocks pair (FE + CN) and
-# its one-shot catalog init to the set.
-# Stop Everything (6_down.sh) tears the minimal set down like any other start:
-# its `docker compose down` covers every container of the project.
+# First starts the containers the demo needs — Dagster, RisingWave and
+# Redpanda+kafka-connect — plus the StarRocks serving stack by default (FE +
+# CN, one-shot catalog init, and hms for the Delta federation, doc §13);
+# compose's depends_on pulls MinIO + Lakekeeper in automatically. The rest of
+# the stack (Trino, Superset, Grafana, Prometheus) stays down. Needs the VPN
+# on, and a devbox shell for the Postgres check. .env is sourced for the
+# environment the checks read (the Jobotron topic check needs KAFKA_OUTPUT_*).
+# Stop Everything (6_down.sh) tears this set down like any other start: its
+# `docker compose down` covers every container of the project.
 
 PORT=${PORT:-4002}
 
-echo "=== Starting the demo's containers (minimal set) ==="
-DEMO_SERVICES="redpanda kafka-connect meta-node-0 compute-node-0 frontend-node-0 compactor-0 compactor-1 dagster-webserver dagster-daemon"
-if [ "${1:-}" = "--starrocks" ]; then
-    echo "=== --starrocks: adding StarRocks FE + CN + catalog init ==="
-    DEMO_SERVICES="$DEMO_SERVICES starrocks starrocks-cn starrocks-init"
-fi
+echo "=== Starting the demo's containers + the StarRocks serving stack ==="
+DEMO_SERVICES="redpanda kafka-connect meta-node-0 compute-node-0 frontend-node-0 compactor-0 compactor-1 dagster-webserver dagster-daemon starrocks starrocks-cn starrocks-init hms"
 if ! docker compose up -d $DEMO_SERVICES; then
     echo "❌ Container start failed — are the images built? Run ./bin/1_up.sh once" \
          "on a working network (VPN off) to build/pull them, then retry." >&2
@@ -37,6 +33,31 @@ for i in $(seq 1 60); do
     if [ "$i" -eq 60 ]; then
         echo "❌ dagster-webserver did not become healthy after 2 minutes:" >&2
         docker compose ps $DEMO_SERVICES >&2
+        exit 1
+    fi
+    sleep 2
+done
+
+echo "=== Waiting for StarRocks to become ready (FE + CN healthy, catalog init done) ==="
+# starrocks-init gates on both FE and CN healthchecks, so its exit code is the
+# single "fully ready" signal. On a re-start the container is already exited 0
+# (compose does not re-run a completed one-shot) and this loop returns at once.
+for i in $(seq 1 150); do
+    state=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' starrocks-init 2>/dev/null || echo missing)
+    case "$state" in
+        "exited 0")
+            echo "✅ StarRocks is ready."
+            break
+            ;;
+        exited*)
+            echo "❌ starrocks-init failed: $state" >&2
+            docker logs --tail 80 starrocks-init >&2 || true
+            exit 1
+            ;;
+    esac
+    if [ "$i" -eq 150 ]; then
+        echo "❌ starrocks-init did not complete after 5 minutes:" >&2
+        docker compose ps starrocks starrocks-cn starrocks-init >&2
         exit 1
     fi
     sleep 2

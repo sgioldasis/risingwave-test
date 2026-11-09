@@ -188,6 +188,8 @@
       <button id="act-readers">Check readers</button>
       <button id="act-postgres">Show Postgres rows</button>
       <button id="act-starrocks">StarRocks &amp; MV rewrite</button>
+      <button id="act-federation">StarRocks reads Delta in place</button>
+      <p class="hint" id="fed-hint">The analyst path: no pipeline at all — StarRocks reaches the Databricks source through an external catalog and reads <code>_delta_log</code> + Parquet straight from ADLS. Zero compute, zero lag.</p>
     </div>
     <div class="sgroup">
       <div class="slabel">Demo</div>
@@ -839,6 +841,36 @@ $('act-starrocks').onclick = () => check('starrocks', d => {
   ];
   return { text: 'StarRocks query rewrite on the synced table:', subs };
 }, 3, ['connect', 'rw', 'sr']);
+
+$('act-federation').onclick = () => check('federation', d => {
+  if (d.error) return { text: 'Federation check failed: ' + d.error };
+  const fmt = n => Number(n).toLocaleString('en-US');
+  const subs = [
+    { text: 'This is the other read path — the one with no pipeline. The StarRocks & MV rewrite button demonstrates the serving path (sync → Kafka → Routine Load → PK table); this one shows the analyst path: a query engine pointed at the Databricks table\'s storage, reading it in place. Zero DBU, no warehouse, no lag.' },
+    { text: 'The external catalog is backed by a small HMS (one name → location mapping) and the sync\'s own service principal. The schema is not registered anywhere — StarRocks reads it from the source\'s _delta_log at query time.', mono: false },
+    { text: 'Source location (from Unity Catalog):', strong: true },
+    { text: d.location, mono: true },
+  ];
+  if (d.repointed) subs.push({ text: 'HMS registration was stale — UC minted a new path (it does on every rebuild). Re-pointed just now, in place of the setup script.' });
+  else subs.push({ text: 'HMS registration matches Unity Catalog\'s path.' });
+  subs.push(
+    { text: 'Query:', strong: true },
+    { text: d.query, mono: true },
+    { text: 'The plan scans ' + (d.plan_scanned || 'NOT Delta storage — unexpected') + ': StarRocks reads the Delta log + Parquet files directly from ADLS with the service principal.', strong: true },
+    { text: fmt(d.rows) + ' rows read from Databricks storage — through the catalog, with no pipeline component touched.', strong: true },
+  );
+  const other = Object.entries(d.tables || {});
+  if (other.length) {
+    subs.push({ text: 'The same shim holds every demo sync’s source (rows through the catalog):', strong: true });
+    subs.push({ text: other.map(([t, n]) => t + ': ' + (n === null ? 'not readable (run the federation setup)' : fmt(n))).join('\n'), mono: true });
+  }
+  const cols = d.columns || [];
+  if (cols.length) {
+    subs.push({ text: 'Latest rows, read in place:', strong: true });
+    subs.push({ table: { columns: cols, rows: d.latest } });
+  }
+  return { text: 'Delta federation — StarRocks reads the source in place:', subs };
+}, 0, ['src', 'sr']);
 
 $('do-rebuild').onclick = async () => {
   if (!confirm('This drops the ' + SYNC + ' source table, clears its watermark rows (other syncs are untouched), and drops the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;

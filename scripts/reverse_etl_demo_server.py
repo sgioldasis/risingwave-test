@@ -9,6 +9,7 @@ localhost only.
                             {"sync": "jobotron", "action": "setup|publish|consume", "market": "cy|gr|ro", "dry_run": bool}
   GET  /api/run/<run_id>    status and duration of a launched run
   GET  /api/check/<sync>/readers | postgres | starrocks   (CDF syncs; starrocks = delta only)
+  GET  /api/check/<sync>/federation   (delta only: StarRocks reading the source in place)
   GET  /api/check/jobotron/topics|postgres?market=<m>   (the instance's topic / mirror)
   GET  /api/schema/<sync>
 
@@ -23,6 +24,7 @@ animation page, with its demo tables and change ops, was retired with the routin
 it demonstrated; this panel drives the new instances directly.)
 """
 
+import concurrent.futures
 import json
 import os
 import re
@@ -589,6 +591,137 @@ def check_starrocks(sync: str) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+# UC mints a new storage path per table only on a rebuild; between rebuilds
+# the `databricks tables get` answer is stable, so it is cached briefly (the
+# five CLI invocations cost ~0.7s of process startup even in parallel). A
+# stale cache after a rebuild shows up as COUNT failures — bust and re-run.
+_UC_CACHE_TTL_S = 30
+_uc_cache: dict = {"at": 0.0, "locs": None}
+
+
+def _uc_locations() -> dict:
+    import time
+
+    now = time.monotonic()
+    if _uc_cache["locs"] is None or now - _uc_cache["at"] > _UC_CACHE_TTL_S:
+        import setup_delta_federation as fed
+
+        with concurrent.futures.ThreadPoolExecutor(len(fed.SOURCES)) as pool:
+            locs = dict(zip(fed.SOURCES, pool.map(fed.table_location, fed.SOURCES)))
+        _uc_cache.update(at=now, locs=locs)
+    return _uc_cache["locs"]
+
+
+def check_federation(sync: str) -> dict:
+    """The Delta federation (serving-layer doc §13): StarRocks reads the
+    Databricks Delta source in place through an HMS-backed external catalog —
+    no pipeline, no compute, just the HMS shim and the sync's service
+    principal. Verifies the chain live and self-heals what the setup script
+    would fix: if UC has re-pointed the source (a rebuild mints a new UUID
+    path), the HMS registration is refreshed before querying. Delta sync only —
+    the federation reads that source table."""
+    if sync != "delta":
+        return {"error": f"no federation for sync '{sync}' — only the delta source is registered in HMS"}
+    try:
+        import pymysql
+
+        import setup_delta_federation as fed
+    except ImportError as e:
+        return {"error": f"imports unavailable: {e}"}
+
+    def connect():
+        return pymysql.connect(
+            host=os.environ.get("STARROCKS_HOST", "127.0.0.1"),
+            port=int(os.environ.get("STARROCKS_PORT", "9030")),
+            user=os.environ.get("STARROCKS_USER", "root"), connect_timeout=5,
+        )
+
+    def refresh_and_count(table_name: str) -> int:
+        """REFRESH + COUNT on one source, on its own connection — the per-source
+        work runs in parallel (~0.6s wall) instead of serially (~2.8s)."""
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"REFRESH EXTERNAL TABLE {fed.CATALOG}.{fed.HMS_DATABASE}.{table_name}")
+            cur.execute(f"SELECT COUNT(*) FROM {fed.CATALOG}.{fed.HMS_DATABASE}.{table_name}")
+            return int(cur.fetchone()[0])
+        finally:
+            conn.close()
+
+    def run(locations: dict, uc_location: str) -> dict:
+        # Compare-then-fix every registered source: re-register only when UC's
+        # path moved (a drop + create on every click would be harmless but
+        # pointless). The delta source's state drives the card's message, but
+        # a stale registration never hides behind the others. HMS read-backs
+        # are cheap (~0.1s for all five), so this stays serial.
+        hms_matches = True
+        for fqn, location in locations.items():
+            name = fqn.rpartition(".")[2]
+            if fed.registered_location(name) != location:
+                fed.register_in_hms(location, name)
+                if name == fed.SOURCE_TABLE:
+                    hms_matches = False
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"SHOW CATALOGS LIKE '{fed.CATALOG}'")
+            catalog_exists = bool(cur.fetchone())
+            if not catalog_exists:
+                fed.create_catalog(fed.load_env())
+        finally:
+            conn.close()
+        # The FE refreshes external-catalog metadata in the background every
+        # hive_meta_cache_refresh_interval_s, so a Delta commit younger than
+        # that is not yet visible. Each source's REFRESH + COUNT runs in its
+        # own connection/thread, so the button always shows current state and
+        # the wall cost is one table's, not five's. A table that fails (never
+        # set up, or a moved path the cache didn't see) reports None.
+        names = [fqn.rpartition(".")[2] for fqn in fed.SOURCES]
+        with concurrent.futures.ThreadPoolExecutor(len(names)) as pool:
+            counts = dict(zip(names, pool.map(refresh_and_count, names)))
+        tables: dict[str, int | None] = {n: c for n, c in counts.items() if n != fed.SOURCE_TABLE}
+        rows = counts[fed.SOURCE_TABLE]
+        # The delta source's detail queries: the in-place proof (a plan
+        # scanning Delta storage directly) and a taste of the data.
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            table = f"{fed.CATALOG}.{fed.HMS_DATABASE}.{fed.SOURCE_TABLE}"
+            cur.execute(f"EXPLAIN SELECT description, COUNT(*) FROM {table} GROUP BY description")
+            plan = "\n".join(r[0] for r in cur.fetchall())
+            cur.execute(f"SELECT * FROM {table} ORDER BY rid DESC LIMIT 5")
+            latest = [[str(v) for v in row] for row in cur.fetchall()]
+            # pymysql's description rows are plain tuples (name first) — unlike
+            # psycopg2's attribute-carrying ones the Postgres check reads.
+            columns = [d[0] for d in cur.description]
+        finally:
+            conn.close()
+        return {
+            "location": uc_location,
+            "hms_matches": hms_matches,
+            "repointed": not hms_matches,
+            "catalog_exists": catalog_exists,
+            "rows": rows,
+            "tables": tables,
+            "plan_scanned": "DeltaLakeScanNode" if "DeltaLakeScanNode" in plan else "",
+            "latest": latest,
+            "columns": columns,
+            "query": f"SELECT COUNT(*) FROM {table}",
+        }
+
+    try:
+        fed.load_env()
+        result = run(_uc_locations(), _uc_locations()[fed.DEFAULT_SOURCE_FQN])
+        # A COUNT failure on a cache-served location means UC moved since the
+        # cache was filled (a rebuild) — bust and re-run once.
+        if any(v is None for v in result["tables"].values()):
+            _uc_cache.update(at=0.0, locs=None)
+            result = run(_uc_locations(), _uc_locations()[fed.DEFAULT_SOURCE_FQN])
+        return result
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
         self.send_response(code)
@@ -626,11 +759,13 @@ class Handler(BaseHTTPRequestHandler):
                 market = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("market", [""])[0]
                 check = check_jobotron_topics if m.group(1) == "topics" else check_jobotron_postgres
                 return self._json(200, check(market))
-            if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres|starrocks)", self.path):
+            if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres|starrocks|federation)", self.path):
                 if m.group(1) not in SYNCS:
                     raise ValueError("unknown sync")
                 if m.group(2) == "starrocks":
                     return self._json(200, check_starrocks(m.group(1)))
+                if m.group(2) == "federation":
+                    return self._json(200, check_federation(m.group(1)))
                 return self._json(200, (check_readers if m.group(2) == "readers" else check_postgres)(m.group(1)))
             if m := re.fullmatch(r"/api/schema/(\w+)", self.path):
                 if m.group(1) not in SYNCS:

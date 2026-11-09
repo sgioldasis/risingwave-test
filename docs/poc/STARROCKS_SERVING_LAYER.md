@@ -727,3 +727,141 @@ QUERY_REWRITE_STATUS` is not `VALID`, then `REFRESH ... WITH SYNC MODE` so
 what it reports is current. Eligibility shape confirmed on 4.1.7: a plain
 SPJG rollup over one internal table rewrites; volatile predicates and
 cross-catalog unions do not (see the skill notes).
+
+## 13. Delta catalog federation — read the Databricks source in place (2026-11-09)
+
+A second, compute-free read path alongside §12's Kafka pipeline: StarRocks
+queries the Databricks Delta source **directly on ADLS** through an external
+Delta catalog. No pipeline, no consumer group, no replay — the query engine
+reads `_delta_log` + Parquet where UC put it. What it buys over the sync:
+
+- **Zero-DBU ad-hoc access** — queries never touch a warehouse or cluster; the
+  only credentials used are the sync's existing service principal.
+- **Near-current** — no CDF lag, no replay; each query reads the source's
+  latest Delta version, within the FE's metadata refresh interval (5s in this
+  demo, see Freshness below). The sync path remains the right one for *serving*
+  (PK upserts, deletes, MV rewrite); federation is the *analyst* path.
+
+### The chain
+
+```
+StarRocks 4.1.7 (delta catalog)
+  → HMS thrift (thrift://host.docker.internal:9083)
+  → table registered as a Delta-provider table pointing at abfss://...
+  → delta-kernel reads _delta_log + Parquet on ADLS Gen2
+    (azure.adls2.oauth2_* with the sync's service principal)
+```
+
+The HMS hop is only a name → location mapping — one per demo sync source
+(`reverse_etl_{avro,cdf,orders,delta,company}_source`), registered by the setup
+script: schema comes from `_delta_log`
+at query time, so there is nothing to keep in sync with UC's schema (verified
+live: a fresh registration with deliberately bogus columns still `DESC`s with
+the real schema — the registration's column list is decorative, so it is left
+empty and can never go stale). The
+`apache/hive:4.0.1` image lacks the hadoop-azure jars, so `hms/` (Dockerfile +
+`abfs-shim.jar` + `core-site.xml`) bakes in a pass-through filesystem shim
+(`shim.AbfsPassthroughFs extends RawLocalFileSystem`) that keeps the `abfss`
+scheme and authority intact instead of requalifying paths to `file:/` —
+HMS only ever lists the table location; no real I/O happens through it.
+
+### Setup (idempotent)
+
+`./bin/3_setup_delta_federation.sh` → `scripts/setup_delta_federation.py`,
+for **every demo sync's source** (`reverse_etl_{avro,cdf,orders,delta,company}_source`):
+
+1. discover each table's abfss location from UC (`databricks --profile
+   personal tables get`; a table UC does not know is skipped with a warning),
+2. register the HMS database + one table per source (thrift via `hmsclient`,
+   drop + create),
+3. drop + create the SR catalog, verify each table with `SELECT COUNT(*)`.
+
+**Re-run after every reset/rebuild**: UC mints a new UUID storage path for
+each managed table every time, so stale HMS registrations would point at gone
+locations. The drop+create re-points them. Prereqs: `docker compose up -d
+hms` and StarRocks up.
+
+Verified live: `delta_federation.delta_fed.reverse_etl_delta_source` →
+COUNT 260,002 (2026-11-09; all five demo sources register and verify the same
+way — avro 3, cdf 2, orders 2, delta 300,002, company 32 on the multi-table
+day), seed rows and bulk `GROUP BY` all correct, `EXPLAIN` shows
+`DeltaLakeScanNode`. Column mapping (the source's protocol has
+`readerVersion=2` / `columnMapping`) works — supported since SR 3.3.6.
+
+### SR 4.1.7 quirks the script bakes in (all found live)
+
+- The catalog type string is **`"deltalake"`**, not the documented `"delta"`
+  (`[type : delta] is not supported` — the FE enum maps `deltalake` → its
+  DeltaLakeConnector).
+- The metastore URI must be **`thrift://host.docker.internal:9083`** (port
+  published on the host), not the docker DNS name `hms`: the FE appends the
+  compose network's search domain (`risingwave-test_iceberg_net`), and the
+  underscore is an illegal Java hostname character → `URISyntaxException`.
+- SR reads a Delta-provider table's location from
+  **`SerDeInfo.parameters["path"]`**, not from `sd.location` (the Databricks
+  HMS convention — decompiled `HiveMetastoreApiConverter.toTableLocation`).
+  With only `sd.location` set, every scan dies with "Can not create a Path
+  from a null string" in delta-kernel's `resolvePath`. The registration sets
+  both, the serde `path` is the one that matters.
+- The table must carry `parameters["spark.sql.sources.provider"] = "delta"`
+  for the FE to route it to the Delta connector.
+- Query one column and the read is genuinely columnar (Parquet projection);
+  the `_delta_log` JSON is fetched per query (cheap, metadata only).
+
+### Cold vs warm query cost (measured 2026-11-09)
+
+The **first** query through a freshly created catalog (or the first after an
+FE restart) takes ~2.2s; every query after that is ~0.3s (the source: 6 Parquet
+files, ~534 KB, 260k rows — the scan itself is nothing). The cold query pays,
+in order: the OAuth2 client-credentials token fetch to Microsoft, the HMS
+metadata round-trip, delta-kernel replaying `_delta_log` (one JSON per commit —
+trivial here), the ADLS directory listing + file opens, and the BE scanner's
+JNI initialization. All of it is StarRocks-side warm-up; none of it touches
+Databricks compute, so the zero-DBU claim is unaffected. With the VPN on every
+round-trip multiplies — the cold query can reach "many seconds". Good demo
+framing: the first query pays the cloud auth once, warm queries are
+sub-second, and the demo page's federation button hides it (its `EXPLAIN` +
+`COUNT` + `SELECT` sequence absorbs the cold cost inside the first click).
+
+### Freshness: the metadata refresh interval (2026-11-09)
+
+"Reads the latest Delta version" is approximate: the FE caches external-table
+metadata (including the Delta file list) and refreshes it in the background
+every `hive_meta_cache_refresh_interval_s`. Default 60s — observed live: a
+`DELETE` on the source stayed invisible through the catalog for ~a minute,
+then appeared on its own (`hive_meta_cache_ttl_s` = 86400 is the unused-entry
+lifetime, not a freshness bound). Since that day the demo's FE entrypoint
+(`starrocks/fe-entrypoint.sh`) sets both refresh intervals to **5s**
+(`hive_meta_cache_refresh_interval_s` + `remote_file_cache_refresh_interval_s`
+— runtime-immutable keys, hence fe.conf + restart), so any client sees Delta
+commits within ~5s; the polling cost over five small demo sources is
+negligible. `REFRESH EXTERNAL TABLE <catalog>.<db>.<table>` still forces
+immediate pickup (~0.25s), and the demo button runs it for every registered
+source before querying. This is a different freshness contract from the
+serving path: the Routine Load target moves only when a sync runs, but is
+then exact; the federation table is near-current within the refresh interval.
+
+### In the demo UI (2026-11-09, later)
+
+The demo page's **"StarRocks reads Delta in place"** button
+(`/api/check/<sync>/federation` in `scripts/reverse_etl_demo_server.py`,
+delta sync only) walks this chain live and self-heals every registration: it
+reads each source's current path from UC (cached for 30s — the five `databricks
+tables get` calls cost ~0.7s even in parallel; a COUNT failure busts the cache
+and re-runs once, which is how a rebuild surfaces), compares against the HMS
+registration (`registered_location()` in the setup script) and re-registers
+when UC has re-minted — so after a rebuild the button fixes what
+`3_setup_delta_federation.sh` would have. Each source's `REFRESH EXTERNAL
+TABLE` + `COUNT` runs on its own connection in parallel; the delta source's
+detail queries (`EXPLAIN` → `DeltaLakeScanNode`, latest five rows read
+straight from Databricks storage) follow. Measured: **~1.0s warm**, ~2.8s on
+the first click (cold UC cache).
+
+### Files
+
+- `hms/Dockerfile`, `hms/core-site.xml`, `hms/shim/shim/AbfsPassthroughFs.java`
+  + `hms/abfs-shim.jar` (source of record + committed artifact — rebuild
+  procedure in the Dockerfile header),
+- `scripts/setup_delta_federation.py` + `bin/3_setup_delta_federation.sh`,
+- `tests/test_delta_federation.py` (shapes + quirks),
+- compose: the `hms` service (built from `./hms/`, port 9083 published).

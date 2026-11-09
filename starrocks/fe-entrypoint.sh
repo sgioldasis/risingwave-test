@@ -119,4 +119,17 @@ grep -q 'materialized_view_min_refresh_interval' /opt/starrocks/fe/conf/fe.conf 
 materialized_view_min_refresh_interval = 10
 EOF
 
+# --- near-real-time Delta federation freshness (serving-layer doc §13): the
+# FE refreshes external-catalog metadata (incl. the Delta file list) in the
+# background every hive_meta_cache_refresh_interval_s — default 60s, so a
+# Delta commit could stay invisible for up to a minute. 5s bounds that lag;
+# with five small demo sources the polling cost is negligible. Both keys are
+# runtime-immutable (IsMutable=false in ADMIN SHOW FRONTEND CONFIG), hence
+# fe.conf + restart rather than ADMIN SET. ---
+grep -q 'hive_meta_cache_refresh_interval_s' /opt/starrocks/fe/conf/fe.conf || cat >> /opt/starrocks/fe/conf/fe.conf <<'EOF'
+
+hive_meta_cache_refresh_interval_s = 5
+remote_file_cache_refresh_interval_s = 5
+EOF
+
 exec /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN

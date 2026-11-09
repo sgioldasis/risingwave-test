@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!-- HMS shim for the StarRocks Delta federation demo (see
+     docs/poc/STARROCKS_SERVING_LAYER.md §13). The metastore only validates
+     that a table location URI is well-formed and a "directory"; the abfss
+     scheme maps to a pass-through FileSystem (shim.AbfsPassthroughFs, in
+     abfs-shim.jar) that keeps the scheme and authority and answers the
+     validation checks without touching Azure. Real reads happen in StarRocks,
+     not here. -->
+<configuration>
+  <property>
+    <name>fs.abfss.impl</name>
+    <value>shim.AbfsPassthroughFs</value>
+  </property>
+  <property>
+    <name>fs.abfs.impl</name>
+    <value>shim.AbfsPassthroughFs</value>
+  </property>
+</configuration>

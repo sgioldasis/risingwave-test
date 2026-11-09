@@ -1279,6 +1279,32 @@ services:
     networks:
       iceberg_net:
 
+  # Hive Metastore shim for the StarRocks Delta federation demo: SR's Delta
+  # catalog requires an HMS or Glue metastore (no filesystem mode), and this
+  # environment has neither — so this Derby-backed HMS holds one name ->
+  # abfss-location mapping for the Databricks source table, pushed by the
+  # setup after it (re)creates the table (UC-minted UUID paths change on
+  # every rebuild). Disposable by design: recreated empty on 1_up.sh.
+  hms:
+    # Built from ./hms/ (Dockerfile): apache/hive:4.0.1 + the abfs pass-through
+    # shim (abfs-shim.jar) and the core-site.xml that wires it in. The FE (and
+    # anything else) reaches it at thrift://host.docker.internal:9083 — the
+    # docker DNS name `hms` breaks the FE's Java URI parser, which appends the
+    # compose network's search domain and its underscore is an illegal
+    # hostname character.
+    build:
+      context: ./hms
+      dockerfile: Dockerfile
+    image: risingwave-test/hms:local
+    container_name: hms
+    hostname: hms
+    environment:
+      - SERVICE_NAME=metastore
+    ports:
+      - "9083:9083"
+    networks:
+      - iceberg_net
+
   # StarRocks shared-data test cluster — standalone proof-of-concept for
   # whether StarRocks can use Azure (ADLS Gen2) as its own table storage,
   # instead of the local BE disk the main `starrocks` service above uses.

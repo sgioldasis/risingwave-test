@@ -30,6 +30,14 @@ devbox shell          # sets up venv, starts local Postgres, loads .env
 # Run the event producer
 ./bin/3_run_producer.sh
 
+# Reverse-ETL demo (port 4002): starts the demo containers plus the StarRocks
+# serving stack (FE + CN, catalog init, hms), waits for both to be ready
+./bin/3_run_reverse_etl_demo.sh
+
+# Delta catalog federation: StarRocks reads the Databricks Delta source in
+# place. Re-run after every reset/rebuild (UC mints a new storage path)
+./bin/3_setup_delta_federation.sh
+
 # Start services
 ./bin/4_run_modern.sh      # React dashboard (port 4000) + FastAPI backend
 ./bin/4_run_ml_serving.sh  # ML prediction API (port 8001)
