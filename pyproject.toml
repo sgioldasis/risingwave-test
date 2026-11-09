@@ -63,7 +63,7 @@ dependencies = [
 [tool.uv.sources]
 # The vendored wheel (see the dependency comment above): a plain file in the repo,
 # so uv sync --frozen never needs network access to Kaizen systems.
-kaizen-dagster-reverse-etl = { path = "vendor/kaizen_dagster_reverse_etl-0.1.0-py3-none-any.whl" }
+kaizen-dagster-reverse-etl = { path = "vendor/kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl" }
 
 [tool.dagster]
 module_name = "orchestration.definitions"

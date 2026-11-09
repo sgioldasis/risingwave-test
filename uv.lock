@@ -1361,7 +1361,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.162.0"
+version = "0.162.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -1371,9 +1371,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/eb/2cf8c80abf09b2800aef0a83b41066fbfda8ee5495b7a08b9d1af40f7046/fastapi-0.162.0.tar.gz", hash = "sha256:6a22c1e2e6e32e0633ee7e170f00009a29b8228b16feb219ee42f32fd8d88a8f", size = 527867, upload-time = "2026-10-23T18:47:33.264Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/53/f6fed628a0c3d6a284125a93f9145b02ecc2c394735a878b5ad9938c8e17/fastapi-0.162.2.tar.gz", hash = "sha256:9ebd2a69b579141315b2447d8e3f518e6fd909abd6c01cac5cc6b06d5c8841f4", size = 530366, upload-time = "2026-11-07T15:41:39.838Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/4f/3f2c25c9b43970b5e9a08beb5e04776247edea684ddc0930f4f02f0bb6cb/fastapi-0.162.0-py3-none-any.whl", hash = "sha256:3785963de305dd09912426cb81f2d230fce98ab3521cdfe97265c8d14983128c", size = 148912, upload-time = "2026-10-23T18:47:31.734Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/fb/0dc0f819163bc6b7f9e6802d7d0b1ac180fbbe4e75dbd10655c6a4d77796/fastapi-0.162.2-py3-none-any.whl", hash = "sha256:d0584f9662317e01140df94c64f4bed1d8b059fe35496e30c9c92f70e6e5ff15", size = 151671, upload-time = "2026-11-07T15:41:38.509Z" },
 ]
 
 [[package]]
@@ -2005,8 +2005,8 @@ wheels = [
 
 [[package]]
 name = "kaizen-dagster-reverse-etl"
-version = "0.1.0"
-source = { path = "vendor/kaizen_dagster_reverse_etl-0.1.0-py3-none-any.whl" }
+version = "0.1.1"
+source = { path = "vendor/kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl" }
 dependencies = [
     { name = "attrs" },
     { name = "authlib" },
@@ -2024,7 +2024,7 @@ dependencies = [
     { name = "requests" },
 ]
 wheels = [
-    { filename = "kaizen_dagster_reverse_etl-0.1.0-py3-none-any.whl", hash = "sha256:5f1e78e7d4b562f6467f3b194332d8c3ac52c95ab3bfdcf88a8f8d101cc7371f" },
+    { filename = "kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl", hash = "sha256:8a8b1537ff67f379300fe6c3420dc7ccd761690abf56d8b584ced8ff73453583" },
 ]
 
 [package.metadata]
@@ -3158,14 +3158,14 @@ wheels = [
 
 [[package]]
 name = "pytest-randomly"
-version = "5.0.0"
+version = "5.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pytest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/01/3b/6a40e1b9d925651e601e056a97f60d8a1daeddeac03d5609be60cb4362ce/pytest_randomly-5.0.0.tar.gz", hash = "sha256:e9c575a5873ef168ddbe340ed9e97ce9edb4492ccc821e4b2ac6bb1f0ed515d2", size = 8542, upload-time = "2026-09-01T22:34:20.441Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/59/d9f088bdf2bdafd7b5305d2be5f2e73d330756e092c448e4e534a30d9bda/pytest_randomly-5.1.0.tar.gz", hash = "sha256:cdf8af20419969d273b97c8e7c8d688200807e815bdc733cf2a6af183080ad58", size = 9010, upload-time = "2026-11-08T23:48:13.168Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/b4/47e939285caad9a623d021512912ac08dc92a467ad075d179f43729d2934/pytest_randomly-5.0.0-py3-none-any.whl", hash = "sha256:8a0d4703115c0c25b38b6e129fc16b1947b9643ff26a41bc1d185d7e5a7689c1", size = 8920, upload-time = "2026-09-01T22:34:19.227Z" },
+    { url = "https://files.pythonhosted.org/packages/67/ef/9979eae8db530930873d15fb16043ef6d72b5042f2636de4d85568eb3df4/pytest_randomly-5.1.0-py3-none-any.whl", hash = "sha256:fb9004e6821422291087d0294fd62f45ff304094db11fbdff8f2fe1ed20764d8", size = 8969, upload-time = "2026-11-08T23:48:11.833Z" },
 ]
 
 [[package]]
@@ -3540,7 +3540,7 @@ requires-dist = [
     { name = "grpcio-health-checking", specifier = ">=1.66.2,<1.80.0" },
     { name = "grpcio-tools", specifier = ">=1.66.0,<1.80.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "kaizen-dagster-reverse-etl", path = "vendor/kaizen_dagster_reverse_etl-0.1.0-py3-none-any.whl" },
+    { name = "kaizen-dagster-reverse-etl", path = "vendor/kaizen_dagster_reverse_etl-0.1.1-py3-none-any.whl" },
     { name = "marimo", specifier = ">=0.10.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=1.3.0" },
