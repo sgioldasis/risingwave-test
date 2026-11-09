@@ -2,6 +2,20 @@
 
 *Written 2026-10-16, against the code as of that date (OSS Delta extraction, Avro encoding, cost meter all in). Updated 2026-10-19 for the delta-rs reconstruction backend — the OSS-Spark and SQL-warehouse branches described in the original are gone ([`REVERSE_ETL_SPARK_FREE_FINDINGS.md`](REVERSE_ETL_SPARK_FREE_FINDINGS.md) has the why and the measurements). Updated 2026-11-05 for the delta state backend — every demo sync keeps its watermark in its own UC Delta table (see §3, §6, §8).*
 
+> **2026-11-09 — the sync engine moved to the vendored library.** The fork this
+> walkthrough describes (`orchestration/assets/reverse_etl_cdf_setup.py`, then
+> ~1,500 lines, plus `reverse_etl_delta_reader.py`) was ported to the library
+> `kaizen-dagster-reverse-etl` (repo `dagster-workspace`, vendored as a wheel in
+> `vendor/`) and the demo switched over to it; the fork retired, leaving only the
+> Statement-Execution helpers in `reverse_etl_cdf_setup.py`, and
+> `reverse_etl_delta_reader.py` was deleted. The machinery descriptions below
+> (§4-§8) remain accurate — the library is a near-verbatim port — but read the
+> paths as their new homes: the sync asset is
+> `kaizen_dagster_reverse_etl.components.cdf_sync.sync.build_sync_asset`, the
+> delta reader is `kaizen_dagster_reverse_etl.core.delta_reader`, the wire/Avro
+> layer is `kaizen_dagster_reverse_etl.core.wire`, state is
+> `…core.state`. Line numbers still refer to the fork as of the writing date.*
+
 This walks through the Dagster implementation of the reverse-ETL sync: how one
 Databricks Delta table's changes flow to Kafka and on to RisingWave and Postgres,
 and how a single config object generates the whole thing for any number of syncs.

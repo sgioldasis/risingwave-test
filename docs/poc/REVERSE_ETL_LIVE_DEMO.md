@@ -145,7 +145,7 @@ the Kaizen STG box (consumer group lag).
 | Piece | File |
 |---|---|
 | The sync's definition (name, columns, seed, `encoding: avro`) | `orchestration/defs/reverse_etl_avro/defs.yaml` |
-| The sync asset, schema building, producer | `orchestration/assets/reverse_etl_cdf_setup.py` |
+| The sync asset, schema building, producer | the vendored library `kaizen-dagster-reverse-etl` (`components.cdf_sync.sync.build_sync_asset`, wheel in `vendor/`); demo-only metering helpers stay in `orchestration/assets/reverse_etl_cdf_setup.py` (the fork retired 2026-11-09) |
 | Connector registration | `orchestration/assets/reverse_etl_debezium_sink.py` |
 | RisingWave table and column handling | `orchestration/assets/reverse_etl_risingwave_setup.py` |
 | Reset job | `orchestration/assets/reverse_etl_reset.py` |
