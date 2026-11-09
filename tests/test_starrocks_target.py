@@ -8,10 +8,12 @@ Run from the repo root:  .venv/bin/python -m pytest
 
 import json
 
+import pymysql
 import pytest
 
 from orchestration.assets.reverse_etl_config import StarrocksTargetConfig
 from orchestration.assets.reverse_etl_starrocks_target import (
+    _stop_and_drop,
     add_missing_columns_to_starrocks,
     propagate_schema_changes_to_starrocks,
 )
@@ -93,3 +95,47 @@ def test_a_drop_removes_the_column_and_the_key_is_anchored(calls, sr_env):
     sql = statements(calls)
     assert [s for s in sql if "DROP COLUMN `gone`" in s]
     assert not [s for s in sql if "DROP COLUMN `rid`" in s]
+
+
+class _RaisingCursor:
+    """A cursor whose STOP/DROP ROUTINE LOAD raise the given exception (SR 4.1.7's
+    absent-job shape); SHOW after the drop says the job is gone."""
+
+    def __init__(self, error: Exception):
+        self.error = error
+        self.description = None
+        self._rows: list = []
+
+    def execute(self, sql, params=None):
+        text = " ".join(str(sql).split())
+        if text.startswith(("STOP ROUTINE LOAD", "DROP ROUTINE LOAD")):
+            raise self.error
+        self._rows = []
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class TestStopAndDrop:
+    def test_a_5089_for_an_absent_job_is_cosmetic_and_the_drop_still_runs(self):
+        # SR 4.1.7 on an absent job (the reset->setup shape): STOP/DROP raise
+        # 5089 OperationalError. The rebuild must proceed past them.
+        cursor = _RaisingCursor(
+            pymysql.err.OperationalError(
+                5089, "Getting analyzing error. Detail message: Routine load job "
+                "[reverse_etl_delta_rl] not found when checking privilege."
+            )
+        )
+        _stop_and_drop(cursor, cfg())
+
+    def test_any_other_operational_error_is_real_and_propagates(self):
+        cursor = _RaisingCursor(pymysql.err.OperationalError(2003, "Can't connect to MySQL server"))
+        with pytest.raises(pymysql.err.OperationalError) as excinfo:
+            _stop_and_drop(cursor, cfg())
+        assert 2003 in excinfo.value.args[:2]

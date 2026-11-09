@@ -168,6 +168,13 @@ def _stop_and_drop(cur, cfg: StarrocksTargetConfig) -> None:
             cur.execute(statement)
         except pymysql.err.ProgrammingError:
             pass
+        except pymysql.err.OperationalError as err:
+            # SR 4.1.7 reports an absent job on STOP/DROP as 5089 OperationalError
+            # ("Routine load job [...] not found when checking privilege") — cosmetic
+            # like the 1064s above: the drop takes effect either way. Any other
+            # OperationalError (connectivity, etc.) is real.
+            if 5089 not in err.args[:2]:
+                raise
     if _routine_load_state(cur, cfg):
         raise RuntimeError(f"{cfg.routine_load_name}: STOP/DROP ran but the job is still visible")
 
