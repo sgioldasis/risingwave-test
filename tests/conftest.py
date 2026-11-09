@@ -16,8 +16,6 @@ from tests.fakes import bind_connections, fake_resources
 def isolated_control_plane_cache(tmp_path, monkeypatch):
     """The sync caches the Databricks token and table locations in a file under dagster_storage. Point it at a temp
     directory so no test reads a developer's real cache or leaves one behind."""
-    from orchestration.assets import reverse_etl_cdf_setup as cdf_setup
-
     from kaizen_dagster_reverse_etl.core import connections as _library_connections
     monkeypatch.setattr(_library_connections, "_CONTROL_PLANE_CACHE_PATH", str(tmp_path / "control_plane_cache.json"))
 
