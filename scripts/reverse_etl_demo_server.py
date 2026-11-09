@@ -8,7 +8,7 @@ localhost only.
   POST /api/launch          {"sync": "avro|cdf|orders|delta", "action": "change|sync|reset|setup", "change": ...}
                             {"sync": "jobotron", "action": "setup|publish|consume", "market": "cy|gr|ro", "dry_run": bool}
   GET  /api/run/<run_id>    status and duration of a launched run
-  GET  /api/check/<sync>/readers | postgres     (CDF syncs)
+  GET  /api/check/<sync>/readers | postgres | starrocks   (CDF syncs; starrocks = delta only)
   GET  /api/check/jobotron/topics|postgres?market=<m>   (the instance's topic / mirror)
   GET  /api/schema/<sync>
 
@@ -511,6 +511,84 @@ def check_postgres(sync: str) -> dict:
         return {"error": type(e).__name__}
 
 
+def check_starrocks(sync: str) -> dict:
+    """The StarRocks serving layer on the sync's target: an async rollup
+    materialized view that the planner reaches transparently — a query written
+    against the base table scans the MV, and EXPLAIN shows MaterializedView: true.
+    Only the delta sync wires a StarRocks target (Avro encoding is a target
+    requirement). The MV is demo-owned here rather than in the target asset
+    because the setup asset drops and recreates the target table on every setup,
+    which turns any MV over it inactive — this check recreates the MV when
+    needed and refreshes it synchronously, so what it reports is always current.
+    Needs pymysql in the helper's environment (the devbox venv has it)."""
+    table = f"reverse_etl_{sync}_target"
+    mv = f"mv_{sync}_target_rollup"
+    if sync != "delta":
+        return {"error": f"no StarRocks target for sync '{sync}' — only delta wires one (Avro encoding is a target requirement)"}
+    try:
+        import pymysql
+
+        conn = pymysql.connect(
+            host=os.environ.get("STARROCKS_HOST", "127.0.0.1"),
+            port=int(os.environ.get("STARROCKS_PORT", "9030")),
+            user=os.environ.get("STARROCKS_USER", "root"), database="reverse_etl", connect_timeout=5,
+        )
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT QUERY_REWRITE_STATUS FROM information_schema.materialized_views "
+                "WHERE TABLE_SCHEMA = 'reverse_etl' AND TABLE_NAME = %s", (mv,)
+            )
+            row = cur.fetchone()
+            if not row or row[0] != "VALID":
+                cur.execute(f"DROP MATERIALIZED VIEW IF EXISTS {mv}")
+                # Plain SPJG rollup over the synced Primary Key table: the shape
+                # transparent rewrite is eligible for (no volatile predicates).
+                cur.execute(
+                    f"CREATE MATERIALIZED VIEW {mv} DISTRIBUTED BY HASH(description) "
+                    f"REFRESH ASYNC EVERY (INTERVAL 10 SECOND) AS "
+                    f"SELECT description, COUNT(*) AS n, MAX(updated_at) AS last_change "
+                    f"FROM {table} GROUP BY description"
+                )
+            cur.execute(f"REFRESH MATERIALIZED VIEW {mv} WITH SYNC MODE")
+            cur.execute(f"SELECT COUNT(*) FROM {mv}")
+            mv_count = cur.fetchone()[0]
+            cur.execute(f"SELECT description, n, last_change FROM {mv} ORDER BY description LIMIT 12")
+            mv_rows = [[str(v) for v in r] for r in cur.fetchall()]
+            # The MV's own DDL, read back from the engine rather than echoed
+            # from the constant above, so what the card shows is what exists.
+            cur.execute(f"SHOW CREATE MATERIALIZED VIEW {mv}")
+            mv_definition = cur.fetchone()[1]
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            target_rows = cur.fetchone()[0]
+            # The rewrite proof: a query naming only the base table. If the
+            # planner substitutes the MV, the plan scans it instead.
+            cur.execute(f"EXPLAIN SELECT description, COUNT(*) FROM {table} GROUP BY description")
+            plan = "\n".join(r[0] for r in cur.fetchall())
+            scanned = re.search(r"TABLE: (\S+)", plan)
+            return {
+                "mv": mv,
+                "mv_definition": mv_definition,
+                "target_rows": target_rows,
+                "mv_count": mv_count,
+                "mv_rows": mv_rows,
+                "rewritten": "MaterializedView: true" in plan,
+                "scanned": scanned.group(1) if scanned else "",
+                # Echo the exact query the rewrite proof ran, so the card can
+                # show both sides: what was asked vs what StarRocks scanned,
+                # and the query it is answered by (the planner substitutes the
+                # MV's precomputed columns for the aggregates).
+                "query": f"SELECT description, COUNT(*) FROM {table} GROUP BY description",
+                "rewritten_query": f"SELECT description, n FROM {mv}",
+            }
+        finally:
+            conn.close()
+    except ImportError:
+        return {"error": "pymysql not available in the helper's environment"}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
         self.send_response(code)
@@ -548,9 +626,11 @@ class Handler(BaseHTTPRequestHandler):
                 market = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("market", [""])[0]
                 check = check_jobotron_topics if m.group(1) == "topics" else check_jobotron_postgres
                 return self._json(200, check(market))
-            if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres)", self.path):
+            if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres|starrocks)", self.path):
                 if m.group(1) not in SYNCS:
                     raise ValueError("unknown sync")
+                if m.group(2) == "starrocks":
+                    return self._json(200, check_starrocks(m.group(1)))
                 return self._json(200, (check_readers if m.group(2) == "readers" else check_postgres)(m.group(1)))
             if m := re.fullmatch(r"/api/schema/(\w+)", self.path):
                 if m.group(1) not in SYNCS:

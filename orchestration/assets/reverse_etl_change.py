@@ -163,7 +163,11 @@ def change_statements(
             values = ", ".join(
                 ["base + 1 + j"]
                 + [
-                    "'bulk-' || CAST(base + 1 + j AS STRING)" if sql_type == "STRING" else _value(sql_type)
+                    # One description per commit-chunk (constant across the
+                    # chunk's rows, distinct across chunks): the MV-rewrite
+                    # demo groups by description, so per-row names would make
+                    # every rollup group a single row.
+                    f"'bulk-' || CAST(base + {chunk} AS STRING)" if sql_type == "STRING" else _value(sql_type)
                     for _, sql_type in columns
                 ]
             )

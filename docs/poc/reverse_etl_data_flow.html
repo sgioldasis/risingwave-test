@@ -187,6 +187,7 @@
       <button id="act-schema">Schemas in Apicurio</button>
       <button id="act-readers">Check readers</button>
       <button id="act-postgres">Show Postgres rows</button>
+      <button id="act-starrocks">StarRocks &amp; MV rewrite</button>
     </div>
     <div class="sgroup">
       <div class="slabel">Demo</div>
@@ -816,6 +817,28 @@ $('act-postgres').onclick = () => check('postgres', d => {
   if (d.rows > d.latest.length) subs.push({ text: '… and ' + (d.rows - d.latest.length) + ' more', mono: true });
   return { text: d.rows + ' row(s) in the target — latest ' + d.latest.length + ', newest first:', subs };
 }, 7, ['connect', 'pg']);
+$('act-starrocks').onclick = () => check('starrocks', d => {
+  if (d.error) return { text: 'StarRocks check failed: ' + d.error };
+  // The whole proof in four lines: the query as written, how many rows it
+  // would have to read, the query it is answered by, how many rows that reads.
+  const fmt = n => Number(n).toLocaleString('en-US');
+  const subs = d.rewritten ? [
+    { text: 'Transparent query rewrite: StarRocks keeps MVs precomputed and, when a query against a base table can be answered from one, the planner swaps the MV in on its own. MVs can be added after the fact — existing queries and dashboards get faster without a single line changed.' },
+    { text: 'Original query:', strong: true },
+    { text: d.query, mono: true },
+    { text: 'The synced table it names has ' + fmt(d.target_rows) + ' rows.', strong: true },
+    { text: 'Automatically rewritten query:', strong: true },
+    { text: d.rewritten_query, mono: true },
+    { text: 'MV definition:', strong: true },
+    { text: d.mv_definition, mono: true },
+    { table: { columns: ['description', 'n', 'last_change'], rows: d.mv_rows } },
+    { text: 'The MV it is answered by has ' + fmt(d.mv_count) + ' rows (auto-refreshed every 10s) — same answer, ' + fmt(d.mv_count) + ' rows read instead of ' + fmt(d.target_rows) + ', with the query never edited.', strong: true },
+  ] : [
+    { text: d.query, mono: true },
+    { text: 'The synced table it names has ' + fmt(d.target_rows) + ' rows — but the plan scanned the base table: the rewrite did NOT fire.', strong: true },
+  ];
+  return { text: 'StarRocks query rewrite on the synced table:', subs };
+}, 3, ['connect', 'rw', 'sr']);
 
 $('do-rebuild').onclick = async () => {
   if (!confirm('This drops the ' + SYNC + ' source table, clears its watermark rows (other syncs are untouched), and drops the Kafka topic, the connector and both targets, then creates them again. Continue?')) return;
@@ -871,7 +894,7 @@ function setStateBackend(name) {
     node.classList.toggle('blue', !isDelta);
   }
   const legend = $('legend-blue');
-  if (legend) legend.textContent = isDelta ? 'Postgres (targets)' : 'Postgres (targets + state)';
+  if (legend) legend.textContent = isDelta ? 'Targets' : 'Targets + state';
   const syncHint = $('sync-hint');
   if (syncHint) syncHint.textContent = isDelta
     ? 'delta-rs reads the versions after the watermark — no Spark, no warehouse scans — produces the events, then moves the watermark with a delta-rs append into its UC Delta state table.'

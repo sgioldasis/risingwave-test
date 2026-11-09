@@ -708,3 +708,22 @@ Three more SR 4.1.7 quirks the asset encodes:
   several task intervals, restart the FE before touching the job. This is
   also why the asset pins start offsets in the CREATE instead of via the
   pause/ALTER/resume churn, whose state transitions can orphan queued tasks.
+
+### Transparent query rewrite on the synced table (2026-11-09)
+
+The demo page's **"StarRocks & MV rewrite"** button
+(`/api/check/<sync>/starrocks` in `scripts/reverse_etl_demo_server.py`, delta
+sync only) demonstrates SR's transparent query rewrite on the serving layer:
+an async rollup MV (`mv_<sync>_target_rollup`, `COUNT` + `MAX(updated_at)` per
+`description`, `REFRESH ASYNC EVERY (INTERVAL 10 SECOND)`) over the synced
+Primary Key table. The check runs a plain `GROUP BY` **against the base
+table** and returns the plan's scanned relation — `TABLE: mv_...` with
+`MaterializedView: true`, i.e. the planner substituted the MV with no change
+to the query. The MV is demo-owned in the check, not in the target asset:
+setup drops and recreates the target table (dropping a base table is allowed
+with a dependent MV — verified live — and turns the MV `INVALID`), and the
+check recreates the MV whenever `information_schema.materialized_views.
+QUERY_REWRITE_STATUS` is not `VALID`, then `REFRESH ... WITH SYNC MODE` so
+what it reports is current. Eligibility shape confirmed on 4.1.7: a plain
+SPJG rollup over one internal table rewrites; volatile predicates and
+cross-catalog unions do not (see the skill notes).

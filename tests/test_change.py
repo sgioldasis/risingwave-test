@@ -100,7 +100,18 @@ class TestBulkLoad:
     def test_each_commit_chains_off_the_tables_current_max_id(self):
         (statement,) = change_statements(delta_cfg(), "bulk_1m", rows=10)
         assert f"SELECT coalesce(max(id), 0) AS base FROM {TABLE}" in statement
-        assert "'bulk-' || CAST(base + 1 + j AS STRING)" in statement
+        assert "'bulk-' || CAST(base + 10 AS STRING)" in statement
+
+    def test_the_description_is_chunk_constant_not_per_row(self):
+        # The MV-rewrite demo groups by description: per-row names (bulk-1,
+        # bulk-2, ...) would make every rollup group a single row, so each
+        # commit's description is constant across its rows (base + chunk, no
+        # per-row j) and distinct across chunks.
+        statements = change_statements(delta_cfg(), "bulk_1m", rows=250_000)
+        # The literal is the chunk size; `base` differs per chunk at runtime
+        # (it chains off the table's max id), so the names stay distinct.
+        assert [s.split("'bulk-' || CAST(base + ")[1].split(" AS STRING")[0] for s in statements] == ["100000", "100000", "50000"]
+        assert all("j AS STRING" not in s for s in statements)
 
     @pytest.mark.parametrize("rows", [0, -1, change_module.BULK_MAX_ROWS + 1])
     def test_a_row_count_out_of_range_is_refused(self, rows):
