@@ -12,7 +12,8 @@ reverse-ETL tool in [`REVERSE_ETL_DRT_COMPARISON.md`](REVERSE_ETL_DRT_COMPARISON
 fix for **partial reads of large Databricks results** (13), a **sink health check** (11) and a partial
 **Databricks cost measurement** (14.1.2). Since 2026-10-14 the sync itself runs on OSS Delta (zero Databricks
 compute) and the APR-233 tool evaluation is closed in
-[`REVERSE_ETL_TOOL_EVALUATION.md`](REVERSE_ETL_TOOL_EVALUATION.md). Names in sections that
+[`REVERSE_ETL_TOOL_EVALUATION.md`](REVERSE_ETL_TOOL_EVALUATION.md). Since 2026-11-09, a **protobuf feasibility
+investigation** (14.5 — producer-feasible, RisingWave and StarRocks blocked). Names in sections that
 describe earlier runs may be the older ones; section 14.4 has the current names.
 Branch: `feature-sr`
 Demo script: [`REVERSE_ETL_LIVE_DEMO.md`](REVERSE_ETL_LIVE_DEMO.md).
@@ -1421,6 +1422,48 @@ group and both target tables were all absent, as expected.
     delete on the orders table and the seeds reached Postgres and RisingWave in each, both connectors were
     `RUNNING`, and no objects under the old names remained (Databricks, Postgres, RisingWave, Connect). A column
     change on the orders sync was tested later through the notebook trigger (section 10.6).
+
+### 14.5 Protobuf instead of Avro (investigated 2026-11-09, not built)
+
+Could the syncs offer `encoding: protobuf` as a third option alongside `json` and `avro`? Investigated only —
+no code changed. **Verdict: feasible on the producer side, but two of the three demo targets structurally
+cannot consume Debezium-shaped protobuf**, so the demo's three-target fan-out cannot work. Avro stays the only
+encoding that feeds RisingWave, Postgres and StarRocks.
+
+**Producer side — feasible, moderate work.**
+
+- `confluent-kafka[protobuf]` 2.16.1 with protobuf 6.33.6 is already installed, `grpcio-tools` (protoc) is already
+  a dependency, and the Confluent wire framing is the same 5-byte header as Avro's (magic byte + schema id, the
+  payload prefixed with the message-index bytes). A `WireProtobufSerializer` following the
+  `WireAvroSerializer` pattern (resolve the schema id once at construction, encode directly) ports directly.
+- The structural difference from Avro: the envelope's row payload is built **dynamically** from the source's
+  columns, so each registration means assembling a `FileDescriptorProto` from `row_fields` (or generating and
+  compiling a `.proto`) rather than passing a schema dict. confluent-kafka's own `ProtobufSerializer` needs
+  protoc-generated classes, so it would be a custom serializer either way.
+- The library's `encoding` validation accepts `json | avro` only (config.py), and sync.py branches on `avro` in
+  three places (`_message_previews`, `_raw_messages`, `_produce_to_kafka`) — protobuf would be a fourth shape to
+  design for the previews (decoded JSON vs Avro hex vs protobuf bytes).
+
+**Targets.**
+
+- **RisingWave — blocked.** The formats matrix (`docs.risingwave.com/ingestion/formats-and-encoding-options.md`)
+  lists `DEBEZIUM` with `JSON` and `AVRO` only; `PROTOBUF` exists only under `FORMAT PLAIN`, and `FORMAT UPSERT`
+  also accepts JSON/AVRO only. So a Debezium protobuf topic cannot give the target its upsert/delete semantics
+  (`FORMAT DEBEZIUM ENCODE AVRO` today); a `PLAIN` protobuf source is append-only with no deletes.
+- **StarRocks — blocked.** Routine Load's `format` property supports CSV, JSON and Avro only (confirmed against
+  the docs, 4.x); the target asset already refuses non-Avro encodings outright.
+- **Kafka Connect → Postgres — possible but needs image work.** The Debezium JDBC sink consumes any Connect
+  `Struct`, and Confluent's `io.confluent.connect.protobuf.ProtobufConverter` exists — but the jar is not in the
+  image (only the Avro converter and the Apicurio converters; `protobuf-java` is present only as the Debezium
+  connectors' runtime dependency). Adding it would repeat the section 14.1 converter-jar exercise.
+
+**Schema evolution inverts the demo's story.** The live schema-change showcase (add/rename/drop with
+propagation) leans on Avro's dynamic registration. In protobuf: adding a column (new field number, optional) is
+compatibility-fine; **renaming is inherently breaking** (a field-name change is a delete + add under BACKWARD
+compatibility — the registry rejects it unless compatibility drops to NONE); drops need `reserved`. The
+rename-propagation demo in particular would need a compatibility exception. Registration also goes through a
+different registry API path than the ccompat v6 Avro calls the demo uses today (Apicurio and Redpanda's built-in
+registry both have protobuf support, on separate endpoints).
   - **The notebook with `label=orders`** (2026-10-04). A one-time Databricks run of the DEV notebook, submitted with
     `base_parameters = {"label": "orders"}` on a classic cluster (as the author's own user), after updating one
     orders row in Databricks: the run succeeded, the row changed in both Postgres and RisingWave, the orders
