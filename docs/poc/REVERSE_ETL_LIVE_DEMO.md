@@ -81,7 +81,7 @@ While a sync runs (2026-10-19): the diagram walks the sync's steps and, on succe
 downstream ones — the watermark move, the two readers, Postgres — before the green badges land; a failure
 stops at the watermark step with red badges. The walk's timing is the page's own (Dagster reports only run
 status), but the status chip and the run log show the run's **real** progress read back from the Dagster
-event log: the sync's per-chunk heartbeat (`Chunk 2/6: versions 2-2, 2 rows, 1 events (total 4)`) replaces
+event log: the sync's per-chunk heartbeat (`Chunk 2/6: table versions 2-3 of 4, 2 rows, 1 events (total 4)`) replaces
 the invented phase counter in the chip, and the heartbeat and schema-propagation lines (`Produced N event(s)
 to …`, `Added column(s) to the RisingWave table …`) appear in the run log as they are logged.
 
@@ -212,7 +212,9 @@ Show:
 Materialize the asset **`reverse_etl_avro_to_kafka`**.
 
 How it reads the changes: by reconstructing them from Delta storage alone — for each commit version since the
-watermark, the sync diffs the snapshot at v-1 against the snapshot at v (`orchestration/assets/reverse_etl_delta_reader.py`,
+watermark, the sync diffs the snapshot at v-1 against the snapshot at v (the library's
+`kaizen_dagster_reverse_etl.core.delta_reader` since the 2026-11-09 fork retirement — this was
+`orchestration/assets/reverse_etl_delta_reader.py`;
 delta-rs reads with the service principal, no Spark, no warehouse; see [`docs/poc/REVERSE_ETL_DBU_COST_NOTES.md`](REVERSE_ETL_DBU_COST_NOTES.md)).
 Before any of that, a no-op check reads the source's current version and the state table's watermark with delta-rs —
 when they are equal the run ends there. The check's token and storage locations come from a
@@ -242,6 +244,12 @@ Show:
   then the Avro payload. `kafka_messages` shows the same events as readable payloads.
 
 ## 4. Change data
+
+Two ways to change a source: the page's change dropdown (the demo op) or raw SQL in the Databricks SQL editor.
+The demo op executes its statements through the Statement Execution API on the warehouse in
+`DATABRICKS_WAREHOUSE_ID` (env-driven since 2026-11-09 — a stopped classic warehouse paid a multi-minute
+cold boot; the env points at the Serverless Starter Warehouse, with the classic `risingwave-poc` as fallback),
+which is why a clicked change lands in seconds.
 
 In the Databricks SQL editor:
 
