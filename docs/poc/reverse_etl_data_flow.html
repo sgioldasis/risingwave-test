@@ -817,7 +817,10 @@ $('act-schema').onclick = async () => {
 };
 $('act-readers').onclick = () => check('readers', d => ({ text: 'Kafka Connect: ' + (d.kafka_connect.error ? d.kafka_connect.error : d.kafka_connect.connector + ', tasks ' + d.kafka_connect.tasks.join(', ')) + '. RisingWave rows: ' + (d.risingwave_rows.error || d.risingwave_rows) + '.' }), 6, ['kafka', 'connect', 'rw']);
 $('act-postgres').onclick = () => check('postgres', d => {
-  if (d.error) return { text: 'Postgres check failed: ' + d.error };
+  if (d.error) {
+    if (d.error === 'UndefinedTable') return { text: 'Postgres check failed: the target table does not exist yet — the Debezium sink creates it on the first record it consumes, and no record has flowed since the last rebuild. Click Sync once (the seed rows are waiting in the source), then re-check.' };
+    return { text: 'Postgres check failed: ' + d.error };
+  }
   // Column headings come from the query itself (the set moves with the demo's
   // schema changes). A real table with scrollbars — the wide targets (company
   // has 16 columns) were unreadable as padded pipe text.

@@ -34,6 +34,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 MODE="${1:-full}"
+START=$SECONDS  # bash builtin — a total-time line at each exit path
 
 MYSQL="docker exec starrocks mysql -h starrocks -P 9030 -u root"
 LOAD="reverse_etl_delta_rl"
@@ -185,12 +186,12 @@ else
 fi
 
 # --- B. delta_federation catalog ----------------------------------------------------
-# In read mode a presence probe suffices. In full mode this runs AFTER the sync
-# rebuild (C) and unconditionally: the reset drops + recreates the Databricks
-# sources and UC mints new storage paths, so the HMS registrations must be
-# re-pointed at the live tables — a stale registration keeps serving the dropped
-# tables' files as GHOST DATA (550k rows that no longer exist in UC).
-if [ "$MODE" != "full" ] && [ "$(get delta_federation)" = "True" ]; then
+# In full mode this DEFERS to after the sync rebuild (C): registering first is
+# wasted work when a rebuild follows, and registers the OLD table locations.
+# Read mode registers here (nothing moves afterwards).
+if [ "$MODE" = "full" ]; then
+    echo "ℹ️  B. federation registration deferred until after the sync rebuild"
+elif [ "$(get delta_federation)" = "True" ]; then
     echo "✅ B. delta_federation catalog already present"
 else
     echo "=== B. Registering the delta_federation catalog ==="
@@ -203,17 +204,99 @@ if [ "$MODE" != "full" ]; then
 elif [ "$(get risingwave)" != "True" ]; then
     echo "=== C. Rebuilding the demo syncs (reset + setup, in parallel) ==="
     ./bin/3_rebuild_reverse_etl.sh avro cdf orders delta company
-    # C moved every demo-owned source to a new storage path — B must re-run after it.
+    # B2. The rebuild dropped + recreated every demo-owned source, and UC minted
+    # new storage paths — re-register unconditionally or the catalog serves the
+    # dropped tables' files as GHOST DATA (550k rows that no longer exist in UC).
     echo "=== B2. Re-registering the federation against the new table locations ==="
     ./bin/3_setup_delta_federation.sh
+    # C2. The setup job's seed step runs AFTER its sync step, so a fresh rebuild
+    # leaves the topics empty — and the Debezium sink only creates the Postgres
+    # table on its first record. Push the seed rows through now, or every
+    # target check fails with UndefinedTable until the user's first sync click.
+    echo "=== C2. First sync per demo sync (seeds flow through the whole pipeline) ==="
+    python3 - <<'PY'
+import json
+import threading
+import time
+import urllib.error
+import urllib.request
+
+URL = "http://localhost:3000/graphql"
+def gql(query, variables=None):
+    req = urllib.request.Request(URL, json.dumps({"query": query, "variables": variables or {}}).encode(),
+                                 {"content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=120))["data"]
+
+def gql_retry(query, variables=None, attempts=24):
+    # Dagster can blip mid-recovery (its code-server socket is the known weak
+    # point); a connection refusal is worth retrying, not aborting the phase.
+    last = None
+    for _ in range(attempts):
+        try:
+            return gql(query, variables)
+        except (urllib.error.URLError, OSError) as e:
+            last = e
+            time.sleep(5)
+    raise SystemExit(f"Dagster unreachable after retries: {last}")
+
+repo = gql_retry("{repositoriesOrError{... on RepositoryConnection{nodes{name location{name}}}}}")["repositoriesOrError"]["nodes"][0]
+
+def run(sync, results):
+    try:
+        selector = {"repositoryLocationName": repo["location"]["name"], "repositoryName": repo["name"],
+                    "jobName": "__ASSET_JOB", "assetSelection": [{"path": [f"reverse_etl_{sync}_to_kafka"]}]}
+        launched = gql_retry("mutation($s:JobOrPipelineSelector!){launchRun(executionParams:{selector:$s})"
+                             "{__typename ... on LaunchRunSuccess{run{runId}} ... on PythonError{message}}}", {"s": selector})["launchRun"]
+        if launched["__typename"] != "LaunchRunSuccess":
+            results[sync] = ("LAUNCH_FAIL", launched.get("message", ""))
+            return
+        run_id = launched["run"]["runId"]
+        while True:
+            info = gql_retry("query($i:ID!){runOrError(runId:$i){... on Run{status}}}", {"i": run_id})["runOrError"]
+            if info["status"] in ("SUCCESS", "FAILURE", "CANCELED"):
+                results[sync] = (info["status"], run_id)
+                return
+            time.sleep(3)
+    except Exception as e:  # a crashed thread must not KeyError the summary
+        results[sync] = ("FAILURE", repr(e))
+
+# Parallel (the webserver's 3G limit gives the headroom; at 1.5G five parallel
+# runs OOM-killed two of them live). Safety net: any failure gets ONE sequential
+# retry — an OOM kill under pressure self-heals instead of failing the phase.
+results = {}
+threads = [threading.Thread(target=run, args=(s, results)) for s in ("avro", "cdf", "orders", "delta", "company")]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+for s in ("avro", "cdf", "orders", "delta", "company"):
+    print(f"  {results[s][0]:8} {s}", flush=True)
+failed = [s for s in ("avro", "cdf", "orders", "delta", "company") if results.get(s, ("FAILURE", ""))[0] != "SUCCESS"]
+for s in failed:
+    print(f"  retrying {s} (sequential)", flush=True)
+    run(s, results)
+    print(f"  {results[s][0]:8} {s} (retry)", flush=True)
+still_failed = [s for s in ("avro", "cdf", "orders", "delta", "company") if results.get(s, ("FAILURE", ""))[0] != "SUCCESS"]
+if still_failed:
+    raise SystemExit(f"first-sync runs failed: {still_failed}")
+PY
 else
     echo "✅ C. Demo syncs already in place (RisingWave target table present)"
+    # Nothing was rebuilt, so the deferred registration lands here — but only if
+    # the catalog is actually missing (a mid-session re-run skips it entirely).
+    if [ "$(get delta_federation)" != "True" ]; then
+        echo "=== B. Registering the delta_federation catalog ==="
+        ./bin/3_setup_delta_federation.sh
+    else
+        echo "✅ B. delta_federation catalog already present (nothing moved)"
+    fi
 fi
 
 # --- D. StarRocks serving table + Routine Load (full mode only) ---------------------
 if [ "$MODE" != "full" ]; then
     echo ""
-    echo "✅ Read-path recovery complete. Summary:"
+    echo "✅ Read-path recovery complete."
+    echo "   Total recovery time: $((SECONDS - START))s"
     echo "   Demo UI: http://localhost:4002/?sync=delta"
     exit 0
 fi
@@ -290,15 +373,25 @@ print(int(all(v == 0 for v in json.loads(latest).values())) if latest else 1)
     for i in $(seq 1 96); do
         # Converged once every partition's Progress equals LatestSourcePosition
         # (and is past OFFSET_ZERO, i.e. at least one consume task committed).
+        # Parse both as JSON dicts: StarRocks orders their keys differently
+        # (Progress 0-first, LatestSourcePosition 11-first), so raw string
+        # equality never matches even when fully caught up.
         MATCH=$($MYSQL -D reverse_etl --execute "SHOW ROUTINE LOAD\G" 2>/dev/null | python3 -c "
+import json
 import sys
 progress = latest = None
 for line in sys.stdin:
-    if line.strip().startswith('Progress:'):
-        progress = line.split(':', 1)[1].strip()
-    if line.strip().startswith('LatestSourcePosition:'):
-        latest = line.split(':', 1)[1].strip()
-print(int(progress == latest and progress is not None and 'OFFSET_ZERO' not in progress))
+    s = line.strip()
+    if s.startswith('Progress:'):
+        progress = s.split(':', 1)[1].strip()
+    if s.startswith('LatestSourcePosition:'):
+        latest = s.split(':', 1)[1].strip()
+if progress is None or latest is None or 'OFFSET_ZERO' in progress:
+    print(0)
+else:
+    p = {k: int(v) for k, v in json.loads(progress).items()}
+    l = {k: int(v) for k, v in json.loads(latest).items()}
+    print(int(p == l and bool(p)))
 ")
         if [ "$MATCH" = "1" ]; then CONVERGED=1; break; fi
         sleep 5
@@ -319,5 +412,6 @@ fi
 
 echo ""
 echo "✅ Recovery complete."
+echo "   Total recovery time: $((SECONDS - START))s"
 $MYSQL -D reverse_etl --execute "SELECT COUNT(*) AS serving_rows FROM reverse_etl_delta_target" 2>/dev/null || true
 echo "   Demo UI: http://localhost:4002/?sync=delta"

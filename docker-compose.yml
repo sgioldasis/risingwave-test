@@ -975,7 +975,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1536M
+          # Every Dagster run step executes as a subprocess IN HERE (multiprocess
+          # executor), on top of the webserver + code server. 1.5G OOM-killed two
+          # of five parallel sync runs (SIGKILL on the step process, seen live
+          # 2026-11-10); 3G gives the headroom. OrbStack commits lazily — the
+          # ceiling is only reached under real pressure.
+          memory: 3G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
       interval: 10s
