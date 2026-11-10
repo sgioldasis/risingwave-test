@@ -7,7 +7,11 @@
 # Redpanda+kafka-connect — plus the StarRocks serving stack by default (FE +
 # CN, one-shot catalog init, and hms for the Delta federation, doc §13);
 # compose's depends_on pulls MinIO + Lakekeeper in automatically. The rest of
-# the stack (Trino, Superset, Grafana, Prometheus) stays down. Needs the VPN
+# the stack (Trino, Superset, Grafana, Prometheus) stays down. It then runs
+# bin/2_recover_demo_state.sh read (fast: CN registration + delta_federation
+# catalog only — the minimum for the StarRocks/Flight read-path demos); pass
+# 'full' to also rebuild the five syncs and the serving table after a Stop
+# Everything. Needs the VPN
 # on, and a devbox shell for the Postgres check. .env is sourced for the
 # environment the checks read (the Jobotron topic check needs KAFKA_OUTPUT_*).
 # Stop Everything (6_down.sh) tears this set down like any other start: its
@@ -62,6 +66,14 @@ for i in $(seq 1 150); do
     fi
     sleep 2
 done
+
+echo "=== Recovering the StarRocks read path (CN registration, federation catalog) ==="
+# Fast start: 'read' mode is phases A+B only — the minimum for the StarRocks
+# read-path demos (federation, Flight benchmark, DuckDB over Flight). Seconds,
+# no VPN. Pass 'full' instead to also rebuild the five syncs and the serving
+# table after a Stop Everything (the sync animation needs it). See the phase
+# table at the top of 2_recover_demo_state.sh.
+./bin/2_recover_demo_state.sh read
 
 echo "=== Demos on http://localhost:$PORT/?sync=delta and http://localhost:$PORT/jobotron ==="
 set -a
