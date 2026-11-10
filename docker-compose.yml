@@ -1219,6 +1219,7 @@ services:
     ports:
       - "9030:9030"   # MySQL protocol — Power BI / mysql clients connect here
       - "8030:8030"   # HTTP API / StarRocks UI
+      - "8010:8010"   # Arrow Flight SQL (columnar gRPC) — pyarrow/DuckDB/ADBC clients
     depends_on:
       lakekeeper-bootstrap:
         condition: service_completed_successfully

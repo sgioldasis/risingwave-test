@@ -132,4 +132,21 @@ hive_meta_cache_refresh_interval_s = 5
 remote_file_cache_refresh_interval_s = 5
 EOF
 
+# --- Arrow Flight SQL serving (spike 2026-11-10): columnar result delivery for
+# Python/DuckDB/BI clients over gRPC, instead of the MySQL wire protocol. The
+# Flight jars ship in the image but the port is disabled by default
+# (arrow_flight_port = -1), and the key is runtime-immutable
+# (IsMutable=false), hence fe.conf + restart. ---
+grep -q 'arrow_flight_port' /opt/starrocks/fe/conf/fe.conf || cat >> /opt/starrocks/fe/conf/fe.conf <<'EOF'
+
+arrow_flight_port = 8010
+EOF
+
+# Arrow Flight's direct-memory access needs this Java 17+ add-opens in the FE
+# JVM; without it every query fails in the FE's BE proxy with
+# "Failed to initialize MemoryUtil" (found 2026-11-10).
+if ! grep -q 'add-opens=java.base/java.nio' /opt/starrocks/fe/conf/fe.conf; then
+  sed -i 's/^JAVA_OPTS="\([^"]*\)"/JAVA_OPTS="\1 --add-opens=java.base\/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"/' /opt/starrocks/fe/conf/fe.conf
+fi
+
 exec /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN

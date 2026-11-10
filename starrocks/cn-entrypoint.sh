@@ -80,6 +80,19 @@ datacache_enable = true
 datacache_mem_size = 671088640
 EOF
 
+# --- Arrow Flight SQL (spike 2026-11-10, mirrors fe-entrypoint.sh): the FE
+# proxies DoGet result batches to the CN's own Flight service. Without this
+# port the proxy fails with "port out of range:-1". Only reachable inside the
+# docker network (FE -> CN), so no host port publishing. NOTE: the CN process
+# reads be.conf for this key — its startup log says so explicitly; appending
+# to cn.conf alone is ignored (found 2026-11-10). ---
+for _conf in /opt/starrocks/cn/conf/be.conf /opt/starrocks/cn/conf/cn.conf; do
+  grep -q 'arrow_flight_port' "$_conf" || cat >> "$_conf" <<'EOF'
+
+arrow_flight_port = 8010
+EOF
+done
+
 sleep 15
 ulimit -u 65535 || true
 ulimit -n 65535 || true
