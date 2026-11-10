@@ -363,6 +363,10 @@ for v in $(docker compose config --volumes); do
         echo "Skipping superset-home (preserved)"
         continue
     fi
+    if [ "$v" = "hms_derby" ]; then
+        echo "Skipping hms_derby (preserved: the Delta federation's HMS registrations)"
+        continue
+    fi
     full_name="${PROJECT_NAME}_${v}"
     if docker volume rm -f "$full_name" > /dev/null 2>&1; then
         echo "✅ Removed volume $full_name"

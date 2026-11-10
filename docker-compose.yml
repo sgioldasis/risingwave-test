@@ -1306,6 +1306,23 @@ services:
       - "9083:9083"
     networks:
       - iceberg_net
+    volumes:
+      # Derby has no volume of its own by default: a recreated hms container
+      # wiped the delta_fed registrations and the federation catalog showed no
+      # tables (found 2026-11-10). Persist them; on every start the entrypoint
+      # runs -initOrUpgradeSchema, which is idempotent on the seeded db.
+      #
+      # NOTE: this volume must be SEEDED, not empty. Derby's create=true
+      # refuses a pre-existing directory (ERROR XBM0J), so the entrypoint's
+      # schema init fails on a fresh volume and hms exits 1. bin/6_down.sh
+      # deliberately skips this volume. If it is ever wiped, recover with:
+      #   docker run --rm --entrypoint bash --user root \
+      #     -v risingwave-test_hms_derby:/seed risingwave-test/hms:local \
+      #     -c 'rm -rf /opt/hive/metastore_db && cd /opt/hive && \
+      #         bin/schematool -dbType derby -initSchema >/dev/null 2>&1 && \
+      #         cp -a metastore_db/. /seed/ && chown -R 1000:1000 /seed'
+      # then re-run bin/3_setup_delta_federation.sh.
+      - hms_derby:/opt/hive/metastore_db
 
   # StarRocks shared-data test cluster — standalone proof-of-concept for
   # whether StarRocks can use Azure (ADLS Gen2) as its own table storage,
@@ -1480,6 +1497,8 @@ volumes:
   grafana-0:
     external: false
   superset-home:
+    external: false
+  hms_derby:
     external: false
   lakekeeper-db:
     external: false
