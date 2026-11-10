@@ -459,6 +459,11 @@ document.addEventListener('keydown', e => {
 
 // Buttons: work only when the page is served by scripts/reverse_etl_demo_server.py.
 let SYNC = new URLSearchParams(location.search).get('sync') || 'delta';
+// The three StarRocks read-path buttons (federation, Flight benchmark, DuckDB
+// over Flight) all resolve the source through the HMS-backed delta_federation
+// catalog. Shown at the top of each of their cards: the fix when a fresh FE
+// start has wiped the catalog (FE metadata is container-local).
+const HMS_NOTE = () => ({ text: '⚠️ Depends on the HMS federation: the hms container holds the catalog→location registrations, and a fresh FE start wipes them. If the catalog is missing, run ./bin/3_setup_delta_federation.sh.', mono: false });
 let helper = false, busy = false;
 const post = body => fetch('/api/launch', { method: 'POST', body: JSON.stringify({ sync: SYNC, ...body }) }).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
 const get = url => fetch(url).then(async r => { const d = await r.json().catch(() => null); if (!r.ok) throw new Error((d && d.error) || 'HTTP ' + r.status); return d; });
@@ -860,6 +865,7 @@ $('act-federation').onclick = () => check('federation', d => {
     { text: d.query, mono: true },
     { text: 'The plan scans ' + (d.plan_scanned || 'NOT Delta storage — unexpected') + ': StarRocks reads the Delta log + Parquet files directly from ADLS with the service principal.', strong: true },
     { text: fmt(d.rows) + ' rows read from Databricks storage — through the catalog, with no pipeline component touched.', strong: true },
+    { text: 'Caching, live: the same count twice just measured ' + d.cache_ms[0] + ' ms, then ' + d.cache_ms[1] + ' ms. The metadata (the _delta_log file list) re-reads from the source at most every 5s, but the Parquet blocks land in the CN’s data cache after the first scan — repeats are answered locally, and Databricks compute is never involved at any point.' },
   );
   const other = Object.entries(d.tables || {});
   if (other.length) {
@@ -871,6 +877,7 @@ $('act-federation').onclick = () => check('federation', d => {
     subs.push({ text: 'Latest rows, read in place:', strong: true });
     subs.push({ table: { columns: cols, rows: d.latest } });
   }
+  subs.push(HMS_NOTE());
   return { text: 'Delta federation — StarRocks reads the source in place:', subs };
 }, 0, ['src', 'sr']);
 
@@ -886,7 +893,11 @@ $('act-flight').onclick = () => check('flight', d => {
       ['MySQL', s.mysql_best_s + 's', fmt(Math.round(s.rows / s.mysql_best_s)) + ' rows/s'],
       ['Flight (Arrow)', s.flight_best_s + 's', fmt(Math.round(s.rows / s.flight_best_s)) + ' rows/s'],
     ] } },
-    { text: speedup + 'x faster — this is the workload Flight exists for: BI extracts, notebook pulls, DuckDB clients reading large result sets.', strong: true },
+    ...(s.rows < 10000 ? [{
+      text: 'The federated source currently holds only ' + fmt(s.rows) + ' rows (a reset/rebuild seeds it with a handful), so this pull comparison measures per-query overhead, not throughput — 0.4x here is rounding noise on a tiny table, not a verdict. Grow the source first — make-change bulk_1m (rows ≈ 500000), no sync needed: this benchmark reads the source\'s storage in place, and StarRocks picks up the new files within ~5s. (A sync is only for the serving path — Kafka → RisingWave/Postgres.) Then re-run to see the real gap.',
+    }] : [{
+      text: speedup + 'x faster — this is the workload Flight exists for: BI extracts, notebook pulls, DuckDB clients reading large result sets.', strong: true,
+    }]),
     { text: '2) Single-key point lookups (' + l.n + ' reads on a ' + fmt(l.table_rows) + '-row internal PK table):', strong: true },
     { table: { columns: ['protocol', 'avg', 'the workload this serves'], rows: [
       ['MySQL', l.mysql_avg_ms + ' ms', 'the dashboard’s serving path — stays on MySQL'],
@@ -894,6 +905,7 @@ $('act-flight').onclick = () => check('flight', d => {
     ] } },
     { text: 'Point lookups are slower over Flight — the honest half of the story. A round trip dominates a one-row answer, and FlightSQL spends more of them per query. Large pull: Flight. Point lookup: MySQL. Same engine, pick the wire per workload.' },
     { text: 'Benchmark: scripts/starrocks_flight_benchmark.py, run inside the dagster-webserver (the FE advertises its Flight endpoint on the docker-network name only). Docs: SR_POC_ARROW_FLIGHT_SQL_DEMO.md.', mono: false },
+    HMS_NOTE(),
   ];
   return { text: 'Arrow Flight SQL vs MySQL protocol, live:', subs };
 }, 0, ['src', 'sr']);
@@ -909,6 +921,7 @@ $('act-duckdb').onclick = () => check('duckdb', d => {
     { text: 'An analytic cut over a filter:', strong: true },
     { table: { columns: d.stats.columns, rows: d.stats.rows } },
     { text: 'One engine computed it (StarRocks, federation, zero DBU), the other analyzed it (DuckDB), and the wire between them was Arrow. Recipe: SR_POC_ARROW_FLIGHT_SQL_DEMO.md, "Querying through DuckDB"; standalone: ./bin/5_starrocks_duckdb.sh.' },
+    HMS_NOTE(),
   ];
   return { text: 'DuckDB over Arrow Flight SQL — StarRocks ' + d.version + ':', subs };
 }, 0, ['src', 'sr']);

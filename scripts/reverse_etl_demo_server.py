@@ -684,7 +684,9 @@ def check_federation(sync: str) -> dict:
         tables: dict[str, int | None] = {n: c for n, c in counts.items() if n != fed.SOURCE_TABLE}
         rows = counts[fed.SOURCE_TABLE]
         # The delta source's detail queries: the in-place proof (a plan
-        # scanning Delta storage directly) and a taste of the data.
+        # scanning Delta storage directly), a taste of the data, and the
+        # cache evidence — two back-to-back counts, showing that after the
+        # first ADLS scan the CN's block cache answers repeats.
         conn = connect()
         try:
             cur = conn.cursor()
@@ -696,6 +698,12 @@ def check_federation(sync: str) -> dict:
             # pymysql's description rows are plain tuples (name first) — unlike
             # psycopg2's attribute-carrying ones the Postgres check reads.
             columns = [d[0] for d in cur.description]
+            cache_ms = []
+            for _ in range(2):
+                t0 = time.perf_counter()
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                cur.fetchall()
+                cache_ms.append(round((time.perf_counter() - t0) * 1000))
         finally:
             conn.close()
         return {
@@ -709,6 +717,7 @@ def check_federation(sync: str) -> dict:
             "latest": latest,
             "columns": columns,
             "query": f"SELECT COUNT(*) FROM {table}",
+            "cache_ms": cache_ms,
         }
 
     try:
