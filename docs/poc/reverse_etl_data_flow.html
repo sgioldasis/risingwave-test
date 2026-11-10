@@ -189,6 +189,8 @@
       <button id="act-postgres">Show Postgres rows</button>
       <button id="act-starrocks">StarRocks &amp; MV rewrite</button>
       <button id="act-federation">StarRocks reads Delta in place</button>
+      <button id="act-flight">Flight vs MySQL benchmark</button>
+      <button id="act-duckdb">DuckDB over Flight</button>
       <p class="hint" id="fed-hint">The analyst path: no pipeline at all — StarRocks reaches the Databricks source through an external catalog and reads <code>_delta_log</code> + Parquet straight from ADLS. Zero compute, zero lag.</p>
     </div>
     <div class="sgroup">
@@ -870,6 +872,45 @@ $('act-federation').onclick = () => check('federation', d => {
     subs.push({ table: { columns: cols, rows: d.latest } });
   }
   return { text: 'Delta federation — StarRocks reads the source in place:', subs };
+}, 0, ['src', 'sr']);
+
+$('act-flight').onclick = () => check('flight', d => {
+  if (d.error) return { text: 'Flight benchmark failed: ' + d.error };
+  const s = d.scan, l = d.lookups;
+  const fmt = n => Number(n).toLocaleString('en-US');
+  const speedup = (s.mysql_best_s / s.flight_best_s).toFixed(1);
+  const subs = [
+    { text: 'Same queries, two wire formats. MySQL converts every row on both ends of the socket; Arrow Flight SQL streams columnar record batches — the format DuckDB, pandas and pyarrow consume natively — with zero conversion. The client talks to the FE’s Flight port (8010); the FE plans, the CN computes, and the batches are proxied back over gRPC.' },
+    { text: '1) Full pull of the federated Delta source (' + fmt(s.rows) + ' rows, streamed, best of ' + s.repetitions + '):', strong: true },
+    { table: { columns: ['protocol', 'best', 'throughput'], rows: [
+      ['MySQL', s.mysql_best_s + 's', fmt(Math.round(s.rows / s.mysql_best_s)) + ' rows/s'],
+      ['Flight (Arrow)', s.flight_best_s + 's', fmt(Math.round(s.rows / s.flight_best_s)) + ' rows/s'],
+    ] } },
+    { text: speedup + 'x faster — this is the workload Flight exists for: BI extracts, notebook pulls, DuckDB clients reading large result sets.', strong: true },
+    { text: '2) Single-key point lookups (' + l.n + ' reads on a ' + fmt(l.table_rows) + '-row internal PK table):', strong: true },
+    { table: { columns: ['protocol', 'avg', 'the workload this serves'], rows: [
+      ['MySQL', l.mysql_avg_ms + ' ms', 'the dashboard’s serving path — stays on MySQL'],
+      ['Flight (Arrow)', l.flight_avg_ms + ' ms', 'one query = several gRPC round trips (prepare, plan, fetch)'],
+    ] } },
+    { text: 'Point lookups are slower over Flight — the honest half of the story. A round trip dominates a one-row answer, and FlightSQL spends more of them per query. Large pull: Flight. Point lookup: MySQL. Same engine, pick the wire per workload.' },
+    { text: 'Benchmark: scripts/starrocks_flight_benchmark.py, run inside the dagster-webserver (the FE advertises its Flight endpoint on the docker-network name only). Docs: SR_POC_ARROW_FLIGHT_SQL_DEMO.md.', mono: false },
+  ];
+  return { text: 'Arrow Flight SQL vs MySQL protocol, live:', subs };
+}, 0, ['src', 'sr']);
+
+$('act-duckdb').onclick = () => check('duckdb', d => {
+  if (d.error) return { text: 'DuckDB demo failed: ' + d.error };
+  const fmt = n => Number(n).toLocaleString('en-US');
+  const subs = [
+    { text: 'The pairing the Arrow wire makes possible: StarRocks computes, the result arrives as Arrow record batches over Flight, and DuckDB scans those buffers in place — zero copy, zero conversion, on either side. This ran from the demo server\'s own process on the host (' + d.endpoint + ').', },
+    { text: 'Pulled ' + fmt(d.rows) + ' rows from the federated Delta source in ' + d.seconds + 's — ' + d.mib + ' MiB, still in Arrow format (the same rows through the MySQL protocol would cost ~10x the client-side bytes).', strong: true },
+    { text: 'DuckDB SQL StarRocks never precomputed — the make-up of the source:', strong: true },
+    { table: { columns: d.makeup.columns, rows: d.makeup.rows } },
+    { text: 'An analytic cut over a filter:', strong: true },
+    { table: { columns: d.stats.columns, rows: d.stats.rows } },
+    { text: 'One engine computed it (StarRocks, federation, zero DBU), the other analyzed it (DuckDB), and the wire between them was Arrow. Recipe: SR_POC_ARROW_FLIGHT_SQL_DEMO.md, "Querying through DuckDB"; standalone: ./bin/5_starrocks_duckdb.sh.' },
+  ];
+  return { text: 'DuckDB over Arrow Flight SQL — StarRocks ' + d.version + ':', subs };
 }, 0, ['src', 'sr']);
 
 $('do-rebuild').onclick = async () => {

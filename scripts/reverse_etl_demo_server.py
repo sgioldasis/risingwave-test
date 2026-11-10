@@ -10,6 +10,8 @@ localhost only.
   GET  /api/run/<run_id>    status and duration of a launched run
   GET  /api/check/<sync>/readers | postgres | starrocks   (CDF syncs; starrocks = delta only)
   GET  /api/check/<sync>/federation   (delta only: StarRocks reading the source in place)
+  GET  /api/check/<sync>/flight       (delta only: Arrow Flight SQL vs MySQL benchmark)
+  GET  /api/check/<sync>/duckdb       (delta only: DuckDB over Flight, zero-copy Arrow)
   GET  /api/check/jobotron/topics|postgres?market=<m>   (the instance's topic / mirror)
   GET  /api/schema/<sync>
 
@@ -722,6 +724,57 @@ def check_federation(sync: str) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def check_flight(sync: str) -> dict:
+    """Arrow Flight SQL vs MySQL protocol, live (SR_POC_ARROW_FLIGHT_SQL_DEMO.md).
+    Runs scripts/starrocks_flight_benchmark.py --json inside the dagster-webserver
+    container: the FE advertises its Flight endpoint as grpc+tcp://starrocks:8010,
+    which only resolves on the compose network, and the container already has
+    pymysql + pyarrow (the ADBC driver is (re)installed into its writable layer
+    here, same as bin/5_starrocks_flight_benchmark.sh). ~40s: 3 streamed pulls of
+    the 420k-row federated source + 200 point lookups each way."""
+    if sync != "delta":
+        return {"error": f"no flight benchmark for sync '{sync}' — the benchmark pulls the delta source"}
+    cmd = [
+        "docker", "exec", "dagster-webserver", "python", "/workspace/scripts/starrocks_flight_benchmark.py", "--json",
+    ]
+    try:
+        subprocess.run(
+            ["docker", "exec", "-u", "root", "dagster-webserver",
+             "python", "-m", "pip", "install", "-q", "adbc-driver-flightsql"],
+            check=True, capture_output=True, timeout=120,
+        )
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+    except FileNotFoundError:
+        return {"error": "docker CLI not available to the demo server — it shells out to docker exec"}
+    except subprocess.CalledProcessError as e:
+        return {"error": f"benchmark failed: {e.stderr.strip().splitlines()[-1] if e.stderr else e}"}
+    except subprocess.TimeoutExpired:
+        return {"error": "benchmark timed out"}
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"error": f"unparseable benchmark output: {proc.stdout[:200]}"}
+
+
+def check_duckdb(sync: str) -> dict:
+    """DuckDB over Arrow Flight SQL, live (SR_POC_ARROW_FLIGHT_SQL_DEMO.md,
+    'Querying through DuckDB'). Unlike check_flight this runs in-process: the
+    demo server's host venv already has duckdb + adbc-driver-flightsql, and
+    the /etc/hosts 'starrocks' entry makes the FE's advertised endpoint
+    resolvable from the host. If the venv lacks a dependency, the error says
+    so (uv sync / uv pip install adbc-driver-flightsql)."""
+    if sync != "delta":
+        return {"error": f"no DuckDB demo for sync '{sync}' — it pulls the delta source"}
+    try:
+        import starrocks_duckdb_demo
+    except ImportError as e:
+        return {"error": f"{e.name} missing in the demo server's venv — pip install adbc-driver-flightsql duckdb"}
+    try:
+        return starrocks_duckdb_demo.report_json()
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
         self.send_response(code)
@@ -759,13 +812,17 @@ class Handler(BaseHTTPRequestHandler):
                 market = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("market", [""])[0]
                 check = check_jobotron_topics if m.group(1) == "topics" else check_jobotron_postgres
                 return self._json(200, check(market))
-            if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres|starrocks|federation)", self.path):
+            if m := re.fullmatch(r"/api/check/(\w+)/(readers|postgres|starrocks|federation|flight|duckdb)", self.path):
                 if m.group(1) not in SYNCS:
                     raise ValueError("unknown sync")
                 if m.group(2) == "starrocks":
                     return self._json(200, check_starrocks(m.group(1)))
                 if m.group(2) == "federation":
                     return self._json(200, check_federation(m.group(1)))
+                if m.group(2) == "flight":
+                    return self._json(200, check_flight(m.group(1)))
+                if m.group(2) == "duckdb":
+                    return self._json(200, check_duckdb(m.group(1)))
                 return self._json(200, (check_readers if m.group(2) == "readers" else check_postgres)(m.group(1)))
             if m := re.fullmatch(r"/api/schema/(\w+)", self.path):
                 if m.group(1) not in SYNCS:
