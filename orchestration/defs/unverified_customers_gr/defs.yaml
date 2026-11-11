@@ -1,20 +1,22 @@
-# The Jobotron team's real GR job (unverified_customers_gr.ipynb) as a Dagster
-# component instance: one query type x one operator (D9), the minimal YAML. The
-# query is the notebook's SQL with its tables qualified to the GR market's
-# physical shard: the notebook runs the union views, but de.voperdb_gr holds
-# only company 1 (verified live 2026-10-26, evidence in
+# The Jobotron team's real GR job (unverified_customers_gr.ipynb) as an instance
+# of the team's delta-to-kafka component (MR !166, vendored wheel): the query runs
+# verbatim on the SQL warehouse and every selected customer is published as one
+# JSON message (the query's columns), keyed by CustomerId, to the instance's
+# Kafka topic. The query is the notebook's SQL with its tables qualified to the
+# GR market's physical shard: the notebook runs the union views, but
+# de.voperdb_gr holds only company 1 (verified live 2026-10-26, evidence in
 # docs/poc/JOBOTRON_CONTRACT_PARITY.md) -- single-market tables turn a 29-way
 # UNION scan into a seconds-class statement. The company/group filters stay as
-# guards. Runs verbatim on the team's SQL warehouse (DATABRICKS_WAREHOUSE_ID in
-# the environment). dry_run defaults to true -- the first run sends nothing.
-type: orchestration.components.reverse_etl_jobotron.JobotronProducer
+# guards. The workspace is the literal host from the environment (this repo has
+# no databricks-workspaces.yaml; the component passes a literal https:// host
+# through; the host var is the repo's existing DBT_DATABRICKS_HOST, which the
+# reverse-ETL env bridge reads too). dry_run defaults to true -- the first run sends nothing.
+
+type: kaizen_dagster_delta_to_kafka.components.delta_to_kafka.DeltaToKafkaComponent
 
 attributes:
-  query_type: unverified_customers
-  operator: gr
-  job_name: Send_Email_to_NonVerified_GR_Customers
-  catalog: de
-  schema_name: voperdb
+  name: unverified_customers_gr
+  asset_key_prefix: [jobotron]
   query: |
     select cusCustomerID as CustomerId, cusCompanyID as CompanyId
     from de.voperdb_gr.cCustomer
@@ -25,4 +27,13 @@ attributes:
     and cusCompanyID = 1  -- GML(GREECE)
     and cusStatusID = 3  -- REAL
     and vstVerifiedFL = false  -- Not verified
-    and (ccgValue0 is null or ccgValue0 <> 1)
+    and (ccgValue0 is null or ccgValue0 <> '1')
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  topic: jobotron_unverified_customers_gr
+  message:
+    format: json
+    key_column: CustomerId
+  metadata: [processed_at, run_id]
+  dry_run: true

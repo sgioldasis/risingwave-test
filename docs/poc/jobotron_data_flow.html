@@ -197,7 +197,7 @@
     <div class="mark">J</div>
     <div class="titles">
       <h1>Jobotron producer</h1>
-      <div class="sub">The team's real notebooks as Dagster instances: the verbatim query on their warehouse → the validated 13-field envelope as JSON → one topic per market → the Postgres mirror. Dry-run (the default) sends nothing.</div>
+      <div class="sub">The team's real notebooks as instances of their delta-to-kafka component (vendored wheel): the verbatim query on their warehouse → one plain-JSON message per customer → one topic per market → the Postgres mirror. Dry-run (the default) sends nothing.</div>
     </div>
   </div>
   <div class="pill" id="helper-pill"><span class="dot"></span><span id="helper-text">checking helper…</span></div>
@@ -215,7 +215,7 @@
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px">
         <input type="checkbox" id="dry_run" checked> dry-run (nothing sent, no topic created)
       </label>
-      <p class="hint">The checkbox flips the mode for this run only — the contract's own IsDryRun widget. Scheduled and blank launches take the YAML value.</p>
+      <p class="hint">The checkbox flips the mode for this run only. Scheduled and blank launches take the YAML value.</p>
     </div>
     <div class="sgroup">
       <div class="slabel">Pipeline</div>
@@ -236,19 +236,19 @@
   </aside>
 
   <main>
-    <section class="canvas" aria-label="Pipeline: the team's views are queried verbatim on the warehouse, the producer builds the 13-field envelope and gates on dry-run, and the demo consumer mirrors the topic into Postgres">
+    <section class="canvas" aria-label="Pipeline: the team's views are queried verbatim on the warehouse by their delta-to-kafka component, one plain-JSON message per row, and the demo consumer mirrors the topic into Postgres">
       <div class="flow">
         <div id="st-views" class="stage g-coral wide"><span class="tag">Databricks · read-only</span><div class="name">de.voperdb</div><div class="desc">the team's sharded UNION views · SELECT only</div><span class="runstate"></span></div>
         <div class="links-col"><div id="e-L1" class="link"></div></div>
-        <div id="st-producer" class="stage g-violet wide"><span class="tag">Dagster · per-market instance</span><div class="name">Jobotron producer</div><div class="desc">statement execution → build_messages</div><span class="runstate"></span>
-          <div class="chips"><span id="chip-query" class="chip">query</span><span id="chip-envelope" class="chip">envelope</span><span id="chip-hash" class="chip">hash</span><span id="chip-gate" class="chip">gate</span></div>
+        <div id="st-producer" class="stage g-violet wide"><span class="tag">Dagster · per-market instance</span><div class="name">delta-to-kafka (their wheel)</div><div class="desc">statement execution → one JSON message per row</div><span class="runstate"></span>
+          <div class="chips"><span id="chip-query" class="chip">query</span><span id="chip-json" class="chip">json</span><span id="chip-key" class="chip">key</span><span id="chip-gate" class="chip">gate</span></div>
         </div>
         <div class="links-col"><div id="e-L2" class="link"></div></div>
         <div id="st-topic" class="stage g-teal"><span class="tag">Kafka</span><div class="name">The instance's topic</div><div class="desc">jobotron_unverified_customers_&lt;mkt&gt;</div><span class="runstate"></span></div>
         <div class="links-col"><div id="e-L3" class="link"></div></div>
-        <div id="st-consumer" class="stage g-blue wide"><span class="tag">Dagster</span><div class="name">Demo consumer</div><div class="desc">decode JSON · dedup on ItemId</div><span class="runstate"></span></div>
+        <div id="st-consumer" class="stage g-blue wide"><span class="tag">Dagster</span><div class="name">Demo consumer</div><div class="desc">decode JSON · dedup on the Kafka key</div><span class="runstate"></span></div>
         <div id="e-L4" class="link"></div>
-        <div id="st-mirror" class="stage g-blue"><span class="tag">Postgres</span><div class="name">Postgres mirror</div><div class="desc">one row per ItemId</div><span class="runstate"></span></div>
+        <div id="st-mirror" class="stage g-blue"><span class="tag">Postgres</span><div class="name">Postgres mirror</div><div class="desc">one row per CustomerId</div><span class="runstate"></span></div>
       </div>
       <div class="legend">
         <span><i style="background: var(--coral)"></i> Databricks (read-only views · warehouse DBUs)</span>
@@ -275,60 +275,45 @@
     <div class="notes">
       <div class="note">
         <h2>The instance's YAML</h2>
-        <p class="sub">From <code>orchestration/defs/unverified_customers_cy/defs.yaml</code> — six typed facts; everything else derives or defaults, and the environment carries the coordinates (<code>DATABRICKS_WAREHOUSE_ID</code> + the service principal — the YAML never does).</p>
-<pre>type: orchestration.components.reverse_etl_jobotron.JobotronProducer
+        <p class="sub">From <code>orchestration/defs/unverified_customers_cy/defs.yaml</code> — an instance of the team's component (the vendored wheel); the query is the notebook's SQL, token-verbatim, and the environment carries the coordinates (<code>DBT_DATABRICKS_HOST</code>, <code>DATABRICKS_WAREHOUSE_ID</code> + the service principal — the YAML never does).</p>
+<pre>type: kaizen_dagster_delta_to_kafka.components.delta_to_kafka.DeltaToKafkaComponent
 attributes:
-  query_type: unverified_customers
-  operator: cy
-  job_name: Send_Email_to_NonVerified_CY_Customers
-  catalog: de
-  schema_name: voperdb
-  query: |
-    select cusCustomerID as CustomerId, cusCompanyID as CompanyId
-    from cCustomer ...   # the notebook's SQL, token-verbatim</pre>
-        <p class="label">Derived or defaulted</p>
-<pre>topic          → jobotron_unverified_customers_cy  (typed when the platform owns it)
-scan_engine    → databricks_sql  (delta_rs / delta_extension opt in, with sources)
-encoding       → json            (no registry anywhere)
-dry_run        → true            (the per-run switch overrides; YAML governs schedules)
-schema_version → 1</pre>
+  name: unverified_customers_cy
+  asset_key_prefix: [jobotron]
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  topic: jobotron_unverified_customers_cy
+  message:
+    format: json
+    key_column: CustomerId
+  metadata: [processed_at, run_id]
+  dry_run: true</pre>
       </div>
       <div class="note">
-        <h2>The 13-field contract (validated 2026-10-26)</h2>
-        <p class="sub">Transcribed from the team's <code>kafka_message_publisher.ipynb</code>; the field-by-field record and every decision live in <code>docs/poc/JOBOTRON_CONTRACT_PARITY.md</code>.</p>
-<pre>JobId           &lt;JobName&gt;_&lt;CompanyId&gt;_&lt;yyyyMMddHHmmss UTC&gt;
-JobName         the YAML's job_name — the wire identity
-JobCreated      second-truncated UTC
-RunId           the Dagster run id
-CompanyId       from the row
-CustomerId      the key, cast to string
-ItemsCount      the batch total
-ItemNumber      row_number over CustomerId (deterministic tie-break)
-ItemId          &lt;ItemPayloadHash&gt;-&lt;ItemNumber&gt;
-ItemPayload     every result column, nested
-ItemPayloadHash sha256 over the pinned canonical JSON
-IsDryRun        the run's mode
-SchemaVersion   1</pre>
+        <h2>The wire contract: plain JSON (the team's, post-MR !166)</h2>
+        <p class="sub">One message per selected customer, keyed by <code>CustomerId</code>. The payload is the query's result columns plus the component's metadata — no envelope, no hash, no registry. (The 13-field envelope the notebooks used is descoped upstream; the field-by-field record of it lives in <code>docs/poc/JOBOTRON_CONTRACT_PARITY.md</code>.)</p>
+<pre>{"CustomerId": 490301250, "CompanyId": 7,
+ "processed_at": "2026-11-11T05:30:17Z",
+ "run_id": "1fba69e5-…"}</pre>
         <p class="label">Guarantees</p>
         <ul>
-          <li>The query must emit <code>CustomerId</code> and <code>CompanyId</code> — a result missing them fails the run, named, before any produce.</li>
-          <li>Hash canon: compact separators, result-column order, nulls explicit, non-ASCII kept — the exact bytes the wire carries.</li>
+          <li>Keyed by the query's <code>CustomerId</code> column — the demo mirror dedups on the Kafka key, last write wins.</li>
+          <li><code>run_id</code> ties every message to the Dagster run that published it.</li>
           <li><b>GDPR:</b> the payload is exactly the query's columns; real topics would run TLS in transit and bounded retention.</li>
         </ul>
       </div>
       <div class="note">
         <h2>Components and jobs</h2>
-        <p class="sub">One Dagster component (<code>orchestration/components/reverse_etl_jobotron.py</code>), three instances (<code>orchestration/defs/unverified_customers_{cy,gr,ro}/</code>). Per instance: the setup asset (the topic only — a no-op under dry-run, not even a Kafka connection), the publish asset, the consume asset (decode, dedup on ItemId, mirror), plus setup and reset jobs. The instances own nothing in Databricks — read-only SELECTs on <code>de.voperdb</code>; a topic exists only once a run carries <code>dry_run: false</code>. Design: <code>docs/poc/JOBOTRON_CONTRACT_PARITY.md</code> and <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
+        <p class="sub">The publish asset is the vendored team component (<code>kaizen-dagster-delta-to-kafka</code>, MR !166), three instances (<code>orchestration/defs/unverified_customers_{cy,gr,ro}/</code>). The local side is demo plumbing only (<code>orchestration/assets/reverse_etl_jobotron.py</code>): the setup asset (the topic only — a no-op under dry-run, not even a Kafka connection), the consume asset (decode, dedup on the key, mirror), and the reset job. The instances own nothing in Databricks — read-only SELECTs on <code>de.voperdb</code>; a topic exists only once a run carries <code>dry_run: false</code>. Design: <code>docs/poc/REVERSE_ETL_JOBOTRON.md</code>.</p>
         <details>
           <summary>Show the publish asset's pipeline</summary>
-<pre style="margin-top: 10px">resolve the warehouse id (DATABRICKS_WAREHOUSE_ID — env, never YAML)
-submit the YAML query VERBATIM in the YAML's catalog.schema context (Statement Execution API, 50s inline wait)
+<pre style="margin-top: 10px">resolve the warehouse (the YAML's env-templated Resolver fields — Dagster renders {{ env(...) }})
+submit the YAML query VERBATIM (Statement Execution API, 50s inline wait)
 poll to a terminal state; fetch every result chunk (completeness-verified)
-coerce values back per the manifest's declared types (JSON_ARRAY stringifies)
-build_messages: order by CustomerId, hash per the pinned canon, 13 fields
-dry-run gate (the default): metadata only — items_count, previews, seconds
-produce one JSON message per row (key = CustomerId) to the instance's topic
-metadata: items_count, dry_run, schema_version, warehouse_id, statement_seconds</pre>
+build one plain-JSON message per row (key = the key_column, CustomerId)
+dry-run gate (the default): metadata only — statement_seconds, warehouse_id
+produce to the instance's topic; run metadata carries the counts</pre>
         </details>
       </div>
     </div>
@@ -338,13 +323,13 @@ metadata: items_count, dry_run, schema_version, warehouse_id, statement_seconds<
 
 <script>
 const S = [
-  { num: '1', t: 'The team’s three notebooks, as Dagster instances', d: 'One instance is one query type × one operator: the folder is unverified_customers_<mkt>, the YAML carries six typed facts (query_type, operator, job_name, catalog, schema_name, query), and the query is the notebook’s SQL, token-verbatim — nothing ported, nothing routed. Everything else derives: the topic is jobotron_unverified_customers_<mkt>, the engine is databricks_sql, encoding is JSON, and dry-run is the default.', n: ['views'] },
-  { num: '2.1', t: 'The candidate query runs on the team’s warehouse', chip: 'query', d: 'scan_engine databricks_sql submits the YAML query VERBATIM through the Statement Execution API to the SQL warehouse from DATABRICKS_WAREHOUSE_ID — the team’s own SQL on their own views (de.voperdb, the sharded UNION layer over the per-market _bronze tables), no transcription. It polls to a terminal state and fetches every result chunk, completeness-verified. The cost is stated, not hidden: seconds of DBUs at the validated scale (the CY query returned 13 candidates in ~38 s wall). delta_rs / delta_extension opt in for zero DBUs, with sources pointing at bronze.', n: ['views', 'producer'], e: ['L1'] },
-  { num: '2.2', t: 'The envelope is the real 13-field contract', chip: 'envelope', d: 'build_messages turns the result rows into the team’s exact envelope: JobId = <JobName>_<the row’s CompanyId>_<yyyyMMddHHmmss UTC>, JobCreated second-truncated UTC, RunId = the Dagster run id, ItemPayload = every result column nested, ItemNumber = row_number over CustomerId (tie-broken deterministically), ItemsCount = the batch total. The query must emit CustomerId and CompanyId — a result missing them fails here, named, before any message exists.', n: ['producer'] },
-  { num: '2.3', t: 'Hashed so the worker can verify', chip: 'hash', d: 'ItemPayloadHash is sha256 over a pinned canonical JSON (compact separators, result-column order, nulls explicit, non-ASCII kept) — the same rendering that lands in ItemPayload, so the worker recomputes and checks. ItemId = <hash>-<number>: the dedup token. The key is CustomerId, cast to string, exactly theirs.', n: ['producer'] },
-  { num: '2.4', t: 'Dry-run: everything built, nothing sent', chip: 'gate', d: 'The default mode runs the WHOLE path — query, envelope, hashing, counting — and produce() never happens; setup is a no-op too (not even a Kafka connection). The launch dialog’s dry_run switch flips the mode per run, exactly like the notebook’s IsDryRun widget, and the YAML value still governs schedules and blank launches. Metadata records items_count, the statement’s seconds and the warehouse id — audits ask the run, not the repo.', n: ['producer'] },
-  { num: '3', t: 'One JSON message per customer on the instance’s topic', d: 'With dry_run false, each message goes out as compact canonical JSON (the hash’s exact canon), keyed by CustomerId, to jobotron_unverified_customers_<mkt>. No registry anywhere — the validated contract is plain JSON. The full eligible set is republished every run; the worker owns dedup and re-validation, so the producer stays stateless.', n: ['producer', 'topic'], e: ['L2'] },
-  { num: '4', t: 'The demo consumer mirrors the topic, deduped on ItemId', d: 'The demo consumer drains the topic from the beginning (watermark-verified, no timing races), decodes the JSON envelopes, and keeps one Postgres mirror row per ItemId — INSERT ... ON CONFLICT DO NOTHING. ItemId carries the payload hash, so new content is a new row and a re-delivered item keeps its first. It stands in for the RFC’s worker, which would act per message (dedup, eligibility re-validation, actions).', n: ['topic', 'consumer', 'mirror'], e: ['L3', 'L4'] }
+  { num: '1', t: 'The team’s three notebooks, as instances of their component', d: 'One instance per market: the folder is unverified_customers_<mkt>, the YAML declares the team’s vendored delta-to-kafka component and carries the query (the notebook’s SQL, token-verbatim), the topic, the Kafka profile and the message shape — nothing ported, nothing routed. The environment carries the coordinates; dry-run is the default.', n: ['views'] },
+  { num: '2.1', t: 'The candidate query runs on the team’s warehouse', chip: 'query', d: 'The component submits the YAML query VERBATIM through the Statement Execution API to the SQL warehouse from DATABRICKS_WAREHOUSE_ID — the team’s own SQL on their own views (de.voperdb, the sharded UNION layer over the per-market _bronze tables), no transcription. It polls to a terminal state and fetches every result chunk, completeness-verified. The cost is seconds of DBUs at the validated scale (the CY query returns 51 candidates in ~3 s).', n: ['views', 'producer'], e: ['L1'] },
+  { num: '2.2', t: 'One plain-JSON message per row', chip: 'json', d: 'Each result row becomes one JSON message: the query’s columns plus the component’s metadata (processed_at, run_id). No envelope, no hash, no registry — the team’s revised contract (MR !166) is plain JSON; the old 13-field envelope is descoped upstream. The query must emit the key_column — CustomerId.', n: ['producer'] },
+  { num: '2.3', t: 'Keyed so the worker can dedup', chip: 'key', d: 'The Kafka record key is CustomerId (the YAML’s key_column), cast to string. The full eligible set is republished every run, so the key is the dedup token: the worker (here, the demo mirror) keeps one row per customer, last write wins.', n: ['producer'] },
+  { num: '2.4', t: 'Dry-run: everything built, nothing sent', chip: 'gate', d: 'The default mode runs the WHOLE path — query, message build, counting — and produce() never happens; setup is a no-op too (not even a Kafka connection). The checkbox flips the mode per run, and the YAML value governs schedules and blank launches. Run metadata records the statement’s seconds and the warehouse id — audits ask the run, not the repo.', n: ['producer'] },
+  { num: '3', t: 'One JSON message per customer on the instance’s topic', d: 'With dry_run false, each message goes out as compact JSON, keyed by CustomerId, to jobotron_unverified_customers_<mkt>. No registry anywhere. The full eligible set is republished every run; the worker owns dedup and re-validation, so the producer stays stateless.', n: ['producer', 'topic'], e: ['L2'] },
+  { num: '4', t: 'The demo consumer mirrors the topic, deduped on the key', d: 'The demo consumer drains the topic from the beginning (watermark-verified, no timing races), decodes the JSON messages, and keeps one Postgres mirror row per CustomerId — INSERT ... ON CONFLICT DO UPDATE, keyed by the Kafka key. It stands in for the RFC’s worker, which would act per message (dedup, eligibility re-validation, actions).', n: ['topic', 'consumer', 'mirror'], e: ['L3', 'L4'] }
 ];
 const NODES = ['views', 'producer', 'topic', 'consumer', 'mirror'];
 const EDGES = ['L1', 'L2', 'L3', 'L4'];
@@ -509,7 +494,7 @@ async function topicsCheck(out = $('result')) {
   if (d.error) { say('Topic check failed: ' + d.error, null, 'fail', out); return; }
   const subs = [{ text: d.topic + ': ' + d.count + ' message(s). Every publish rewrites the whole eligible set — the last run’s rows are what the topic holds.' }];
   for (const m of d.messages) {
-    subs.push({ text: m.error ? 'decode error: ' + m.error : 'item ' + m.ItemNumber + '/' + m.ItemsCount + ' · ' + m.CustomerId + ' → ' + m.JobName + (m.IsDryRun ? ' [dry-run]' : ''), mono: true });
+    subs.push({ text: m.error ? 'decode error: ' + m.error : 'customer ' + m.CustomerId + ' (company ' + m.CompanyId + ') · run ' + (m.run_id || '').slice(0, 8), mono: true });
   }
   if (d.count > d.messages.length) subs.push({ text: '… and ' + (d.count - d.messages.length) + ' more', mono: true });
   say(d.topic, null, d.count ? 'ok' : 'fail', out, subs);
@@ -519,7 +504,7 @@ async function postgresCheck(out = $('result')) {
   say('Reading the mirror table...', null, 'run', out);
   const d = await get('/api/check/jobotron/postgres?market=' + market());
   if (d.error) { say('Mirror check failed: ' + d.error, null, 'fail', out); return; }
-  const subs = [{ text: d.table + ': ' + d.count + ' item(s) — one row per ItemId ever seen; a republished item keeps its first row.' }];
+  const subs = [{ text: d.table + ': ' + d.count + ' row(s) — one row per CustomerId; a republished customer keeps its latest run\'s row.' }];
   for (const row of d.rows) subs.push({ text: row.join(' | '), mono: true });
   if (d.count > d.rows.length) subs.push({ text: '… and ' + (d.count - d.rows.length) + ' more', mono: true });
   say(d.table, null, 'ok', out, subs);

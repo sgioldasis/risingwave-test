@@ -53,7 +53,9 @@ CHANGES = ("insert", "update", "delete", "add_column", "rename_column", "drop_co
 MARKETS = ("cy", "gr", "ro")
 # action -> the instance asset's suffix ("" is the publish asset itself); "reset" is the
 # instance's reset JOB, not an asset
-JOBOTRON_ASSETS = {"setup": "_setup", "publish": "", "consume": "_consume", "reset": None}
+# Suffixes of the local demo-plumbing assets per action; "publish" is special (the
+# library instance's asset, handled in launch_jobotron) and "reset" is a job.
+JOBOTRON_ASSETS = {"setup": "_setup", "publish": None, "consume": "_consume", "reset": None}
 SCHEMA_REGISTRY = os.environ.get(
     "SCHEMA_REGISTRY_URL", "http://staging-schema-registry.kaizengaming.net/apis/ccompat/v7"
 )
@@ -212,7 +214,9 @@ def launch(
 def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retried: bool = False) -> dict:
     """One instance's run: the market's setup/publish/consume asset, with the per-run mode
     switch in the run config (the checkbox; the YAML value governs when it is not sent).
-    Reset is the instance's job, not an asset selection."""
+    Reset is the instance's job, not an asset selection. The publish asset is the vendored
+    team component's (asset key jobotron/unverified_customers_<market>); setup and consume
+    are the local demo plumbing."""
     if market not in MARKETS:
         raise ValueError(f"market must be one of {MARKETS}")
     if action not in JOBOTRON_ASSETS:
@@ -223,9 +227,20 @@ def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retr
     selector = {"repositoryLocationName": repo["location"]["name"], "repositoryName": repo["name"]}
     if action == "reset":
         return _launch_run({"selector": {**selector, "jobName": f"jobotron_unverified_customers_{market}_reset_job"}}, _retried)
+    if action == "publish":
+        # The library instance's publish asset: key prefix [jobotron], name
+        # unverified_customers_<market> (its own per-run dry_run switch). The
+        # run-config op key is the FULL op name: the prefix folds in with a
+        # double underscore (jobotron__unverified_customers_<market>) — keyed
+        # by the bare name, Dagster silently ignores the config.
+        path = ["jobotron", f"unverified_customers_{market}"]
+        op_name = "__".join(path)
+        params: dict = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": path}]}}
+        params["runConfigData"] = {"ops": {op_name: {"config": {"dry_run": bool(dry_run)}}}}
+        return _launch_run(params, _retried)
     asset = f"jobotron_unverified_customers_{market}{JOBOTRON_ASSETS[action]}"
-    params: dict = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [asset]}]}}
-    if action != "consume":  # the mode switch exists on setup and publish; consume reads only
+    params = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [asset]}]}}
+    if action != "consume":  # the mode switch exists on setup; consume reads only
         params["runConfigData"] = {"ops": {asset: {"config": {"dry_run": bool(dry_run)}}}}
     return _launch_run(params, _retried)
 
@@ -473,8 +488,8 @@ def check_jobotron_topics(market: str) -> dict:
 
 def check_jobotron_postgres(market: str) -> dict:
     """Rows currently in the instance's Postgres mirror table (table = topic name; one
-    row per ItemId). Same credential convention as the CDF demo's postgres check:
-    POSTGRES_USER/POSTGRES_PASSWORD from the environment."""
+    row per CustomerId, the Kafka key). Same credential convention as the CDF demo's
+    postgres check: POSTGRES_USER/POSTGRES_PASSWORD from the environment."""
     if market not in MARKETS:
         raise ValueError(f"market must be one of {MARKETS}")
     topic = f"jobotron_unverified_customers_{market}"
@@ -485,8 +500,8 @@ def check_jobotron_postgres(market: str) -> dict:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT item_id, item_number, customer_id, company_id, run_id, is_dry_run "
-                f"FROM {topic} ORDER BY item_number"
+                f"SELECT customer_id, company_id, run_id, processed_at "
+                f"FROM {topic} ORDER BY customer_id"
             )
             rows = [[str(v) for v in row] for row in cur.fetchall()]
         return {"table": topic, "count": len(rows), "rows": rows[:12]}

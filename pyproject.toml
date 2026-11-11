@@ -12,6 +12,14 @@ dependencies = [
     # replace: cd dagster-workspace/libraries/kaizen-dagster-reverse-etl &&
     # uv build && cp dist/*.whl <this repo>/vendor/
     "kaizen-dagster-reverse-etl",
+    # The Jobotron publisher (Databricks Statement Execution SQL -> Kafka), the
+    # team's delta-to-kafka component from dagster-workspace MR !166 (branch
+    # feature/APR-293-jobotron). Vendored as a wheel the same way: rebuild and
+    # replace with git archive feature/APR-293-jobotron
+    # libraries/kaizen-dagster-delta-to-kafka | tar -x -C <tmp> &&
+    # cd <tmp>/libraries/kaizen-dagster-delta-to-kafka && uv build &&
+    # cp dist/*.whl <this repo>/vendor/
+    "kaizen-dagster-delta-to-kafka",
     "confluent-kafka[protobuf,avro]>=2.12.2",
     "fastavro>=1.9.0",
     "grpcio-tools>=1.66.0,<1.80.0",
@@ -69,6 +77,7 @@ dependencies = [
 # The vendored wheel (see the dependency comment above): a plain file in the repo,
 # so uv sync --frozen never needs network access to Kaizen systems.
 kaizen-dagster-reverse-etl = { path = "vendor/kaizen_dagster_reverse_etl-0.1.4-py3-none-any.whl" }
+kaizen-dagster-delta-to-kafka = { path = "vendor/kaizen_dagster_delta_to_kafka-0.1.0-py3-none-any.whl" }
 
 [tool.dagster]
 module_name = "orchestration.definitions"

@@ -1,5 +1,12 @@
 # Jobotron port plan: risingwave-test → dagster-workspace
 
+> **SUPERSEDED (2026-11-11, twice over):** the team's MR !166 replaced this port with a
+> generalized `kaizen-dagster-delta-to-kafka` library (envelope and zero-DBU engines descoped —
+> plain JSON wire), and this repo now **vendors that wheel** instead of carrying the ported code.
+> Current state: [`REVERSE_ETL_JOBOTRON.md`](REVERSE_ETL_JOBOTRON.md). The zero-DBU engine
+> analysis below (§3 and the contract sections) survives as the record of why the warehouse path
+> won day one and what a zero-DBU revival would need.
+
 Plan for porting the **Jobotron component** (core code + tests only) from this
 repo onto `feature/NOJIRA-jobotron` in `~/Projects/dagster-workspace`, into a new
 capability library, with `defs.yaml` instance(s) in an existing code location.

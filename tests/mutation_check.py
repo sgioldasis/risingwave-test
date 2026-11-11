@@ -5,7 +5,7 @@ tests that should catch it. A mutation the tests do NOT catch "survives": that i
 mutation turns out to change nothing, a mutation to rewrite. A mutation whose text no longer occurs exactly once is
 reported as stale (the code moved on): update it.
 
-The mutants run in a temporary copy of orchestration/, notebooks/ and tests/, so the working tree is never edited.
+The mutants run in a temporary copy of orchestration/, notebooks/, scripts/ and tests/, so the working tree is never edited.
 
 Run from the repo root:  .venv/bin/python tests/mutation_check.py            (all)
                          .venv/bin/python tests/mutation_check.py drt change  (those groups)
@@ -106,53 +106,35 @@ MUTATIONS = [
         "change", "stale-config error not reworded", f"{ASSETS}/reverse_etl_change.py", 'if "UNRESOLVED_COLUMN" in str(error):', "if False:",
         "tests/test_change.py",
     ),
-    # --- the Jobotron producer (the real contract, docs/poc/JOBOTRON_CONTRACT_PARITY.md) ---
-    Mutation(
-        "jobotron", "hash canonicalization loosened", f"{ASSETS}/reverse_etl_jobotron.py",
-        'json.dumps(payload, separators=(",", ":"), ensure_ascii=False)',
-        'json.dumps(payload, separators=(", ", ": "), ensure_ascii=False)', "tests/test_jobotron.py",
-    ),
-    Mutation(
-        "jobotron", "ItemPayloadHash dropped from the envelope", f"{ASSETS}/reverse_etl_jobotron.py",
-        '                "ItemPayloadHash": payload_hash,\n', "", "tests/test_jobotron.py",
-    ),
-    Mutation(
-        "jobotron", "missing envelope columns accepted", f"{ASSETS}/reverse_etl_jobotron.py",
-        '    missing = [name for name in REQUIRED_RESULT_COLUMNS if name not in columns]\n    if missing:',
-        '    missing = [name for name in REQUIRED_RESULT_COLUMNS if name not in columns]\n    if False:',
-        "tests/test_jobotron.py",
-    ),
-    Mutation(
-        "jobotron", "dry-run gate off", f"{ASSETS}/reverse_etl_jobotron.py",
-        '        if dry_run:\n            context.log.info(\n                f"Dry run: built',
-        '        if False:\n            context.log.info(\n                f"Dry run: built',
-        "tests/test_jobotron.py",
-    ),
+    # --- the Jobotron demo plumbing (the publish asset itself is the vendored
+    # delta-to-kafka wheel, mutation-checked in the library's own harness) ---
     Mutation(
         "jobotron", "dry-run setup creates a topic anyway", f"{ASSETS}/reverse_etl_jobotron.py",
-        '        if dry_run:\n            # Zero side effects in dry-run',
+        '        if config.dry_run:\n            # Zero side effects in dry-run',
         '        if False:\n            # Zero side effects in dry-run',
         "tests/test_jobotron.py",
     ),
     Mutation(
-        "jobotron", "run-config mode switch ignored", f"{ASSETS}/reverse_etl_jobotron.py",
-        "    return config.dry_run\n", "    return cfg.dry_run\n",
+        "jobotron", "mirror dedup loosened", f"{ASSETS}/reverse_etl_jobotron.py",
+        '            by_customer[str(customer_id)] = value', '            by_customer[str(len(by_customer))] = value',
         "tests/test_jobotron.py",
     ),
     Mutation(
-        "jobotron", "null key accepted", f"{ASSETS}/reverse_etl_jobotron.py", '        if row["CustomerId"] is None:', "        if False:",
-        "tests/test_jobotron.py",
-    ),
-    Mutation("jobotron", "rejected deliveries ignored", f"{ASSETS}/reverse_etl_jobotron.py", "if undelivered or delivery_errors:", "if False:", "tests/test_jobotron.py"),
-    Mutation(
-        "jobotron", "ItemIds not deduped", f"{ASSETS}/reverse_etl_jobotron.py",
-        '            by_item[value.get("ItemId")] = value', '            by_item[str(len(by_item))] = value',
+        "jobotron", "customerless message mirrored", f"{ASSETS}/reverse_etl_jobotron.py",
+        '            if customer_id is None:\n                context.log.warning',
+        '            if False:\n                context.log.warning',
         "tests/test_jobotron.py",
     ),
     Mutation(
-        "jobotron", "reset allowlist off", f"{ASSETS}/reverse_etl_jobotron.py", '    bad = [name for name in (cfg.derived_topic,) if not name.startswith("jobotron_")]\n    if bad:',
-        '    bad = [name for name in (cfg.derived_topic,) if not name.startswith("jobotron_")]\n    if False:',
+        "jobotron", "reset allowlist off", f"{ASSETS}/reverse_etl_jobotron.py",
+        '    if not inst.topic.startswith("jobotron_"):\n        raise RuntimeError(',
+        '    if False:\n        raise RuntimeError(',
         "tests/test_jobotron.py",
+    ),
+    Mutation(
+        "jobotron", "publish config keyed by the bare asset name", "scripts/reverse_etl_demo_server.py",
+        '        op_name = "__".join(path)', '        op_name = path[-1]',
+        "tests/test_demo_server.py",
     ),
     # --- the Delta reader ---
     # --- the wire formats ---
@@ -277,7 +259,7 @@ def main(groups: list[str]) -> int:
     survived, stale = [], []
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        for folder in ("orchestration", "tests", "notebooks"):
+        for folder in ("orchestration", "tests", "notebooks", "scripts"):
             shutil.copytree(ROOT / folder, work / folder, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         shutil.copy(ROOT / "pyproject.toml", work / "pyproject.toml")
         # Without this a copy that cannot run its tests would make every mutation look caught.

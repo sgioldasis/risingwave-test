@@ -1,5 +1,12 @@
 # Jobotron contract parity: from the RFC's sketch to the team's real envelope
 
+> **SUPERSEDED (2026-11-11):** the producer described here (the local `JobotronProducer` and its
+> 13-field envelope) is gone — replaced by the team's own `kaizen-dagster-delta-to-kafka`
+> component (MR !166), which publishes plain JSON. The current design lives in
+> [`REVERSE_ETL_JOBOTRON.md`](REVERSE_ETL_JOBOTRON.md). This doc remains the field-by-field record
+> of the *team's original* envelope contract and the live-verified grant/storage evidence the
+> current yamls' comments cite.
+
 Status: **implemented** (2026-10-26) — all seven steps built and tested (56 contract/publish/consume/setup/reset/defs tests, 8 mutation anchors, full suite green); uncommitted, awaiting review. This is the design that brought `JobotronProducer`
 (`orchestration/components/reverse_etl_jobotron.py`, builder in
 `orchestration/assets/reverse_etl_jobotron.py`) to full wire compatibility with the

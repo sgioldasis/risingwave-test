@@ -202,6 +202,62 @@ fi
 if [ "$MODE" != "full" ]; then
     echo "ℹ️  read mode: skipping the syncs and serving-table phases (run with 'full' for those)"
 elif [ "$(get risingwave)" != "True" ]; then
+    # C0. Storage readiness gate. The reset's drop step reads the source tables'
+    # _delta_log through the SP's blob credential, and right after a cold start that
+    # read has failed once with AuthorizationFailure while the network path was still
+    # settling (2026-11-11: five reset jobs failed in 5s each, everything green on the
+    # re-run minutes later). Probe the exact failing path end-to-end -- resolve the
+    # company source's UC location (it is the existing-table sync, never dropped by
+    # the reset) and read its _delta_log with the same delta-rs options the reset
+    # uses -- and hold the rebuild until it passes (the company source survives
+    # Stop Everything, so the table is always there when this runs).
+    echo "=== C0. Storage readiness probe (SP -> blob read of a demo source) ==="
+    PROBE=$(docker exec -i dagster-webserver python - <<'PY'
+import os
+import time
+
+# docker exec python does not import orchestration.definitions, so load the .env
+# the way definitions.py does (compose-injected env wins, same setdefault rule).
+for _line in open("/workspace/.env"):
+    _line = _line.strip()
+    if _line and not _line.startswith("#") and "=" in _line:
+        _key, _, _value = _line.partition("=")
+        os.environ.setdefault(_key.strip().strip('"'), _value.strip().strip('"'))
+
+from deltalake import DeltaTable
+
+from kaizen_dagster_reverse_etl.core.connections import azure_storage_options
+from kaizen_dagster_delta_to_kafka.components.delta_to_kafka.source.authentication import (
+    open_workspace_client,
+    read_credentials,
+)
+
+FQN = "de_dev.sr_poc_external.reverse_etl_company_source"
+deadline = time.time() + 180
+attempt = 0
+while True:
+    attempt += 1
+    try:
+        client = open_workspace_client(os.environ["DBT_DATABRICKS_HOST"], read_credentials(os.environ))
+        location = client.tables.get(FQN).storage_location
+        version = DeltaTable(location, storage_options=azure_storage_options(location)).version()
+        print(f"attempt {attempt}: {FQN} at version {version} -- ready", file=os.sys.stderr)
+        print(1)
+        break
+    except Exception as error:  # noqa: BLE001 -- the probe classifies by retrying, not by type
+        if time.time() > deadline:
+            print(f"attempt {attempt}: still failing: {error}", file=os.sys.stderr)
+            print(0)
+            break
+        print(f"attempt {attempt}: not ready yet ({type(error).__name__}) -- retrying in 10s", file=os.sys.stderr)
+        time.sleep(10)
+PY
+    )
+    if [ "$PROBE" != "1" ]; then
+        echo "❌ C0. the storage path never came ready in 180s -- the reset's blob reads would fail." >&2
+        echo "   Check the VPN and the SP's Storage Blob Data access, then re-run." >&2
+        exit 1
+    fi
     echo "=== C. Rebuilding the demo syncs (reset + setup, in parallel) ==="
     ./bin/3_rebuild_reverse_etl.sh avro cdf orders delta company
     # B2. The rebuild dropped + recreated every demo-owned source, and UC minted
