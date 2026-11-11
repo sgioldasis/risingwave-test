@@ -103,7 +103,7 @@ so the demo UI is unchanged. `Definitions.merge` reaches the demo defs via the m
 (`reverse_etl_jobotron.jobotron_demo_defs`) — Dagster 1.13 refuses two module-scope
 `Definitions` in one file.
 
-## 5. Running it (demo UI or Dagster)
+## 5. Running it (demo UI, Dagster, or CLI)
 
 Demo UI: `http://localhost:4002/jobotron` — market tabs, per-market buttons
 setup → publish (dry-run checkbox) → consume, plus topic/mirror checks and reset.
@@ -126,6 +126,49 @@ double underscore:
 Keyed by the bare asset name, Dagster accepts the run and **silently ignores the config** — the
 "real" publish runs as a dry run. The demo server handles this; it matters only if you launch
 manually.
+
+### Single terminal, no UI (`dagster asset materialize`)
+
+The cy cycle end-to-end from one terminal, without the Dagster UI or daemon — each command runs
+the asset **in-process** and exits. From inside `devbox shell` (which puts the venv's `dbt` on
+PATH — required by `_ensure_valid_manifest` — and loads `.env`; only `POSTGRES_HOST` needs
+exporting, since `.env` deliberately omits it for the containers):
+
+```bash
+devbox shell
+export POSTGRES_HOST=localhost      # the one var .env omits on purpose
+which dbt                           # sanity: should print .venv/bin/dbt
+
+# 1. setup — create the topic (create-if-not-exists; no-op if it's there)
+dagster asset materialize --select jobotron_unverified_customers_cy_setup \
+  -m orchestration.definitions \
+  --config-json '{"ops":{"jobotron_unverified_customers_cy_setup":{"config":{"dry_run":false}}}}'
+
+# 2. publish — DRY RUN first (real query, real message build, nothing sent)
+dagster asset materialize --select 'jobotron/unverified_customers_cy' \
+  -m orchestration.definitions \
+  --config-json '{"ops":{"jobotron__unverified_customers_cy":{"config":{"dry_run":true}}}}'
+
+# 3. publish — real
+dagster asset materialize --select 'jobotron/unverified_customers_cy' \
+  -m orchestration.definitions \
+  --config-json '{"ops":{"jobotron__unverified_customers_cy":{"config":{"dry_run":false}}}}'
+
+# 4. consume — mirror into Postgres
+dagster asset materialize --select jobotron_unverified_customers_cy_consume \
+  -m orchestration.definitions
+```
+
+Omitting `--config-json` on a publish means the YAML default — `dry_run: true` — so omission is
+still a dry run. The other markets work the same way with `_gr`/`_ro` in the names.
+
+Check the mirror directly (`PGUSER`/`PGDATABASE`/`PGHOST` defaults are set by `devbox.json`, so a
+bare `psql` works inside the shell):
+
+```bash
+psql -c "SELECT count(*) FROM jobotron_unverified_customers_cy"
+psql -c "SELECT customer_id, left(payload::text, 120) FROM jobotron_unverified_customers_cy LIMIT 3"
+```
 
 ## 6. Ops notes (the things that bit us)
 
