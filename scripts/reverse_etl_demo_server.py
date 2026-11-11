@@ -211,6 +211,15 @@ def launch(
     return _launch_run(params, _retried)
 
 
+def _assert_topic_exists(topic: str) -> None:
+    """Raise a clear error unless the topic exists (the publish preflight)."""
+    from confluent_kafka.admin import AdminClient
+
+    admin = AdminClient(_kafka_inspect_conf())
+    if topic not in admin.list_topics(timeout=10).topics:
+        raise ValueError(f"topic {topic} does not exist -- run setup first")
+
+
 def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retried: bool = False) -> dict:
     """One instance's run: the market's setup/publish/consume asset, with the per-run mode
     switch in the run config (the checkbox; the YAML value governs when it is not sent).
@@ -221,6 +230,16 @@ def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retr
         raise ValueError(f"market must be one of {MARKETS}")
     if action not in JOBOTRON_ASSETS:
         raise ValueError(f"action must be one of {sorted(JOBOTRON_ASSETS)}")
+    # An omitted mode is a DRY run, not a real publish: bool(None) is False, so a
+    # bare {"action": "publish"} would otherwise publish for real while the
+    # docstring promises the YAML default (true). The UI always sends the
+    # checkbox; this guards every other caller.
+    dry_run = True if dry_run is None else bool(dry_run)
+    if action == "publish" and not dry_run:
+        # Fail fast on a missing topic: the library's producer would otherwise
+        # retry UNKNOWN_TOPIC_OR_PART for 120s before surfacing it. Setup creates
+        # the topic; the library deliberately does not.
+        _assert_topic_exists(f"jobotron_unverified_customers_{market}")
     repo = gql("{repositoriesOrError{... on RepositoryConnection{nodes{name location{name}}}}}")[
         "repositoriesOrError"
     ]["nodes"][0]

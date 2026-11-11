@@ -136,6 +136,18 @@ MUTATIONS = [
         '        op_name = "__".join(path)', '        op_name = path[-1]',
         "tests/test_demo_server.py",
     ),
+    Mutation(
+        "jobotron", "an omitted mode publishes for real", "scripts/reverse_etl_demo_server.py",
+        '    dry_run = True if dry_run is None else bool(dry_run)',
+        '    dry_run = bool(dry_run)',
+        "tests/test_demo_server.py",
+    ),
+    Mutation(
+        "jobotron", "publish skips the topic preflight", "scripts/reverse_etl_demo_server.py",
+        '    if action == "publish" and not dry_run:',
+        '    if False:',
+        "tests/test_demo_server.py",
+    ),
     # --- the Delta reader ---
     # --- the wire formats ---
     # --- properties ---

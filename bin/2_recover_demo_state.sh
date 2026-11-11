@@ -258,6 +258,55 @@ PY
         echo "   Check the VPN and the SP's Storage Blob Data access, then re-run." >&2
         exit 1
     fi
+    # C0b. Grants preflight. The SP's SELECT on the market schemas regresses
+    # repeatedly (Entra provisioning wipes SP-level grants); a publish would
+    # fail mid-demo with [INSUFFICIENT_PERMISSIONS]. Probe each schema the
+    # jobotron queries through the component's own auth path, BEFORE the rebuild.
+    echo "=== C0b. Grants preflight (SP -> SELECT probe on every market schema) ==="
+    GRANTS=$(docker exec -i dagster-webserver python - <<'PY'
+import os
+import sys
+
+for _line in open("/workspace/.env"):
+    _line = _line.strip()
+    if _line and not _line.startswith("#") and "=" in _line:
+        _key, _, _value = _line.partition("=")
+        os.environ.setdefault(_key.strip().strip('"'), _value.strip().strip('"'))
+
+from kaizen_dagster_delta_to_kafka.components.delta_to_kafka.source.authentication import (
+    open_workspace_client,
+    read_credentials,
+)
+
+client = open_workspace_client(os.environ["DBT_DATABRICKS_HOST"], read_credentials(os.environ))
+# One probe per schema the three market queries read: the market shard's
+# cCustomer plus the shared verification table.
+PROBES = [
+    "select 1 from de.voperdb_cy.cCustomer limit 1",
+    "select 1 from de.voperdb_gr.cCustomer limit 1",
+    "select 1 from de.voperdb_ro.cCustomer limit 1",
+    "select 1 from de.metadatadb.mVerificationStatus limit 1",
+]
+failed = []
+for statement in PROBES:
+    response = client.statement_execution.execute_statement(
+        warehouse_id=os.environ["DATABRICKS_WAREHOUSE_ID"], statement=statement, wait_timeout="20s"
+    )
+    state = response.status.state.value if response.status and response.status.state else "N/A"
+    error = getattr(response.status.error, "message", "") if response.status and response.status.error else ""
+    print(f"{statement.split(' from ')[1]}: {state} {error}".strip(), file=sys.stderr)
+    if state != "SUCCEEDED":
+        failed.append(statement)
+print(0 if failed else 1)
+PY
+    )
+    if [ "$GRANTS" != "1" ]; then
+        echo "❌ C0b. the SP is missing SELECT on at least one market schema -- the jobotron publish would fail mid-demo." >&2
+        echo "   Fix (per failing schema, by the SP's application id, via the personal CLI profile):" >&2
+        echo "   databricks --profile personal experimental aitools tools query \"GRANT SELECT ON SCHEMA de.voperdb_<mkt> TO '<sp application id>'\"" >&2
+        echo "   (de.metadatadb too if the verification-table probe failed.) Then re-run." >&2
+        exit 1
+    fi
     echo "=== C. Rebuilding the demo syncs (reset + setup, in parallel) ==="
     ./bin/3_rebuild_reverse_etl.sh avro cdf orders delta company
     # B2. The rebuild dropped + recreated every demo-owned source, and UC minted

@@ -109,7 +109,8 @@ Publish takes ~11 s wall: ~3 s statement + ~2 s Kafka + ~6 s Dagster multiproces
 **Dry-run semantics**: the checkbox (or run config) overrides the YAML default per run. With it on,
 the full path runs — real query, real message build — and nothing is sent: the run log says
 `Dry run: built N message(s) … and sent NOTHING`. The YAML default (`dry_run: true`) governs
-blank/scheduled launches.
+blank/scheduled launches, and a request that omits the field entirely is treated as a dry run —
+omission is never a real publish.
 
 **Run-config gotcha (found live 2026-11-11, guarded by `tests/test_demo_server.py` + a mutation):**
 the per-run config's ops key must be the **full op name** — the asset prefix folds in with a
@@ -131,11 +132,16 @@ manually.
   publish fails fast with `[INSUFFICIENT_PERMISSIONS] … does not have SELECT on Table
   'de.voperdb_<mkt>.cCustomer'`. The durable fix (Entra group mapping) is tracked in the port-plan
   doc.
-- **Publish before setup fails after a 120 s Kafka retry loop** (`UNKNOWN_TOPIC_OR_PART`) — setup
-  creates the topic; the library does not.
-- **Recovery**: `bin/2_recover_demo_state.sh` rebuilds the demo end-to-end; its C0 gate now waits
-  for Databricks storage readiness before the rebuild, so the transient cold-start
-  `AuthorizationFailure` surfaces as a clear early abort, not five failed jobs.
+- **Publish before setup fails fast** — the demo server preflights the topic before a real publish
+  and rejects with "run setup first" (~1 s) instead of the library's 120 s `UNKNOWN_TOPIC_OR_PART`
+  retry loop. Setup creates the topic; the library deliberately does not. A publish request that
+  **omits** the dry-run field is a dry run, not a real publish (guarded by mutations: "an omitted
+  mode publishes for real", "publish skips the topic preflight").
+- **Recovery**: `bin/2_recover_demo_state.sh` rebuilds the demo end-to-end; its C0 gate waits for
+  Databricks storage readiness and its **C0b preflight probes SELECT on every market schema**
+  (`de.voperdb_{cy,gr,ro}.cCustomer` + `de.metadatadb.mVerificationStatus`) before the rebuild —
+  a missing grant aborts up front with the GRANT command to run, instead of a mid-demo
+  `[INSUFFICIENT_PERMISSIONS]` failure.
 - **Verified live 2026-11-11** (post-adoption smoke, all three markets):
   cy 51, gr 669, ro 1452 — topic count == mirror count on every round trip; dry-run verified
   side-effect-free.
