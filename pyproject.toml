@@ -37,6 +37,11 @@ dependencies = [
     "dbt-starrocks==1.12.2",
     "sqlalchemy>=2.0.46",
     "duckdb>=1.2.0",
+    # The demo server's DuckDB-over-Flight check (check_duckdb ->
+    # scripts/starrocks_duckdb_demo.py) needs the FlightSQL driver in the host
+    # venv. It used to be installed ad hoc; uv sync prunes anything not declared,
+    # which surfaced as "Failed to fetch" on the demo page (2026-11-11).
+    "adbc-driver-flightsql>=1.0.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",
     "dagster>=1.13.3",

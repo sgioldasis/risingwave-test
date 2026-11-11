@@ -812,6 +812,11 @@ def check_duckdb(sync: str) -> dict:
         import starrocks_duckdb_demo
     except ImportError as e:
         return {"error": f"{e.name} missing in the demo server's venv — pip install adbc-driver-flightsql duckdb"}
+    except SystemExit as e:
+        # starrocks_duckdb_demo sys.exits at import time on a missing dependency;
+        # uncaught, that kills the handler thread before any response and the
+        # browser reports "Failed to fetch".
+        return {"error": str(e)}
     try:
         return starrocks_duckdb_demo.report_json()
     except Exception as e:
