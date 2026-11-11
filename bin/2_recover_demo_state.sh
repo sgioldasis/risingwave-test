@@ -535,6 +535,63 @@ else
     echo "✅ D2. Serving table already holds data ($ROWS rows) — no replay needed"
 fi
 
+# --- E. Jobotron warm-up (full mode only) --------------------------------------------
+# The teardown's PostgreSQL drop (6_down.sh wipes every public table) also takes
+# the jobotron mirror tables, and the Redpanda volume takes the topics — so the
+# Jobotron panel comes up red until a cycle runs. Warm up ONE market (cy, the
+# smallest ~50-row one) so the post-recovery state is demonstrably green in ~1
+# minute; the demo UI's own buttons cover gr/ro on demand (ro alone is ~1.5k rows).
+echo "=== E. Jobotron warm-up (cy: setup -> publish -> consume) ==="
+python3 - <<'PY'
+import json, sys, time, urllib.request
+
+URL = "http://localhost:3000/graphql"
+MARKET = "cy"
+ASSET = f"jobotron_unverified_customers_{MARKET}"
+
+def gql(query, variables=None):
+    req = urllib.request.Request(URL, json.dumps({"query": query, "variables": variables or {}}).encode(),
+                                 {"content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=120))["data"]
+
+repo = gql("{repositoriesOrError{... on RepositoryConnection{nodes{name location{name}}}}}")["repositoriesOrError"]["nodes"][0]
+selector = {"repositoryLocationName": repo["location"]["name"], "repositoryName": repo["name"]}
+
+def launch_and_poll(asset_path, config=None, what=""):
+    params = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": asset_path}]}}
+    if config:
+        # The ops key is the FULL op name: the asset prefix folds in with a double
+        # underscore — keyed by the bare name, Dagster silently ignores the config.
+        params["runConfigData"] = {"ops": {"__".join(asset_path): {"config": config}}}
+    out = gql("mutation($p:ExecutionParams!){launchRun(executionParams:$p)"
+              "{__typename ... on LaunchRunSuccess{run{runId}} ... on PythonError{message}}}",
+              {"p": params})["launchRun"]
+    if out["__typename"] != "LaunchRunSuccess":
+        raise SystemExit(f"{what}: launch failed: {out}")
+    run_id = out["run"]["runId"]
+    q = 'query($id:ID!){runOrError(runId:$id){... on Run{status}}}'
+    for _ in range(80):
+        d = gql(q, {"id": run_id})["runOrError"]
+        if d["status"] in ("SUCCESS", "FAILURE", "CANCELED"):
+            if d["status"] != "SUCCESS":
+                raise SystemExit(f"{what}: run {d['status']} ({run_id}) — see the Dagster UI for the logs")
+            print(f"  {what}: SUCCESS")
+            return
+        time.sleep(3)
+    raise SystemExit(f"{what}: run did not finish in 4 minutes ({run_id})")
+
+launch_and_poll([f"{ASSET}_setup"], {"dry_run": False}, "setup")
+launch_and_poll(["jobotron", f"unverified_customers_{MARKET}"], {"dry_run": False}, "publish")
+launch_and_poll([f"{ASSET}_consume"], None, "consume")
+PY
+if [ $? -eq 0 ]; then
+    echo "✅ E. cy mirror: $(psql -h localhost -p 5432 -U postgres -d postgres -t -A -c "SELECT count(*) FROM jobotron_unverified_customers_cy" 2>/dev/null || echo '?') rows"
+else
+    echo "❌ E. the jobotron warm-up failed — the reverse-ETL side is green, but run the" >&2
+    echo "   Jobotron panel's cycle (or this script again) before the demo." >&2
+    exit 1
+fi
+
 echo ""
 echo "✅ Recovery complete."
 echo "   Total recovery time: $((SECONDS - START))s"
