@@ -79,12 +79,15 @@ seconds-class statement; evidence in the parity doc).
 
 **Auth**: the component resolves credentials via `read_credentials`: `MULTI_WORKSPACE_ARM_*` →
 `ServicePrincipal` (azure-client-secret), else `AmbientCredentials`. **The SDK's ambient chain does
-not read `DATABRICKS_AZURE_*`** — `.env` carries the `MULTI_WORKSPACE_ARM_{TENANT_ID,CLIENT_ID,CLIENT_SECRET}`
-trio (same SP as the reverse-ETL bridge). The Kafka profile is the library's baked-in
-`openshift_kafka_connect` (SASL/SCRAM on the staging cluster); its password env is
-`OPENSHIFT_STG_KAFKA_PASSWORD` (same value as the repo's `KAFKA_OUTPUT_SASL_PASSWORD` — the
-profile pins the name; this is the one credential duplication, fixed only if the team adds a
-custom profile path).
+not read `DATABRICKS_AZURE_*`** — so `orchestration/definitions.py` derives the
+`MULTI_WORKSPACE_ARM_{TENANT_ID,CLIENT_ID,CLIENT_SECRET}` aliases from the canonical
+`DATABRICKS_AZURE_*` values at load time (same SP as the reverse-ETL bridge). The Kafka profile is
+the library's baked-in `openshift_kafka_connect` (SASL/SCRAM on the staging cluster); its password
+env is `OPENSHIFT_STG_KAFKA_PASSWORD`, derived the same way from `KAFKA_OUTPUT_SASL_PASSWORD` (the
+profile pins the name). The aliases are **not stored in `.env`** — one copy of each secret, no
+duplication. The recovery script's C0/C0b probes derive them inline (they load `.env` standalone).
+Editing `.env` breaks the dagster containers' single-file bind mount — `docker restart
+dagster-webserver dagster-daemon` rebinds.
 
 ## 4. Demo plumbing (local, topic-parameterized)
 

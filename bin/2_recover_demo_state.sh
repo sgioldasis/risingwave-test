@@ -224,6 +224,16 @@ for _line in open("/workspace/.env"):
         _key, _, _value = _line.partition("=")
         os.environ.setdefault(_key.strip().strip('"'), _value.strip().strip('"'))
 
+# The wheel's aliases (see definitions.py): derive from the canonical secrets.
+for _alias, _canonical in (
+    ("MULTI_WORKSPACE_ARM_TENANT_ID", "DATABRICKS_AZURE_TENANT_ID"),
+    ("MULTI_WORKSPACE_ARM_CLIENT_ID", "DATABRICKS_AZURE_CLIENT_ID"),
+    ("MULTI_WORKSPACE_ARM_CLIENT_SECRET", "DATABRICKS_AZURE_CLIENT_SECRET"),
+    ("OPENSHIFT_STG_KAFKA_PASSWORD", "KAFKA_OUTPUT_SASL_PASSWORD"),
+):
+    if _canonical in os.environ:
+        os.environ.setdefault(_alias, os.environ[_canonical])
+
 from deltalake import DeltaTable
 
 from kaizen_dagster_reverse_etl.core.connections import azure_storage_options
@@ -272,6 +282,16 @@ for _line in open("/workspace/.env"):
     if _line and not _line.startswith("#") and "=" in _line:
         _key, _, _value = _line.partition("=")
         os.environ.setdefault(_key.strip().strip('"'), _value.strip().strip('"'))
+
+# The wheel's aliases (see definitions.py): derive from the canonical secrets.
+for _alias, _canonical in (
+    ("MULTI_WORKSPACE_ARM_TENANT_ID", "DATABRICKS_AZURE_TENANT_ID"),
+    ("MULTI_WORKSPACE_ARM_CLIENT_ID", "DATABRICKS_AZURE_CLIENT_ID"),
+    ("MULTI_WORKSPACE_ARM_CLIENT_SECRET", "DATABRICKS_AZURE_CLIENT_SECRET"),
+    ("OPENSHIFT_STG_KAFKA_PASSWORD", "KAFKA_OUTPUT_SASL_PASSWORD"),
+):
+    if _canonical in os.environ:
+        os.environ.setdefault(_alias, os.environ[_canonical])
 
 from kaizen_dagster_delta_to_kafka.components.delta_to_kafka.source.authentication import (
     open_workspace_client,

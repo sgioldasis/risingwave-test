@@ -83,6 +83,20 @@ if _env_file.exists():
                     os.environ[_m.group(1)] = _m.group(2)
     del _re, _env_re, _ef
 
+# The vendored delta-to-kafka wheel reads the same SP and Kafka secrets under its
+# own names: its auth path (read_credentials) ignores DATABRICKS_AZURE_* and wants
+# MULTI_WORKSPACE_ARM_*, and its kafka_profiles.conf pins OPENSHIFT_STG_KAFKA_PASSWORD.
+# Derive the aliases from the canonical vars instead of duplicating the secrets in .env.
+for _alias, _canonical in (
+    ("MULTI_WORKSPACE_ARM_TENANT_ID", "DATABRICKS_AZURE_TENANT_ID"),
+    ("MULTI_WORKSPACE_ARM_CLIENT_ID", "DATABRICKS_AZURE_CLIENT_ID"),
+    ("MULTI_WORKSPACE_ARM_CLIENT_SECRET", "DATABRICKS_AZURE_CLIENT_SECRET"),
+    ("OPENSHIFT_STG_KAFKA_PASSWORD", "KAFKA_OUTPUT_SASL_PASSWORD"),
+):
+    if _canonical in os.environ:
+        os.environ.setdefault(_alias, os.environ[_canonical])
+del _alias, _canonical
+
 # Note: RisingWave native Iceberg source is working via Trino-written tables.
 # Keep runtime setup lightweight; avoid dropping/recreating Iceberg tables on each dbt run.
 
