@@ -99,6 +99,9 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-randomly>=5.0.0",
     "pytest-timeout>=2.4.0",
+    # typeshed stubs for psycopg2: silences the editor's "Library stubs not
+    # installed" hint on every `import psycopg2.extras` (psycopg2-binary ships none).
+    "types-psycopg2>=2.9.21",
     "ruff>=0.17.2",
 ]
 
