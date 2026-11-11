@@ -3,6 +3,8 @@
     "UV_PYTHON":                    "$PWD/.venv/bin/python",
     "PYTHONPATH":                   ".",
     "PGHOST":                       "localhost",
+    "PGUSER":                       "postgres",
+    "PGDATABASE":                   "postgres",
     "DATABRICKS_AUTH_TYPE":         "azure-client-secret",
     "RW_LICENSE_KEY":               "$RISINGWAVE_LICENSE_KEY",
     "DBT_DATABRICKS_HOST":          "https://adb-1608121643336927.7.azuredatabricks.net",
