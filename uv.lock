@@ -2112,7 +2112,7 @@ dependencies = [
     { name = "pyyaml" },
 ]
 wheels = [
-    { filename = "kaizen_dagster_jobotron-0.1.1-py3-none-any.whl", hash = "sha256:8a7efbd6b395444878bf48cc1414cfc34ad0cc474f9e6fa54b9b8ca1b0ecef10" },
+    { filename = "kaizen_dagster_jobotron-0.1.1-py3-none-any.whl", hash = "sha256:586dc239441349f63b2910fcb80886e2e8c7fe91ea90fe933b641190bb5cab79" },
 ]
 
 [package.metadata]
