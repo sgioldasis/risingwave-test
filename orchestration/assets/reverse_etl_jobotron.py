@@ -1,16 +1,17 @@
 """Jobotron demo plumbing (docs/poc/JOBOTRON_CONTRACT_PARITY.md): the setup, consume and
-reset assets around the publish instances. The publish asset itself is the vendored
-team component -- one `DeltaToKafkaComponent` defs.yaml instance per market
-(orchestration/defs/unverified_customers_{cy,gr,ro}/defs.yaml, MR !166's
-kaizen-dagster-delta-to-kafka wheel): it runs the candidate-selection query on the SQL
-warehouse and publishes one plain-JSON message per selected customer, keyed by
-CustomerId, to the instance's topic. What this module keeps is exactly what a
-publish-only component does not do:
+reset assets around the publish instance. The publish asset itself is the vendored
+Jobotron component -- ONE `JobotronComponent` defs.yaml fan-out instance
+(orchestration/defs/unverified_customers/defs.yaml, APR-336's kaizen-dagster-jobotron
+wheel): it runs the candidate-selection query on the SQL warehouse and publishes one
+13-field envelope message per selected customer, keyed by CustomerId, to the
+partition's topic. What this module keeps is exactly what a publish-only component
+does not do:
 
 - setup: create the instance's Kafka topic (create-if-not-exists, one partition;
   a no-op under dry-run -- not even a Kafka connection).
-- consume: the demo worker stand-in -- drain the topic (watermark-verified), dedup
-  on the Kafka key (CustomerId), mirror one row per customer into Postgres.
+- consume: the demo worker stand-in -- drain the topic (watermark-verified), skip
+  IsDryRun: true records (a real Worker no-ops them too), dedup on the Kafka key
+  (CustomerId), mirror one row per customer into Postgres.
 - reset: delete the topic and drop the mirror table, guarded by a name allowlist.
 
 Asset/job names are unchanged from the local-producer days, so the demo UI
@@ -51,10 +52,12 @@ MARKETS = ("cy", "gr", "ro")
 
 @dataclass(frozen=True)
 class JobotronDemoInstance:
-    """The demo plumbing around one publish instance's topic. The topic name is the
-    one the publish instance's defs.yaml declares (jobotron_unverified_customers_<market>),
-    and every Dagster object here derives its name from the instance: `<instance>_setup`,
-    `<instance>_consume`, `<instance>_setup_job`, `<instance>_reset_job`."""
+    """The demo plumbing around one market's topic. The topic name is the one the
+    publish instance's defs.yaml template declares for the market
+    (jobotron_unverified_customers_<market>), and every Dagster object here derives its
+    name from the instance: `<instance>_setup`, `<instance>_consume`,
+    `<instance>_setup_job`, `<instance>_reset_job`. Publishing itself is the ONE
+    fan-out publish asset; the market is its partition key."""
 
     market: str
 
@@ -201,10 +204,15 @@ def build_consume_asset(inst: JobotronDemoInstance):
             consumer.close()
 
         # Dedup on the Kafka key (CustomerId): the last message wins, matching an
-        # upsert-style worker. (The old envelope deduped on ItemId, a content hash --
-        # the plain-JSON wire has no hash, and the key is the identity the worker acts on.)
+        # upsert-style worker. IsDryRun: true records are skipped -- a real Worker
+        # no-ops them, so the mirror (the demo's worker stand-in) must not act on
+        # them either; the envelope's RunId/JobCreated fill the mirror's run fields.
         by_customer: dict[str, dict] = {}
+        dry_run_count = 0
         for value in values:
+            if value.get("IsDryRun"):
+                dry_run_count += 1
+                continue
             customer_id = value.get("CustomerId")
             if customer_id is None:
                 context.log.warning(f"A message on {inst.topic} has no CustomerId -- skipped")
@@ -214,8 +222,8 @@ def build_consume_asset(inst: JobotronDemoInstance):
             {
                 "customer_id": customer_id,
                 "company_id": None if value.get("CompanyId") is None else str(value.get("CompanyId")),
-                "run_id": value.get("run_id"),
-                "processed_at": value.get("processed_at"),
+                "run_id": value.get("RunId"),
+                "processed_at": value.get("JobCreated"),
                 "payload": psycopg2.extras.Json(value),
             }
             for customer_id, value in by_customer.items()
@@ -241,13 +249,15 @@ def build_consume_asset(inst: JobotronDemoInstance):
         finally:
             conn.close()
         context.log.info(
-            f"{inst.topic}: {len(values)} message(s) read, {len(mirror_rows)} customer(s) mirrored"
+            f"{inst.topic}: {len(values)} message(s) read, {dry_run_count} dry-run record(s) skipped, "
+            + f"{len(mirror_rows)} customer(s) mirrored"
         )
 
         context.add_output_metadata(
             {
                 "messages_read": MetadataValue.int(len(values)),
                 "items_count": MetadataValue.int(len(mirror_rows)),
+                "dry_run_skipped": MetadataValue.int(dry_run_count),
                 "consume_seconds": MetadataValue.float(round(time.monotonic() - started, 1)),
             }
         )
@@ -320,7 +330,7 @@ def build_reset_job(inst: JobotronDemoInstance):
 
 def build_jobotron_demo_defs(inst: JobotronDemoInstance) -> Definitions:
     """The plumbing Definitions for one market: setup + consume assets and the setup
-    and reset jobs. The publish asset comes from the market's DeltaToKafkaComponent
+    and reset jobs. The publish asset comes from the market's JobotronComponent
     defs.yaml instance, loaded separately via load_defs."""
     setup = build_setup_asset(inst)
     consume = build_consume_asset(inst)

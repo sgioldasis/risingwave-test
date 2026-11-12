@@ -1,0 +1,55 @@
+# The KYC team's limit-unverified-customer-rights.ipynb (variant B' in
+# docs/poc/JOBOTRON_KYC_NOTEBOOK_PATTERNS.md §4.6): the sibling of
+# notify_unverified_customers_over_deposit_limit -- same configurator code, same
+# fan-out shape; it differs in the job name, one extra config field
+# (daysCountdown) and two template predicates. The notebook interpolates the
+# countdown straight into `interval ${config.daysCountdown} days`, an identifier
+# position a parameter marker cannot fill, so days_countdown is declared in
+# literal_parameters: substituted as text only after the ^[A-Za-z0-9_]+$ whitelist
+# (the injection boundary, whatever the value's source).
+#
+# LIVE-TOPIC GUARD: the notebooks' own routing is topic_template "kyc.jobs.{market_code}"
+# (kept commented on the line below) -- KYC Workers consume those topics and act on
+# real customers, and even a dry-run PUBLISHES IsDryRun: true records there (the
+# Worker no-ops them, but the write is real). This instance is pointed at demo
+# topics instead: switch back only when the real deployment is intended.
+
+type: kaizen_dagster_jobotron.components.jobotron.JobotronComponent
+
+attributes:
+  name: limit_unverified_customer_rights
+  asset_key_prefix: [jobotron]
+  job_name: Limit_Unverified_Customer_Rights
+  query_template: |
+    select distinct c.cusCustomerID as CustomerId, c.cusCompanyID as CompanyId
+    from de.voperdb_{market_code}.cCustomer_Group g
+    inner join de.voperdb_{market_code}.cCustomer c on c.cusCustomerID = g.ccgCustomerID
+    where g.comp_part = {company_id}
+    and c.comp_part = {company_id}
+    and g.ccgGroupID = {group_id}
+    and g.ccgCreated < current_timestamp() - interval {days_countdown} days
+    and g.ccgValue4 is null
+  # topic_template: "kyc.jobs.{market_code}"  # the notebooks' live routing -- see the guard above
+  topic_template: "jobotron_limit_unverified_customer_rights_{market_code}"
+  companies:
+    source: de.metadatadb.mcompany
+    # the notebooks' inactive list, as exact comCodes
+    # (the notebooks themselves excluded by id: 2, 3, 6, 10, 12, 13, 14)
+    exclude: [B2B, BTN, ENBTN, KZ, ATBTN, DEKSN, ATKSN]
+  literal_parameters: [market_code, days_countdown]
+  configurator:
+    base_url: "{{ env('CONFIGURATOR_BASE_URL') }}"
+    configuration_code: UnverifiedCustomerLimitsUntilRestrictionConfig
+    fields:
+      group_code: group
+      days_countdown: daysCountdown
+  group_lookup:
+    code: group_code
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  message:
+    format: envelope
+    key_column: CustomerId
+  schema_version: 1
+  dry_run: true

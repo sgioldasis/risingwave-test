@@ -1,0 +1,63 @@
+# The KYC team's send-sms-to-kyc-blocked-customers/kyc_blocked_customers_gr.ipynb
+# (variant D in docs/poc/JOBOTRON_KYC_NOTEBOOK_PATTERNS.md §4.6): the fan-out
+# machinery with a one-company list (include: [GRSTX], Stoiximan GR's exact comCode)
+# -- a static partition set, no enumeration table. The eligibility exists/not exists
+# clauses and the procedure's TOP 1000 are plain SQL in the template; the "rest go
+# out on the next runs" semantics live in the Worker's marking (the KYC_SMS_Sent
+# group, 1127), which is why the rate limit and the republish are safe.
+#
+# Only the ids are selected: every query column becomes the item payload, and the
+# phone number stays out of Kafka deliberately (PII minimization, §2.8) -- the
+# Worker/Iris looks it up itself.
+#
+# LIVE-TOPIC GUARD: the notebooks' own routing is topic_template "kyc.jobs.{market_code}"
+# (kept commented on the line below) -- KYC Workers consume those topics and act on
+# real customers, and even a dry-run PUBLISHES IsDryRun: true records there (the
+# Worker no-ops them, but the write is real). This instance is pointed at a demo
+# topic instead: switch back only when the real deployment is intended.
+
+type: kaizen_dagster_jobotron.components.jobotron.JobotronComponent
+
+attributes:
+  name: kyc_blocked_customers_gr
+  asset_key_prefix: [jobotron]
+  job_name: Send_SMS_to_KYC_Blocked_Customers
+  query_template: |
+    select a.cusCustomerID as CustomerId, a.cusCompanyID as CompanyId
+    from de.voperdb_{market_code}.cCustomer a
+    inner join de.metadatadb.mVerificationStatus on cusVerificationStatusID = vstVerificationStatusID
+    where cusCompanyID = {company_id}
+    and cusCountryID = 1
+    and cusStatusID = 3
+    and current_timestamp() > cusCreated + interval 1 month - interval 2 days
+    and vstVerifiedFL = false
+    and coalesce(trim(cusMobilePhone), '') <> ''
+    and exists (
+      select 1 from de.voperdb_{market_code}.tTransaction
+      where traCustomerID = a.cusCustomerID
+      and traStatusID = 3
+      and traTypeID not in (22, 23, 70)
+      and traCreated > current_timestamp() - interval 1 month
+      and traHashValue = a.cusCustomerID % 64
+    )
+    and not exists (
+      select 1 from de.voperdb_{market_code}.cCustomer_Group
+      where ccgCustomerID = a.cusCustomerID
+      and ccgGroupID = {group_id}
+    )
+    limit 1000
+  # topic_template: "kyc.jobs.{market_code}"  # the notebooks' live routing -- see the guard above
+  topic_template: "jobotron_kyc_blocked_customers_gr_{market_code}"
+  literal_parameters: [market_code]
+  companies:
+    include: [GRSTX]  # Stoiximan GR (company 1), by its exact comCode
+  parameters:
+    group_id: 1127
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  message:
+    format: envelope
+    key_column: CustomerId
+  schema_version: 1
+  dry_run: true

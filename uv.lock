@@ -2099,9 +2099,9 @@ wheels = [
 ]
 
 [[package]]
-name = "kaizen-dagster-delta-to-kafka"
-version = "0.1.0"
-source = { path = "vendor/kaizen_dagster_delta_to_kafka-0.1.0-py3-none-any.whl" }
+name = "kaizen-dagster-jobotron"
+version = "0.1.1"
+source = { path = "vendor/kaizen_dagster_jobotron-0.1.1-py3-none-any.whl" }
 dependencies = [
     { name = "confluent-kafka" },
     { name = "dagster" },
@@ -2112,7 +2112,7 @@ dependencies = [
     { name = "pyyaml" },
 ]
 wheels = [
-    { filename = "kaizen_dagster_delta_to_kafka-0.1.0-py3-none-any.whl", hash = "sha256:54f9d5d593cb5bb82dd4370355f70c1cdfacc335443e82ec678b11ce83ce9a3f" },
+    { filename = "kaizen_dagster_jobotron-0.1.1-py3-none-any.whl", hash = "sha256:8a7efbd6b395444878bf48cc1414cfc34ad0cc474f9e6fa54b9b8ca1b0ecef10" },
 ]
 
 [package.metadata]
@@ -3660,7 +3660,7 @@ dependencies = [
     { name = "grpcio-tools" },
     { name = "hmsclient" },
     { name = "httpx" },
-    { name = "kaizen-dagster-delta-to-kafka" },
+    { name = "kaizen-dagster-jobotron" },
     { name = "kaizen-dagster-reverse-etl" },
     { name = "marimo" },
     { name = "numpy" },
@@ -3717,7 +3717,7 @@ requires-dist = [
     { name = "grpcio-tools", specifier = ">=1.66.0,<1.80.0" },
     { name = "hmsclient", specifier = ">=0.1.1" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "kaizen-dagster-delta-to-kafka", path = "vendor/kaizen_dagster_delta_to_kafka-0.1.0-py3-none-any.whl" },
+    { name = "kaizen-dagster-jobotron", path = "vendor/kaizen_dagster_jobotron-0.1.1-py3-none-any.whl" },
     { name = "kaizen-dagster-reverse-etl", path = "vendor/kaizen_dagster_reverse_etl-0.1.4-py3-none-any.whl" },
     { name = "marimo", specifier = ">=0.10.0" },
     { name = "numpy", specifier = ">=1.24.0" },

@@ -557,12 +557,18 @@ def gql(query, variables=None):
 repo = gql("{repositoriesOrError{... on RepositoryConnection{nodes{name location{name}}}}}")["repositoriesOrError"]["nodes"][0]
 selector = {"repositoryLocationName": repo["location"]["name"], "repositoryName": repo["name"]}
 
-def launch_and_poll(asset_path, config=None, what=""):
+def launch_and_poll(asset_path, config=None, what="", partition=None):
     params = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": asset_path}]}}
     if config:
         # The ops key is the FULL op name: the asset prefix folds in with a double
         # underscore — keyed by the bare name, Dagster silently ignores the config.
         params["runConfigData"] = {"ops": {"__".join(asset_path): {"config": config}}}
+    if partition:
+        # The one fan-out publish instance (jobotron/unverified_customers) is
+        # partitioned by exact comCode; the dagster/partition run tag is what
+        # context.partition_key reads (the same tag a sensor's partitioned run
+        # request carries).
+        params["executionMetadata"] = {"tags": [{"key": "dagster/partition", "value": partition}]}
     out = gql("mutation($p:ExecutionParams!){launchRun(executionParams:$p)"
               "{__typename ... on LaunchRunSuccess{run{runId}} ... on PythonError{message}}}",
               {"p": params})["launchRun"]
@@ -581,7 +587,7 @@ def launch_and_poll(asset_path, config=None, what=""):
     raise SystemExit(f"{what}: run did not finish in 4 minutes ({run_id})")
 
 launch_and_poll([f"{ASSET}_setup"], {"dry_run": False}, "setup")
-launch_and_poll(["jobotron", f"unverified_customers_{MARKET}"], {"dry_run": False}, "publish")
+launch_and_poll(["jobotron", "unverified_customers"], {"dry_run": False}, "publish", partition="CYSTX")
 launch_and_poll([f"{ASSET}_consume"], None, "consume")
 PY
 if [ $? -eq 0 ]; then

@@ -107,11 +107,17 @@ MUTATIONS = [
         "tests/test_change.py",
     ),
     # --- the Jobotron demo plumbing (the publish asset itself is the vendored
-    # delta-to-kafka wheel, mutation-checked in the library's own harness) ---
+    # kaizen-dagster-jobotron wheel, mutation-checked in the library's own harness) ---
     Mutation(
         "jobotron", "dry-run setup creates a topic anyway", f"{ASSETS}/reverse_etl_jobotron.py",
         '        if config.dry_run:\n            # Zero side effects in dry-run',
         '        if False:\n            # Zero side effects in dry-run',
+        "tests/test_jobotron.py",
+    ),
+    Mutation(
+        "jobotron", "a dry-run record is mirrored", f"{ASSETS}/reverse_etl_jobotron.py",
+        '            if value.get("IsDryRun"):\n                dry_run_count += 1',
+        '            if False:\n                dry_run_count += 1',
         "tests/test_jobotron.py",
     ),
     Mutation(
@@ -249,6 +255,31 @@ MUTATIONS = [
     # --- the reset job ---
     Mutation("reset", "a missing group is retried", f"{ASSETS}/reverse_etl_reset.py", "GROUP_ID_NOT_FOUND", "NEVER_MATCHES", "tests/test_reset.py"),
     # --- the sync asset ---
+    # --- the Jobotron partition-sync host piece (the wheel's registration contract) ---
+    Mutation(
+        "jobotron_sync", "the scan serves static instances too", f"{ASSETS}/jobotron_partition_sync.py",
+        "        if not source:\n            continue",
+        "        if False:\n            continue",
+        "tests/test_partition_sync.py",
+    ),
+    Mutation(
+        "jobotron_sync", "the partitions-def name drops the component's derivation", f"{ASSETS}/jobotron_partition_sync.py",
+        '                "partitions_name": dagster_identifier(\n                    "_".join([*prefix, name, "companies"])\n                ),',
+        '                "partitions_name": dagster_identifier(name),',
+        "tests/test_partition_sync.py",
+    ),
+    Mutation(
+        "jobotron_sync", "an arrival is not registered", f"{ASSETS}/jobotron_partition_sync.py",
+        "    additions = [key for key in codes if key not in current]",
+        "    additions = []",
+        "tests/test_partition_sync.py",
+    ),
+    Mutation(
+        "jobotron_sync", "an in-flight departure is removed anyway", f"{ASSETS}/jobotron_partition_sync.py",
+        "    removals = [key for key in departed if key not in in_flight]",
+        "    removals = [key for key in departed]",
+        "tests/test_partition_sync.py",
+    ),
 ]
 
 

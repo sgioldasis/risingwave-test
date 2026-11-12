@@ -51,6 +51,11 @@ JOBOTRON_PAGE = PAGE.parent / "jobotron_data_flow.html"
 SYNCS = ("avro", "cdf", "orders", "delta", "company")
 CHANGES = ("insert", "update", "delete", "add_column", "rename_column", "drop_column", "bulk_1m")
 MARKETS = ("cy", "gr", "ro")
+# The publish asset is ONE partitioned fan-out instance (unverified_customers, the
+# three variant-A notebooks as one defs.yaml): a market maps to its company's exact
+# comCode, which is the partition key (the instance's include names companies by
+# comCode, so the static partitions are the codes).
+JOBOTRON_PARTITION = {"cy": "CYSTX", "gr": "GRSTX", "ro": "ROBTN"}
 # action -> the instance asset's suffix ("" is the publish asset itself); "reset" is the
 # instance's reset JOB, not an asset
 # Suffixes of the local demo-plumbing assets per action; "publish" is special (the
@@ -221,11 +226,11 @@ def _assert_topic_exists(topic: str) -> None:
 
 
 def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retried: bool = False) -> dict:
-    """One instance's run: the market's setup/publish/consume asset, with the per-run mode
+    """One market's run: the market's setup/publish/consume plumbing, with the per-run mode
     switch in the run config (the checkbox; the YAML value governs when it is not sent).
-    Reset is the instance's job, not an asset selection. The publish asset is the vendored
-    team component's (asset key jobotron/unverified_customers_<market>); setup and consume
-    are the local demo plumbing."""
+    Reset is the market's job, not an asset selection. The publish asset is the vendored
+    team component's ONE fan-out instance (asset key jobotron/unverified_customers, the
+    market's exact comCode as the partition); setup and consume are the local demo plumbing."""
     if market not in MARKETS:
         raise ValueError(f"market must be one of {MARKETS}")
     if action not in JOBOTRON_ASSETS:
@@ -247,15 +252,18 @@ def launch_jobotron(action: str, market: str | None, dry_run: bool | None, _retr
     if action == "reset":
         return _launch_run({"selector": {**selector, "jobName": f"jobotron_unverified_customers_{market}_reset_job"}}, _retried)
     if action == "publish":
-        # The library instance's publish asset: key prefix [jobotron], name
-        # unverified_customers_<market> (its own per-run dry_run switch). The
-        # run-config op key is the FULL op name: the prefix folds in with a
-        # double underscore (jobotron__unverified_customers_<market>) — keyed
-        # by the bare name, Dagster silently ignores the config.
-        path = ["jobotron", f"unverified_customers_{market}"]
+        # The library instance's publish asset: ONE fan-out instance for all three
+        # markets, keyed jobotron/unverified_customers; the market selects its
+        # comCode partition via the dagster/partition run tag (the same tag a
+        # sensor's partitioned run request carries -- context.partition_key reads
+        # it). The run-config op key is the FULL op name: the prefix folds in with
+        # a double underscore (jobotron__unverified_customers) — keyed by the bare
+        # name, Dagster silently ignores the config.
+        path = ["jobotron", "unverified_customers"]
         op_name = "__".join(path)
         params: dict = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": path}]}}
         params["runConfigData"] = {"ops": {op_name: {"config": {"dry_run": bool(dry_run)}}}}
+        params["executionMetadata"] = {"tags": [{"key": "dagster/partition", "value": JOBOTRON_PARTITION[market]}]}
         return _launch_run(params, _retried)
     asset = f"jobotron_unverified_customers_{market}{JOBOTRON_ASSETS[action]}"
     params = {"selector": {**selector, "jobName": "__ASSET_JOB", "assetSelection": [{"path": [asset]}]}}

@@ -3,7 +3,7 @@ the shapes of the GraphQL params it builds for the demo UI's buttons.
 
 Found live (2026-11-11): the publish run config was keyed by the BARE asset
 name, but the library asset's op name folds the prefix in with a double
-underscore (jobotron__unverified_customers_<market>) — Dagster accepted the
+underscore (jobotron__unverified_customers) — Dagster accepted the
 run anyway and silently ignored the per-run dry_run switch, so a "real"
 publish ran as a dry run.
 
@@ -62,19 +62,29 @@ def topic_exists(topic_factory):
 
 
 class TestLaunchJobotron:
-    def test_publish_config_is_keyed_by_the_full_op_name(self, launched, topic_exists):
+    def test_publish_targets_the_fan_out_asset_with_the_market_partition(self, launched, topic_exists):
+        # One fan-out instance for all three markets; a market maps to its exact
+        # comCode partition via the dagster/partition run tag (what
+        # context.partition_key reads).
         server.launch_jobotron("publish", "cy", False)
         selector = launched["params"]["selector"]
-        assert selector["assetSelection"] == [{"path": ["jobotron", "unverified_customers_cy"]}]
+        assert selector["assetSelection"] == [{"path": ["jobotron", "unverified_customers"]}]
+        assert launched["params"]["executionMetadata"] == {"tags": [{"key": "dagster/partition", "value": "CYSTX"}]}
         # The prefix folds into the op name with a DOUBLE underscore; keyed by
         # the bare name, Dagster silently drops the config.
-        assert launched["params"]["runConfigData"]["ops"] == {"jobotron__unverified_customers_cy": {"config": {"dry_run": False}}}
+        assert launched["params"]["runConfigData"]["ops"] == {"jobotron__unverified_customers": {"config": {"dry_run": False}}}
+
+    def test_each_market_selects_its_own_partition(self, launched, topic_exists):
+        server.launch_jobotron("publish", "gr", True)
+        assert launched["params"]["executionMetadata"] == {"tags": [{"key": "dagster/partition", "value": "GRSTX"}]}
+        server.launch_jobotron("publish", "ro", True)
+        assert launched["params"]["executionMetadata"] == {"tags": [{"key": "dagster/partition", "value": "ROBTN"}]}
 
     def test_publish_with_an_omitted_mode_is_a_dry_run(self, launched, topic_exists):
         # bool(None) was False: a bare publish published FOR REAL while the
         # docstring promises the YAML default (true). Omission now means dry.
         server.launch_jobotron("publish", "cy", None)
-        assert launched["params"]["runConfigData"]["ops"] == {"jobotron__unverified_customers_cy": {"config": {"dry_run": True}}}
+        assert launched["params"]["runConfigData"]["ops"] == {"jobotron__unverified_customers": {"config": {"dry_run": True}}}
 
     def test_real_publish_preflights_the_topic(self, launched, topic_factory):
         # The library's producer would retry UNKNOWN_TOPIC_OR_PART for 120s;
@@ -86,7 +96,7 @@ class TestLaunchJobotron:
 
     def test_publish_honours_dry_run_true(self, launched):
         server.launch_jobotron("publish", "cy", True)
-        assert launched["params"]["runConfigData"]["ops"] == {"jobotron__unverified_customers_cy": {"config": {"dry_run": True}}}
+        assert launched["params"]["runConfigData"]["ops"] == {"jobotron__unverified_customers": {"config": {"dry_run": True}}}
 
     def test_setup_config_keyed_by_its_own_asset_name(self, launched):
         # The local plumbing assets have no prefix: the op key is the name itself.

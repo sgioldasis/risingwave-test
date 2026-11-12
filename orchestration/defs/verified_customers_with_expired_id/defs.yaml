@@ -1,0 +1,45 @@
+# The KYC team's send-notification-to-verified-customers-with-expired-id /
+# verified_customers_with_expired_id.ipynb (variant C in
+# docs/poc/JOBOTRON_KYC_NOTEBOOK_PATTERNS.md §4.6): a group-based fan-out -- the
+# group id is the same constant in every company (CustomersVerifiedIdentityExpired,
+# 1416), there is no configurator, and the fan-out only enumerates the companies
+# and binds comp_part per partition.
+#
+# LIVE-TOPIC GUARD: the notebooks' own routing is topic_template "kyc.jobs.{market_code}"
+# -- KYC Workers consume those topics and act on real customers, and even a dry-run
+# PUBLISHES IsDryRun: true records there (the Worker no-ops them, but the write is
+# real). This instance is pointed at demo topics instead: switch the template back to
+# "kyc.jobs.{market_code}" only when the real deployment is intended.
+
+type: kaizen_dagster_jobotron.components.jobotron.JobotronComponent
+
+attributes:
+  name: verified_customers_with_expired_id
+  asset_key_prefix: [jobotron]
+  job_name: Send_Notification_to_Verified_Customers_with_Expired_Id
+  query_template: |
+    select distinct ccgCustomerID as CustomerId, cusCompanyID as CompanyId
+    from de.voperdb_{market_code}.cCustomer_Group
+    inner join de.voperdb_{market_code}.cCustomer on cusCustomerID = ccgCustomerID
+    where ccgGroupID = {group_id}
+    and ccgValue0 is null
+    and ccgCreated < current_timestamp() - interval 30 days
+    and cusCompanyID = {company_id}
+  # topic_template: "kyc.jobs.{market_code}"  # the notebooks' live routing -- see the guard above
+  topic_template: "jobotron_verified_customers_with_expired_id_{market_code}"
+  literal_parameters: [market_code]
+  companies:
+    source: de.metadatadb.mcompany
+    # the notebooks' inactive list, as exact comCodes
+    # (the notebooks themselves excluded by id: 2, 3, 6, 10, 12, 13, 14)
+    exclude: [B2B, BTN, ENBTN, KZ, ATBTN, DEKSN, ATKSN]
+  parameters:
+    group_id: 1416
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  message:
+    format: envelope
+    key_column: CustomerId
+  schema_version: 1
+  dry_run: true

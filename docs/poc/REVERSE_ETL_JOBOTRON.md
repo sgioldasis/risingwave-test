@@ -1,5 +1,14 @@
 # REVERSE_ETL_JOBOTRON.md — the Jobotron producer (the team's delta-to-kafka component)
 
+> **Superseded (2026-11-12).** The producer moved on twice since this was written: the
+> publish path is the **Jobotron component** (`kaizen-dagster-jobotron`, APR-336 — the
+> notebooks' 13-field envelope, not plain JSON), and the three per-market instances are
+> **one fan-out instance** (`orchestration/defs/unverified_customers/defs.yaml`,
+> `include: [CYSTX, GRSTX, ROBTN]`, partition keys = comCodes). The current design and
+> its rationale: [`JOBOTRON_KYC_NOTEBOOK_PATTERNS.md`](JOBOTRON_KYC_NOTEBOOK_PATTERNS.md)
+> (§8 records the build deltas). This document stays as the historical record of the
+> delta-to-kafka adoption.
+
 **Status: v4 — ADOPTED (2026-11-11). The producer is the Jobotron team's own component
 (`kaizen-dagster-delta-to-kafka`, MR !166 on `feature/APR-293-jobotron`), vendored as a wheel and
 driven entirely by `defs.yaml`. The local producer code, the 13-field envelope, the zero-DBU scan
@@ -7,6 +16,8 @@ engines, and the cost meter are all gone — the team's revised component publis
 instead (the envelope descoped under "Productionise Delta-to-Kafka"). The pre-!166 design lives on
 in [`JOBOTRON_CONTRACT_PARITY.md`](JOBOTRON_CONTRACT_PARITY.md) and [`JOBOTRON_PORT_PLAN.md`](JOBOTRON_PORT_PLAN.md)
 (historical; the RFC context §1–§8 there is unchanged and still the background).**
+The KYC team's own Jobotron notebooks (the upstream jobs this component must eventually serve
+beyond variant A) are analyzed in [`JOBOTRON_KYC_NOTEBOOK_PATTERNS.md`](JOBOTRON_KYC_NOTEBOOK_PATTERNS.md).
 
 ---
 

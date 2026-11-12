@@ -60,6 +60,7 @@ from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
 from . import defs as reverse_etl_yaml_defs  # not `defs`: that is the Definitions below
 from .assets import reverse_etl_jobotron as jobotron_assets
+from .assets.jobotron_partition_sync import jobotron_dynamic_partition_sync
 
 from .constants import dbt_PROJECT_PATH, dbt_STARROCKS_PROJECT_PATH
 # Set up logging
@@ -963,8 +964,8 @@ external_dbt_source_assets = [
 # module-level Definitions, so the base one is nested inside the merge.
 defs = Definitions.merge(
     # Jobotron demo plumbing (setup/consume/reset per market) -- the publish assets
-    # themselves are the vendored team component's defs.yaml instances under
-    # orchestration/defs/unverified_customers_*, loaded by load_defs below.
+    # themselves are the vendored Jobotron component's defs.yaml instances under
+    # orchestration/defs/, loaded by load_defs below.
     # (Reached through the module: two module-scope Definitions in here are refused.)
     jobotron_assets.jobotron_demo_defs,
     Definitions(
@@ -1067,7 +1068,10 @@ defs = Definitions.merge(
             ml_training_schedule,
             dbt_starrocks_build_schedule,
         ],
-        sensors=[ml_training_sensor_realtime],
+        sensors=[
+            ml_training_sensor_realtime,
+            jobotron_dynamic_partition_sync,
+        ],
         resources={
             "dbt": DbtCliResource(
                 project_dir=str(dbt_PROJECT_PATH),

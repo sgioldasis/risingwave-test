@@ -1,0 +1,62 @@
+# The KYC team's THREE variant-A jobs (unverified_customers_{cy,gr,ro}.ipynb) as ONE
+# fan-out instance -- the "Alternative" design in
+# docs/poc/JOBOTRON_KYC_NOTEBOOK_PATTERNS.md §4.6: the template is the notebooks'
+# shared 90%, the per-market differences are data. `companies.include` makes the
+# partition set static (one partition per company; the implementation does not allow
+# combining include with a source table, and each partition still enumerates its
+# company against de.metadatadb.mcompany -- which is where the run's identity comes
+# from). The include names companies by their EXACT comCode (not a prefix: codes
+# share prefixes across markets -- DE would prune both DEBTN and DEKSN); the
+# partition keys are the codes themselves.
+#
+# Placeholder split: {market_code} (= comCode[:2].lower(), the notebooks' getTopic
+# rule -- cy/gr/ro) sits in table names (de.voperdb_<code>), so it is a
+# literal_parameter -- whitelist-validated text substitution, never a bind parameter;
+# everything else ({company_id}, {group_id}, {excluded_types}) binds as Statement
+# Execution parameters, and {excluded_types} is a CSV string that expands to one
+# bound parameter per type. {company_id} and {market_code} come from the enumeration
+# itself, which is why parameters_by_company carries only the group ids (the
+# notebooks' per-market send-suppression groups) and the excluded types; GR adds
+# type 15 (UNVERIFIED STOIXIMAN-GR) per its notebook.
+#
+# Topics keep the per-market demo names (jobotron_unverified_customers_<code>), so
+# the demo plumbing (setup/consume/reset assets, the checks, the mirror tables) is
+# unchanged; only the publish launch targets the one partitioned asset now. The
+# publish asset's partition keys are the comCodes ("CYSTX"=cy, "GRSTX"=gr,
+# "ROBTN"=ro). dry_run is the default: the envelope publishes with IsDryRun: true
+# (the Worker no-ops those records) -- the demo mirror skips them.
+
+type: kaizen_dagster_jobotron.components.jobotron.JobotronComponent
+
+attributes:
+  name: unverified_customers
+  asset_key_prefix: [jobotron]
+  job_name: Send_Email_to_Unverified_Customers
+  query_template: |
+    select cusCustomerID as CustomerId, cusCompanyID as CompanyId
+    from de.voperdb_{market_code}.cCustomer
+    inner join de.metadatadb.mVerificationStatus on cusVerificationStatusID = vstVerificationStatusID
+    left join de.voperdb_{market_code}.cCustomer_Group on ccgCustomerID = cusCustomerID and ccgGroupID = {group_id}
+    where cusCreated between current_timestamp() - interval 28 days and current_timestamp() - interval 26 days
+    and cusTypeID not in ({excluded_types})
+    and cusCompanyID = {company_id}
+    and cusStatusID = 3  -- REAL
+    and vstVerifiedFL = false  -- Not verified
+    and (ccgValue0 is null or ccgValue0 <> '1')
+  topic_template: "jobotron_unverified_customers_{market_code}"
+  companies:
+    include: [CYSTX, GRSTX, ROBTN]  # CY, GR (GML), RO -- the notebooks' three markets
+  parameters_by_company:
+    # the same keys as the include list: exact comCodes
+    CYSTX: {group_id: 1424, excluded_types: "2, 5, 6, 10, 11"}
+    GRSTX: {group_id: 1425, excluded_types: "2, 5, 6, 10, 11, 15"}
+    ROBTN: {group_id: 1321, excluded_types: "2, 5, 6, 10, 11"}
+  literal_parameters: [market_code]
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  message:
+    format: envelope
+    key_column: CustomerId
+  schema_version: 1
+  dry_run: true

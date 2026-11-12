@@ -1,9 +1,10 @@
-"""The Jobotron demo plumbing around the vendored delta-to-kafka publish instances
-(docs/poc/JOBOTRON_CONTRACT_PARITY.md): the setup asset (topic), the demo consumer
-(drain, dedup on the Kafka key, Postgres mirror), the reset job (allowlist guard)
-and the three demo defs. The publish path itself is the team component's
-(kaizen-dagster-delta-to-kafka) -- covered by the wheel's own test suite; here it
-is pinned only through its import surface and the defs the demo loads.
+"""The Jobotron demo plumbing around the vendored Jobotron publish instances
+(docs/poc/JOBOTRON_CONTRACT_PARITY.md, docs/poc/JOBOTRON_KYC_NOTEBOOK_PATTERNS.md):
+the setup asset (topic), the demo consumer (drain, skip IsDryRun:true, dedup on the
+Kafka key, Postgres mirror), the reset job (allowlist guard) and the demo defs. The
+publish path itself is the Jobotron component's (kaizen-dagster-jobotron, APR-336)
+-- covered by the wheel's own test suite; here it is pinned only through its import
+surface and the defs the demo loads.
 
 Kafka, Postgres and the resources are fakes. Run from the repo root:
 .venv/bin/python -m pytest
@@ -27,7 +28,9 @@ from tests.fakes import (
 )
 
 DEF_ROOT = Path(__file__).resolve().parent.parent / "orchestration" / "defs"
-DEFS = {market: DEF_ROOT / f"unverified_customers_{market}" / "defs.yaml" for market in ("cy", "gr", "ro")}
+# The three variant-A notebooks as ONE fan-out instance (the brief's §4.6
+# "Alternative"); the demo topics stay per-market via the topic template.
+FAN_OUT_DEF = DEF_ROOT / "unverified_customers" / "defs.yaml"
 
 
 # --- the fakes ---------------------------------------------------------------------------------------------------------
@@ -153,14 +156,31 @@ class Env:
         return self.run(jobotron.build_consume_asset(self.inst))
 
 
+def envelope_message(customer_id, company_id=7, job="Send_Email_to_Unverified_Customers", dry_run=False, run_id="run-1"):
+    """The 13-field envelope the vendored Jobotron component publishes (the fields the
+    demo consumer reads; the wheel's own suite pins the full contract byte-for-byte)."""
+    return json.dumps({
+        "JobId": f"{job}_{company_id}_20261111090000",
+        "JobName": job,
+        "JobCreated": "2026-11-11T09:00:00Z",
+        "RunId": run_id,
+        "CompanyId": company_id,
+        "CustomerId": customer_id,
+        "ItemsCount": 1,
+        "ItemNumber": 1,
+        "ItemId": "abc-1",
+        "ItemPayload": {"CustomerId": customer_id, "CompanyId": company_id},
+        "ItemPayloadHash": "abc",
+        "IsDryRun": dry_run,
+        "SchemaVersion": 1,
+    }).encode()
+
+
 def seeded_env(market, calls, monkeypatch, customers=()):
-    """An env whose topic already holds one plain-JSON message per customer (the shape
-    the vendored component publishes: the query's columns plus the instance metadata)."""
+    """An env whose topic already holds one envelope message per customer (the shape
+    the vendored component publishes)."""
     messages = [
-        (
-            f"jobotron_unverified_customers_{market}",
-            json.dumps({"CustomerId": customer_id, "CompanyId": 7, "processed_at": "2026-11-11T09:00:00Z", "run_id": "run-1"}).encode(),
-        )
+        (f"jobotron_unverified_customers_{market}", envelope_message(customer_id))
         for customer_id in customers
     ]
     return Env(market, calls, monkeypatch, topic_messages=messages)
@@ -181,21 +201,22 @@ def no_waiting(monkeypatch):
 
 def test_the_vendored_component_imports_and_builds_one_publish_asset():
     """Import smoke for the vendored wheel plus the publish-asset surface the demo
-    defs rely on: one DeltaToKafkaComponent instance builds exactly one asset (the
+    defs rely on: one JobotronComponent instance builds exactly one asset (the
     publish asset), keyed by the instance's prefix."""
-    from kaizen_dagster_delta_to_kafka.components.delta_to_kafka import DeltaToKafkaComponent
-    from kaizen_dagster_delta_to_kafka.components.delta_to_kafka.sink.formats.json import JsonFormat
+    from kaizen_dagster_jobotron import JobotronComponent
+    from kaizen_dagster_jobotron.components.jobotron.sink.formats.envelope import EnvelopeFormat
 
-    component = DeltaToKafkaComponent(
+    component = JobotronComponent(
         name="unverified_customers_cy",
         asset_key_prefix=["jobotron"],
-        query="select 1 as CustomerId",
+        job_name="Send_Email_to_Unverified_Customers",
+        query="select 1 as CustomerId, 7 as CompanyId",
         workspace="https://adb-1608121643336927.7.azuredatabricks.net",  # the literal-host escape hatch
         warehouse="wh-123",
         kafka_profile="openshift_kafka_connect",
         topic="jobotron_unverified_customers_cy",
-        message=JsonFormat(format="json", key_column="CustomerId"),
-        metadata=["processed_at", "run_id"],
+        message=EnvelopeFormat(format="envelope", key_column="CustomerId"),
+        schema_version=1,
         dry_run=True,
     )
     built = component.build_defs(None)
@@ -266,8 +287,8 @@ class TestConsume:
             calls,
             monkeypatch,
             topic_messages=[
-                ("jobotron_unverified_customers_cy", json.dumps({"CustomerId": 1001, "CompanyId": 7, "run_id": "run-1"}).encode()),
-                ("jobotron_unverified_customers_cy", json.dumps({"CustomerId": 1001, "CompanyId": 7, "run_id": "run-2"}).encode()),
+                ("jobotron_unverified_customers_cy", envelope_message(1001, run_id="run-1")),
+                ("jobotron_unverified_customers_cy", envelope_message(1001, run_id="run-2")),
             ],
         )
         result = env.consume()
@@ -275,6 +296,25 @@ class TestConsume:
         assert metadata(result)["items_count"].value == 1
         (rows,) = [s[2] for s in env.postgres.statements if s[0] == "executemany"]
         assert rows[0]["run_id"] == "run-2"
+
+    def test_a_dry_run_record_is_skipped_the_way_a_real_worker_noops_it(self, calls, monkeypatch):
+        """The envelope's dry run PUBLISHES with IsDryRun: true (the notebook semantics):
+        the mirror must not act on those records, or the demo's consume check lies."""
+        env = Env(
+            "cy",
+            calls,
+            monkeypatch,
+            topic_messages=[
+                ("jobotron_unverified_customers_cy", envelope_message(1001, dry_run=True)),
+                ("jobotron_unverified_customers_cy", envelope_message(1002, dry_run=False)),
+            ],
+        )
+        result = env.consume()
+        assert result.success
+        assert metadata(result)["messages_read"].value == 2
+        assert metadata(result)["items_count"].value == 1
+        assert metadata(result)["dry_run_skipped"].value == 1
+        assert mirror_rows(env.postgres, env.topic) == ["1002"]
 
     def test_a_message_without_a_customer_id_is_skipped(self, calls, monkeypatch):
         env = seeded_env("cy", calls, monkeypatch, customers=[1001])
@@ -354,28 +394,58 @@ class TestReset:
 
 
 class TestDefs:
-    def test_the_three_demo_yamls_point_at_the_vendored_component_with_their_own_topics(self):
-        for market in ("cy", "gr", "ro"):
-            attrs = yaml.safe_load(DEFS[market].read_text())
-            assert (
-                attrs["type"]
-                == "kaizen_dagster_delta_to_kafka.components.delta_to_kafka.DeltaToKafkaComponent"
-            )
-            attributes = attrs["attributes"]
-            assert attributes["name"] == f"unverified_customers_{market}"
-            assert attributes["asset_key_prefix"] == ["jobotron"]
-            assert attributes["topic"] == f"jobotron_unverified_customers_{market}"
-            assert attributes["message"] == {"format": "json", "key_column": "CustomerId"}
-            assert attributes["kafka_profile"] == "openshift_kafka_connect"
-            assert attributes["dry_run"] is True
+    def test_the_fan_out_yaml_points_at_the_vendored_component(self):
+        attrs = yaml.safe_load(FAN_OUT_DEF.read_text())
+        assert attrs["type"] == "kaizen_dagster_jobotron.components.jobotron.JobotronComponent"
+        attributes = attrs["attributes"]
+        assert attributes["name"] == "unverified_customers"
+        assert attributes["asset_key_prefix"] == ["jobotron"]
+        assert attributes["job_name"] == "Send_Email_to_Unverified_Customers"
+        assert attributes["topic_template"] == "jobotron_unverified_customers_{market_code}"
+        assert attributes["companies"] == {"include": ["CYSTX", "GRSTX", "ROBTN"]}
+        assert attributes["literal_parameters"] == ["market_code"]
+        assert attributes["message"] == {"format": "envelope", "key_column": "CustomerId"}
+        assert attributes["schema_version"] == 1
+        assert attributes["kafka_profile"] == "openshift_kafka_connect"
+        assert attributes["dry_run"] is True
 
-    def test_the_demo_queries_are_the_notebooks_per_market_rules(self):
-        assert "ccgGroupID = 1424" in yaml.safe_load(DEFS["cy"].read_text())["attributes"]["query"]
-        assert "cusCompanyID = 7" in yaml.safe_load(DEFS["cy"].read_text())["attributes"]["query"]
-        assert "cusTypeID not in (2, 5, 6, 10, 11, 15)" in yaml.safe_load(DEFS["gr"].read_text())["attributes"]["query"]
-        assert "ccgGroupID = 1425" in yaml.safe_load(DEFS["gr"].read_text())["attributes"]["query"]
-        assert "ccgGroupID = 1321" in yaml.safe_load(DEFS["ro"].read_text())["attributes"]["query"]
-        assert "cusCompanyID = 4" in yaml.safe_load(DEFS["ro"].read_text())["attributes"]["query"]
+    def test_the_template_carries_the_notebooks_per_market_rules_as_data(self):
+        per_company = yaml.safe_load(FAN_OUT_DEF.read_text())["attributes"]["parameters_by_company"]
+        # The group ids and the excluded-type lists are the notebooks': GR adds
+        # type 15 (UNVERIFIED STOIXIMAN-GR) per its own SQL. The market itself is
+        # not per-company data: {market_code} is the enumeration's own derivation
+        # (comCode[:2].lower() -- the notebooks' getTopic).
+        assert per_company == {
+            "CYSTX": {"group_id": 1424, "excluded_types": "2, 5, 6, 10, 11"},
+            "GRSTX": {"group_id": 1425, "excluded_types": "2, 5, 6, 10, 11, 15"},
+            "ROBTN": {"group_id": 1321, "excluded_types": "2, 5, 6, 10, 11"},
+        }
+        template = yaml.safe_load(FAN_OUT_DEF.read_text())["attributes"]["query_template"]
+        assert "de.voperdb_{market_code}.cCustomer" in template
+        assert "ccgGroupID = {group_id}" in template
+        assert "cusTypeID not in ({excluded_types})" in template
+        assert "cusCompanyID = {company_id}" in template
+
+    def test_the_fan_out_yaml_loads_through_the_component_with_static_partitions(self):
+        """The demo's surface the launch path relies on: the yaml builds ONE publish
+        asset keyed jobotron/unverified_customers, statically partitioned by the
+        comCodes (the demo UI's partition keys)."""
+        import os
+
+        from kaizen_dagster_jobotron import JobotronComponent
+        from kaizen_dagster_jobotron.components.jobotron.sink.formats.envelope import EnvelopeFormat
+
+        attrs = yaml.safe_load(FAN_OUT_DEF.read_text())["attributes"]
+        # env() resolvers render only inside the Dagster container; the shape is
+        # what this test pins, not the coordinates.
+        os.environ.setdefault("DBT_DATABRICKS_HOST", "smoke-host")
+        os.environ.setdefault("DATABRICKS_WAREHOUSE_ID", "smoke-wh")
+        attrs["workspace"] = "https://smoke-host"
+        attrs["message"] = EnvelopeFormat(**attrs.pop("message"))
+        built = JobotronComponent(**attrs).build_defs(None)
+        assets = list(built.assets)
+        assert [asset.key.to_user_string() for asset in assets] == ["jobotron/unverified_customers"]
+        assert sorted(assets[0].partitions_def.get_partition_keys()) == ["CYSTX", "GRSTX", "ROBTN"]
 
     def test_the_demo_plumbing_defs_load_without_name_collisions(self):
         built = [jobotron.build_jobotron_demo_defs(jobotron.JobotronDemoInstance(market)) for market in ("cy", "gr", "ro")]

@@ -1,0 +1,64 @@
+# The KYC team's notify-unverified-customers-over-deposit-limit.ipynb (variant B in
+# docs/poc/JOBOTRON_KYC_NOTEBOOK_PATTERNS.md §4.6) as an instance of the Jobotron
+# component: a configurator-driven fan-out over all active companies, one partition
+# per company. Each partition reads the company's configurator entry
+# (UnverifiedCustomerLimitsUntilRestrictionConfig): inactive or missing isActive is
+# a valid skip (the partition materializes as a no-op success with the reason in its
+# metadata); an active entry's `group` code resolves to {group_id} through
+# de.metadatadb.mgroup (0 or >1 matches fail the partition, as the notebook's
+# getGroupId require does).
+#
+# The notebook interpolates the SQL: g.ccgCreated >= timestamp'${createdFrom}'.
+# Here {created_from} is the run anchor (start of yesterday, UTC) and sits in a VALUE
+# position, so it binds as a :created_from STRING parameter instead of a timestamp
+# literal -- the whitelist refuses dashes/colons in substituted text, and the bind
+# is the component's whole injection boundary (§4.3).
+#
+# LIVE-TOPIC GUARD: the notebooks' own routing is topic_template "kyc.jobs.{market_code}"
+# (kept commented on the line below) -- KYC Workers consume those topics and act on
+# real customers, and even a dry-run PUBLISHES IsDryRun: true records there (the
+# Worker no-ops them, but the write is real). This instance is pointed at demo
+# topics instead: switch back only when the real deployment is intended.
+#
+# Kafka profile: the demo containers reach the same STG brokers through
+# openshift_kafka_connect (SASL/SCRAM, OPENSHIFT_STG_KAFKA_PASSWORD). The
+# notebooks' own kyc_jobs_stg profile (client certs from /dbfs/...) only resolves
+# on Databricks.
+
+type: kaizen_dagster_jobotron.components.jobotron.JobotronComponent
+
+attributes:
+  name: notify_unverified_customers_over_deposit_limit
+  asset_key_prefix: [jobotron]
+  job_name: Notify_Unverified_Customers_Over_Deposit_Limit
+  query_template: |
+    select distinct c.cusCustomerID as CustomerId, c.cusCompanyID as CompanyId
+    from de.voperdb_{market_code}.cCustomer_Group g
+    inner join de.voperdb_{market_code}.cCustomer c on c.cusCustomerID = g.ccgCustomerID
+    where g.comp_part = {company_id}
+    and c.comp_part = {company_id}
+    and g.ccgGroupID = {group_id}
+    and g.ccgCreated >= {created_from}
+  # topic_template: "kyc.jobs.{market_code}"  # the notebooks' live routing -- see the guard above
+  topic_template: "jobotron_notify_unverified_customers_over_deposit_limit_{market_code}"
+  literal_parameters: [market_code]
+  companies:
+    source: de.metadatadb.mcompany
+    # the notebooks' inactive list, as exact comCodes
+    # (the notebooks themselves excluded by id: 2, 3, 6, 10, 12, 13, 14)
+    exclude: [B2B, BTN, ENBTN, KZ, ATBTN, DEKSN, ATKSN]
+  configurator:
+    base_url: "{{ env('CONFIGURATOR_BASE_URL') }}"
+    configuration_code: UnverifiedCustomerLimitsUntilRestrictionConfig
+    fields:
+      group_code: group
+  group_lookup:
+    code: group_code
+  workspace: "{{ env('DBT_DATABRICKS_HOST') }}"
+  warehouse: "{{ env('DATABRICKS_WAREHOUSE_ID') }}"
+  kafka_profile: openshift_kafka_connect
+  message:
+    format: envelope
+    key_column: CustomerId
+  schema_version: 1
+  dry_run: true
