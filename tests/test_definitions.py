@@ -36,6 +36,12 @@ def test_the_reverse_etl_assets_declare_no_resources_and_the_drt_resource_is_bou
             assert set(keys) - {"io_manager", "drt"} == set(), sorted(names)
 
 
+@pytest.mark.skipif(
+    not all(path.exists() for path in DBT_MANIFESTS),
+    reason="importing orchestration.definitions needs the dbt manifests (CI has none: "
+    "`dbt parse` runs the on-run-start hooks, which need a live RisingWave for the "
+    "UDFs + Iceberg connection)",
+)
 def test_every_job_selection_resolves_against_the_registered_assets():
     """A job's asset selection must be fully covered by Definitions' assets list.
 
