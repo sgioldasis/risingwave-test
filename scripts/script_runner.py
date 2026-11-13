@@ -43,7 +43,7 @@ SCRIPTS = [
     ("5_starrocks_flight_benchmark.sh", "🚀 StarRocks Flight Benchmark", "Benchmark Arrow Flight SQL vs MySQL protocol on StarRocks (runs in dagster-webserver, ~40s)"),
     ("5_starrocks_duckdb.sh", "🦆 DuckDB over StarRocks", "Query StarRocks from DuckDB over Arrow Flight SQL — zero-copy Arrow (host venv; needs '127.0.0.1 starrocks' in /etc/hosts)"),
     ("show_links.sh", "🔗 Links", "Display all available tool links (dashboards, consoles, etc.)"),
-    ("3_run_producer.sh", "🚀 Start Producer", "Run the event producer with configurable TPS", True),
+    ("3_run_producer.sh", "🚀 Start Funnel Producer", "Run the funnel event producer (page_views/cart_events/purchases) with configurable TPS", True),
     ("3_run_wallet_producer.sh", "💳 Start Wallet Producer", "Run the synthetic wallet transaction producer (StarRocks upsert demo)", True),
     ("4_run_ml_serving.sh", "🤖 ML Serving", "Start ML serving with River online learning (port 8001)"),
     ("4_run_modern.sh", "✨ Run Modern Dashboard", "Start the modern dashboard"),
