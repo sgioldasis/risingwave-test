@@ -224,8 +224,13 @@ sr -e "SELECT TABLE_NAME, IS_ACTIVE, QUERY_REWRITE_STATUS FROM information_schem
 ```
 Expect `VALID`. Then, in a shell (each `sr` call is its own session, so the `SET` below lasts for one call only):
 ```bash
-Q="SELECT date_trunc('day', window_start) AS day, country, SUM(viewers) AS viewers
+Q="SELECT DATE(window_start) AS day, country, SUM(viewers) AS viewers
    FROM databricks_uc.sr_poc_external.funnel_summary_historical GROUP BY day, country ORDER BY day"
+# DATE(), not date_trunc: the MV is built on DATE(window_start) because
+# Superset's sqlglot layer transpiles date_trunc('day', x) to DATE(x) before
+# sending SQL to StarRocks, and rewrite requires the query expression to
+# match the MV's exactly (a date_trunc query would NOT rewrite) -- see
+# docs/SR_POC_QUERY_REWRITE_DEMO.md, "Superset sqlglot gotcha (2026-11-13)".
 
 # 1. the query only names the raw table; the plan goes to the MV
 sr -e "EXPLAIN $Q" | grep -E "OlapScanNode|IcebergScanNode|MaterializedView"

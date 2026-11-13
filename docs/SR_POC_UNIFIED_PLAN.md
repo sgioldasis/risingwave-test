@@ -125,18 +125,22 @@ StarRocks currently has three external catalogs and a dbt-managed hot view:
   `risingwave.public.funnel_summary`
 
 **Is data copied from Databricks to StarRocks, or read live?** As of
-2026-09-08, **nothing is copied — this is a zero-copy architecture**. Every
-piece is read live at query time (full history, including why this changed
-from an earlier cached design, in
-[SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)):
+2026-09-08, the **default architecture is zero-copy** — every piece is read
+live at query time (full history, including why this changed from an earlier
+cached design, in
+[SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)).
+Since 2026-09-13 the cached variants were restored **alongside** the
+zero-copy path (the frontend's Architecture toggle and the
+`/api/query/funnel/cached*` endpoints select them), so both coexist:
 
 * **Country names** — live join to
-  `databricks_uc.sr_poc_external.iceberg_countries` on every dashboard
-  request. No local copy exists (the earlier `mv_iceberg_countries_cache`
-  was dropped).
+  `databricks_uc.sr_poc_external.iceberg_countries` on every default-path
+  request; the cached path reads `mv_iceberg_countries_cache` (20-second
+  refresh).
 * **Historical funnel data** — live query to
   `databricks_uc.sr_poc_external.funnel_summary_historical` on every
-  request (the earlier `mv_unified_funnel_summary` was dropped).
+  default-path request; the cached path reads `mv_unified_funnel_summary`
+  (`REFRESH MANUAL` — refreshed explicitly, not on a schedule).
 * **Hot/current-minute funnel data** — unchanged: live JDBC query against
   `risingwave.public.funnel_summary`, as it always was.
 
@@ -410,10 +414,13 @@ container. It validated the StarRocks catalogs, the Lakekeeper country table,
 the Databricks historical table, the RisingWave hot relation, and the Kafka
 `funnel` topic before dashboard dbt assets were allowed to run.
 
-All four SQL-backed dashboard endpoint groups fall back to cold MV history when
+All four SQL-backed dashboard endpoint groups fall back to cold history when
 the hot RisingWave catalog is unavailable and mark the response with
-`degraded=true`. Enriched and health fallback responses preserve their metric
-shape, while emoji fields use the neutral `N/A` value without hot data.
+`degraded=true` — the default (zero-copy) endpoints query
+`databricks_uc.sr_poc_external.funnel_summary_historical` directly; only the
+cached endpoints fall back to `mv_unified_funnel_summary`. Enriched and
+health fallback responses preserve their metric shape, while emoji fields
+use the neutral `N/A` value without hot data.
 
 The modern dashboard launcher uses the Devbox-managed Node.js 22 runtime. The
 launcher explicitly prepends the Devbox Node path so Script Runner cannot fall
@@ -519,8 +526,10 @@ Deployed shape (refresh interval widened to 5 minutes on 2026-09-06; see
 "Remaining questions for Part 3" below):
 
 ```sql
+-- as restored 2026-09-13: REFRESH MANUAL (the cached path refreshes it
+-- explicitly; the original 2026-09 build had REFRESH ASYNC EVERY 5 MINUTE)
 CREATE MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary
-REFRESH ASYNC EVERY (INTERVAL 5 MINUTE)
+REFRESH MANUAL
 PROPERTIES (
   "query_rewrite_consistency" = "loose"
 )

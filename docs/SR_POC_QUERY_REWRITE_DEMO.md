@@ -58,7 +58,7 @@ time it's evaluated. A new, purpose-built MV is needed: a stable SPJG
 }}
 
 SELECT
-  date_trunc('day', window_start) AS day,
+  DATE(window_start) AS day,
   country,
   SUM(viewers) AS viewers,
   SUM(carters) AS carters,
@@ -66,6 +66,10 @@ SELECT
 FROM {{ source('databricks_uc', 'funnel_summary_historical') }}
 GROUP BY day, country
 ```
+
+(Was `date_trunc('day', window_start)` until 2026-11-13 — changed for a
+reason that's easy to get wrong; see [the Superset sqlglot gotcha
+below](#superset-sqlglot-gotcha-2026-11-13).)
 
 Design choices:
 
@@ -208,13 +212,25 @@ Ran the identical query 3x each way (wall-clock, via `mysql` client):
 | **With rewrite** | 0.15s | 0.06s | 0.05s |
 | **Without rewrite** (forced off) | 5.50s | 1.78s | 1.80s |
 
-**~20-35x faster with rewrite**, even at this trivial scale (4,280 raw
-rows). Most of the "without rewrite" cost here is Iceberg metadata/file-list
-overhead against external storage (REST catalog + ADLS), which the rewrite
-path skips entirely by never touching Iceberg. This gap should only widen as
-the historical table grows — worth re-running this same comparison later
+**~20-35x faster with rewrite at the 2026-09 measurement** (table above).
+Re-measured 2026-11-13 on the same stack (FE 4.1.7, after table-level
+Predictive Optimization compacted `funnel_summary_historical`'s small-file
+buildup): **~0.8s vs ~4.2s — a stable ~5x**. The raw-scan side got much
+cheaper (fewer, larger files to plan and read), the MV side stayed
+sub-second. The rewrite still wins by construction — it never touches
+Iceberg planning at all — and the gap grows again with file count, but the
+dramatic tens-of-x headline no longer reproduces against this compacted
+table; the 2026-09 numbers are kept above as the pre-compaction record.
+Worth re-running this same comparison later
 once real data volume accumulates, to get a scaling curve rather than a
 single snapshot.
+
+Re-measured again later the same day (2026-11-13), after enabling the
+Iceberg metadata cache (see below): **~20ms vs ~200ms warm** — the old
+gap was dominated by per-query UC metadata fetching, which the cache
+eliminates. The raw-scan side reverts to seconds whenever the 300s
+metadata cache has gone cold (e.g. after the dashboard sat idle for a
+few minutes), so the on-screen contrast is still visible in practice.
 
 ## How to run this live for an audience
 
@@ -225,13 +241,18 @@ single snapshot.
    everything at once) → Launchpad → Launch Run. (If the model was just
    added/changed, `dbt parse` needs to run first so Dagster's manifest
    picks it up — see "Deployment log" above for the exact snag hit.) The
-   `refresh_mv_funnel_daily_country_rollup` asset in that job runs
-   `REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` automatically — no
-   longer a separate manual step (see
-   `orchestration/assets/query_rewrite_demo_refresh.py`). The MV also now
+   MV needs no separate warm-up: the dbt build's `materialized_view`
+   materialization runs `REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` as
+   its post-hook whenever it rebuilds the model, and the MV also
    auto-refreshes on its own every 5 minutes (`refresh_method="ASYNC EVERY
    (INTERVAL 5 MINUTE)"`, changed 2026-09-14), so it stays in sync with
    the raw table between job runs without any manual step during a demo.
+   (A dedicated force-refresh asset,
+   `orchestration/assets/query_rewrite_demo_refresh.py`, ran at the end of
+   that job from 2026-09 until 2026-11-13, when it was removed as
+   redundant — on a cold stack its PCT partition sync over uncached UC
+   metadata cost ~8 minutes and it never found a partition to refresh that
+   dbt's post-hook hadn't already covered.)
 2. Confirm eligibility one more time:
    ```sql
    SELECT QUERY_REWRITE_STATUS, QUERY_REWRITE_STATUS_REASON
@@ -242,9 +263,10 @@ single snapshot.
 **Live, in front of the audience:**
 
 1. Show the raw query — emphasize it only mentions the raw historical
-   table, nothing about any MV:
+   table, nothing about any MV (use `DATE()`, matching the MV — a
+   `date_trunc` query would NOT rewrite; see the sqlglot gotcha below):
    ```sql
-   SELECT date_trunc('day', window_start) AS day, country, SUM(viewers) AS viewers
+   SELECT DATE(window_start) AS day, country, SUM(viewers) AS viewers
    FROM databricks_uc.sr_poc_external.funnel_summary_historical
    GROUP BY day, country
    ORDER BY day;
@@ -257,7 +279,9 @@ single snapshot.
    and the much higher `cardinality`. Same SQL, same answer, completely
    different plan.
 4. Time both (even a simple client-side stopwatch is convincing — see the
-   measured numbers above: ~0.05-0.15s vs ~1.8-5.5s).
+   measured numbers above: ~0.05-0.15s vs ~1.8-5.5s in 2026-09; ~0.8s vs
+   ~4.2s after the 2026-11-13 re-measurement; ~0.02s vs ~0.2s warm after
+   the metadata-cache change the same day).
 5. `SET enable_materialized_view_rewrite = true;` again to leave the session
    in its default state before moving on.
 6. Close the narrative: an analyst using a BI tool that only knows about the
@@ -279,7 +303,7 @@ since that was a full service swap and the MV needed rebuilding via
 * `EXPLAIN` still flips cleanly between `OlapScanNode` / `MaterializedView:
   true` (rewrite on) and `IcebergScanNode` (rewrite off) for the identical
   query text.
-* One schema difference on the new FE image (`starrocks/fe-ubuntu:4.0-latest`
+* One schema difference on the new FE image (`starrocks/fe-ubuntu:4.1.7`
   vs the old `allin1-ubuntu:4.1.4`):
   `information_schema.materialized_views` no longer has a
   `QUERY_REWRITE_STATUS_REASON` column — drop it from the eligibility-check
@@ -338,13 +362,101 @@ through that connection has rewrite disabled at the session level — no
 per-query SQL text for Superset's formatter to touch or strip. Confirmed
 via Superset's own API: ~0.6-0.7s (rewrite on, normal connection) vs.
 ~7.2s (rewrite off, `init_command` connection) for the identical query —
-matching the raw, outside-Superset numbers closely.
+matching the raw, outside-Superset numbers closely. (Re-measured
+2026-11-13: ~0.8s vs ~4.2s, after PO compacted the historical table —
+same conclusion.) Note the comparison is only honest with Superset's
+result cache out of the way: these two charts (and the Funnel
+Dashboard's Live-vs-Cached pair) carry `cache_timeout: 0` — with the
+default cache timeout, a chart with a warm cache renders instantly and
+the on-screen "race" compares cache hits, not queries.
+
+**Demo choreography note (2026-11-13):** the on-screen gap between the two
+charts only exists while the Iceberg metadata cache (300s TTL) is cold.
+Reload the dashboard after it has sat idle ~5 minutes and the OFF chart
+takes seconds while ON stays fast; refresh again within that window and
+both render fast (raw scan ~0.2s warm vs ~0.02s for the MV — a ~10x gap,
+but sub-second on both sides at this data volume). Plan-level proof via
+`EXPLAIN` works regardless of cache state, so lead with that if the race
+looks unimpressive.
 
 Lesson for future work: don't trust a query-hint-in-SQL-text approach to
 survive any BI tool's own SQL processing/formatting layer without
 verifying the *actual* SQL that reached the database — a session-level
 connection property is more robust whenever the tool sits between you and
 the query text.
+
+## Superset sqlglot gotcha (2026-11-13)
+
+Second real bug in the same category as the hint-stripping one above, and
+the same lesson: **verify the SQL that actually reaches the database.**
+
+**Symptom:** the dashboard's "Rewrite OFF" chart kept rendering first /
+as fast as "Rewrite ON" even after setting `cache_timeout: 0` on both
+charts. The server-side gap measured clean through the CLI (~0.8s ON vs
+~4.2s OFF), but Superset's `logs` table showed both charts taking
+~6-7s per load.
+
+**Root cause (two layers):**
+
+1. Superset transpiles dataset SQL through **sqlglot** before sending it
+   to a MySQL-protocol connection (which is what StarRocks is). sqlglot
+   rewrites `date_trunc('day', x)` into `DATE(x)` for the MySQL dialect —
+   so the SQL that reached StarRocks used `DATE(window_start)` no matter
+   what the dataset YAML said. Reproduced directly:
+   `sqlglot.transpile(sql, write='mysql')` performs exactly this rewrite.
+2. StarRocks' rewrite requires the query's day expression to **match the
+   MV's expression exactly**. The MV was built on `date_trunc`, so a
+   `DATE()` query didn't match, and `CAST(x AS DATE)` doesn't unify with
+   `date_trunc` either (both tested via `EXPLAIN` 2026-11-13). The
+   matching is strict in both directions — after the fix below, a
+   `date_trunc` query no longer rewrites either.
+
+Consequence: **the "Rewrite ON" chart had never actually rewritten
+through Superset** — both charts ran raw Iceberg scans the whole time.
+Proof: the FE audit log (`fe.audit.log`) showed both charts' queries with
+identical `ScanBytes=59401 / ScanRows=20525` and ~6-7s each.
+
+**Fix:** rebuilt the MV on `DATE(window_start)` to match exactly what
+Superset actually sends (the dataset SQL still *says* `date_trunc` — it's
+transpiled in transit, which is harmless now). `EXPLAIN` of the exact
+wrapped SQL Superset sends then shows
+`OlapScanNode TABLE: mv_funnel_daily_country_rollup / MaterializedView:
+true`. All SQL-console demo examples in this doc use `DATE()` for the
+same reason.
+
+Diagnostic that cracked it: `fe.audit.log`'s `QueriedRelations` /
+`ScanBytes` fields — audit-log first, BI-tool API second.
+
+### Iceberg metadata cache (2026-11-13, same day)
+
+While diagnosing the above, the MV's own refreshes were found spending
+minutes walking Databricks UC REST table metadata before each refresh's
+partition sync — `databricks_uc` was created with
+`iceberg_meta_cache_ttl_sec = 0` (never cache), so every refresh and
+every raw-scan query re-fetched the whole table metadata over VPN. The
+retry-loop pathology (scheduled refresh → PCT sync → "no partitions" →
+SKIPPED → resubmit ~every 20s, saturating the task pool) is fed by this
+too.
+
+Fix: recreate the catalog with `iceberg_meta_cache_ttl_sec = 300`
+(changed in `starrocks/init_catalog.sh` and the `dbt_starrocks`
+on-run-start hook; applied live by DROP/CREATE of the catalog since
+StarRocks 4.1.7 has no ALTER for catalog properties). Partition sync
+went from minutes to ~3ms. Side effect: the raw-scan ("Rewrite OFF")
+path dropped from ~4.2s to ~200ms warm — most of its old cost was
+metadata fetching, not data reading — while staying seconds-slow when
+the 300s cache expires. Two operational quirks hit during the change,
+both worth knowing:
+
+- A refresh submitted while the catalog is being recreated dies silently
+  and, worse, an *empty* MV then reports "no partitions to refresh" →
+  SKIPPED on every subsequent refresh (PCT compares base-table snapshots,
+  and the base hasn't changed since the MV registered). Recovery is a
+  forced full refresh: `REFRESH MATERIALIZED VIEW <mv> FORCE;`
+- Same quirk after a dbt rebuild that leaves the MV unpopulated: the
+  post-hook's `REFRESH ... WITH SYNC MODE` can return SKIPPED with 0 rows
+  on the table. Check `SELECT COUNT(*)` on the MV after any rebuild and
+  force-refresh if it's empty.
 
 ## Investigation log: dashboard slowness and a real data-loss incident (2026-09-14)
 
@@ -535,7 +647,7 @@ refresh cost — only reduces how often it's user-visible.
 - `dbt_starrocks/models/mv_funnel_daily_country_rollup.sql` — `refresh_method`
   `MANUAL` → `ASYNC EVERY (INTERVAL 1 MINUTE)` → `ASYNC EVERY (INTERVAL 5 MINUTE)`
 - `orchestration/assets/query_rewrite_demo_refresh.py` — docstring/description
-  updated to match
+  updated to match (asset deleted 2026-11-13 — see the deployment note above)
 - Databricks (`de_dev.sr_poc_external`): `OPTIMIZE`, table-level Predictive
   Optimization on `funnel_summary_historical` + `iceberg_countries`,
   the retention-property incident and its revert, `FSCK REPAIR` ×2

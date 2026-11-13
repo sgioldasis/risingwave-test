@@ -32,7 +32,20 @@ Key point: **RisingWave does the transformation work once** (raw Kafka events �
 
 ## 2. Docker Compose setup
 
-### Service definition
+> **⚠️ SUPERSEDED — read before copying anything from this section.** The
+> service definition below is the original 2026-06 allin1 shared-nothing
+> setup, kept as history. It does **not** match the current stack and the
+> build it describes cannot work (`starrocks/Dockerfile` no longer exists):
+> the live services are a **FE + CN shared-data pair** on the stack's own
+> MinIO (`starrocks/fe-ubuntu:4.1.7` + `starrocks/cn-ubuntu:4.1.7`, OAuth
+> for ADLS — SAS is not used), publishing ports 9030/8030/8010 (FE) and
+> 8040 (CN), with `starrocks-init` creating the storage volume and catalogs.
+> See §12 of this doc and
+> [SR_POC_STARROCKS_SHARED_DATA_MINIO.md](../SR_POC_STARROCKS_SHARED_DATA_MINIO.md)
+> for the current shape, or `docker-compose.yml` (services `starrocks`,
+> `starrocks-cn`, `starrocks-init`) for the truth.
+
+### Service definition (historical — see banner above)
 
 ```yaml
 starrocks:

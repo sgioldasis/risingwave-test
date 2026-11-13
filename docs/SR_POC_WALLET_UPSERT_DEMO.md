@@ -455,7 +455,7 @@ add-on below) for consistency across all three wallet tables.
 StarRocks even have a separate `TIMESTAMP` type? Short answer: StarRocks
 has **no `TIMESTAMP` type at all** — `DATETIME` is the only temporal
 column type, supports microsecond precision since v3.3.5 (this project
-runs v4.1.4), and is timezone-naive, same reason the sink rejects
+runs v4.1.7), and is timezone-naive, same reason the sink rejects
 `TIMESTAMP WITH TIME ZONE` above. See the `starrocks` skill's "Temporal
 types" section for the full detail — not worth duplicating here.)
 

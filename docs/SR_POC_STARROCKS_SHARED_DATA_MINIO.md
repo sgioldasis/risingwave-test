@@ -48,18 +48,18 @@ to change — the dbt_starrocks profile, `orchestration/*.py`,
 `modern-dashboard/backend/api.py`, and `starrocks/init_catalog.sh` all
 still connect via hostname `starrocks` port 9030.
 
-* **`starrocks`** (service) — `starrocks/fe-ubuntu:4.0-latest`, entrypoint
+* **`starrocks`** (service) — `starrocks/fe-ubuntu:4.1.7`, entrypoint
   [starrocks/fe-entrypoint.sh](../starrocks/fe-entrypoint.sh). Sets
   `run_mode = shared_data`, `cloud_native_storage_type = S3`, and carries
   forward every fix accumulated on the old allin1 setup: the ADLS
   core-site.xml credential (needed to read the Databricks Unity Catalog
   table's actual data files, physically stored in ADLS — separate from the
   REST catalog's own OAuth metadata credential), the JVM heap ceiling fix
-  (`-Xmx3072m`, see [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)
+  (`-Xmx4096m` since the planner-timeout investigation; originally raised from the image default to `-Xmx3072m`, see [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)
   for why the image default caused multi-second GC pauses),
   `connector_table_query_trigger_analyze_max_running_task_num = 0`, the 10s
   MV refresh floor, and the Iceberg metadata cache settings.
-* **`starrocks-cn`** (service) — `starrocks/cn-ubuntu:4.0-latest`,
+* **`starrocks-cn`** (service) — `starrocks/cn-ubuntu:4.1.7`,
   entrypoint [starrocks/cn-entrypoint.sh](../starrocks/cn-entrypoint.sh).
   Registers itself via `ALTER SYSTEM ADD COMPUTE NODE`, carries the same
   ADLS credential (CN does the actual data scanning, same as BE did

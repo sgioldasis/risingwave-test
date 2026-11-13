@@ -1358,12 +1358,13 @@ current procedure:
    `databricks_uc` (still set to `iceberg_meta_cache_ttl_sec = 0`) can see
    it at all; (b) the dashboard no longer reads `databricks_uc` live for
    this — it reads `mv_iceberg_countries_cache`, a local StarRocks cache
-   that refreshes on a 60s schedule (see the "Query latency investigation"
+   that refreshes on a 20-second schedule since the eleventh follow-up
+   above (originally 60s; see the "Query latency investigation"
    section above for why: a live per-query catalog read cost 500ms-1.5s+ of
    planning time on every single dashboard query, twice over once combined
    with the JDBC catalog cost — moving it to a periodically-refreshed local
    cache fixed that at the price of this propagation delay). **Worst case:
-   up to ~68s** (8s UniForm + up to 60s cache tick). For a specific demo
+   up to ~28s** (8s UniForm + up to 20s cache tick). For a specific demo
    moment where that's too slow, force an immediate refresh instead of
    waiting for the schedule:
    ```sql

@@ -93,11 +93,12 @@ step creates them.
 
 One click builds everything for all three dashboards — it's the union of
 the two more narrowly-scoped jobs described below (`modern_dashboard_setup_job`
-`|` `wallet_pipeline_setup_job`), including the Query Rewrite Demo's MV
-warm-up (`refresh_mv_funnel_daily_country_rollup`), which used to be a
-separate manual step. Dagster automatically dedupes the one asset the two
-selections share (`sr_local_db.wallet_transactions`, pulled in transitively
-by `starrocks_unified_dbt_assets` — see the note under 3b) so it only runs
+`|` `wallet_pipeline_setup_job`). The Query Rewrite Demo's MV needs no warm-up
+step — the dbt build's post-hook refreshes it on rebuild, and it
+auto-refreshes every 5 minutes besides. Dagster automatically dedupes the one
+asset the two selections share (`sr_local_db.wallet_transactions`, pulled in
+transitively by `starrocks_unified_dbt_assets` — see the note under 3b) so it
+only runs
 once. **Run this before starting any producers**, not while one is already
 writing — see the concurrent-rebuild caveat under 3a.
 
@@ -137,11 +138,13 @@ rebuilding both demos together.
 a long session; lengthened same-day from an initial 1-minute schedule
 after profiling showed each refresh takes 20-46s regardless of tuning, so
 1 minute meant live queries too often landed inside a slow refresh window
-— see the model file's own comment for the full tradeoff), and
-`refresh_mv_funnel_daily_country_rollup` (part of this job's selection)
-also forces an immediate synchronous refresh, so it's guaranteed current
-right after this job runs too. (The Funnel Dashboard never needed this —
-its view reads both sources live, no cache to warm.)
+— see the model file's own comment for the full tradeoff). The MV is
+therefore always at most 5 minutes stale, with no warm-up step needed.
+(A force-refresh asset that used to run at the end of
+`modern_dashboard_setup_job` was removed on 2026-11-13 as redundant —
+on a cold stack its PCT partition sync cost ~8 minutes for zero new
+partitions. The Funnel Dashboard never needed any of this — its view
+reads both sources live, no cache to warm.)
 
 **If this fails with `Kafka topic 'funnel' is unavailable`:** see the same
 snag documented in
@@ -245,9 +248,11 @@ Superset itself is broken:
 docker exec starrocks mysql -h127.0.0.1 -P9030 -uroot -e \
   "SELECT COUNT(*) FROM sr_local_db_sr_local_db.wallet_transactions;"
 
-# Query Rewrite Demo: was the MV actually refreshed?
+# Query Rewrite Demo: is the MV rewrite-eligible?
+# (QUERY_REWRITE_STATUS_REASON no longer exists on the fe-ubuntu images --
+# do not select it; see SR_POC_QUERY_REWRITE_DEMO.md)
 docker exec starrocks mysql -h127.0.0.1 -P9030 -uroot -e \
-  "SELECT QUERY_REWRITE_STATUS, QUERY_REWRITE_STATUS_REASON FROM information_schema.materialized_views WHERE TABLE_NAME='mv_funnel_daily_country_rollup';"
+  "SELECT QUERY_REWRITE_STATUS FROM information_schema.materialized_views WHERE TABLE_NAME='mv_funnel_daily_country_rollup';"
 
 # RisingWave: do the expected sources/sinks exist?
 psql -h localhost -p 4566 -U root -d dev -c "SHOW SOURCES;"

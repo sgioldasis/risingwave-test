@@ -21,10 +21,14 @@ StarRocks SQLAlchemy engine (`mysql+pymysql`, port 9030), reading the
 governed view `dashboard_funnel_serving`
 ([dbt_starrocks/models/dashboard_funnel_serving.sql](../dbt_starrocks/models/dashboard_funnel_serving.sql)).
 That view itself is a StarRocks-side union of two sources, and as of
-2026-09-08 **both are read live at query time — this is a zero-copy
-architecture, no local materialized copy of either source exists** (see
+2026-09-08 **both are read live at query time on the default (zero-copy)
+architecture** — no local materialized copy of either source sits in the
+default query path. (Since 2026-09-13 the cached variants are also
+restored *alongside* it — `dashboard_funnel_serving_cached` and the
+`/api/query/funnel/cached*` endpoints behind the frontend's Architecture
+toggle — so both architectures coexist; see
 [SR_POC_ICEBERG_COUNTRIES_MIGRATION.md](SR_POC_ICEBERG_COUNTRIES_MIGRATION.md)'s
-twelfth follow-up for the full history and why):
+twelfth and thirteenth follow-ups for the full history.):
 
 - **Windows younger than 3 minutes**: read live from
   `risingwave.public.funnel_summary` through StarRocks' JDBC federation
@@ -99,13 +103,13 @@ branches read live at query time (see "Why this doc exists" above).
 
 **Expected outcome:** `RUN_SUCCESS`. `mv_funnel_daily_country_rollup`
 auto-refreshes every 5 minutes on its own schedule now (see
-`dbt_starrocks/models/mv_funnel_daily_country_rollup.sql`), and this job's
-selection also includes `refresh_mv_funnel_daily_country_rollup` (see
-`orchestration/assets/query_rewrite_demo_refresh.py`), which forces an
-immediate synchronous refresh as part of the same run — no separate manual
-step needed if you also want the
-query-rewrite demo (see
-[SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md)).
+`dbt_starrocks/models/mv_funnel_daily_country_rollup.sql`), and the dbt
+build's own post-hook refreshes it synchronously whenever it rebuilds the
+model — so the Query Rewrite Demo is populated with no separate manual step
+(see [SR_POC_QUERY_REWRITE_DEMO.md](SR_POC_QUERY_REWRITE_DEMO.md)). (A
+dedicated force-refresh asset used to run at the end of this job; it was
+removed on 2026-11-13 as redundant — on a cold stack its PCT partition sync
+over uncached UC metadata took ~8 minutes for zero new partitions.)
 
 **If this fails with `Kafka topic 'funnel' is unavailable`:** that's
 `modern_dashboard_preflight` — it hard-requires the `funnel` topic to exist,
@@ -154,11 +158,15 @@ enter a TPS value.
 
 **Expected outcome:** the live SSE dashboard view starts ticking ("Last
 event: ..." updates). **Wait at least ~60-70 seconds** before querying again —
-`funnel_summary` is a 1-minute tumbling window with `EMIT ON WINDOW CLOSE`
+`funnel_summary` is a 1-minute tumbling window
 ([dbt/models/funnel_summary.sql](../dbt/models/funnel_summary.sql)), so the
 first row doesn't materialize until the first full window closes plus the
-5-second watermark delay on the source. Querying immediately will still show
-cold-only data — that's expected, not a bug.
+5-second watermark delay on the source. (The SQL comment in that file claims
+`EMIT ON WINDOW CLOSE`; it is aspirational only — the MV has no such clause,
+as established in
+[SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md](SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md).)
+Querying immediately will still show cold-only data — that's expected, not a
+bug.
 
 ### Step 6 — Query again, after the producer has run for a minute or two
 
@@ -344,6 +352,8 @@ Hit this 2026-09-07: `modern_dashboard_setup_job` failed on a fresh stack
 with four unrelated-looking asset failures
 (`modern_dashboard_databricks_table`, `iceberg_countries`,
 `modern_dashboard_preflight`, `starrocks_mv_warm`) — all four query StarRocks
+(`starrocks_mv_warm` no longer exists — it was removed with the zero-copy
+migration; match today's failures against the current asset set)
 catalogs (`databricks_uc`, `lakekeeper_local`, `risingwave`) that turned out
 not to exist. Root cause was one level down: the `starrocks-init` container
 (created by `1_up.sh` via `docker-compose.yml`, responsible for creating
