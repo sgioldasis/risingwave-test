@@ -43,7 +43,7 @@ position:
       width: 12
       height: 46
       code: "**Demo:** StarRocks transparent materialized-view query rewrite. Both\
-        \ charts run the *exact same query* (`SELECT date_trunc('day', window_start)\
+        \ charts run the *exact same query* (`SELECT DATE(window_start)\
         \ AS day, country, SUM(viewers) AS viewers FROM databricks_uc.sr_poc_external.funnel_summary_historical\
         \ GROUP BY day, country`) against the raw base Iceberg table \u2014 neither\
         \ one mentions `mv_funnel_daily_country_rollup` at all. See `docs/SR_POC_QUERY_REWRITE_DEMO.md`.\n\
@@ -63,18 +63,35 @@ position:
         \ running with rewrite ON the whole time (both fast, indistinguishable) despite\
         \ `EXPLAIN` on the raw hinted SQL confirming the hint works fine outside Superset.\
         \ The `init_command`-based separate connection avoids this since there's no\
-        \ per-query SQL text for anything to strip.\n\n**Confirmed live via `EXPLAIN`**\
+        \ per-query SQL text for anything to strip.\n\n**Update (2026-11-13):**\
+        \ discovered a second silent SQL rewrite, in the other direction. Superset\
+        \ transpiles dataset SQL through sqlglot (MySQL dialect) before sending it\
+        \ to StarRocks, and sqlglot converts `date_trunc('day', x)` into `DATE(x)`\
+        \ — so the SQL reaching StarRocks used `DATE()` regardless of what the\
+        \ dataset said, and it never matched the MV's `date_trunc` expression (StarRocks\
+        \ rewrite requires exact expression match; `CAST(x AS DATE)` doesn't unify\
+        \ either). The \"Rewrite ON\" chart was therefore never actually rewriting\
+        \ through Superset — the FE audit log showed both charts scanning identical\
+        \ Iceberg bytes, ~6-7s each. Fixed by rebuilding the MV on `DATE(window_start)`\
+        \ to match exactly what Superset sends (the dataset SQL still says `date_trunc`;\
+        \ it's transpiled in transit, harmlessly now). Full story: `docs/SR_POC_QUERY_REWRITE_DEMO.md`,\
+        \ \"Superset sqlglot gotcha (2026-11-13)\".\n\n**Confirmed live via `EXPLAIN`**\
         \ (run directly, outside Superset): rewrite ON shows `TABLE: mv_funnel_daily_country_rollup`\
         \ / `MaterializedView: true`; rewrite OFF shows `TABLE: sr_poc_external.funnel_summary_historical`\
-        \ (the raw Iceberg table). **Timing, confirmed through Superset's own API\
-        \ this time:** ~0.6-0.7s (MV) vs. ~7.2s (raw Iceberg scan) for the identical\
-        \ result.\n\n**Why it works:** `mv_funnel_daily_country_rollup` is a plain\
+        \ (the raw Iceberg table). **Timing:** ~0.8s (MV) vs. ~4.2s (raw Iceberg\
+        \ scan) at the 2026-11-13 re-measurement after PO compacted the table (2026-09:\
+        \ ~0.6-0.7s vs ~7.2s); after the same day's Iceberg metadata-cache change,\
+        \ ~0.02s vs ~0.2s warm — the raw side is seconds again whenever the 300s\
+        \ UC metadata cache goes cold, so the on-screen contrast persists.\n\n**Why it works:** `mv_funnel_daily_country_rollup` is a plain\
         \ SPJG (Select-Project-Join-Group-by) rollup over a single external-catalog\
         \ source, no volatile predicates -- confirmed eligible via `information_schema.materialized_views.query_rewrite_status\
         \ = VALID`. Contrast with `mv_unified_funnel_summary` elsewhere in this project,\
         \ which unions two catalogs with a `CURRENT_TIMESTAMP()`-relative filter and\
         \ is explicitly `INVALID` / `UNSUPPORTED_DEFINITION` for rewrite -- not every\
-        \ MV shape qualifies."
+        \ MV shape qualifies.\n\n**Demo tip:** the visible gap only exists while the Iceberg metadata cache\
+        \ is cold (300s TTL). Reload the dashboard after it has sat idle ~5 minutes and\
+        \ the OFF chart will take seconds while ON stays fast; refresh again within 5\
+        \ minutes and both render fast (the raw scan is ~0.2s warm vs ~0.02s for the MV)."
   ROW-N-I9TX10UC:
     children:
     - CHART-ROBTRDGG
@@ -93,9 +110,9 @@ position:
     meta:
       chartId: 7
       height: 50
-      sliceName: "Daily Country Viewers \u2014 Rewrite ON (~0.6s, uses MV)"
+      sliceName: "Daily Country Viewers \u2014 Rewrite ON (~0.1s, uses MV)"
       uuid: 8ca2e3df-68f2-428c-8e66-b00bb8d84bb1
-      width: 4
+      width: 6
     type: CHART
     parents:
     - ROOT_ID
@@ -107,9 +124,9 @@ position:
     meta:
       chartId: 5
       height: 50
-      sliceName: "Daily Country Viewers \u2014 Rewrite OFF (~7.2s, raw Iceberg scan)"
+      sliceName: "Daily Country Viewers \u2014 Rewrite OFF (raw Iceberg scan)"
       uuid: 10009d6f-2f72-45e0-af07-6797fc91a1f5
-      width: 4
+      width: 6
     type: CHART
     parents:
     - ROOT_ID

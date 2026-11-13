@@ -50,6 +50,7 @@ from .assets.reverse_etl_consumer import (
     reverse_etl_delta_postgres_target,
 )
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
+from .assets.funnel_direct_kafka_setup import funnel_events_direct_kafka
 from .assets.wallet_direct_kafka_setup import (
     wallet_transactions_direct_kafka,
     wallet_status_update_load_job,
@@ -57,7 +58,6 @@ from .assets.wallet_direct_kafka_setup import (
 from .assets.wallet_sync_mv_setup import wallet_transactions_log
 from .assets.wallet_agg_key_setup import wallet_type_totals_agg
 from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
-from .assets.query_rewrite_demo_refresh import refresh_mv_funnel_daily_country_rollup
 from . import defs as reverse_etl_yaml_defs  # not `defs`: that is the Definitions below
 from .assets import reverse_etl_jobotron as jobotron_assets
 from .assets.jobotron_partition_sync import jobotron_dynamic_partition_sync
@@ -319,6 +319,26 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             risingwave_sink_key = AssetKey(["public", "sink_funnel_to_databricks"])
             if risingwave_sink_key not in {dep.asset_key for dep in existing_deps}:
                 existing_deps.append(AssetDep(asset=risingwave_sink_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
+        # hot_funnel_summary is a VIEW over risingwave.public.funnel_summary
+        # (JDBC catalog) -- it needs the RisingWave MV to exist before the
+        # view can be created. Without this cross-PoC dep it raced
+        # realtime_funnel_dbt_assets on a fresh stack and failed with
+        # "Unknown table 'public.funnel_summary'" (first click of the
+        # StarRocks Superset Demo button, 2026-11-13). The models above
+        # already serialize behind the RW step transitively via
+        # sink_funnel_to_databricks; hot_funnel_summary reads the RW table
+        # directly and doesn't touch the Databricks sink, so it needs its
+        # own edge. dbt refs chain the rest (dashboard_funnel_serving etc.
+        # ref hot_funnel_summary or carry the dep above).
+        _MODELS_READING_RW_FUNNEL_SUMMARY = {"hot_funnel_summary"}
+        if dbt_resource_props.get("name") in _MODELS_READING_RW_FUNNEL_SUMMARY:
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            rw_funnel_key = AssetKey(["public", "funnel_summary"])
+            if rw_funnel_key not in {dep.asset_key for dep in existing_deps}:
+                existing_deps.append(AssetDep(asset=rw_funnel_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         # Casino Kafka source tables depend on proto descriptors being in MinIO.
@@ -694,10 +714,7 @@ _MODERN_DASHBOARD_SELECTION = (
     )
     | AssetSelection.assets(starrocks_unified_dbt_assets)
     | AssetSelection.assets(funnel_daily_totals_agg)
-    # Warms the Query Rewrite Demo's MANUAL-refresh MV so both charts are
-    # populated with no separate manual step -- see
-    # docs/SR_POC_QUERY_REWRITE_DEMO.md.
-    | AssetSelection.assets(refresh_mv_funnel_daily_country_rollup)
+    | AssetSelection.assets(funnel_events_direct_kafka)
 )
 
 modern_dashboard_setup_job = define_asset_job(
@@ -715,8 +732,7 @@ modern_dashboard_setup_job = define_asset_job(
     description=(
         "Create all RisingWave, Kafka sink, Iceberg/Databricks, and StarRocks "
         "objects required by the modern dashboard and the Query Rewrite "
-        "Demo (including a one-shot warm-up refresh of its MANUAL-refresh "
-        "MV). Infrastructure services must already be running. Also "
+        "Demo. Infrastructure services must already be running. Also "
         "includes funnel_daily_totals_agg, an independent AGGREGATE KEY "
         "table-model demo add-on -- see "
         "docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md."
@@ -767,8 +783,8 @@ starrocks_demo_setup_job = define_asset_job(
     selection=_MODERN_DASHBOARD_SELECTION | _WALLET_PIPELINE_SELECTION,
     description=(
         "Single entry point that builds everything for the StarRocks demo "
-        "session in one run: the Funnel Dashboard, the Query Rewrite Demo "
-        "(including its MV warm-up), and the Wallet Upsert Demo (all five "
+        "session in one run: the Funnel Dashboard, the Query Rewrite Demo, "
+        "and the Wallet Upsert Demo (all five "
         "table-model add-ons). Equivalent to running "
         "modern_dashboard_setup_job and wallet_pipeline_setup_job together. "
         "Run before starting any producers, not while one is already "
@@ -1024,9 +1040,6 @@ defs = Definitions.merge(
             # pure additive counts (viewers/carters/purchasers), no
             # reversal/upsert semantics to fight, unlike the wallet attempt
             funnel_daily_totals_agg,
-            # One-shot warm-up refresh for the Query Rewrite Demo's
-            # MANUAL-refresh MV
-            refresh_mv_funnel_daily_country_rollup,
             # Delta sync's Postgres target: table setup + JSON sink connector + consumer report
             reverse_etl_delta_postgres_target,
             reverse_etl_delta_json_jdbc_sink,

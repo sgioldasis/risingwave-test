@@ -5,7 +5,7 @@ default_endpoint: null
 offset: 0
 cache_timeout: null
 schema: sr_local_db_sr_local_db
-sql: SELECT date_trunc('day', window_start) AS day, country, SUM(viewers) AS viewers
+sql: SELECT DATE(window_start) AS day, country, SUM(viewers) AS viewers
   FROM databricks_uc.sr_poc_external.funnel_summary_historical GROUP BY day, country
 params: null
 template_params: null

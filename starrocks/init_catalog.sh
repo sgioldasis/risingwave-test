@@ -56,7 +56,11 @@ PROPERTIES (
     "iceberg.catalog.credential"    = "${DATABRICKS_AZURE_CLIENT_ID}:${DATABRICKS_AZURE_CLIENT_SECRET}",
     "iceberg.catalog.oauth2-server-uri" = "https://login.microsoftonline.com/${DATABRICKS_AZURE_TENANT_ID}/oauth2/v2.0/token",
     "iceberg.catalog.scope"         = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default",
-    "iceberg_meta_cache_ttl_sec"    = "0"
+    -- 300s (was 0 = never cache): with ttl=0 every MV refresh re-walks the
+    -- whole UC/REST table metadata before it can sync partitions, which made
+    -- each scheduled refresh take minutes and choke the task pool
+    -- (retry-storm). 300s matches the MV's own 5-minute refresh cadence.
+    "iceberg_meta_cache_ttl_sec"    = "300"
 );
 SQL
 

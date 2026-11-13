@@ -48,9 +48,16 @@ position:
     meta:
       width: 12
       height: 26
-      code: "**Data source:** `risingwave.public.funnel_summary`, queried directly\
+      code: "**Side-by-side comparison (2026-11-13):** two charts, same 1-minute funnel\
+        \ aggregation, two independent ingestion paths into StarRocks.\n\n- **Left\
+        \ \u2014 via RisingWave:** `risingwave.public.funnel_summary`, queried directly\
         \ via StarRocks's JDBC catalog \u2014 bypassing `dashboard_funnel_serving`\
-        \ entirely, so the Databricks Iceberg cold branch is never touched.\n\n\u2705\
+        \ entirely, so the Databricks Iceberg cold branch is never touched.\n- **Right\
+        \ \u2014 Direct-from-Kafka:** `funnel_summary_direct`, a StarRocks VIEW recomputing\
+        \ the same 1-minute windows over raw events ingested by Routine Load jobs straight\
+        \ off the `page_views`/`cart_events`/`purchases` topics \u2014 no RisingWave\
+        \ in the loop at all (same pattern as the Wallet demo's direct path). ~5s Routine\
+        \ Load batch interval vs the RisingWave path's ~2-3s.\n\n\u2705\
         \ **Pros:** Both fast (~0.7s) *and* genuinely fresh (zero staleness, no refresh\
         \ cycle) \u2014 confirmed via direct benchmark against the full view for the\
         \ identical last-hour result.\n\n\u274C **Cons:** Only shows whatever RisingWave\
@@ -146,7 +153,17 @@ position:
       sliceName: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [RisingWave\
         \ only]"
       uuid: 6297e8c9-9fa2-4f82-be65-09ec466adaee
-      width: 12
+      width: 6
+  CHART-DIRECTK:
+    children: []
+    id: CHART-DIRECTK
+    meta:
+      chartId: 18
+      height: 50
+      sliceName: "Funnel Over Time (Hot-Only, Direct-from-Kafka) \u2014 Last Hour [Routine\
+        \ Load, no RisingWave]"
+      uuid: 70c4a0dc-95d5-43ac-af2b-435fd081d019
+      width: 6
     type: CHART
     parents:
     - ROOT_ID
@@ -217,6 +234,7 @@ position:
     id: ROW-HOTONLY
     children:
     - CHART-VECBRFE5
+    - CHART-DIRECTK
     parents:
     - ROOT_ID
     - GRID_ID

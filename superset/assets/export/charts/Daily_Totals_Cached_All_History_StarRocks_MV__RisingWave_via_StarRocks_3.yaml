@@ -29,7 +29,7 @@ params:
   color_pn: true
   annotation_layers: []
 query_context: null
-cache_timeout: null
+cache_timeout: 0
 uuid: 65f7df80-fc91-4300-a76d-965a8986f45e
 version: 1.0.0
 dataset_uuid: 4a913584-3059-465c-a79d-5980f3990ecf

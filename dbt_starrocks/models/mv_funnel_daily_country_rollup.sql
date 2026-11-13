@@ -66,7 +66,18 @@
 -- rollup with no volatile predicates and a single external-Iceberg source,
 -- which is the pattern StarRocks' rewrite optimizer actually supports.
 SELECT
-  date_trunc('day', window_start) AS day,
+  -- DATE(window_start), NOT date_trunc('day', window_start): Superset runs
+  -- every dataset SQL through sqlglot with the MySQL dialect before sending
+  -- it, and sqlglot transpiles date_trunc('day', x) into DATE(x) -- so the
+  -- SQL that actually reaches StarRocks from the Rewrite-demo charts uses
+  -- DATE(), whatever the dataset YAML says. StarRocks' rewrite requires the
+  -- query's day expression to match the MV's exactly (CAST(x AS DATE) is
+  -- not unified either -- tested 2026-11-13), so with a date_trunc MV the
+  -- "Rewrite ON" chart silently scanned raw Iceberg exactly like the "OFF"
+  -- chart (confirmed via fe.audit.log: identical ScanBytes/ScanRows, 6-7s
+  -- both). Building the MV on DATE() makes the transpiled chart SQL
+  -- rewrite-eligible. Verified via a throwaway MV before this change.
+  DATE(window_start) AS day,
   country,
   SUM(viewers) AS viewers,
   SUM(carters) AS carters,

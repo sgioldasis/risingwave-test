@@ -1,0 +1,34 @@
+slice_name: "Funnel Over Time (Hot-Only, Direct-from-Kafka) — Last Hour [Routine Load, no RisingWave]"
+description: Same 1-minute funnel aggregation as the RisingWave-fed chart, but computed by StarRocks over raw Kafka events ingested via Routine Load (page_views/cart_events/purchases -> funnel_summary_direct view). No RisingWave in the loop.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 11__table
+  viz_type: echarts_timeseries_line
+  groupby: []
+  metrics:
+  - sum__viewers
+  - sum__carters
+  - sum__purchasers
+  granularity_sqla: window_start
+  time_range: '1 hour ago : now'
+  adhoc_filters:
+  - clause: WHERE
+    subject: window_start
+    operator: TEMPORAL_RANGE
+    comparator: '1 hour ago : now'
+    expressionType: SIMPLE
+  order_desc: false
+  x_axis: window_start
+  x_axis_time_format: '%H:%M'
+  y_axis_format: SMART_NUMBER
+  rich_tooltip: true
+  show_legend: true
+  row_limit: 10000
+  annotation_layers: []
+query_context: null
+cache_timeout: 0
+uuid: 70c4a0dc-95d5-43ac-af2b-435fd081d019
+version: 1.0.0
+dataset_uuid: 93e88c16-1bf1-44bf-a06a-dcf9e1a53818

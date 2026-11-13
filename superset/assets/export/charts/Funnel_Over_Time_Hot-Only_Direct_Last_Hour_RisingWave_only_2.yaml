@@ -28,7 +28,7 @@ params:
   row_limit: 10000
   annotation_layers: []
 query_context: null
-cache_timeout: null
+cache_timeout: 0
 uuid: 6297e8c9-9fa2-4f82-be65-09ec466adaee
 version: 1.0.0
 dataset_uuid: 448b7df2-264e-48c0-97bf-70fdf2c8ecf2
