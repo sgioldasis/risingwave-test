@@ -10,7 +10,7 @@ params:
   query_mode: aggregate
   groupby:
   - label: day
-    sqlExpression: DATE(window_start)
+    sqlExpression: DATE(convert_tz(window_start, 'UTC', 'Europe/Athens'))
     expressionType: SQL
   metrics:
   - sum__viewers
@@ -21,7 +21,7 @@ params:
   time_range: No filter
   timeseries_limit_metric:
     label: day
-    sqlExpression: DATE(window_start)
+    sqlExpression: DATE(convert_tz(window_start, 'UTC', 'Europe/Athens'))
     expressionType: SQL
   order_desc: true
   table_timestamp_format: '%Y-%m-%d'

@@ -13,9 +13,9 @@ params:
   - type
   - amount
   - status
-  - event_time
+  - event_time_local
   adhoc_filters: []
-  row_limit: 100
+  row_limit: 4000
   server_pagination: false
   order_by_cols:
   - '["event_time", false]'

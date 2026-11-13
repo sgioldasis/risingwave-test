@@ -106,5 +106,17 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: event_time_local
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DATETIME
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: convert_tz(event_time, 'UTC', 'Europe/Athens')
+  description: Display-only copy of event_time converted to Europe/Athens (handles DST).
+  python_date_format: null
+  extra: null
 version: 1.0.0
 database_uuid: debd0510-5d66-4f6b-9765-ccea1342506c

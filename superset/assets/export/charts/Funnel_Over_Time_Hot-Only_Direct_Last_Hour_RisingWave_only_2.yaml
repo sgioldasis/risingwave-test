@@ -20,7 +20,11 @@ params:
     comparator: '1 hour ago : now'
     expressionType: SIMPLE
   order_desc: false
-  x_axis: window_start
+  x_axis:
+    sqlExpression: convert_tz(window_start, 'UTC', 'Europe/Athens')
+    expressionType: SQL
+    label: window_start_local
+    columnType: BASE_AXIS
   x_axis_time_format: '%H:%M'
   y_axis_format: SMART_NUMBER
   rich_tooltip: true
