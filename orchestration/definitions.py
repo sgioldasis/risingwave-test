@@ -1040,6 +1040,11 @@ defs = Definitions.merge(
             # pure additive counts (viewers/carters/purchasers), no
             # reversal/upsert semantics to fight, unlike the wallet attempt
             funnel_daily_totals_agg,
+            # Direct Kafka -> StarRocks funnel leg (Routine Load tables +
+            # funnel_summary_direct VIEW), powering the side-by-side
+            # "via RisingWave" vs "Direct-from-Kafka" pair on the Funnel
+            # Dashboard -- no RisingWave in the loop
+            funnel_events_direct_kafka,
             # Delta sync's Postgres target: table setup + JSON sink connector + consumer report
             reverse_etl_delta_postgres_target,
             reverse_etl_delta_json_jdbc_sink,

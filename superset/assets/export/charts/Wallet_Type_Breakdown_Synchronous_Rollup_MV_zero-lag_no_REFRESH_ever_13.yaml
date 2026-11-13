@@ -1,6 +1,5 @@
-slice_name: "Wallet Type Breakdown \u2014 Synchronous Rollup MV [zero-lag, no REFRESH\
-  \ ever]"
-description: null
+slice_name: "Wallet Type Breakdown — Synchronous Rollup MV [zero-lag, no REFRESH, no RisingWave]"
+description: "Feature: synchronous (rollup) materialized view — storage-maintained aggregate that updates in lockstep with every write; no REFRESH statement exists. Value: aggregates with zero possible staleness and zero refresh ops; the optimizer rewrites the GROUP BY query to the rollup transparently. RisingWave: NOT USED — base table wallet_transactions_log is fed by Routine Load."
 certified_by: null
 certification_details: null
 viz_type: table

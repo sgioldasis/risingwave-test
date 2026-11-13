@@ -34,3 +34,23 @@ def test_the_reverse_etl_assets_declare_no_resources_and_the_drt_resource_is_bou
             # the env contract: the sync's assets (and the demo's around them) bind nothing —
             # the one exception is the drt comparison sync, whose resource is dagster-embedded's own
             assert set(keys) - {"io_manager", "drt"} == set(), sorted(names)
+
+
+def test_every_job_selection_resolves_against_the_registered_assets():
+    """A job's asset selection must be fully covered by Definitions' assets list.
+
+    validate_loadable above does NOT resolve the unresolved asset jobs — an asset
+    that is imported and selected in a job but forgotten in Definitions(assets=[...])
+    only raises DagsterInvalidSubsetError when the repository's jobs are resolved
+    (fresh code-server load), which is exactly how the funnel_events_direct_kafka
+    outage of 2026-11-13 shipped: the demo button died with LAUNCH_FAILED at cold
+    start while an older cached repo state masked it. Force full job resolution here.
+    """
+    from orchestration.definitions import defs
+
+    jobs = {job.name for job in defs.get_repository_def().get_all_jobs()}
+    assert {
+        "modern_dashboard_setup_job",
+        "wallet_pipeline_setup_job",
+        "starrocks_demo_setup_job",
+    } <= jobs

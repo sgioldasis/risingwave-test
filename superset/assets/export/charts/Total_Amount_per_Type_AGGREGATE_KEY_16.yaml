@@ -1,5 +1,5 @@
-slice_name: "Total Amount per Type \u2014 AGGREGATE KEY"
-description: null
+slice_name: "Total Amount per Type — AGGREGATE KEY [storage-maintained, no RisingWave]"
+description: "Feature: AGGREGATE KEY table — per-type SUM(amount) maintained by the storage layer at ingestion. Value: same answer as query-time aggregation, pre-computed on write; compare with the PK-table baseline (Total Amount per Type). RisingWave: NOT USED — fed by Routine Load."
 certified_by: null
 certification_details: null
 viz_type: dist_bar

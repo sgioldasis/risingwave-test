@@ -1,5 +1,5 @@
-slice_name: Count per Type
-description: null
+slice_name: "Count per Type — query-time GROUP BY [via RisingWave sink]"
+description: "Feature: query-time GROUP BY over the Primary Key table (the baseline the AGGREGATE KEY and rollup-MV charts are contrasted against). Value: simplest read path; aggregation cost paid at query time on every refresh. RisingWave: data arrived via the RW sink — the query itself runs entirely in StarRocks."
 certified_by: null
 certification_details: null
 viz_type: dist_bar

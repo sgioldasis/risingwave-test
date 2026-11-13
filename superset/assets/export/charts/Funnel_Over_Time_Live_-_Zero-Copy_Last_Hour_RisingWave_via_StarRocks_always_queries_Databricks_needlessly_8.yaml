@@ -1,6 +1,6 @@
 slice_name: "Funnel Over Time (Live - Zero-Copy) \u2014 Last Hour [RisingWave, via\
   \ StarRocks \u2014 always queries Databricks needlessly]"
-description: null
+description: "Feature: same federated UNION view as Daily Totals (Live) — shown deliberately for its cost profile. Value: honest benchmark — for a last-hour window the Databricks branch contributes zero rows yet StarRocks still authenticates and reads Iceberg metadata on every query (~5s); this overhead is what motivates the Cached variant. RisingWave: REQUIRED (+ Databricks catalog reachable)."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line

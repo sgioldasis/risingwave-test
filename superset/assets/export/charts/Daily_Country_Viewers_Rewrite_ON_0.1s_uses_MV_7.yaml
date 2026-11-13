@@ -1,5 +1,5 @@
-slice_name: "Daily Country Viewers \u2014 Rewrite ON (~0.1s, uses MV)"
-description: null
+slice_name: "Daily Country Viewers — Rewrite ON (~0.1s, uses MV) [no RisingWave]"
+description: "Feature: transparent query rewrite — the optimizer silently redirects the identical query to an asynchronous MV over the external Iceberg table. Value: ~10-100x faster dashboards on lake data (0.05-0.15s vs 1.8-5.5s) with no query or dashboard changes. RisingWave: NOT USED."
 certified_by: null
 certification_details: null
 viz_type: table

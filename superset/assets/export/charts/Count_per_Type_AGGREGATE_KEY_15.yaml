@@ -1,5 +1,5 @@
-slice_name: "Count per Type \u2014 AGGREGATE KEY"
-description: null
+slice_name: "Count per Type — AGGREGATE KEY [storage-maintained, no RisingWave]"
+description: "Feature: AGGREGATE KEY table — per-type event counts maintained by the storage layer at ingestion. Value: same answer as query-time GROUP BY, but pre-computed on write; compare with the PK-table baseline (Count per Type). RisingWave: NOT USED — fed by Routine Load."
 certified_by: null
 certification_details: null
 viz_type: dist_bar

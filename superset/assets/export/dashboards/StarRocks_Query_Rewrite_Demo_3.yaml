@@ -17,8 +17,9 @@ position:
     type: GRID
     id: GRID_ID
     children:
-    - ROW-N-I9TX10UC
     - ROW-2
+    - ROW-N-I9TX10UC
+    - ROW-2B
     parents:
     - ROOT_ID
   ROW-2:
@@ -41,57 +42,18 @@ position:
     - ROW-2
     meta:
       width: 12
-      height: 46
-      code: "**Demo:** StarRocks transparent materialized-view query rewrite. Both\
-        \ charts run the *exact same query* (`SELECT DATE(window_start)\
-        \ AS day, country, SUM(viewers) AS viewers FROM databricks_uc.sr_poc_external.funnel_summary_historical\
-        \ GROUP BY day, country`) against the raw base Iceberg table \u2014 neither\
-        \ one mentions `mv_funnel_daily_country_rollup` at all. See `docs/SR_POC_QUERY_REWRITE_DEMO.md`.\n\
-        \n- **Rewrite ON** (left) is the query as-is, on the normal StarRocks connection.\
-        \ StarRocks's optimizer silently redirects it to the pre-aggregated MV.\n\
-        - **Rewrite OFF** (right) runs on a *separate* Superset database connection\
-        \ (`StarRocks (rewrite disabled)`) whose SQLAlchemy URI carries `?init_command=SET\
-        \ SESSION enable_materialized_view_rewrite=0` \u2014 that SQL runs once when\
-        \ each pooled connection opens, so every query through it has rewrite disabled\
-        \ at the session level, no per-query syntax needed.\n\n**Correction (2026-09-12):**\
-        \ the first version of this demo used a `/*+ SET_VAR(enable_materialized_view_rewrite=false)\
-        \ */` query hint embedded in the dataset's SQL instead. Confirmed directly\
-        \ via the chart's own `query` field in the API response: Superset's SQL processing\
-        \ silently stripped that hint comment when wrapping the virtual dataset in\
-        \ its outer `SELECT ... FROM (...) AS virtual_table` \u2014 the actual query\
-        \ sent to StarRocks never had the hint at all, so both charts were quietly\
-        \ running with rewrite ON the whole time (both fast, indistinguishable) despite\
-        \ `EXPLAIN` on the raw hinted SQL confirming the hint works fine outside Superset.\
-        \ The `init_command`-based separate connection avoids this since there's no\
-        \ per-query SQL text for anything to strip.\n\n**Update (2026-11-13):**\
-        \ discovered a second silent SQL rewrite, in the other direction. Superset\
-        \ transpiles dataset SQL through sqlglot (MySQL dialect) before sending it\
-        \ to StarRocks, and sqlglot converts `date_trunc('day', x)` into `DATE(x)`\
-        \ — so the SQL reaching StarRocks used `DATE()` regardless of what the\
-        \ dataset said, and it never matched the MV's `date_trunc` expression (StarRocks\
-        \ rewrite requires exact expression match; `CAST(x AS DATE)` doesn't unify\
-        \ either). The \"Rewrite ON\" chart was therefore never actually rewriting\
-        \ through Superset — the FE audit log showed both charts scanning identical\
-        \ Iceberg bytes, ~6-7s each. Fixed by rebuilding the MV on `DATE(window_start)`\
-        \ to match exactly what Superset sends (the dataset SQL still says `date_trunc`;\
-        \ it's transpiled in transit, harmlessly now). Full story: `docs/SR_POC_QUERY_REWRITE_DEMO.md`,\
-        \ \"Superset sqlglot gotcha (2026-11-13)\".\n\n**Confirmed live via `EXPLAIN`**\
-        \ (run directly, outside Superset): rewrite ON shows `TABLE: mv_funnel_daily_country_rollup`\
-        \ / `MaterializedView: true`; rewrite OFF shows `TABLE: sr_poc_external.funnel_summary_historical`\
-        \ (the raw Iceberg table). **Timing:** ~0.8s (MV) vs. ~4.2s (raw Iceberg\
-        \ scan) at the 2026-11-13 re-measurement after PO compacted the table (2026-09:\
-        \ ~0.6-0.7s vs ~7.2s); after the same day's Iceberg metadata-cache change,\
-        \ ~0.02s vs ~0.2s warm — the raw side is seconds again whenever the 300s\
-        \ UC metadata cache goes cold, so the on-screen contrast persists.\n\n**Why it works:** `mv_funnel_daily_country_rollup` is a plain\
-        \ SPJG (Select-Project-Join-Group-by) rollup over a single external-catalog\
-        \ source, no volatile predicates -- confirmed eligible via `information_schema.materialized_views.query_rewrite_status\
-        \ = VALID`. Contrast with `mv_unified_funnel_summary` elsewhere in this project,\
-        \ which unions two catalogs with a `CURRENT_TIMESTAMP()`-relative filter and\
-        \ is explicitly `INVALID` / `UNSUPPORTED_DEFINITION` for rewrite -- not every\
-        \ MV shape qualifies.\n\n**Demo tip:** the visible gap only exists while the Iceberg metadata cache\
-        \ is cold (300s TTL). Reload the dashboard after it has sat idle ~5 minutes and\
-        \ the OFF chart will take seconds while ON stays fast; refresh again within 5\
-        \ minutes and both render fast (the raw scan is ~0.2s warm vs ~0.02s for the MV)."
+      height: 23
+      code: '### ✨ Transparent query rewrite -- lake data at MV speed
+
+        - **At a glance:** [transparent query rewrite](https://docs.starrocks.io/docs/using_starrocks/async_mv/use_cases/query_rewrite_with_materialized_views/) -- the optimizer silently redirects a base-table query to a matching async MV holding pre-computed results.
+
+        - **Why here:** daily country viewers over Databricks Iceberg history: the MV computes the rollup once at REFRESH, then every identical dashboard query hits it instead of scanning the lake.
+
+        - **Value:** ~10-100x faster dashboards (~0.1s vs a multi-second raw Iceberg scan) with zero query or dashboard changes -- the Rewrite OFF chart runs the same query without the MV.
+
+        - **RisingWave:** NOT USED on either side -- both charts read Databricks Iceberg history through StarRocks catalogs; this demo is purely about StarRocks'' own optimizer, with no streaming layer in the loop.
+
+        '
   ROW-N-I9TX10UC:
     children:
     - CHART-ROBTRDGG
@@ -110,7 +72,7 @@ position:
     meta:
       chartId: 7
       height: 50
-      sliceName: "Daily Country Viewers \u2014 Rewrite ON (~0.1s, uses MV)"
+      sliceName: Daily Country Viewers — Rewrite ON (~0.1s, uses MV) [no RisingWave]
       uuid: 8ca2e3df-68f2-428c-8e66-b00bb8d84bb1
       width: 6
     type: CHART
@@ -124,7 +86,7 @@ position:
     meta:
       chartId: 5
       height: 50
-      sliceName: "Daily Country Viewers \u2014 Rewrite OFF (raw Iceberg scan)"
+      sliceName: Daily Country Viewers — Rewrite OFF (raw Iceberg scan) [no RisingWave]
       uuid: 10009d6f-2f72-45e0-af07-6797fc91a1f5
       width: 6
     type: CHART
@@ -132,4 +94,55 @@ position:
     - ROOT_ID
     - GRID_ID
     - ROW-N-I9TX10UC
+  MARKDOWN-1B:
+    type: MARKDOWN
+    id: MARKDOWN-1B
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-2B
+    meta:
+      width: 12
+      height: 76
+      code: '**Demo:** StarRocks transparent materialized-view query rewrite. Both charts run the *exact same query* (`SELECT DATE(window_start) AS day, country, SUM(viewers) AS viewers FROM databricks_uc.sr_poc_external.funnel_summary_historical GROUP BY day, country`) against the raw base Iceberg table — neither one mentions `mv_funnel_daily_country_rollup` at all. See `docs/SR_POC_QUERY_REWRITE_DEMO.md`.
+
+
+        - **Rewrite ON** (left) is the query as-is, on the normal StarRocks connection. StarRocks''s optimizer silently redirects it to the pre-aggregated MV.
+
+        - **Rewrite OFF** (right) runs on a *separate* Superset database connection (`StarRocks (rewrite disabled)`) whose SQLAlchemy URI carries `?init_command=SET SESSION enable_materialized_view_rewrite=0` — that SQL runs once when each pooled connection opens, so every query through it has rewrite disabled at the session level, no per-query syntax needed.
+
+
+        **Correction (2026-09-12):** the first version of this demo used a `/*+ SET_VAR(enable_materialized_view_rewrite=false) */` query hint embedded in the dataset''s SQL instead. Confirmed directly via the chart''s own `query` field in the API response: Superset''s SQL processing silently stripped that hint comment when wrapping the virtual dataset in its outer `SELECT ... FROM (...) AS virtual_table` — the actual query sent to StarRocks never had the hint at all, so both charts were quietly running with rewrite ON the whole time (both fast, indistinguishable) despite `EXPLAIN` on the raw hinted SQL confirming the hint works fine outside Superset. The `init_command`-based separate connection avoids this since there''s no per-query SQL text for anything to strip.
+
+
+        **Update (2026-11-13):** discovered a second silent SQL rewrite, in the other direction. Superset transpiles dataset SQL through sqlglot (MySQL dialect) before sending it to StarRocks, and sqlglot converts `date_trunc(''day'', x)` into `DATE(x)` — so the SQL reaching StarRocks used `DATE()` regardless of what the dataset said, and it never matched the MV''s `date_trunc` expression (StarRocks rewrite requires exact expression match; `CAST(x AS DATE)` doesn''t unify either). The "Rewrite ON" chart was therefore never actually rewriting through Superset — the FE audit log showed both charts scanning identical Iceberg bytes, ~6-7s each. Fixed by rebuilding the MV on `DATE(window_start)` to match exactly what Superset sends (the dataset SQL still says `date_trunc`; it''s transpiled in transit, harmlessly now). Full story: `docs/SR_POC_QUERY_REWRITE_DEMO.md`, "Superset sqlglot gotcha (2026-11-13)".
+
+
+        **Confirmed live via `EXPLAIN`** (run directly, outside Superset): rewrite ON shows `TABLE: mv_funnel_daily_country_rollup` / `MaterializedView: true`; rewrite OFF shows `TABLE: sr_poc_external.funnel_summary_historical` (the raw Iceberg table). **Timing:** ~0.8s (MV) vs. ~4.2s (raw Iceberg scan) at the 2026-11-13 re-measurement after PO compacted the table (2026-09: ~0.6-0.7s vs ~7.2s); after the same day''s Iceberg metadata-cache change, ~0.02s vs ~0.2s warm — the raw side is seconds again whenever the 300s UC metadata cache goes cold, so the on-screen contrast persists.
+
+
+        **Why it works:** `mv_funnel_daily_country_rollup` is a plain SPJG (Select-Project-Join-Group-by) rollup over a single external-catalog source, no volatile predicates -- confirmed eligible via `information_schema.materialized_views.query_rewrite_status = VALID`. Contrast with `mv_unified_funnel_summary` elsewhere in this project, which unions two catalogs with a `CURRENT_TIMESTAMP()`-relative filter and is explicitly `INVALID` / `UNSUPPORTED_DEFINITION` for rewrite -- not every MV shape qualifies.
+
+
+        **Demo tip:** the visible gap only exists while the Iceberg metadata cache is cold (300s TTL). Reload the dashboard after it has sat idle ~5 minutes and the OFF chart will take seconds while ON stays fast; refresh again within 5 minutes and both render fast (the raw scan is ~0.2s warm vs ~0.02s for the MV).
+
+        '
+  ROW-2B:
+    type: ROW
+    id: ROW-2B
+    children:
+    - MARKDOWN-1B
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+metadata:
+  native_filter_configuration: []
+  color_scheme_domain: []
+  shared_label_colors: []
+  map_label_colors: {}
+  label_colors: {}
+theme_uuid: null
 version: 1.0.0

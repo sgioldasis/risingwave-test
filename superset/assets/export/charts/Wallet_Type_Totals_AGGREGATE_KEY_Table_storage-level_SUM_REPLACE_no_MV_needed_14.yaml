@@ -1,6 +1,5 @@
-slice_name: "Wallet Type Totals \u2014 AGGREGATE KEY Table [storage-level SUM/REPLACE,\
-  \ no MV needed]"
-description: null
+slice_name: "Wallet Type Totals — AGGREGATE KEY Table [storage-level SUM/REPLACE, no MV, no RisingWave]"
+description: "Feature: AGGREGATE KEY table with SUM/REPLACE maintained per key at ingestion. Value: running totals with no MV and no refresh — the storage layer is the aggregator. RisingWave: NOT USED — fed by Routine Load."
 certified_by: null
 certification_details: null
 viz_type: table

@@ -1,5 +1,5 @@
 slice_name: "Funnel Over Time (Hot-Only, Direct-from-Kafka) — Last Hour [Routine Load, no RisingWave]"
-description: Same 1-minute funnel aggregation as the RisingWave-fed chart, but computed by StarRocks over raw Kafka events ingested via Routine Load (page_views/cart_events/purchases -> funnel_summary_direct view). No RisingWave in the loop.
+description: "Feature: Routine Load (Kafka-to-StarRocks native ingestion) + a plain VIEW computing the 1-minute funnel windows at query time. Value: ~5s end-to-end freshness with no stream processor in the loop — proves the hot path works without RisingWave (right side of the side-by-side). RisingWave: NOT USED — raw page_views/cart_events/purchases topics read directly."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line

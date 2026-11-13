@@ -1,5 +1,5 @@
 slice_name: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [RisingWave only]"
-description: null
+description: "Feature: JDBC external catalog to RisingWave (Postgres wire protocol) — query a streaming database as if native. Value: freshest data (~2-3s lag) with sub-second queries and zero storage in StarRocks (zero-copy serving). RisingWave: REQUIRED — queries risingwave.public.funnel_summary directly; goes blank if RW is down or empty (no fallback)."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line

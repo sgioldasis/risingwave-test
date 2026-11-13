@@ -1,5 +1,5 @@
 slice_name: "Wallet Transactions \u2014 Point Lookup [via RisingWave sink]"
-description: null
+description: "Feature: RisingWave native StarRocks sink (type=upsert) into a Primary Key table. Value: streaming upserts dedupe on transaction_id — a reversal overwrites the original row, so point lookups always show the latest state. RisingWave: REQUIRED — this table is written by the RW sink."
 certified_by: null
 certification_details: null
 viz_type: table

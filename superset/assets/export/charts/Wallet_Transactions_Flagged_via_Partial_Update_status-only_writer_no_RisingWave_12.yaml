@@ -1,6 +1,6 @@
 slice_name: "Wallet Transactions \u2014 Flagged via Partial Update [status-only writer,\
   \ no RisingWave]"
-description: null
+description: "Feature: partial column update on a Primary Key table — a status-only writer touches the status column without rewriting the row. Value: independent writers can update different columns of the same row safely (flagging without losing event data). RisingWave: NOT USED — the status writer is its own Routine Load path."
 certified_by: null
 certification_details: null
 viz_type: table

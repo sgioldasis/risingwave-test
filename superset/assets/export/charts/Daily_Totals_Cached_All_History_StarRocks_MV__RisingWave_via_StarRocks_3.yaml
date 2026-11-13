@@ -1,6 +1,6 @@
 slice_name: "Daily Totals (Cached) \u2014 All History [StarRocks MV + RisingWave,\
   \ via StarRocks]"
-description: null
+description: "Feature: asynchronous materialized view (REFRESH MANUAL) over Databricks Iceberg history, UNIONed with the live RisingWave branch by a cutoff predicate. Value: fast all-history view (~1.3s) that never goes fully blank; RW hot data overlays the frozen MV snapshot. RisingWave: REQUIRED for freshness — without RW running the chart shows only the MV's last-rebuild snapshot (staleness invisible from the chart)."
 certified_by: null
 certification_details: null
 viz_type: table

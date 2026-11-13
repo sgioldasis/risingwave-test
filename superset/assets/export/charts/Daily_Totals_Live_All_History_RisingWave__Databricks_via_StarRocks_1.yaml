@@ -1,6 +1,6 @@
 slice_name: "Daily Totals (Live) \u2014 All History [RisingWave + Databricks, via\
   \ StarRocks]"
-description: null
+description: "Feature: federated external catalogs — one view UNION ALLs a JDBC catalog (RisingWave over Postgres wire) with the Iceberg REST catalog (Databricks UC). Value: one SQL surface over streaming-hot rows and lake-cold history with zero data movement. RisingWave: REQUIRED — the hot branch reads risingwave.public.funnel_summary live; when RW is empty the Databricks branch serves everything."
 certified_by: null
 certification_details: null
 viz_type: table

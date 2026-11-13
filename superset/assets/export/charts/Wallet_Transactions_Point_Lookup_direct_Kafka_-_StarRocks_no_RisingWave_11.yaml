@@ -1,6 +1,6 @@
 slice_name: "Wallet Transactions \u2014 Point Lookup [direct Kafka -> StarRocks, no\
   \ RisingWave]"
-description: null
+description: "Feature: Routine Load JSON ingestion into a Primary Key table (upsert-on-key at load time). Value: the same dedupe/correctness as the RW sink with zero stream processing — RisingWave is optional even for upsert workloads (left/right pair). RisingWave: NOT USED."
 certified_by: null
 certification_details: null
 viz_type: table
