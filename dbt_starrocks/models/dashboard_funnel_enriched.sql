@@ -5,6 +5,13 @@
   )
 }}
 
+-- Base is the RW-free serving view (2026-11-14): the original read
+-- dashboard_funnel_serving, whose hot branch scans risingwave.public.funnel_summary
+-- over the JDBC catalog. With RW "up but slow" (e.g. replaying its source
+-- backlog right after a restart) the pre-check saw a reachable RW, and the
+-- JDBC scan crawled for minutes -- the Analytics tab sat on "Loading..."
+-- The RW-free base serves the same fresh windows (frozen MV + 20s direct
+-- branch) with no external catalog in the query path.
 WITH country_aggregated AS (
   SELECT
     window_start,
@@ -14,7 +21,7 @@ WITH country_aggregated AS (
     SUM(purchasers) AS purchasers,
     SUM(carters) / NULLIF(SUM(viewers), 0) AS view_to_cart_rate,
     SUM(purchasers) / NULLIF(SUM(carters), 0) AS cart_to_buy_rate
-  FROM {{ ref('dashboard_funnel_serving') }}
+  FROM {{ ref('dashboard_funnel_serving_cached_direct') }}
   GROUP BY window_start, window_end
 )
 

@@ -33,6 +33,9 @@ const App = () => {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [lastUpdate, setLastUpdate] = useState(new Date());
+    // Ref mirror of lastUpdate: the SSE watchdog reads it inside a closure
+    // where the state value would be stale.
+    const lastUpdateRef = useRef(new Date());
     const [lastEventTime, setLastEventTime] = useState(null);
     const [activeTab, setActiveTab] = useState('dashboard');
     const [predictionsEnabled, setPredictionsEnabled] = useState(true);
@@ -88,7 +91,9 @@ const App = () => {
         if (eventData.stats !== undefined) {
             setStats(eventData.stats);
         }
-        setLastUpdate(new Date());
+        const now = new Date();
+        lastUpdateRef.current = now;
+        setLastUpdate(now);
         setLoading(false);
     };
 
@@ -109,6 +114,11 @@ const App = () => {
         let staticDataInterval = null;
 
         const connectSSE = () => {
+            // Close any lingering connection first (watchdog reconnects and
+            // onerror reconnects must not stack duplicate streams).
+            if (eventSource) {
+                eventSource.close();
+            }
             // Fetch initial data via regular endpoint
             fetchStaticData();
             setLoading(true);
@@ -153,6 +163,17 @@ const App = () => {
         // Poll static data (producer status, last event time) every 5 seconds
         staticDataInterval = setInterval(fetchStaticData, 5000);
 
+        // Watchdog: if no SSE message has arrived for 15s, rebuild the
+        // connection. Covers the case where the backend restarted and the
+        // EventSource's own reconnect never recovered (2026-11-14: the
+        // whole app froze at the restart timestamp until a manual refresh).
+        const sseWatchdog = setInterval(() => {
+            if (Date.now() - lastUpdateRef.current.getTime() > 15000) {
+                console.warn('SSE watchdog: no data for 15s, reconnecting');
+                connectSSE();
+            }
+        }, 5000);
+
         // Cleanup on unmount
         return () => {
             if (eventSource) {
@@ -164,6 +185,7 @@ const App = () => {
             if (staticDataInterval) {
                 clearInterval(staticDataInterval);
             }
+            clearInterval(sseWatchdog);
         };
     }, []);
 

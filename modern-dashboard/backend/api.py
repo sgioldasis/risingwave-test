@@ -1578,15 +1578,12 @@ def get_enriched_funnel_data(
                 LIMIT :limit
             """)
             
-            if not _risingwave_reachable():
-                logger.warning("Hot catalog unavailable; serving via the RW-free Routine Load cache")
-                records = _cached_enriched_records(conn, limit)
-                return {
-                    "data": records,
-                    "count": len(records),
-                    "degraded": True,
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                }
+            # No RW pre-check here: dashboard_funnel_enriched reads the RW-free
+            # serving view (frozen MV + 20s direct branch), so this endpoint is
+            # RW-independent regardless of RW's state. The old pre-check missed
+            # the dangerous case anyway -- RW "up but slow" (replaying source
+            # backlog after a restart) made the JDBC-backed view crawl for
+            # minutes while the reachability probe happily passed.
             result = conn.execute(query, {"limit": limit})
             
             records = []
@@ -1652,35 +1649,8 @@ def get_funnel_health():
                 GROUP BY funnel_health
             """)
             
-            if not _risingwave_reachable():
-                logger.warning("Hot catalog unavailable; serving via the RW-free Routine Load cache")
-                fallback_rows = _cached_enriched_records(conn, 5)
-                health_summary = {}
-                for row in fallback_rows:
-                    health = row["funnel_health"]
-                    summary = health_summary.setdefault(
-                        health,
-                        {
-                            "count": 0,
-                            "avg_score": 0.0,
-                            "avg_view_to_cart_rate": 0.0,
-                            "avg_cart_to_buy_rate": 0.0,
-                        },
-                    )
-                    summary["count"] += 1
-                    summary["avg_score"] += row["funnel_score"]
-                    summary["avg_view_to_cart_rate"] += row["view_to_cart_rate"]
-                    summary["avg_cart_to_buy_rate"] += row["cart_to_buy_rate"]
-                for summary in health_summary.values():
-                    count = summary["count"]
-                    summary["avg_score"] /= count
-                    summary["avg_view_to_cart_rate"] /= count
-                    summary["avg_cart_to_buy_rate"] /= count
-                return {
-                    "health_summary": health_summary,
-                    "degraded": True,
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                }
+            # No RW pre-check: dashboard_funnel_enriched is RW-free now (see
+            # /api/funnel/enriched) -- always serve straight from StarRocks.
             result = conn.execute(query)
 
             health_summary = {}

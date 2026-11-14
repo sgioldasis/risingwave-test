@@ -190,6 +190,47 @@ else
     echo "✅ Wallet producer started at 1 TPS (log: /tmp/wallet_producer.log)."
 fi
 
+# Modern dashboard + ML serving (host processes, like the producers): started
+# here so the whole app can be demoed right after this script finishes.
+# Guarded by LISTEN-port checks so re-clicking the demo never restarts a
+# running UI (a restart would blank the SSE state for a few seconds), and
+# detached via start_new_session for the same reason as the producers.
+echo "=== Starting the modern dashboard + ML serving ==="
+API_RUNNING=$(lsof -ti :8000 -sTCP:LISTEN 2>/dev/null | head -1)
+UI_RUNNING=$(lsof -ti :4000 -sTCP:LISTEN 2>/dev/null | head -1)
+ML_SERVING_RUNNING=$(lsof -ti :8001 -sTCP:LISTEN 2>/dev/null | head -1)
+
+if [ -n "$API_RUNNING" ] && [ -n "$UI_RUNNING" ]; then
+    echo "✅ Modern dashboard already running (API :8000, UI :4000)."
+else
+    python3 -c "import subprocess; subprocess.Popen(['./bin/4_run_modern.sh'], stdout=open('/tmp/modern_dashboard.log','w'), stderr=subprocess.STDOUT, start_new_session=True)"
+    echo "🚀 Modern dashboard starting (log: /tmp/modern_dashboard.log)."
+fi
+if [ -n "$ML_SERVING_RUNNING" ]; then
+    echo "✅ ML serving already running (API :8001)."
+else
+    python3 -c "import subprocess; subprocess.Popen(['./bin/4_run_ml_serving.sh'], stdout=open('/tmp/ml_serving.log','w'), stderr=subprocess.STDOUT, start_new_session=True)"
+    echo "🚀 ML serving starting (log: /tmp/ml_serving.log)."
+fi
+
+# Wait until all three answer, so the app can be shown immediately.
+# API probe: /api/last-event-time reads in-memory state only -- with RW down
+# /api/funnel/health burns ~2-3s on the bounded RW pre-check and would time
+# out against a short -m.
+for i in $(seq 1 45); do
+    API_OK=$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://localhost:8000/api/last-event-time || true)
+    UI_OK=$(curl -s -m 2 -o /dev/null -w '%{http_code}' http://localhost:4000 || true)
+    ML_OK=$(curl -s -m 2 -o /dev/null -w '%{http_code}' http://localhost:8001/health || true)
+    if [ "$API_OK" = "200" ] && [ "$UI_OK" = "200" ] && [ "$ML_OK" = "200" ]; then
+        echo "✅ Modern dashboard is up and serving (UI :4000, API :8000, ML :8001)."
+        break
+    fi
+    if [ "$i" -eq 45 ]; then
+        echo "⚠️  Dashboard/ML not fully up after 90s -- check /tmp/modern_dashboard.log and /tmp/ml_serving.log"
+    fi
+    sleep 2
+done
+
 ELAPSED=$((SECONDS - START_SECONDS))
 echo ""
 echo "=== StarRocks Superset demo is up ==="
@@ -204,3 +245,4 @@ echo "    (the rewrite race reads best ~5 min after the dashboard was last loade
 echo "     cold UC metadata cache; see docs/SR_POC_QUERY_REWRITE_DEMO.md)"
 echo "  🔍 Redpanda console:      http://localhost:9090"
 echo "  ⚙️  Dagster:               http://localhost:3000"
+echo "  📈 Modern dashboard:      http://localhost:4000 (API :8000, ML predictions :8001)"
