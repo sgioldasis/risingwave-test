@@ -142,6 +142,24 @@ grep -q 'arrow_flight_port' /opt/starrocks/fe/conf/fe.conf || cat >> /opt/starro
 arrow_flight_port = 8010
 EOF
 
+# --- fast-fail JDBC catalog queries when a federated source (RisingWave) is
+# down. The FE's metadata pool is HikariCP: each connection ATTEMPT to the
+# dead host fails instantly (UnknownHostException), but Hikari keeps retrying
+# until its connectionTimeout -- default 10s -- so every RW-backed chart
+# burned 10-30s before erroring (seen live 2026-11-14, fe.log: "HikariPool-N
+# - Connection is not available, request timed out after 10002ms"). 1s bounds
+# it (views resolving through the catalog borrow from the pool up to 3 times,
+# so 2s still meant ~6s for dashboard_funnel_serving). Runtime-immutable,
+# hence fe.conf + restart. Pairs with the PG driver's connectTimeout/
+# loginTimeout on the catalog URI (starrocks/init_catalog.sh) and the
+# "RisingWave not available" error rewrite (superset/superset_config.py). ---
+if ! grep -q 'jdbc_connection_timeout_ms' /opt/starrocks/fe/conf/fe.conf; then
+  echo "" >> /opt/starrocks/fe/conf/fe.conf
+  echo "jdbc_connection_timeout_ms = 1000" >> /opt/starrocks/fe/conf/fe.conf
+elif ! grep -q 'jdbc_connection_timeout_ms = 1000' /opt/starrocks/fe/conf/fe.conf; then
+  sed -i 's/^jdbc_connection_timeout_ms.*/jdbc_connection_timeout_ms = 1000/' /opt/starrocks/fe/conf/fe.conf
+fi
+
 # Arrow Flight's direct-memory access needs this Java 17+ add-opens in the FE
 # JVM; without it every query fails in the FE's BE proxy with
 # "Failed to initialize MemoryUtil" (found 2026-11-10).

@@ -26,17 +26,23 @@
 -- an empty MV (fresh stack): its MAX is NULL, and the direct branch serves
 -- everything.
 --
--- funnel_summary_direct_20s is NOT a dbt model -- it's built by the
+-- funnel_summary_direct is NOT a dbt model -- it's built by the
 -- funnel_events_direct_kafka Dagster asset (orchestration/assets/
 -- funnel_direct_kafka_setup.py), same as the Routine Load jobs feeding it;
 -- referenced here by literal name, with a Dagster-side dep added in
--- orchestration/definitions.py so the asset always runs first. It is the
--- 20-second-grain twin of funnel_summary_direct (2026-11-14): the RW-fed
--- funnel topic pushed 20-second windows and both the dashboard chart and
--- the online learner were built for that cadence -- at minute grain new
--- data arrived once a minute instead of three times. The cutoff vs the
--- frozen MV sits in September, so every post-cutoff 20-second window is
--- served exactly once.
+-- orchestration/definitions.py so the asset always runs first.
+--
+-- MINUTE grain, deliberately NOT funnel_summary_direct_20s (2026-11-14):
+-- the 20-second twin (same asset, same cadence rationale) briefly served
+-- this hot branch too, but it made the Funnel Dashboard's Cached chart
+-- plot 20-second windows (~20 viewers/row at 1 TPS) next to the Live
+-- chart's 1-minute windows (60 viewers/row) -- same totals per minute,
+-- visually a different shape, breaking the side-by-side's "same
+-- 1-minute aggregation" premise. The 20s view's cadence-sensitive
+-- consumer (the RW-free online learner, ml/serving/kafka_river_predictor.py
+-- via ML_RECENT_WINDOWS_TABLE) reads funnel_summary_direct_20s directly,
+-- so it keeps its 3x/minute cadence; only this serving view went back to
+-- minute grain.
 WITH unified_funnel AS (
   SELECT
     window_start,
@@ -60,7 +66,7 @@ WITH unified_funnel AS (
     purchasers,
     CAST(carters AS DOUBLE) / NULLIF(viewers, 0) AS view_to_cart_rate,
     CAST(purchasers AS DOUBLE) / NULLIF(carters, 0) AS cart_to_buy_rate
-  FROM sr_local_db_sr_local_db.funnel_summary_direct_20s
+  FROM sr_local_db_sr_local_db.funnel_summary_direct
   WHERE window_start > COALESCE(
     (SELECT MAX(window_start) FROM {{ ref('mv_unified_funnel_summary') }}),
     CAST('0000-01-01 00:00:00' AS DATETIME)

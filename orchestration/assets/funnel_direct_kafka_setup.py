@@ -170,6 +170,19 @@ SELECT
 FROM stats
 """
 
+# The RW-only twin's dataset view (chart "Funnel Over Time (Hot-Only)
+# [RisingWave only]"). Defined here because it was originally created ad-hoc
+# with no repo source -- a dbt run executed while RisingWave was down
+# (2026-11-14) drop-swapped it away silently, and nothing recreated it.
+# IF NOT EXISTS keeps an existing view untouched, and the guarded execution
+# keeps THIS asset's mission (RW-free ingestion) intact when the risingwave
+# JDBC catalog can't validate the reference because RW is down.
+HOT_DIRECT_VIEW_SQL = f"""
+CREATE VIEW IF NOT EXISTS {SCHEMA}.funnel_summary_hot_direct AS
+SELECT window_start, window_end, country, viewers, carters, purchasers
+FROM risingwave.public.funnel_summary
+"""
+
 
 @asset(
     name="funnel_events_direct_kafka",
@@ -213,6 +226,14 @@ def funnel_events_direct_kafka(context: AssetExecutionContext) -> dict:
 
         connection.execute(text(CREATE_VIEW_20S_SQL))
         context.log.info("View %s.funnel_summary_direct_20s ready", SCHEMA)
+
+        try:
+            connection.execute(text(HOT_DIRECT_VIEW_SQL))
+            context.log.info("View %s.funnel_summary_hot_direct ready", SCHEMA)
+        except Exception as exc:
+            context.log.warning(
+                "funnel_summary_hot_direct not ensured (RisingWave down?): %s", exc
+            )
 
         for _, table, _, _ in _TABLES:
             row[table] = connection.execute(text(

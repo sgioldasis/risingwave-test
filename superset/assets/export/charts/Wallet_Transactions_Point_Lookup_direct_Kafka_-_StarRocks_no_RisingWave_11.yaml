@@ -21,7 +21,12 @@ params:
   - amount
   - status
   - event_time_local
-  adhoc_filters: []
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: event_time <= FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(NOW()) / 5) *
+      5 - 10)
+    operator: null
   row_limit: 4000
   server_pagination: false
   order_by_cols:

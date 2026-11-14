@@ -100,7 +100,14 @@ PROPERTIES (
   # fluctuated. Confirmed via 100+ repeated queries with this flag: zero
   # corruption, vs. reliably reproducing within ~6 calls without it. See
   # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md.
-  "jdbc_uri"        = "jdbc:postgresql://frontend-node-0:4566/dev?binaryTransfer=false",
+  #
+  # connectTimeout/loginTimeout=2 (PG driver params, seconds): make each
+  # connection ATTEMPT to a down RisingWave fail instantly instead of hanging.
+  # This alone does NOT bound the total error latency -- the FE's HikariCP
+  # metadata pool retries until its own connectionTimeout (see
+  # jdbc_connection_timeout_ms in starrocks/fe-entrypoint.sh, which is what
+  # actually bounds the 10-30s RW-down error lag seen live 2026-11-14).
+  "jdbc_uri"        = "jdbc:postgresql://frontend-node-0:4566/dev?binaryTransfer=false&connectTimeout=2&loginTimeout=2",
   "driver_url"      = "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar",
   "driver_class"    = "org.postgresql.Driver",
   "schema_resolver" = "postgresql"

@@ -37,7 +37,14 @@ fi
 
 # Start the Backend
 echo "Starting FastAPI Backend..."
-(cd modern-dashboard && nohup uv run python3 backend/api.py > ../backend.log 2>&1) &
+# Pin RISINGWAVE_HOST to localhost: the backend runs on the HOST, but the
+# invoking shell (devbox / script runner after loading .env) exports
+# RISINGWAVE_HOST=frontend-node-0 -- a docker-network name that doesn't
+# resolve on the host. That made _risingwave_reachable() fail inside a
+# healthy-stack backend, so every query silently took the RW-free fallback
+# and the UI showed the "Degraded" banner (seen live 2026-11-14 after a
+# 6_down/1_up cycle started from the script runner).
+(cd modern-dashboard && nohup env RISINGWAVE_HOST=localhost uv run python3 backend/api.py > ../backend.log 2>&1) &
 BACKEND_PID=$!
 echo $BACKEND_PID > .backend.pid
 
