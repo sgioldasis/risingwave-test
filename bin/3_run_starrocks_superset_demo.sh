@@ -23,6 +23,8 @@
 
 set -e
 
+START_SECONDS=$SECONDS
+
 echo "=== Starting the containers the Superset dashboards need ==="
 SERVICES="redpanda redpanda-init minio-0 lakekeeper lakekeeper-bootstrap lakekeeper-migrate lakekeeper-db meta-node-0 compute-node-0 frontend-node-0 compactor-0 compactor-1 postgres-0 dagster-webserver dagster-daemon starrocks starrocks-cn starrocks-init superset superset-init"
 if ! docker compose up -d $SERVICES; then
@@ -189,7 +191,7 @@ else
 fi
 
 echo ""
-echo "=== StarRocks Superset demo is up ==="
+echo "=== StarRocks Superset demo is up (total time: $((SECONDS - START_SECONDS))s) ==="
 echo "  📊 Superset:              http://localhost:3002 (admin / sr_poc_admin_2026)"
 echo "  - Funnel Dashboard:       http://localhost:3002/superset/dashboard/funnel-dashboard/"
 echo "  - Wallet Upsert Demo:     http://localhost:3002/superset/dashboard/wallet-upsert-demo/"
