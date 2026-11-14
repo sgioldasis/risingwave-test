@@ -1,5 +1,10 @@
-slice_name: "Daily Totals — AGGREGATE KEY Table [storage-level SUM, no MV, no RisingWave]"
-description: "Feature: AGGREGATE KEY table model — aggregation maintained by the storage layer via three Routine Load jobs off the raw Kafka topics. Value: SELECT * already returns merged running totals — no MV, no query-time GROUP BY, no refresh to trust. RisingWave: NOT USED — deliberately sourced from raw topics, bypassing RisingWave entirely."
+slice_name: "Daily Totals \u2014 AGGREGATE KEY Table [storage-level SUM, no MV, no\
+  \ RisingWave]"
+description: "Feature: AGGREGATE KEY table model \u2014 aggregation maintained by\
+  \ the storage layer via three Routine Load jobs off the raw Kafka topics. Value:\
+  \ SELECT * already returns merged running totals \u2014 no MV, no query-time GROUP\
+  \ BY, no refresh to trust. RisingWave: NOT USED \u2014 deliberately sourced from\
+  \ raw topics, bypassing RisingWave entirely."
 certified_by: null
 certification_details: null
 viz_type: table
@@ -25,6 +30,7 @@ params:
   show_cell_bars: true
   color_pn: true
   annotation_layers: []
+  comparison_type: values
 query_context: null
 cache_timeout: null
 uuid: 365d74cc-de14-4e4a-864f-6b7904557f18

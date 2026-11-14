@@ -856,6 +856,9 @@ services:
       # objects (matched by UUID) updates them in place rather than
       # duplicating.
       - "./superset/assets/export:/app/assets_export:ro"
+      # Force-applies chart params from the bundle after the standard import
+      # (see the script's docstring for why: the import skips existing charts).
+      - "./superset/force_chart_import.py:/app/force_chart_import.py:ro"
     environment:
       - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-sr_poc_demo_secret_key_change_me}
       - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
@@ -885,7 +888,7 @@ services:
       # wrapping folder (e.g. `dashboard_export_<timestamp>/metadata.yaml`).
       # The zip built below must have that wrapper folder or metadata.yaml
       # itself gets stripped away and the whole bundle is silently rejected.
-      - "pip install --no-cache-dir pymysql==1.1.1 && superset db upgrade && (superset fab create-admin --username \"$$SUPERSET_ADMIN_USERNAME\" --firstname Admin --lastname User --email \"$$SUPERSET_ADMIN_EMAIL\" --password \"$$SUPERSET_ADMIN_PASSWORD\" || true) && superset init && (test -d /app/assets_export && python3 -c \"import zipfile, os; zf = zipfile.ZipFile('/tmp/assets_export.zip', 'w', zipfile.ZIP_DEFLATED); [zf.writestr(zipfile.ZipInfo(os.path.join('assets_export', os.path.relpath(os.path.join(root, f), '/app/assets_export')), date_time=(2020,1,1,0,0,0)), open(os.path.join(root, f), 'rb').read()) for root, _, files in os.walk('/app/assets_export') for f in files]; zf.close()\" && superset import-dashboards -p /tmp/assets_export.zip -u \"$$SUPERSET_ADMIN_USERNAME\" || echo 'No assets_export bundle found or import failed -- continuing without it')"
+      - "pip install --no-cache-dir pymysql==1.1.1 && superset db upgrade && (superset fab create-admin --username \"$$SUPERSET_ADMIN_USERNAME\" --firstname Admin --lastname User --email \"$$SUPERSET_ADMIN_EMAIL\" --password \"$$SUPERSET_ADMIN_PASSWORD\" || true) && superset init && (test -d /app/assets_export && python3 -c \"import zipfile, os; zf = zipfile.ZipFile('/tmp/assets_export.zip', 'w', zipfile.ZIP_DEFLATED); [zf.writestr(zipfile.ZipInfo(os.path.join('assets_export', os.path.relpath(os.path.join(root, f), '/app/assets_export')), date_time=(2020,1,1,0,0,0)), open(os.path.join(root, f), 'rb').read()) for root, _, files in os.walk('/app/assets_export') for f in files]; zf.close()\" && superset import-dashboards -p /tmp/assets_export.zip -u \"$$SUPERSET_ADMIN_USERNAME\" || echo 'No assets_export bundle found or import failed -- continuing without it') && (python3 /app/force_chart_import.py || echo 'force_chart_import failed -- chart params may be stale, continuing')"
     depends_on:
       starrocks:
         condition: service_healthy

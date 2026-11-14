@@ -1,9 +1,11 @@
-table_name: wallet_transactions
-main_dttm_col: event_time
+table_name: dashboard_funnel_serving_cached_direct
+main_dttm_col: window_start
+currency_code_column: null
 description: null
 default_endpoint: null
 offset: 0
 cache_timeout: null
+catalog: null
 schema: sr_local_db_sr_local_db
 sql: null
 params: null
@@ -13,91 +15,54 @@ fetch_values_predicate: null
 extra: null
 normalize_columns: false
 always_filter_main_dttm: false
-uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed
+folders: null
+uuid: 45c75087-6290-426e-b7c6-1e611eab1687
 metrics:
-- metric_name: sum__amount
-  verbose_name: Total Amount
+- metric_name: sum__carters
+  verbose_name: Total Carters
   metric_type: null
-  expression: SUM(amount)
+  expression: SUM(carters)
   description: null
-  d3format: ',.2f'
+  d3format: ',d'
   currency: null
   extra: null
   warning_text: null
-- metric_name: cnt
-  verbose_name: Count
+- metric_name: sum__purchasers
+  verbose_name: Total Purchasers
   metric_type: null
-  expression: COUNT(*)
+  expression: SUM(purchasers)
+  description: null
+  d3format: ',d'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: sum__viewers
+  verbose_name: Total Viewers
+  metric_type: null
+  expression: SUM(viewers)
   description: null
   d3format: ',d'
   currency: null
   extra: null
   warning_text: null
 columns:
-- column_name: status
+- column_name: country
   verbose_name: null
   is_dttm: false
-  is_active: true
-  type: VARCHAR(16)
+  is_active: null
+  type: VARCHAR
   advanced_data_type: null
   groupby: true
   filterable: true
   expression: null
   description: null
   python_date_format: null
+  datetime_format: null
   extra: null
-- column_name: type
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: VARCHAR(16)
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: transaction_id
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: VARCHAR(64)
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: account_id
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: VARCHAR(64)
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: amount
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: DECIMAL
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: event_time
+- column_name: window_start
   verbose_name: null
   is_dttm: true
-  is_active: true
+  is_active: null
   type: DATETIME
   advanced_data_type: null
   groupby: true
@@ -105,18 +70,85 @@ columns:
   expression: null
   description: null
   python_date_format: null
+  datetime_format: null
   extra: null
-- column_name: event_time_local
+- column_name: window_end
   verbose_name: null
-  is_dttm: false
-  is_active: true
+  is_dttm: true
+  is_active: null
   type: DATETIME
   advanced_data_type: null
   groupby: true
   filterable: true
-  expression: convert_tz(event_time, 'UTC', 'Europe/Athens')
-  description: Display-only copy of event_time converted to Europe/Athens (handles DST).
+  expression: null
+  description: null
   python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cart_to_buy_rate
+  verbose_name: null
+  is_dttm: false
+  is_active: null
+  type: DOUBLE
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: view_to_cart_rate
+  verbose_name: null
+  is_dttm: false
+  is_active: null
+  type: DOUBLE
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: purchasers
+  verbose_name: null
+  is_dttm: false
+  is_active: null
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: carters
+  verbose_name: null
+  is_dttm: false
+  is_active: null
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: viewers
+  verbose_name: null
+  is_dttm: false
+  is_active: null
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
   extra: null
 version: 1.0.0
 database_uuid: debd0510-5d66-4f6b-9765-ccea1342506c

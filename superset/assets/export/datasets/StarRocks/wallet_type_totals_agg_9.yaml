@@ -1,9 +1,11 @@
-table_name: funnel_daily_totals_agg
-main_dttm_col: day
+table_name: wallet_type_totals_agg
+main_dttm_col: last_event_time
+currency_code_column: null
 description: null
 default_endpoint: null
 offset: 0
 cache_timeout: null
+catalog: null
 schema: sr_local_db_sr_local_db
 sql: null
 params: null
@@ -13,37 +15,20 @@ fetch_values_predicate: null
 extra: null
 normalize_columns: false
 always_filter_main_dttm: false
-uuid: 43886fcf-5277-4a3a-b598-f64db79ed4db
+folders: null
+uuid: 6f9b1d86-a6cb-4b2f-8c3f-79e4ab346ef3
 metrics:
-- metric_name: sum__carters
-  verbose_name: Total Carters
-  metric_type: null
-  expression: SUM(carters)
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
   description: null
-  d3format: ',d'
-  currency: null
-  extra: null
-  warning_text: null
-- metric_name: sum__purchasers
-  verbose_name: Total Purchasers
-  metric_type: null
-  expression: SUM(purchasers)
-  description: null
-  d3format: ',d'
-  currency: null
-  extra: null
-  warning_text: null
-- metric_name: sum__viewers
-  verbose_name: Total Viewers
-  metric_type: null
-  expression: SUM(viewers)
-  description: null
-  d3format: ',d'
+  d3format: null
   currency: null
   extra: null
   warning_text: null
 columns:
-- column_name: purchasers
+- column_name: event_count
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -54,54 +39,46 @@ columns:
   expression: null
   description: null
   python_date_format: null
+  datetime_format: null
   extra: null
-- column_name: carters
+- column_name: type
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: BIGINT(20)
+  type: VARCHAR(16)
   advanced_data_type: null
   groupby: true
   filterable: true
   expression: null
   description: null
   python_date_format: null
+  datetime_format: null
   extra: null
-- column_name: viewers
+- column_name: total_amount
   verbose_name: null
   is_dttm: false
   is_active: true
-  type: BIGINT(20)
+  type: DECIMAL
   advanced_data_type: null
   groupby: true
   filterable: true
   expression: null
   description: null
   python_date_format: null
+  datetime_format: null
   extra: null
-- column_name: country
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: VARCHAR(2)
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: null
-  description: null
-  python_date_format: null
-  extra: null
-- column_name: day
+- column_name: last_event_time
   verbose_name: null
   is_dttm: true
   is_active: true
-  type: DATE
+  type: DATETIME
   advanced_data_type: null
   groupby: true
   filterable: true
   expression: null
   description: null
   python_date_format: null
+  datetime_format: null
   extra: null
 version: 1.0.0
 database_uuid: debd0510-5d66-4f6b-9765-ccea1342506c

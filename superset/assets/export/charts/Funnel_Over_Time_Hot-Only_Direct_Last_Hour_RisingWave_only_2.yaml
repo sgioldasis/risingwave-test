@@ -1,25 +1,33 @@
 slice_name: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [RisingWave only]"
-description: "Feature: JDBC external catalog to RisingWave (Postgres wire protocol) — query a streaming database as if native. Value: freshest data (~2-3s lag) with sub-second queries and zero storage in StarRocks (zero-copy serving). RisingWave: REQUIRED — queries risingwave.public.funnel_summary directly; goes blank if RW is down or empty (no fallback)."
+description: "Feature: JDBC external catalog to RisingWave (Postgres wire protocol)\
+  \ \u2014 query a streaming database as if native. Value: freshest data (~2-3s lag)\
+  \ with sub-second queries and zero storage in StarRocks (zero-copy serving). RisingWave:\
+  \ REQUIRED \u2014 queries risingwave.public.funnel_summary directly; goes blank\
+  \ if RW is down or empty (no fallback)."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
 params:
+  adhoc_filters:
+  - clause: WHERE
+    comparator: '1 hour ago : now'
+    expressionType: SIMPLE
+    operator: TEMPORAL_RANGE
+    subject: window_start
+  annotation_layers: []
   datasource: 3__table
-  viz_type: echarts_timeseries_line
+  granularity_sqla: window_start
   groupby: []
   metrics:
   - sum__viewers
   - sum__carters
   - sum__purchasers
-  granularity_sqla: window_start
-  time_range: '1 hour ago : now'
-  adhoc_filters:
-  - clause: WHERE
-    subject: window_start
-    operator: TEMPORAL_RANGE
-    comparator: '1 hour ago : now'
-    expressionType: SIMPLE
   order_desc: false
+  rich_tooltip: true
+  row_limit: 10000
+  show_legend: true
+  time_range: '1 hour ago : now'
+  viz_type: echarts_timeseries_line
   x_axis:
     sqlExpression: convert_tz(window_start, 'UTC', 'Europe/Athens')
     expressionType: SQL
@@ -27,10 +35,6 @@ params:
     columnType: BASE_AXIS
   x_axis_time_format: '%H:%M'
   y_axis_format: SMART_NUMBER
-  rich_tooltip: true
-  show_legend: true
-  row_limit: 10000
-  annotation_layers: []
 query_context: null
 cache_timeout: 0
 uuid: 6297e8c9-9fa2-4f82-be65-09ec466adaee

@@ -16,19 +16,23 @@ ADMIN_USER="${SUPERSET_ADMIN_USERNAME:-admin}"
 ADMIN_PASS="${SUPERSET_ADMIN_PASSWORD:-sr_poc_admin_2026}"
 COOKIE_JAR="$(mktemp)"
 
-echo "=== Logging into Superset ==="
-CSRF=$(curl -s -m 10 -c "$COOKIE_JAR" "$SUPERSET_URL/login/" \
-  | grep -oE 'csrf_token[^>]*value="[^"]*"' | grep -oE 'value="[^"]*"' | sed 's/value="//;s/"//')
-curl -s -m 10 -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
-  -X POST "$SUPERSET_URL/login/" \
-  --data-urlencode "csrf_token=$CSRF" \
-  --data-urlencode "username=$ADMIN_USER" \
-  --data-urlencode "password=$ADMIN_PASS" \
-  -o /dev/null -w "login HTTP_STATUS:%{http_code}\n"
+echo "=== Logging into Superset (JWT) ==="
+# /api/v1/* rejects plain session cookies here ("Missing Authorization
+# Header"), so the API calls below need a bearer token, not the old
+# form-login + cookie-jar approach this script used before.
+TOKEN=$(curl -s -m 10 -X POST "$SUPERSET_URL/api/v1/security/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\": \"$ADMIN_USER\", \"password\": \"$ADMIN_PASS\", \"provider\": \"db\", \"refresh\": true}" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token', ''))")
+if [ -z "$TOKEN" ]; then
+  echo "❌ JWT login failed -- is the stack up at $SUPERSET_URL?"
+  exit 1
+fi
+AUTH="Authorization: Bearer $TOKEN"
 
 echo "=== Fetching all dashboard IDs ==="
 DASH_IDS=$(curl -s -m 10 "$SUPERSET_URL/api/v1/dashboard/?q=(page_size:100)" \
-  -b "$COOKIE_JAR" -H "Referer: $SUPERSET_URL/" \
+  -H "$AUTH" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(','.join(str(r['id']) for r in d['result']))")
 
 if [ -z "$DASH_IDS" ]; then
@@ -39,7 +43,7 @@ echo "Exporting dashboards: $DASH_IDS"
 
 echo "=== Exporting via /api/v1/dashboard/export/ ==="
 curl -s -m 30 "$SUPERSET_URL/api/v1/dashboard/export/?q=!($DASH_IDS)" \
-  -b "$COOKIE_JAR" -H "Referer: $SUPERSET_URL/" \
+  -H "$AUTH" \
   -o /tmp/superset_export.zip -w "export HTTP_STATUS:%{http_code}\n"
 
 file /tmp/superset_export.zip | grep -q "Zip archive" || {
@@ -61,5 +65,4 @@ if [ -n "$EXPORT_ROOT" ]; then
   rmdir "$EXPORT_ROOT"
 fi
 
-rm -f "$COOKIE_JAR"
 echo "✅ Exported to superset/assets/export/ -- review with 'git status' / 'git diff' and commit."

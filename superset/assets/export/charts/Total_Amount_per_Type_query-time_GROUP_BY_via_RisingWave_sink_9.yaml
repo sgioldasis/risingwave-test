@@ -1,0 +1,72 @@
+slice_name: "Total Amount per Type \u2014 query-time GROUP BY [via RisingWave sink]"
+description: "Feature: query-time SUM aggregation over the Primary Key table (the\
+  \ baseline the AGGREGATE KEY charts are contrasted against). Value: simplest read\
+  \ path; aggregation cost paid at query time on every refresh. RisingWave: data arrived\
+  \ via the RW sink \u2014 the query itself runs entirely in StarRocks."
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 6__table
+  viz_type: echarts_timeseries_bar
+  groupby: []
+  metrics:
+  - sum__amount
+  adhoc_filters: []
+  row_limit: 100
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_value: true
+  annotation_layers: []
+  contributionMode: null
+  zoomable: false
+  markerEnabled: false
+  truncateYAxis: true
+  comparison_type: values
+  x_axis: type
+  stack: null
+  xAxisLabelRotation: 45
+  form_data_bak:
+    datasource: 6__table
+    viz_type: dist_bar
+    groupby:
+    - type
+    metrics:
+    - sum__amount
+    adhoc_filters: []
+    row_limit: 100
+    time_range: No filter
+    timeseries_limit_metric:
+      label: type
+      sqlExpression: type
+      expressionType: SQL
+    order_desc: false
+    show_legend: true
+    show_bar_value: true
+    annotation_layers: []
+  queries_bak: null
+query_context: '{"datasource": {"id": 6, "type": "table"}, "force": false, "queries":
+  [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {},
+  "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "type", "label": "type",
+  "expressionType": "SQL"}], "metrics": ["sum__amount"], "annotation_layers": [],
+  "row_limit": 100, "series_limit": 0, "order_desc": false, "url_params": {}, "custom_params":
+  {}, "series_limit_metric": {"label": "type", "sqlExpression": "type", "expressionType":
+  "SQL"}, "custom_form_data": {}, "series_columns": [], "orderby": [[{"label": "type",
+  "sqlExpression": "type", "expressionType": "SQL"}, true]], "time_offsets": [], "post_processing":
+  [{"operation": "pivot", "options": {"index": ["type"], "columns": [], "aggregates":
+  {"sum__amount": {"operator": "mean"}}, "drop_missing_columns": true}}, {"operation":
+  "flatten"}]}], "form_data": {"datasource": "6__table", "viz_type": "echarts_timeseries_bar",
+  "groupby": [], "metrics": ["sum__amount"], "adhoc_filters": [], "row_limit": 100,
+  "timeseries_limit_metric": {"label": "type", "sqlExpression": "type", "expressionType":
+  "SQL"}, "order_desc": false, "show_legend": true, "show_value": true, "annotation_layers":
+  [], "contributionMode": null, "zoomable": false, "markerEnabled": false, "truncateYAxis":
+  true, "comparison_type": "values", "x_axis": "type", "stack": null, "xAxisLabelRotation":
+  45}, "result_format": "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 32b4d281-18f6-4b03-949b-a1f9bdeb1386
+version: 1.0.0
+dataset_uuid: 280acdaf-99fb-48bc-84ff-1861dab213ed

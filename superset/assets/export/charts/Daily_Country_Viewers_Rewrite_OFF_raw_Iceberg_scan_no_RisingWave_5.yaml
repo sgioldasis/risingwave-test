@@ -1,5 +1,8 @@
-slice_name: "Daily Country Viewers — Rewrite OFF (raw Iceberg scan) [no RisingWave]"
-description: "Feature: Iceberg REST catalog federation (Databricks Unity Catalog) — query lake tables in place, zero copy. Value: direct SQL over Databricks-governed data from StarRocks; this chart shows the raw-scan cost (~1.8-5.5s) that the MV rewrite eliminates. RisingWave: NOT USED."
+slice_name: "Daily Country Viewers \u2014 Rewrite OFF (raw Iceberg scan) [no RisingWave]"
+description: "Feature: Iceberg REST catalog federation (Databricks Unity Catalog)\
+  \ \u2014 query lake tables in place, zero copy. Value: direct SQL over Databricks-governed\
+  \ data from StarRocks; this chart shows the raw-scan cost (~1.8-5.5s) that the MV\
+  \ rewrite eliminates. RisingWave: NOT USED."
 certified_by: null
 certification_details: null
 viz_type: table
@@ -18,6 +21,7 @@ params:
   - '["day", false]'
   time_range: No filter
   annotation_layers: []
+  comparison_type: values
 query_context: null
 cache_timeout: 0
 uuid: 10009d6f-2f72-45e0-af07-6797fc91a1f5

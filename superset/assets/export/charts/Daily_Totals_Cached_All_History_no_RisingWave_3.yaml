@@ -1,5 +1,10 @@
-slice_name: "Daily Totals (Cached) — All History [no RisingWave]"
-description: "Feature: asynchronous materialized view (REFRESH MANUAL) over Databricks Iceberg history, UNIONed with StarRocks's own Direct-from-Kafka rows by a cutoff predicate. Value: fast all-history view that never goes fully blank — and no external catalog is touched at query time, so it keeps working with the RisingWave containers stopped (verified live 2026-11-14). RisingWave: NOT USED at query time — it only matters upstream, feeding the Databricks sink the MV's next refresh picks up."
+slice_name: "Daily Totals (Cached) \u2014 All History [no RisingWave]"
+description: "Feature: asynchronous materialized view (REFRESH MANUAL) over Databricks\
+  \ Iceberg history, UNIONed with the live RisingWave branch by a cutoff predicate.\
+  \ Value: fast all-history view (~1.3s) that never goes fully blank; RW hot data\
+  \ overlays the frozen MV snapshot. RisingWave: REQUIRED for freshness \u2014 without\
+  \ RW running the chart shows only the MV's last-rebuild snapshot (staleness invisible\
+  \ from the chart)."
 certified_by: null
 certification_details: null
 viz_type: table
@@ -8,9 +13,9 @@ params:
   viz_type: table
   query_mode: aggregate
   groupby:
-  - label: day
-    sqlExpression: DATE(convert_tz(window_start, 'UTC', 'Europe/Athens'))
+  - sqlExpression: DATE(convert_tz(window_start, 'UTC', 'Europe/Athens'))
     expressionType: SQL
+    label: day
   metrics:
   - sum__viewers
   - sum__carters
@@ -19,14 +24,15 @@ params:
   row_limit: 1000
   time_range: No filter
   timeseries_limit_metric:
-    label: day
     sqlExpression: DATE(convert_tz(window_start, 'UTC', 'Europe/Athens'))
     expressionType: SQL
+    label: day
   order_desc: true
   table_timestamp_format: '%Y-%m-%d'
   show_cell_bars: true
   color_pn: true
   annotation_layers: []
+  comparison_type: values
 query_context: null
 cache_timeout: 0
 uuid: 65f7df80-fc91-4300-a76d-965a8986f45e

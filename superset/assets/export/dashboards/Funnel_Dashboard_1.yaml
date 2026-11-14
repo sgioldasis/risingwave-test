@@ -52,19 +52,25 @@ position:
     meta:
       width: 12
       height: 34
-      code: '### ✨ JDBC catalog + Routine Load -- the hot funnel path
-
-        - **At a glance:** a [JDBC external catalog](https://docs.starrocks.io/docs/data_source/catalog/jdbc_catalog/) (StarRocks queries RisingWave in place over the Postgres wire protocol -- no data copied) plus [Routine Load](https://docs.starrocks.io/docs/loading/kafka/RoutineLoad/) (Kafka topics land natively in StarRocks).
-
-        - **Why here:** the funnel needs last-hour, minute-grained charts. Left: StarRocks reads RisingWave''s `funnel_summary` live through the catalog. Right: the raw topics feed StarRocks directly and a plain VIEW computes the same funnel -- no stream processor in the loop.
-
-        - **Value:** sub-second dashboards on the freshest data either way -- and the right side proves the hot path keeps working even with RisingWave removed from the architecture.
-
-        - **RisingWave:** on the left, REQUIRED -- RisingWave is the streaming layer: it consumes the page/cart/purchase topics, computes the 1-minute funnel windows in its materialized views, and serves them to StarRocks live over the JDBC catalog (goes blank if RW is down). On the right, NOT USED -- StarRocks ingests the same topics itself.
-
-        - **Reading this dashboard:** all the last-hour funnel charts look identical on purpose -- same 1-minute aggregation, different paths. This section contrasts *ingestion* (how data reaches StarRocks); the next section contrasts *serving* (how the chart query reads it back).
-
-        '
+      code: "### \u2728 JDBC catalog + Routine Load -- the hot funnel path\n- **At\
+        \ a glance:** a [JDBC external catalog](https://docs.starrocks.io/docs/data_source/catalog/jdbc_catalog/)\
+        \ (StarRocks queries RisingWave in place over the Postgres wire protocol --\
+        \ no data copied) plus [Routine Load](https://docs.starrocks.io/docs/loading/kafka/RoutineLoad/)\
+        \ (Kafka topics land natively in StarRocks).\n- **Why here:** the funnel needs\
+        \ last-hour, minute-grained charts. Left: StarRocks reads RisingWave's `funnel_summary`\
+        \ live through the catalog. Right: the raw topics feed StarRocks directly\
+        \ and a plain VIEW computes the same funnel -- no stream processor in the\
+        \ loop.\n- **Value:** sub-second dashboards on the freshest data either way\
+        \ -- and the right side proves the hot path keeps working even with RisingWave\
+        \ removed from the architecture.\n- **RisingWave:** on the left, REQUIRED\
+        \ -- RisingWave is the streaming layer: it consumes the page/cart/purchase\
+        \ topics, computes the 1-minute funnel windows in its materialized views,\
+        \ and serves them to StarRocks live over the JDBC catalog (goes blank if RW\
+        \ is down). On the right, NOT USED -- StarRocks ingests the same topics itself.\n\
+        - **Reading this dashboard:** all the last-hour funnel charts look identical\
+        \ on purpose -- same 1-minute aggregation, different paths. This section contrasts\
+        \ *ingestion* (how data reaches StarRocks); the next section contrasts *serving*\
+        \ (how the chart query reads it back).\n"
   ROW-FOT-MD:
     type: ROW
     id: ROW-FOT-MD
@@ -86,17 +92,24 @@ position:
     meta:
       width: 12
       height: 31
-      code: '### ✨ Funnel Over Time -- live vs RW-free cache, same last hour
-
-        - **Left -- Live (RisingWave REQUIRED):** [federated external catalogs](https://docs.starrocks.io/docs/data_source/catalog/) -- one zero-copy view UNION ALLs a JDBC catalog (RisingWave hot rows) with the Iceberg REST catalog (Databricks UC). Always fresh, zero data movement -- but every load re-fetches external metadata (~5s), and RW down = the whole view fails to resolve (Unknown database ''public.''), so the chart errors rather than silently dropping the hot rows.
-
-        - **Right -- Cached (RisingWave NOT USED at query time):** an [asynchronous materialized view](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/) over Databricks history UNIONed with the Direct-from-Kafka branch (same Routine Load ingestion as the pair above) by a cutoff predicate. ~0.2s, and it keeps working with the RW containers stopped (verified live 2026-11-14).
-
-        - **Value:** the mirror-image trade-off -- freshness vs independence. Detailed data-source notes for both views below.
-
-        - **How this differs from the section above:** that pair showed two *ingestion* paths into StarRocks (stream processor vs Routine Load); this pair shows two *serving* paths out of it -- a live federated query paying the external-catalog cost on every load vs a precomputed cache that doesn''t. Same charts, same window, deliberately -- so cost and RW-dependence are the only variables.
-
-        '
+      code: "### \u2728 Funnel Over Time -- live vs RW-free cache, same last hour\n\
+        - **Left -- Live (RisingWave REQUIRED):** [federated external catalogs](https://docs.starrocks.io/docs/data_source/catalog/)\
+        \ -- one zero-copy view UNION ALLs a JDBC catalog (RisingWave hot rows) with\
+        \ the Iceberg REST catalog (Databricks UC). Always fresh, zero data movement\
+        \ -- but every load re-fetches external metadata (~5s), and RW down = the\
+        \ whole view fails to resolve (Unknown database 'public.'), so the chart errors\
+        \ rather than silently dropping the hot rows.\n- **Right -- Cached (RisingWave\
+        \ NOT USED at query time):** an [asynchronous materialized view](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/)\
+        \ over Databricks history UNIONed with the Direct-from-Kafka branch (same\
+        \ Routine Load ingestion as the pair above) by a cutoff predicate. ~0.2s,\
+        \ and it keeps working with the RW containers stopped (verified live 2026-11-14).\n\
+        - **Value:** the mirror-image trade-off -- freshness vs independence. Detailed\
+        \ data-source notes for both views below.\n- **How this differs from the section\
+        \ above:** that pair showed two *ingestion* paths into StarRocks (stream processor\
+        \ vs Routine Load); this pair shows two *serving* paths out of it -- a live\
+        \ federated query paying the external-catalog cost on every load vs a precomputed\
+        \ cache that doesn't. Same charts, same window, deliberately -- so cost and\
+        \ RW-dependence are the only variables.\n"
   ROW-DT-MD:
     type: ROW
     id: ROW-DT-MD
@@ -118,20 +131,22 @@ position:
     meta:
       width: 12
       height: 23
-      code: '### ✨ Daily Totals -- live vs RW-free cache, all history
-
-        - **Left -- Live (RisingWave REQUIRED):** the same zero-copy federated view as the chart above, over all history -- here the Databricks cold branch genuinely matters (it supplies the history; the hot branch only covers what RisingWave currently retains).
-
-        - **Right -- Cached (RisingWave NOT USED at query time):** the same RW-free cached view as the chart above, over all history -- frozen MV snapshot + newer Routine-Load rows, no double-count by construction (cutoff: direct rows strictly newer than the MV''s latest window).
-
-        '
+      code: "### \u2728 Daily Totals -- live vs RW-free cache, all history\n- **Left\
+        \ -- Live (RisingWave REQUIRED):** the same zero-copy federated view as the\
+        \ chart above, over all history -- here the Databricks cold branch genuinely\
+        \ matters (it supplies the history; the hot branch only covers what RisingWave\
+        \ currently retains).\n- **Right -- Cached (RisingWave NOT USED at query time):**\
+        \ the same RW-free cached view as the chart above, over all history -- frozen\
+        \ MV snapshot + newer Routine-Load rows, no double-count by construction (cutoff:\
+        \ direct rows strictly newer than the MV's latest window).\n"
   CHART-VECBRFE5:
     children: []
     id: CHART-VECBRFE5
     meta:
       chartId: 2
       height: 50
-      sliceName: Funnel Over Time (Hot-Only, Direct) — Last Hour [RisingWave only]
+      sliceName: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [RisingWave\
+        \ only]"
       uuid: 6297e8c9-9fa2-4f82-be65-09ec466adaee
       width: 6
     type: CHART
@@ -145,7 +160,7 @@ position:
     meta:
       chartId: 1
       height: 50
-      sliceName: Daily Totals (Live) — All History [RisingWave + Databricks]
+      sliceName: "Daily Totals (Live) \u2014 All History [RisingWave + Databricks]"
       uuid: 3ea580d3-af2b-4761-b424-611100f06171
       width: 6
     type: CHART
@@ -159,7 +174,7 @@ position:
     meta:
       chartId: 8
       height: 50
-      sliceName: Funnel Over Time (Live) — Last Hour [RisingWave]
+      sliceName: "Funnel Over Time (Live) \u2014 Last Hour [RisingWave]"
       uuid: 45f66882-8284-44f0-8563-10ba1c19c078
       width: 6
     type: CHART
@@ -173,7 +188,7 @@ position:
     meta:
       chartId: 3
       height: 50
-      sliceName: Daily Totals (Cached) — All History [no RisingWave]
+      sliceName: "Daily Totals (Cached) \u2014 All History [no RisingWave]"
       uuid: 65f7df80-fc91-4300-a76d-965a8986f45e
       width: 6
     type: CHART
@@ -187,7 +202,7 @@ position:
     meta:
       chartId: 10
       height: 50
-      sliceName: Funnel Over Time (Cached) — Last Hour [no RisingWave]
+      sliceName: "Funnel Over Time (Cached) \u2014 Last Hour [no RisingWave]"
       uuid: d33b8dd6-0364-4e23-8eb6-c26410fe8445
       width: 6
     type: CHART
@@ -240,7 +255,8 @@ position:
       chartId: 17
       width: 12
       height: 50
-      sliceName: Daily Totals — AGGREGATE KEY Table [storage-level SUM, no MV, no RisingWave]
+      sliceName: "Daily Totals \u2014 AGGREGATE KEY Table [storage-level SUM, no MV,\
+        \ no RisingWave]"
       uuid: 365d74cc-de14-4e4a-864f-6b7904557f18
   ROW-AGGKEY:
     type: ROW
@@ -263,17 +279,16 @@ position:
     meta:
       width: 12
       height: 23
-      code: '### ✨ AGGREGATE KEY table -- running totals at storage level
-
-        - **At a glance:** the [AGGREGATE KEY table model](https://docs.starrocks.io/docs/table_design/table_types/aggregate_table/) -- running totals maintained by the storage layer, fed by Routine Load off the raw topics.
-
-        - **Why here:** three Routine Load jobs aggregate `page_views`/`cart_events`/`purchases` into one row per day+country; repeats merge on write.
-
-        - **Value:** `SELECT *` already returns merged daily totals -- no MV, no query-time GROUP BY, no refresh; a table-model alternative to the MV-based Daily Totals charts above.
-
-        - **RisingWave:** NOT USED -- the AGGREGATE table is fed by Routine Load straight off the raw topics; the aggregation the other charts get from RisingWave materialized views happens here inside StarRocks storage instead.
-
-        '
+      code: "### \u2728 AGGREGATE KEY table -- running totals at storage level\n-\
+        \ **At a glance:** the [AGGREGATE KEY table model](https://docs.starrocks.io/docs/table_design/table_types/aggregate_table/)\
+        \ -- running totals maintained by the storage layer, fed by Routine Load off\
+        \ the raw topics.\n- **Why here:** three Routine Load jobs aggregate `page_views`/`cart_events`/`purchases`\
+        \ into one row per day+country; repeats merge on write.\n- **Value:** `SELECT\
+        \ *` already returns merged daily totals -- no MV, no query-time GROUP BY,\
+        \ no refresh; a table-model alternative to the MV-based Daily Totals charts\
+        \ above.\n- **RisingWave:** NOT USED -- the AGGREGATE table is fed by Routine\
+        \ Load straight off the raw topics; the aggregation the other charts get from\
+        \ RisingWave materialized views happens here inside StarRocks storage instead.\n"
   ROW-AGGKEY-MD:
     type: ROW
     id: ROW-AGGKEY-MD
@@ -290,7 +305,7 @@ position:
     meta:
       chartId: 18
       height: 50
-      sliceName: Funnel Over Time (Hot-Only, Direct) — Last Hour [Routine Load]
+      sliceName: "Funnel Over Time (Hot-Only, Direct) \u2014 Last Hour [Routine Load]"
       uuid: 70c4a0dc-95d5-43ac-af2b-435fd081d019
       width: 6
     type: CHART
@@ -309,20 +324,23 @@ position:
     meta:
       width: 12
       height: 32
-      code: '**Side-by-side comparison (2026-11-13):** two charts, same 1-minute funnel aggregation, two independent ingestion paths into StarRocks.
-
-
-        - **Left — via RisingWave:** `risingwave.public.funnel_summary`, queried directly via StarRocks''s JDBC catalog — bypassing `dashboard_funnel_serving` entirely, so the Databricks Iceberg cold branch is never touched.
-
-        - **Right — Direct-from-Kafka:** `funnel_summary_direct`, a StarRocks VIEW recomputing the same 1-minute windows over raw events ingested by Routine Load jobs straight off the `page_views`/`cart_events`/`purchases` topics — no RisingWave in the loop at all (same pattern as the Wallet demo''s direct path). ~5s Routine Load batch interval vs the RisingWave path''s ~2-3s.
-
-
-        ✅ **Pros:** Both fast (~0.7s) *and* genuinely fresh (zero staleness, no refresh cycle) — confirmed via direct benchmark against the full view for the identical last-hour result.
-
-
-        ❌ **Cons:** Only shows whatever RisingWave currently retains — no historical fallback. If RisingWave restarts/loses its hot data (e.g. `bin/6_down.sh`), this chart goes blank until fresh data streams back in; the other two views still show Databricks-backed history.
-
-        '
+      code: "**Side-by-side comparison (2026-11-13):** two charts, same 1-minute funnel\
+        \ aggregation, two independent ingestion paths into StarRocks.\n\n- **Left\
+        \ \u2014 via RisingWave:** `risingwave.public.funnel_summary`, queried directly\
+        \ via StarRocks's JDBC catalog \u2014 bypassing `dashboard_funnel_serving`\
+        \ entirely, so the Databricks Iceberg cold branch is never touched.\n- **Right\
+        \ \u2014 Direct-from-Kafka:** `funnel_summary_direct`, a StarRocks VIEW recomputing\
+        \ the same 1-minute windows over raw events ingested by Routine Load jobs\
+        \ straight off the `page_views`/`cart_events`/`purchases` topics \u2014 no\
+        \ RisingWave in the loop at all (same pattern as the Wallet demo's direct\
+        \ path). ~5s Routine Load batch interval vs the RisingWave path's ~2-3s.\n\
+        \n\u2705 **Pros:** Both fast (~0.7s) *and* genuinely fresh (zero staleness,\
+        \ no refresh cycle) \u2014 confirmed via direct benchmark against the full\
+        \ view for the identical last-hour result.\n\n\u274C **Cons:** Only shows\
+        \ whatever RisingWave currently retains \u2014 no historical fallback. If\
+        \ RisingWave restarts/loses its hot data (e.g. `bin/6_down.sh`), this chart\
+        \ goes blank until fresh data streams back in; the other two views still show\
+        \ Databricks-backed history.\n"
   ROW-8B:
     type: ROW
     id: ROW-8B
@@ -344,18 +362,27 @@ position:
     meta:
       width: 12
       height: 28
-      code: '**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving_cached_direct` -- a `UNION ALL` of the StarRocks materialized view `mv_unified_funnel_summary` (REFRESH MANUAL, frozen at last rebuild) and the Direct-from-Kafka path''s rows (`funnel_summary_direct`, computed over the Routine-Load tables) newer than the MV''s latest window.
-
-
-        **No double-counting by construction:** the cutoff is `window_start > (SELECT MAX(window_start) FROM mv_unified_funnel_summary)` -- the MV branch contributes every window it has, the direct branch only windows strictly newer, so no window is served twice no matter when the MV was last refreshed. If the MV is refreshed later, it takes over those windows and the direct branch shrinks accordingly. An empty MV (fresh stack) falls back to the direct branch serving everything. RW-independent: verified live 2026-11-14 with the RisingWave containers stopped -- the view still resolved and served continuous 2026-09-05 → now data (965 frozen MV rows + fresh Routine-Load rows).
-
-
-        ✅ **Pros:** Fast (~0.2s), never blank, and no external catalog touched at query time -- unlike the live zero-copy charts (left above), this view survives the RW containers being stopped.
-
-
-        ❌ **Cons:** The MV branch is only as fresh as its last rebuild (`REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;` picks up new Databricks history); until then new windows come solely from the direct branch. There''s no way to tell from the chart alone which branch is currently serving a given window.
-
-        '
+      code: "**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving_cached_direct`\
+        \ -- a `UNION ALL` of the StarRocks materialized view `mv_unified_funnel_summary`\
+        \ (REFRESH MANUAL, frozen at last rebuild) and the Direct-from-Kafka path's\
+        \ rows (`funnel_summary_direct`, computed over the Routine-Load tables) newer\
+        \ than the MV's latest window.\n\n**No double-counting by construction:**\
+        \ the cutoff is `window_start > (SELECT MAX(window_start) FROM mv_unified_funnel_summary)`\
+        \ -- the MV branch contributes every window it has, the direct branch only\
+        \ windows strictly newer, so no window is served twice no matter when the\
+        \ MV was last refreshed. If the MV is refreshed later, it takes over those\
+        \ windows and the direct branch shrinks accordingly. An empty MV (fresh stack)\
+        \ falls back to the direct branch serving everything. RW-independent: verified\
+        \ live 2026-11-14 with the RisingWave containers stopped -- the view still\
+        \ resolved and served continuous 2026-09-05 \u2192 now data (965 frozen MV\
+        \ rows + fresh Routine-Load rows).\n\n\u2705 **Pros:** Fast (~0.2s), never\
+        \ blank, and no external catalog touched at query time -- unlike the live\
+        \ zero-copy charts (left above), this view survives the RW containers being\
+        \ stopped.\n\n\u274C **Cons:** The MV branch is only as fresh as its last\
+        \ rebuild (`REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary\
+        \ WITH SYNC MODE;` picks up new Databricks history); until then new windows\
+        \ come solely from the direct branch. There's no way to tell from the chart\
+        \ alone which branch is currently serving a given window.\n"
   ROW-5B:
     type: ROW
     id: ROW-5B
@@ -377,18 +404,23 @@ position:
     meta:
       width: 12
       height: 28
-      code: '**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving` — a zero-copy StarRocks view that `UNION ALL`s RisingWave (hot path, live JDBC) with the Databricks Iceberg REST Catalog (cold path, historical).
-
-
-        ⚠️ **For the "Last Hour" line chart above specifically, the Databricks branch contributes ZERO rows** -- confirmed via direct benchmark: querying the hot branch alone takes ~0.7s, but the full view (Databricks branch included) takes ~5.1s for the identical last-hour result. StarRocks still authenticates against the Iceberg REST catalog and reads its metadata on every query regardless, even though nothing useful comes back -- that wasted work is the entire reason this chart is slow. This is the mirror image of the Cached chart''s dead MV branch: there the dead branch is free to skip, here it costs ~4.3s every time. Databricks genuinely matters for the **Daily Totals (Live)** chart below, which queries all history and really does need it.
-
-
-        ✅ **Pros:** Always fresh — reflects RisingWave''s real-time state with zero staleness by construction, no refresh schedule to trust or forget.
-
-
-        ❌ **Cons:** Slow (~2-6s per query) for exactly the reason above.
-
-        '
+      code: "**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving` \u2014\
+        \ a zero-copy StarRocks view that `UNION ALL`s RisingWave (hot path, live\
+        \ JDBC) with the Databricks Iceberg REST Catalog (cold path, historical).\n\
+        \n\u26A0\uFE0F **For the \"Last Hour\" line chart above specifically, the\
+        \ Databricks branch contributes ZERO rows** -- confirmed via direct benchmark:\
+        \ querying the hot branch alone takes ~0.7s, but the full view (Databricks\
+        \ branch included) takes ~5.1s for the identical last-hour result. StarRocks\
+        \ still authenticates against the Iceberg REST catalog and reads its metadata\
+        \ on every query regardless, even though nothing useful comes back -- that\
+        \ wasted work is the entire reason this chart is slow. This is the mirror\
+        \ image of the Cached chart's dead MV branch: there the dead branch is free\
+        \ to skip, here it costs ~4.3s every time. Databricks genuinely matters for\
+        \ the **Daily Totals (Live)** chart below, which queries all history and really\
+        \ does need it.\n\n\u2705 **Pros:** Always fresh \u2014 reflects RisingWave's\
+        \ real-time state with zero staleness by construction, no refresh schedule\
+        \ to trust or forget.\n\n\u274C **Cons:** Slow (~2-6s per query) for exactly\
+        \ the reason above.\n"
   ROW-6B:
     type: ROW
     id: ROW-6B
@@ -410,18 +442,38 @@ position:
     meta:
       width: 12
       height: 42
-      code: '**Add-on: AGGREGATE KEY table-model demo (2026-09-13).** `funnel_daily_totals_agg` is a StarRocks `AGGREGATE KEY (day, country)` table -- one row per day, kept continuously summed at the storage layer by three independent Routine Load jobs reading the *raw* `page_views`/`cart_events`/`purchases` Kafka topics directly. No MV, no query-time `GROUP BY` -- `SELECT *` already shows the merged, running total.
-
-
-        **Deliberately not sourced from the `funnel` topic or the `funnel`/`funnel_summary` materialized views above**, even though those already compute viewers/carters/purchasers: confirmed live that both continuously re-emit a *growing* snapshot for the same still-open window (e.g. `viewers` climbing 1 -> 11 -> 21 -> ... for one `window_start`, not a single final row), despite `funnel_summary.sql`''s own comment claiming otherwise. Summing those revisions would massively over-count. The raw event topics have no such problem -- one message per real occurrence, genuinely append-only.
-
-
-        **`dbt-starrocks` cannot build this at all** -- checked the installed adapter''s own macro source: `table_type` only accepts `DUPLICATE`/`PRIMARY`/`UNIQUE` (raises a compiler error for `AGGREGATE`), and there''s no dbt materialization for Routine Load either. Built as a plain Dagster asset instead -- see `orchestration/assets/funnel_agg_key_setup.py` and `docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md`.
-
-
-        **On small differences vs. the Live and Cached Daily Totals charts above (2026-09-13):** unlike the wallet demo''s `AGGREGATE KEY` attempt (where the mismatch was structural and permanent — see [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md)), a small residual gap here (a few tenths of a percent) is just measurement-timing lag between two independently-refreshing live pipelines, not a semantic mismatch. Confirmed directly: computed both `COUNT(*)` raw page-view rows and `SUM(COUNT(DISTINCT user_id))` per 1-minute window from the *same* underlying `src_page` source at the same time — 9,515 vs. 9,521, within 0.06%. In this synthetic producer a user essentially never generates two page views in the same minute, so raw event count and distinct-viewers-per-window are structurally almost identical; any gap you see between this chart and the Daily Totals ones is just each side''s own ingestion lag (this table''s Routine Load batches every ~5s; the cached view has its own MV+RisingWave union lag), not a different definition of "viewers".
-
-        '
+      code: "**Add-on: AGGREGATE KEY table-model demo (2026-09-13).** `funnel_daily_totals_agg`\
+        \ is a StarRocks `AGGREGATE KEY (day, country)` table -- one row per day,\
+        \ kept continuously summed at the storage layer by three independent Routine\
+        \ Load jobs reading the *raw* `page_views`/`cart_events`/`purchases` Kafka\
+        \ topics directly. No MV, no query-time `GROUP BY` -- `SELECT *` already shows\
+        \ the merged, running total.\n\n**Deliberately not sourced from the `funnel`\
+        \ topic or the `funnel`/`funnel_summary` materialized views above**, even\
+        \ though those already compute viewers/carters/purchasers: confirmed live\
+        \ that both continuously re-emit a *growing* snapshot for the same still-open\
+        \ window (e.g. `viewers` climbing 1 -> 11 -> 21 -> ... for one `window_start`,\
+        \ not a single final row), despite `funnel_summary.sql`'s own comment claiming\
+        \ otherwise. Summing those revisions would massively over-count. The raw event\
+        \ topics have no such problem -- one message per real occurrence, genuinely\
+        \ append-only.\n\n**`dbt-starrocks` cannot build this at all** -- checked\
+        \ the installed adapter's own macro source: `table_type` only accepts `DUPLICATE`/`PRIMARY`/`UNIQUE`\
+        \ (raises a compiler error for `AGGREGATE`), and there's no dbt materialization\
+        \ for Routine Load either. Built as a plain Dagster asset instead -- see `orchestration/assets/funnel_agg_key_setup.py`\
+        \ and `docs/SR_POC_FUNNEL_AGGREGATE_KEY_DEMO.md`.\n\n**On small differences\
+        \ vs. the Live and Cached Daily Totals charts above (2026-09-13):** unlike\
+        \ the wallet demo's `AGGREGATE KEY` attempt (where the mismatch was structural\
+        \ and permanent \u2014 see [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md)),\
+        \ a small residual gap here (a few tenths of a percent) is just measurement-timing\
+        \ lag between two independently-refreshing live pipelines, not a semantic\
+        \ mismatch. Confirmed directly: computed both `COUNT(*)` raw page-view rows\
+        \ and `SUM(COUNT(DISTINCT user_id))` per 1-minute window from the *same* underlying\
+        \ `src_page` source at the same time \u2014 9,515 vs. 9,521, within 0.06%.\
+        \ In this synthetic producer a user essentially never generates two page views\
+        \ in the same minute, so raw event count and distinct-viewers-per-window are\
+        \ structurally almost identical; any gap you see between this chart and the\
+        \ Daily Totals ones is just each side's own ingestion lag (this table's Routine\
+        \ Load batches every ~5s; the cached view has its own MV+RisingWave union\
+        \ lag), not a different definition of \"viewers\".\n"
   ROW-AGGKEY-MDB:
     type: ROW
     id: ROW-AGGKEY-MDB

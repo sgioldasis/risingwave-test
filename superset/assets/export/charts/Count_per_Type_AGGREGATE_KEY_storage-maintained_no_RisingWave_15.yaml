@@ -1,0 +1,85 @@
+slice_name: "Count per Type \u2014 AGGREGATE KEY [storage-maintained, no RisingWave]"
+description: "Feature: AGGREGATE KEY table \u2014 per-type event counts maintained\
+  \ by the storage layer at ingestion. Value: same answer as query-time GROUP BY,\
+  \ but pre-computed on write; compare with the PK-table baseline (Count per Type).\
+  \ RisingWave: NOT USED \u2014 fed by Routine Load."
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 9__table
+  viz_type: echarts_timeseries_bar
+  groupby: []
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: event_count
+    aggregate: SUM
+    label: cnt
+    d3format: ',d'
+  adhoc_filters: []
+  row_limit: 100
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_value: true
+  annotation_layers: []
+  contributionMode: null
+  zoomable: false
+  markerEnabled: false
+  truncateYAxis: true
+  comparison_type: values
+  x_axis: type
+  stack: null
+  xAxisLabelRotation: 45
+  form_data_bak:
+    datasource: 9__table
+    viz_type: dist_bar
+    groupby:
+    - type
+    metrics:
+    - expressionType: SIMPLE
+      column:
+        column_name: event_count
+      aggregate: SUM
+      label: cnt
+      d3format: ',d'
+    adhoc_filters: []
+    row_limit: 100
+    time_range: No filter
+    timeseries_limit_metric:
+      label: type
+      sqlExpression: type
+      expressionType: SQL
+    order_desc: false
+    show_legend: true
+    show_bar_value: true
+    annotation_layers: []
+  queries_bak: null
+query_context: '{"datasource": {"id": 9, "type": "table"}, "force": false, "queries":
+  [{"filters": [], "extras": {"having": "", "where": ""}, "applied_time_extras": {},
+  "columns": [{"columnType": "BASE_AXIS", "sqlExpression": "type", "label": "type",
+  "expressionType": "SQL"}], "metrics": [{"expressionType": "SIMPLE", "column": {"column_name":
+  "event_count"}, "aggregate": "SUM", "label": "cnt", "d3format": ",d"}], "annotation_layers":
+  [], "row_limit": 100, "series_limit": 0, "order_desc": false, "url_params": {},
+  "custom_params": {}, "series_limit_metric": {"label": "type", "sqlExpression": "type",
+  "expressionType": "SQL"}, "custom_form_data": {}, "series_columns": [], "orderby":
+  [[{"label": "type", "sqlExpression": "type", "expressionType": "SQL"}, true]], "time_offsets":
+  [], "post_processing": [{"operation": "pivot", "options": {"index": ["type"], "columns":
+  [], "aggregates": {"cnt": {"operator": "mean"}}, "drop_missing_columns": true}},
+  {"operation": "flatten"}]}], "form_data": {"datasource": "9__table", "viz_type":
+  "echarts_timeseries_bar", "groupby": [], "metrics": [{"expressionType": "SIMPLE",
+  "column": {"column_name": "event_count"}, "aggregate": "SUM", "label": "cnt", "d3format":
+  ",d"}], "adhoc_filters": [], "row_limit": 100, "timeseries_limit_metric": {"label":
+  "type", "sqlExpression": "type", "expressionType": "SQL"}, "order_desc": false,
+  "show_legend": true, "show_value": true, "annotation_layers": [], "contributionMode":
+  null, "zoomable": false, "markerEnabled": false, "truncateYAxis": true, "comparison_type":
+  "values", "x_axis": "type", "stack": null, "xAxisLabelRotation": 45}, "result_format":
+  "json", "result_type": "full"}'
+cache_timeout: null
+uuid: 3e2b6bd7-e919-4230-a290-186438577a8b
+version: 1.0.0
+dataset_uuid: 6f9b1d86-a6cb-4b2f-8c3f-79e4ab346ef3

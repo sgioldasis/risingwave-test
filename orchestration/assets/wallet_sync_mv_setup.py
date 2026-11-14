@@ -77,7 +77,7 @@ FROM KAFKA (
 # COUNT(transaction_id) (a real column) works fine.
 CREATE_MV_SQL = f"""
 CREATE MATERIALIZED VIEW {SCHEMA}.{MV_NAME} AS
-SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
+SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count, MAX(event_time) AS last_event_time
 FROM {SCHEMA}.{TABLE}
 GROUP BY type
 """

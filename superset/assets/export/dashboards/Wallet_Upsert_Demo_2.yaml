@@ -55,26 +55,44 @@ position:
     meta:
       width: 12
       height: 37
-      code: '**Demo:** StarRocks Primary Key table upsert visibility, motivated by an internal PAM Operational Query Layer proposal that argues for StarRocks to serve upsert-heavy financial reads (reversals/corrections) directly from Kafka. See `docs/SR_POC_WALLET_UPSERT_DEMO.md`.
+      code: '**Demo:** StarRocks Primary Key table upsert visibility, motivated by
+        an internal PAM Operational Query Layer proposal that argues for StarRocks
+        to serve upsert-heavy financial reads (reversals/corrections) directly from
+        Kafka. See `docs/SR_POC_WALLET_UPSERT_DEMO.md`.
 
 
-        **Pipeline:** `scripts/wallet_producer.py` emits a synthetic transaction, then ~5s later a reversal for the *same* `transaction_id` -> RisingWave source (`src_wallet_transactions`) -> RisingWave''s native StarRocks sink in upsert mode (`sink_wallet_transactions_to_starrocks`) -> a genuine StarRocks Primary Key table (`wallet_transactions`), not a view/MV.
+        **Pipeline:** `scripts/wallet_producer.py` emits a synthetic transaction,
+        then ~5s later a reversal for the *same* `transaction_id` -> RisingWave source
+        (`src_wallet_transactions`) -> RisingWave''s native StarRocks sink in upsert
+        mode (`sink_wallet_transactions_to_starrocks`) -> a genuine StarRocks Primary
+        Key table (`wallet_transactions`), not a view/MV.
 
 
-        **Confirmed live (2026-09-12):** `count(*) == count(DISTINCT transaction_id)` -- every reversed transaction produced 2 Kafka events, but the table holds exactly 1 row per `transaction_id`, correctly showing the *latest* (reversed) state, not a duplicate. A single point lookup by `transaction_id` took ~90ms including `docker exec` overhead.
+        **Confirmed live (2026-09-12):** `count(*) == count(DISTINCT transaction_id)`
+        -- every reversed transaction produced 2 Kafka events, but the table holds
+        exactly 1 row per `transaction_id`, correctly showing the *latest* (reversed)
+        state, not a duplicate. A single point lookup by `transaction_id` took ~90ms
+        including `docker exec` overhead.
 
 
-        **Real issues found and fixed while building this** (see the doc for full detail): StarRocks''s CTAS always coerces DOUBLE/literal-float results to `decimal(38,9)` regardless of CAST, so `amount` is modeled as `decimal` end-to-end (arguably more correct for money anyway); RisingWave''s StarRocks sink flatly rejects `TIMESTAMP WITH TIME ZONE`, so `event_time` is cast to plain `TIMESTAMP` before the sink; `starrocks.mysqlport`/`starrocks.httpport` (one word) are the correct sink property names, not `query_port`/`http_port`.
+        **Real issues found and fixed while building this** (see the doc for full
+        detail): StarRocks''s CTAS always coerces DOUBLE/literal-float results to
+        `decimal(38,9)` regardless of CAST, so `amount` is modeled as `decimal` end-to-end
+        (arguably more correct for money anyway); RisingWave''s StarRocks sink flatly
+        rejects `TIMESTAMP WITH TIME ZONE`, so `event_time` is cast to plain `TIMESTAMP`
+        before the sink; `starrocks.mysqlport`/`starrocks.httpport` (one word) are
+        the correct sink property names, not `query_port`/`http_port`.
 
 
-        All data is synthetic (`scripts/wallet_producer.py`) -- no real accounts, amounts, or payment data anywhere in this pipeline.'
+        All data is synthetic (`scripts/wallet_producer.py`) -- no real accounts,
+        amounts, or payment data anywhere in this pipeline.'
   CHART-I080AVLI:
     children: []
     id: CHART-I080AVLI
     meta:
       chartId: 6
       height: 50
-      sliceName: Count per Type — query-time GROUP BY [via RisingWave sink]
+      sliceName: "Count per Type \u2014 query-time GROUP BY [via RisingWave sink]"
       uuid: 450cf43b-d5af-400a-b1e7-2030477bc096
       width: 3
     type: CHART
@@ -88,7 +106,8 @@ position:
     meta:
       chartId: 9
       height: 50
-      sliceName: Total Amount per Type — query-time GROUP BY [via RisingWave sink]
+      sliceName: "Total Amount per Type \u2014 query-time GROUP BY [via RisingWave\
+        \ sink]"
       uuid: 32b4d281-18f6-4b03-949b-a1f9bdeb1386
       width: 3
     type: CHART
@@ -102,7 +121,8 @@ position:
     meta:
       chartId: 4
       height: 50
-      sliceName: Wallet Transactions — Point Lookup (StarRocks Primary Key, upsert-verified)
+      sliceName: "Wallet Transactions \u2014 Point Lookup (StarRocks Primary Key,\
+        \ upsert-verified)"
       uuid: 7659cec0-3b9d-4f4c-8114-82df77689575
       width: 6
     type: CHART
@@ -146,7 +166,8 @@ position:
       chartId: 11
       width: 6
       height: 50
-      sliceName: Wallet Transactions — Point Lookup [direct Kafka -> StarRocks, no RisingWave]
+      sliceName: "Wallet Transactions \u2014 Point Lookup [direct Kafka -> StarRocks,\
+        \ no RisingWave]"
       uuid: 5a680acb-dd49-4045-85b5-358d06dc71df
   MARKDOWN-COMPARE:
     type: MARKDOWN
@@ -159,19 +180,34 @@ position:
     meta:
       width: 12
       height: 42
-      code: '### ✨ Primary Key table -- upsert visibility for point lookups
-
-        - **At a glance:** the [Primary Key table model](https://docs.starrocks.io/docs/table_design/table_types/primary_key_table/) -- every row carries a unique key, and a write with the same key replaces the old row (upsert). Rows land on the right via [Routine Load](https://docs.starrocks.io/docs/loading/kafka/RoutineLoad/) -- StarRocks''s built-in Kafka importer: a background job inside the database that continuously subscribes to a topic and pulls each batch of messages straight into the table, no external pipeline needed.
-
-        - **Why here:** wallet events (deposits, bets, reversals) stream in from Kafka. A reversal must cancel its original transaction -- StarRocks upserts on `transaction_id`, so the reversal overwrites the original row and the table always shows each transaction''s current state. Left: rows land via RisingWave''s native StarRocks sink; right: straight from Kafka via Routine Load.
-
-        - **Value:** without a store that upserts, "latest state" would be hand-rolled -- an extra consumer merging reversals into a database, or append-plus-dedupe at query time. Here the storage engine does the merge: a point lookup by `transaction_id` returns current truth in milliseconds, with zero custom merge code.
-
-        - **Expected lag between the two charts:** the left table is fed by the RisingWave sink (rows land per checkpoint) while the right one is fed by Routine Load, which commits a batch only every 5s -- the StarRocks-enforced floor for `max_batch_interval`. At any instant the right table therefore trails the left by up to ~5s / a handful of rows (verified 2026-11-14 at 1 event/s: exactly 5 rows / 5.0s behind, converging as the next batch lands). That gap is expected pipeline latency, not missing data.
-
-        - **RisingWave:** on the left, REQUIRED -- RisingWave is the streaming engine: it consumes the wallet Kafka topic, keeps the upsert state (each reversal replaces its original), and pushes merged rows into StarRocks through its native StarRocks sink. On the right, NOT USED -- Routine Load does the same job natively in StarRocks, which is why the right side keeps working when RW is down.
-
-        '
+      code: "### \u2728 Primary Key table -- upsert visibility for point lookups\n\
+        - **At a glance:** the [Primary Key table model](https://docs.starrocks.io/docs/table_design/table_types/primary_key_table/)\
+        \ -- every row carries a unique key, and a write with the same key replaces\
+        \ the old row (upsert). Rows land on the right via [Routine Load](https://docs.starrocks.io/docs/loading/kafka/RoutineLoad/)\
+        \ -- StarRocks's built-in Kafka importer: a background job inside the database\
+        \ that continuously subscribes to a topic and pulls each batch of messages\
+        \ straight into the table, no external pipeline needed.\n- **Why here:** wallet\
+        \ events (deposits, bets, reversals) stream in from Kafka. A reversal must\
+        \ cancel its original transaction -- StarRocks upserts on `transaction_id`,\
+        \ so the reversal overwrites the original row and the table always shows each\
+        \ transaction's current state. Left: rows land via RisingWave's native StarRocks\
+        \ sink; right: straight from Kafka via Routine Load.\n- **Value:** without\
+        \ a store that upserts, \"latest state\" would be hand-rolled -- an extra\
+        \ consumer merging reversals into a database, or append-plus-dedupe at query\
+        \ time. Here the storage engine does the merge: a point lookup by `transaction_id`\
+        \ returns current truth in milliseconds, with zero custom merge code.\n- **Expected\
+        \ lag between the two charts:** the left table is fed by the RisingWave sink\
+        \ (rows land per checkpoint) while the right one is fed by Routine Load, which\
+        \ commits a batch only every 5s -- the StarRocks-enforced floor for `max_batch_interval`.\
+        \ At any instant the right table therefore trails the left by up to ~5s /\
+        \ a handful of rows (verified 2026-11-14 at 1 event/s: exactly 5 rows / 5.0s\
+        \ behind, converging as the next batch lands). That gap is expected pipeline\
+        \ latency, not missing data.\n- **RisingWave:** on the left, REQUIRED -- RisingWave\
+        \ is the streaming engine: it consumes the wallet Kafka topic, keeps the upsert\
+        \ state (each reversal replaces its original), and pushes merged rows into\
+        \ StarRocks through its native StarRocks sink. On the right, NOT USED -- Routine\
+        \ Load does the same job natively in StarRocks, which is why the right side\
+        \ keeps working when RW is down.\n"
   ROW-COMPARE:
     type: ROW
     id: ROW-COMPARE
@@ -194,7 +230,8 @@ position:
       chartId: 12
       width: 12
       height: 50
-      sliceName: Wallet Transactions — Flagged via Partial Update [status-only writer, no RisingWave]
+      sliceName: "Wallet Transactions \u2014 Flagged via Partial Update [status-only\
+        \ writer, no RisingWave]"
       uuid: 7b0091f3-a82d-4ddd-8ab3-bb688d18578c
   ROW-PARTIAL:
     type: ROW
@@ -217,17 +254,18 @@ position:
     meta:
       width: 12
       height: 26
-      code: '### ✨ Partial column update -- independent writers, one row
-
-        - **At a glance:** [partial column update](https://docs.starrocks.io/docs/loading/Load_to_Primary_Key_tables/) -- one load can update only some columns of a Primary Key table row; the rest keep their values.
-
-        - **Why here:** a flagging service marks suspicious transactions by writing just the `status` column of `wallet_transactions_direct_kafka` -- it never sees, and must not overwrite, the rest of the row.
-
-        - **Value:** several independent systems can update the same row safely, with no read-modify-write cycles and no clobbered columns -- no coordination service needed.
-
-        - **RisingWave:** NOT USED -- nothing in this path needs a stream processor: the flagged rows land via Routine Load and the status-only writer is a StarRocks load job. The chart deliberately shows StarRocks handling multi-writer updates on its own.
-
-        '
+      code: "### \u2728 Partial column update -- independent writers, one row\n- **At\
+        \ a glance:** [partial column update](https://docs.starrocks.io/docs/loading/Load_to_Primary_Key_tables/)\
+        \ -- one load can update only some columns of a Primary Key table row; the\
+        \ rest keep their values.\n- **Why here:** a flagging service marks suspicious\
+        \ transactions by writing just the `status` column of `wallet_transactions_direct_kafka`\
+        \ -- it never sees, and must not overwrite, the rest of the row.\n- **Value:**\
+        \ several independent systems can update the same row safely, with no read-modify-write\
+        \ cycles and no clobbered columns -- no coordination service needed.\n- **RisingWave:**\
+        \ NOT USED -- nothing in this path needs a stream processor: the flagged rows\
+        \ land via Routine Load and the status-only writer is a StarRocks load job.\
+        \ The chart deliberately shows StarRocks handling multi-writer updates on\
+        \ its own.\n"
   ROW-PARTIAL-MD:
     type: ROW
     id: ROW-PARTIAL-MD
@@ -248,9 +286,10 @@ position:
     - ROW-SYNCMV
     meta:
       chartId: 13
-      width: 12
-      height: 50
-      sliceName: Wallet Type Breakdown — Synchronous Rollup MV [zero-lag, no REFRESH, no RisingWave]
+      width: 4
+      height: 34
+      sliceName: "Wallet Type Breakdown \u2014 Synchronous Rollup MV [zero-lag, no\
+        \ REFRESH, no RisingWave]"
       uuid: fc88c9ae-ce00-42eb-a60a-7400cfb725d5
   ROW-SYNCMV:
     type: ROW
@@ -272,18 +311,32 @@ position:
     - ROW-SYNCMV-MD
     meta:
       width: 12
-      height: 28
-      code: '### ✨ Synchronous rollup MV -- always-current aggregates
-
-        - **At a glance:** a [synchronous (rollup) materialized view](https://docs.starrocks.io/docs/using_starrocks/Materialized_view-single_table/) -- a pre-aggregated index on one base table that StarRocks updates in lockstep with every write, so it never needs a REFRESH and can never go stale. Contrast with an [asynchronous MV](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/): a separate table populated by a background REFRESH job, which can join many tables and use any aggregate function -- but is only as fresh as its last refresh. Sync MVs trade that flexibility for zero lag on a single table.
-
-        - **Why here:** `wallet_transactions_log` keeps every event as its own row; the rollup maintains type-level totals continuously, so the breakdown chart reads the rollup instead of scanning the log.
-
-        - **Value:** aggregates are always current -- zero REFRESH operations, zero staleness. An async MV would need a refresh schedule (stale windows); recomputing the GROUP BY at query time gets slower as the log grows.
-
-        - **RisingWave:** NOT USED -- the log table and its rollup MV are fed straight from Kafka by Routine Load. Synchronous MVs only exist inside StarRocks, so no external streaming engine could provide this anyway.
-
-        '
+      height: 41
+      code: "### \u2728 Synchronous rollup MV -- always-current aggregates\n\n- **At\
+        \ a glance:** a [synchronous (rollup) materialized view](https://docs.starrocks.io/docs/using_starrocks/Materialized_view-single_table/)\
+        \ -- a pre-aggregated index on one base table that StarRocks updates in lockstep\
+        \ with every write, so it never needs a REFRESH and can never go stale. Contrast\
+        \ with an [asynchronous MV](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/):\
+        \ a separate table populated by a background REFRESH job, which can join many\
+        \ tables and use any aggregate function -- but is only as fresh as its last\
+        \ refresh. Sync MVs trade that flexibility for zero lag on a single table.\n\
+        \n- **Why here:** `wallet_transactions_log` keeps every event as its own row;\
+        \ the rollup maintains type-level totals continuously, so the breakdown chart\
+        \ reads the rollup instead of scanning the log.\n\n- **Value:** aggregates\
+        \ are always current -- zero REFRESH operations, zero staleness. An async\
+        \ MV would need a refresh schedule (stale windows); recomputing the GROUP\
+        \ BY at query time gets slower as the log grows.\n\n- **RisingWave:** NOT\
+        \ USED -- the log table and its rollup MV are fed straight from Kafka by Routine\
+        \ Load. Synchronous MVs only exist inside StarRocks, so no external streaming\
+        \ engine could provide this anyway.\n\n- **Reading the pair (this chart +\
+        \ the AGGREGATE KEY totals below):** same question, two independent mechanisms\
+        \ -- query rewrite over the rollup vs storage-level merging. Each is fed by\
+        \ its **own Routine Load job batching every ~5s** (the StarRocks-enforced\
+        \ floor) on independent timers, so at any instant one table can be up to one\
+        \ batch (~5s of events at this producer's 1 TPS) ahead of the other. Small\
+        \ transient differences between the two tables are that batching lag, not\
+        \ missing data -- they converge within ~5s, and which side leads flips batch\
+        \ to batch.\n"
   ROW-SYNCMV-MD:
     type: ROW
     id: ROW-SYNCMV-MD
@@ -304,20 +357,11 @@ position:
     - ROW-AGGKEY
     meta:
       chartId: 14
-      width: 12
-      height: 50
-      sliceName: Wallet Type Totals — AGGREGATE KEY Table [storage-level SUM/REPLACE, no MV, no RisingWave]
+      width: 4
+      height: 34
+      sliceName: "Wallet Type Totals \u2014 AGGREGATE KEY Table [storage-level SUM/REPLACE,\
+        \ no MV, no RisingWave]"
       uuid: 28829e50-0497-4e74-b5fe-fd4e9722a7d3
-  ROW-AGGKEY:
-    type: ROW
-    id: ROW-AGGKEY
-    children:
-    - CHART-AGGKEY
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    meta:
-      background: BACKGROUND_TRANSPARENT
   MARKDOWN-AGGKEY:
     type: MARKDOWN
     id: MARKDOWN-AGGKEY
@@ -329,17 +373,18 @@ position:
     meta:
       width: 12
       height: 26
-      code: '### ✨ AGGREGATE KEY table -- the table is the running total
-
-        - **At a glance:** the [AGGREGATE KEY table model](https://docs.starrocks.io/docs/table_design/table_types/aggregate_table/) -- aggregation maintained by the storage engine itself: rows arriving with an already-seen key are merged via each column''s aggregate function.
-
-        - **Why here:** a Routine Load job writes one row per wallet type; repeated writes for the same type merge on the spot, so the table itself IS the running total.
-
-        - **Value:** running totals with no MV, no query-time GROUP BY, no refresh -- `SELECT *` returns the merged answer. (Deliberate contrast: it sums raw events, so a reversal still counts toward its type; the Primary Key table nets reversals out.)
-
-        - **RisingWave:** NOT USED -- Routine Load feeds the AGGREGATE table straight from the raw topics; the storage engine, not a stream processor, does the aggregating.
-
-        '
+      code: "### \u2728 AGGREGATE KEY table -- the table is the running total\n- **At\
+        \ a glance:** the [AGGREGATE KEY table model](https://docs.starrocks.io/docs/table_design/table_types/aggregate_table/)\
+        \ -- aggregation maintained by the storage engine itself: rows arriving with\
+        \ an already-seen key are merged via each column's aggregate function.\n-\
+        \ **Why here:** a Routine Load job writes one row per wallet type; repeated\
+        \ writes for the same type merge on the spot, so the table itself IS the running\
+        \ total.\n- **Value:** running totals with no MV, no query-time GROUP BY,\
+        \ no refresh -- `SELECT *` returns the merged answer. (Deliberate contrast:\
+        \ it sums raw events, so a reversal still counts toward its type; the Primary\
+        \ Key table nets reversals out.)\n- **RisingWave:** NOT USED -- Routine Load\
+        \ feeds the AGGREGATE table straight from the raw topics; the storage engine,\
+        \ not a stream processor, does the aggregating.\n"
   ROW-AGGKEY-MD:
     type: ROW
     id: ROW-AGGKEY-MD
@@ -362,7 +407,7 @@ position:
       chartId: 15
       width: 3
       height: 50
-      sliceName: Count per Type — AGGREGATE KEY [storage-maintained, no RisingWave]
+      sliceName: "Count per Type \u2014 AGGREGATE KEY [storage-maintained, no RisingWave]"
       uuid: 3e2b6bd7-e919-4230-a290-186438577a8b
   CHART-AGGAMOUNT:
     type: CHART
@@ -376,7 +421,8 @@ position:
       chartId: 16
       width: 3
       height: 50
-      sliceName: Total Amount per Type — AGGREGATE KEY [storage-maintained, no RisingWave]
+      sliceName: "Total Amount per Type \u2014 AGGREGATE KEY [storage-maintained,\
+        \ no RisingWave]"
       uuid: c299212a-437e-454e-8df4-9915dcb6fd54
   MARKDOWN-COMPAREB:
     type: MARKDOWN
@@ -389,15 +435,27 @@ position:
     meta:
       width: 12
       height: 61
-      code: '**Add-on comparison (2026-09-12, latency re-measured 2026-09-13):** the two tables above hold the same live `wallet_transactions` Kafka topic, ingested two different ways -- motivated by the internal PAM Operational Query Layer proposal, which specifically argues for StarRocks to serve upsert-heavy financial reads *directly from Kafka*, not via an intermediate stream processor.
+      code: '**Add-on comparison (2026-09-12, latency re-measured 2026-09-13):** the
+        two tables above hold the same live `wallet_transactions` Kafka topic, ingested
+        two different ways -- motivated by the internal PAM Operational Query Layer
+        proposal, which specifically argues for StarRocks to serve upsert-heavy financial
+        reads *directly from Kafka*, not via an intermediate stream processor.
 
 
-        - **Left (via RisingWave sink):** Kafka -> RisingWave source -> RisingWave upsert sink -> StarRocks. Tuned this session with `commit_checkpoint_interval = 1` (see `dbt/models/sink_wallet_transactions_to_starrocks.sql`), cutting lag from ~24-40s at the sink''s decoupled default (`commit_checkpoint_interval = 10`).
+        - **Left (via RisingWave sink):** Kafka -> RisingWave source -> RisingWave
+        upsert sink -> StarRocks. Tuned this session with `commit_checkpoint_interval
+        = 1` (see `dbt/models/sink_wallet_transactions_to_starrocks.sql`), cutting
+        lag from ~24-40s at the sink''s decoupled default (`commit_checkpoint_interval
+        = 10`).
 
-        - **Right (direct Kafka -> StarRocks):** a native StarRocks Routine Load job (`wallet_direct_kafka_load`, see `orchestration/assets/wallet_direct_kafka_setup.py`) reads the same topic straight into a second Primary Key table, no RisingWave involved at all.
+        - **Right (direct Kafka -> StarRocks):** a native StarRocks Routine Load job
+        (`wallet_direct_kafka_load`, see `orchestration/assets/wallet_direct_kafka_setup.py`)
+        reads the same topic straight into a second Primary Key table, no RisingWave
+        involved at all.
 
 
-        **Measured rigorously (12 samples, 3s apart, 2026-09-13) -- no consistent winner:**
+        **Measured rigorously (12 samples, 3s apart, 2026-09-13) -- no consistent
+        winner:**
 
 
         | | avg lag | min | max |
@@ -409,13 +467,26 @@ position:
         | Direct Kafka Routine Load | 3.36s | 0.7s | 5.7s |
 
 
-        Both hover in the same few-seconds band; which one looks "ahead" at any single glance just depends on where you catch each path''s own batch cycle (RisingWave commits every checkpoint, ~4s in this project''s tuned config; the Routine Load job''s `max_batch_interval` is 5s but lands bursty, not on a strict clock). An earlier version of this note claimed the direct path was consistently faster (~1-2s vs ~2-3s) based on a couple of single-point checks -- that wasn''t rigorous and the corrected, repeated measurement doesn''t support it.
+        Both hover in the same few-seconds band; which one looks "ahead" at any single
+        glance just depends on where you catch each path''s own batch cycle (RisingWave
+        commits every checkpoint, ~4s in this project''s tuned config; the Routine
+        Load job''s `max_batch_interval` is 5s but lands bursty, not on a strict clock).
+        An earlier version of this note claimed the direct path was consistently faster
+        (~1-2s vs ~2-3s) based on a couple of single-point checks -- that wasn''t
+        rigorous and the corrected, repeated measurement doesn''t support it.
 
 
-        Both confirmed upsert-correct: `COUNT(*) == COUNT(DISTINCT transaction_id)` holds on both tables, so a reversal event overwrites its original row either way -- the comparison is purely about architecture, not correctness or a clear latency win.
+        Both confirmed upsert-correct: `COUNT(*) == COUNT(DISTINCT transaction_id)`
+        holds on both tables, so a reversal event overwrites its original row either
+        way -- the comparison is purely about architecture, not correctness or a clear
+        latency win.
 
 
-        **Tradeoff:** the direct path is simpler -- one fewer moving part, one fewer thing that can lag or fail -- but RisingWave in the loop brings stream processing (joins, windowing, dedup, transformation) that a passthrough-only pipeline like this one doesn''t need; for a pipeline that DID need those, the direct-Kafka path wouldn''t be an option at all.
+        **Tradeoff:** the direct path is simpler -- one fewer moving part, one fewer
+        thing that can lag or fail -- but RisingWave in the loop brings stream processing
+        (joins, windowing, dedup, transformation) that a passthrough-only pipeline
+        like this one doesn''t need; for a pipeline that DID need those, the direct-Kafka
+        path wouldn''t be an option at all.
 
         '
   ROW-COMPAREB:
@@ -439,10 +510,21 @@ position:
     meta:
       width: 12
       height: 24
-      code: '**Add-on comparison (2026-09-12): partial-column update, no RisingWave.** The table above is filtered to `status = ''flagged''` on `wallet_transactions_direct_kafka` -- every row there was written by an *independent* StarRocks Routine Load job (`wallet_status_update_load`) reading a *separate* Kafka topic (`wallet_status_updates`) that carries only `{transaction_id, status}`, loaded with `"partial_update" = "true"`.
+      code: '**Add-on comparison (2026-09-12): partial-column update, no RisingWave.**
+        The table above is filtered to `status = ''flagged''` on `wallet_transactions_direct_kafka`
+        -- every row there was written by an *independent* StarRocks Routine Load
+        job (`wallet_status_update_load`) reading a *separate* Kafka topic (`wallet_status_updates`)
+        that carries only `{transaction_id, status}`, loaded with `"partial_update"
+        = "true"`.
 
 
-        That writer never sees `account_id`/`type`/`amount`/`event_time` at all -- yet the row above still has all of them, exactly as originally written by the *other* Routine Load job that ingests full transactions. This is a genuinely different write pattern from the upsert demo above: not "a new event replaces the whole row," but "two independent writers, each with partial knowledge of a row, converge on the same table" -- something a Unique Key table''s whole-row-replace model can''t express at all.
+        That writer never sees `account_id`/`type`/`amount`/`event_time` at all --
+        yet the row above still has all of them, exactly as originally written by
+        the *other* Routine Load job that ingests full transactions. This is a genuinely
+        different write pattern from the upsert demo above: not "a new event replaces
+        the whole row," but "two independent writers, each with partial knowledge
+        of a row, converge on the same table" -- something a Unique Key table''s whole-row-replace
+        model can''t express at all.
 
 
         See `orchestration/assets/wallet_direct_kafka_setup.py` and `docs/SR_POC_WALLET_UPSERT_DEMO.md`.
@@ -469,13 +551,29 @@ position:
     meta:
       width: 12
       height: 30
-      code: '**Add-on comparison (2026-09-13): synchronous (rollup) materialized view, no RisingWave.** The table above reads `wallet_transactions_log` -- a **Duplicate Key** table (keeps every event as a separate row, no upsert -- an original transaction and its reversal both land here, unlike the two Primary Key tables above which collapse them) fed by yet another StarRocks Routine Load job on the same `wallet_transactions` topic.
+      code: '**Add-on comparison (2026-09-13): synchronous (rollup) materialized view,
+        no RisingWave.** The table above reads `wallet_transactions_log` -- a **Duplicate
+        Key** table (keeps every event as a separate row, no upsert -- an original
+        transaction and its reversal both land here, unlike the two Primary Key tables
+        above which collapse them) fed by yet another StarRocks Routine Load job on
+        the same `wallet_transactions` topic.
 
 
-        Grouped over it is `mv_wallet_type_rollup`, a **synchronous** materialized view -- unlike every other MV in this project (`mv_unified_funnel_summary`, `mv_funnel_daily_country_rollup`, `mv_iceberg_countries_cache`), which are all *asynchronous* and need an explicit `REFRESH` to pick up new data, this one is maintained directly by the storage engine and updates in lockstep with every write -- **there is no `REFRESH` statement for it, it isn''t possible to issue one.** Confirmed via `EXPLAIN`: querying `wallet_transactions_log GROUP BY type` directly shows `rollup: mv_wallet_type_rollup` in the plan, same transparent redirection as the async query-rewrite demo, but with zero possible staleness.
+        Grouped over it is `mv_wallet_type_rollup`, a **synchronous** materialized
+        view -- unlike every other MV in this project (`mv_unified_funnel_summary`,
+        `mv_funnel_daily_country_rollup`, `mv_iceberg_countries_cache`), which are
+        all *asynchronous* and need an explicit `REFRESH` to pick up new data, this
+        one is maintained directly by the storage engine and updates in lockstep with
+        every write -- **there is no `REFRESH` statement for it, it isn''t possible
+        to issue one.** Confirmed via `EXPLAIN`: querying `wallet_transactions_log
+        GROUP BY type` directly shows `rollup: mv_wallet_type_rollup` in the plan,
+        same transparent redirection as the async query-rewrite demo, but with zero
+        possible staleness.
 
 
-        See `orchestration/assets/wallet_sync_mv_setup.py` and `docs/SR_POC_WALLET_UPSERT_DEMO.md` for two real StarRocks gotchas found while building this (`COUNT(*)` rejected by sync MV creation, `IF NOT EXISTS` not actually idempotent for sync MVs).
+        See `orchestration/assets/wallet_sync_mv_setup.py` and `docs/SR_POC_WALLET_UPSERT_DEMO.md`
+        for two real StarRocks gotchas found while building this (`COUNT(*)` rejected
+        by sync MV creation, `IF NOT EXISTS` not actually idempotent for sync MVs).
 
         '
   ROW-SYNCMV-MDB:
@@ -499,7 +597,27 @@ position:
     meta:
       width: 12
       height: 37
-      code: "**Add-on comparison (2026-09-13): AGGREGATE KEY table, storage-level incremental aggregation.** The table above (`wallet_type_totals_agg`) is a **third** way this project answers \"total amount / event count per type\", each via a structurally different mechanism:\n\n1. **Ad-hoc aggregate query** (the bar charts below) --\n   `SELECT type, SUM(amount) ... FROM wallet_transactions GROUP BY type`, computed at query time over the Primary Key table.\n2. **Synchronous rollup MV** (above) -- a query-time *rewrite* to a pre-merged rollup index over the Duplicate Key log table.\n3. **AGGREGATE KEY table (here)** -- the table itself IS the answer. On ingest, a Routine Load job (`wallet_type_totals_agg_load`) writes one row per `type`; when a second row for the same key arrives, StarRocks merges it via each column's own aggregate function -- `SUM` for `total_amount`/`event_count`, `REPLACE` (keep only the latest value) for `last_event_time` -- confirmed live: two events summed correctly with no MV, no `GROUP BY`, not even a compaction wait: `SELECT *`/`COUNT(*)` reflect the merged, one-row-per-key state immediately.\n\n**Numbers won't match the other two exactly, and that's expected, not a bug:** this table sums every *raw* event by its own `type` -- a `bet` that later gets reversed still counts toward `bet`'s gross total here, with its `reversal` counted separately. The Primary Key table's aggregate instead nets reversals out (upsert collapses each `transaction_id` to its latest state, moving it out of its original `type` bucket entirely). Same-ish question, genuinely different answer depending on which table you ask.\n"
+      code: "**Add-on comparison (2026-09-13): AGGREGATE KEY table, storage-level\
+        \ incremental aggregation.** The table above (`wallet_type_totals_agg`) is\
+        \ a **third** way this project answers \"total amount / event count per type\"\
+        , each via a structurally different mechanism:\n\n1. **Ad-hoc aggregate query**\
+        \ (the bar charts below) --\n   `SELECT type, SUM(amount) ... FROM wallet_transactions\
+        \ GROUP BY type`, computed at query time over the Primary Key table.\n2. **Synchronous\
+        \ rollup MV** (above) -- a query-time *rewrite* to a pre-merged rollup index\
+        \ over the Duplicate Key log table.\n3. **AGGREGATE KEY table (here)** --\
+        \ the table itself IS the answer. On ingest, a Routine Load job (`wallet_type_totals_agg_load`)\
+        \ writes one row per `type`; when a second row for the same key arrives, StarRocks\
+        \ merges it via each column's own aggregate function -- `SUM` for `total_amount`/`event_count`,\
+        \ `REPLACE` (keep only the latest value) for `last_event_time` -- confirmed\
+        \ live: two events summed correctly with no MV, no `GROUP BY`, not even a\
+        \ compaction wait: `SELECT *`/`COUNT(*)` reflect the merged, one-row-per-key\
+        \ state immediately.\n\n**Numbers won't match the other two exactly, and that's\
+        \ expected, not a bug:** this table sums every *raw* event by its own `type`\
+        \ -- a `bet` that later gets reversed still counts toward `bet`'s gross total\
+        \ here, with its `reversal` counted separately. The Primary Key table's aggregate\
+        \ instead nets reversals out (upsert collapses each `transaction_id` to its\
+        \ latest state, moving it out of its original `type` bucket entirely). Same-ish\
+        \ question, genuinely different answer depending on which table you ask.\n"
   ROW-AGGKEY-MDB:
     type: ROW
     id: ROW-AGGKEY-MDB
@@ -521,22 +639,40 @@ position:
     meta:
       width: 12
       height: 34
-      code: '### ✨ Query-time GROUP BY vs storage-maintained AGGREGATE KEY
-
-        - **At a glance:** the same two questions -- event count and total amount per wallet type -- each answered by a different StarRocks mechanism: the left pair runs a query-time [GROUP BY](https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT_GROUP_BY/) over the [Primary Key table](https://docs.starrocks.io/docs/table_design/table_types/primary_key_table/) (aggregation computed when you query); the right pair reads from the [AGGREGATE KEY table model](https://docs.starrocks.io/docs/table_design/table_types/aggregate_table/) (aggregation pre-merged at ingestion).
-
-        - **Why here:** the left pair runs a query-time GROUP BY over the Primary Key table (via the RisingWave sink) -- the baseline any SQL store gives you. The right pair reads the same numbers from the AGGREGATE KEY table that merged them at ingestion (Routine Load, no RisingWave).
-
-        - **Value:** the charts look near-identical; the mechanisms are not. GROUP BY re-aggregates the table on every load; AGGREGATE KEY serves a pre-merged answer -- this row is the A/B comparison of where aggregation should live.
-
-        - **RisingWave:** left pair REQUIRED -- it streams wallet events into the Primary Key table that the GROUP BY reads. Right pair NOT USED -- the AGGREGATE table is fed by Routine Load directly, so this comparison also isolates what RisingWave does (stream into StarRocks) from what StarRocks does (store and merge).
-
-        '
+      code: "### \u2728 Query-time GROUP BY vs storage-maintained AGGREGATE KEY\n\
+        - **At a glance:** the same two questions -- event count and total amount\
+        \ per wallet type -- each answered by a different StarRocks mechanism: the\
+        \ left pair runs a query-time [GROUP BY](https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT_GROUP_BY/)\
+        \ over the [Primary Key table](https://docs.starrocks.io/docs/table_design/table_types/primary_key_table/)\
+        \ (aggregation computed when you query); the right pair reads from the [AGGREGATE\
+        \ KEY table model](https://docs.starrocks.io/docs/table_design/table_types/aggregate_table/)\
+        \ (aggregation pre-merged at ingestion).\n- **Why here:** the left pair runs\
+        \ a query-time GROUP BY over the Primary Key table (via the RisingWave sink)\
+        \ -- the baseline any SQL store gives you. The right pair reads the same numbers\
+        \ from the AGGREGATE KEY table that merged them at ingestion (Routine Load,\
+        \ no RisingWave).\n- **Value:** the charts look near-identical; the mechanisms\
+        \ are not. GROUP BY re-aggregates the table on every load; AGGREGATE KEY serves\
+        \ a pre-merged answer -- this row is the A/B comparison of where aggregation\
+        \ should live.\n- **RisingWave:** left pair REQUIRED -- it streams wallet\
+        \ events into the Primary Key table that the GROUP BY reads. Right pair NOT\
+        \ USED -- the AGGREGATE table is fed by Routine Load directly, so this comparison\
+        \ also isolates what RisingWave does (stream into StarRocks) from what StarRocks\
+        \ does (store and merge).\n"
   ROW-CHARTS-MD:
     type: ROW
     id: ROW-CHARTS-MD
     children:
     - MARKDOWN-CHARTS
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  ROW-AGGKEY:
+    type: ROW
+    id: ROW-AGGKEY
+    children:
+    - CHART-AGGKEY
     parents:
     - ROOT_ID
     - GRID_ID

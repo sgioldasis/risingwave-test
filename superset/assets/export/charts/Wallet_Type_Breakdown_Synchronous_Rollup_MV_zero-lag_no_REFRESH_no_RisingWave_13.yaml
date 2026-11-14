@@ -1,0 +1,54 @@
+slice_name: "Wallet Type Breakdown \u2014 Synchronous Rollup MV [zero-lag, no REFRESH,\
+  \ no RisingWave]"
+description: "Feature: synchronous (rollup) materialized view \u2014 storage-maintained\
+  \ aggregate that updates in lockstep with every write; no REFRESH statement exists.\
+  \ Value: aggregates with zero possible staleness and zero refresh ops; the optimizer\
+  \ rewrites the GROUP BY query to the rollup transparently. RisingWave: NOT USED\
+  \ \u2014 base table wallet_transactions_log is fed by Routine Load."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 8__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - type
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: amount
+    aggregate: SUM
+    label: total_amount
+    d3format: ',.2f'
+  - expressionType: SIMPLE
+    column:
+      column_name: transaction_id
+    aggregate: COUNT
+    label: event_count
+    d3format: ',d'
+  - expressionType: SIMPLE
+    column:
+      column_name: event_time
+    aggregate: MAX
+    label: last_event_time
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  time_range: No filter
+  annotation_layers: []
+  comparison_type: values
+  column_config:
+    total_amount:
+      d3NumberFormat: ',.2f'
+    event_count:
+      d3NumberFormat: ',d'
+    last_event_time:
+      columnWidth: 150
+query_context: '{"datasource":{"id":8,"type":"table"},"force":true,"queries":[{"time_range":"No
+  filter","filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["type"],"metrics":[{"aggregate":"SUM","column":{"column_name":"amount"},"d3format":",.2f","expressionType":"SIMPLE","label":"total_amount"},{"aggregate":"COUNT","column":{"column_name":"transaction_id"},"d3format":",d","expressionType":"SIMPLE","label":"event_count"}],"orderby":[[{"aggregate":"SUM","column":{"column_name":"amount"},"d3format":",.2f","expressionType":"SIMPLE","label":"total_amount"},false]],"annotation_layers":[],"row_limit":100,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"post_processing":[],"time_offsets":[]}],"form_data":{"adhoc_filters":[],"alignPositiveNegative":false,"annotation_layers":[],"column_config":{"total_amount":{"alignPositiveNegative":false,"colorPositiveNegative":true,"showCellBars":true}},"comparison_type":"values","datasource":"8__table","groupby":["type"],"metrics":[{"aggregate":"SUM","column":{"column_name":"amount"},"d3format":",.2f","expressionType":"SIMPLE","label":"total_amount"},{"aggregate":"COUNT","column":{"column_name":"transaction_id"},"d3format":",d","expressionType":"SIMPLE","label":"event_count"}],"order_by_cols":[],"query_mode":"aggregate","row_limit":100,"server_pagination":false,"slice_id":13,"time_range":"No
+  filter","viz_type":"table","force":true,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+cache_timeout: null
+uuid: fc88c9ae-ce00-42eb-a60a-7400cfb725d5
+version: 1.0.0
+dataset_uuid: e504661f-b020-4438-866e-d06f8309e625

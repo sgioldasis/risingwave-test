@@ -12,5 +12,7 @@ extra:
   engine_params: {}
   metadata_cache_timeout: {}
   schemas_allowed_for_file_upload: []
+impersonate_user: false
+configuration_method: sqlalchemy_form
 uuid: b504b2eb-4a64-4ef3-a652-ac83bf373576
 version: 1.0.0
