@@ -65,7 +65,7 @@ All the objects below are in the StarRocks database `sr_local_db_sr_local_db`.
 | `mv_unified_funnel_summary`, `mv_iceberg_countries_cache`, `dashboard_funnel_serving_cached` | MVs and a view | The earlier cached design, kept on purpose for the side-by-side comparison (part 1). The first is refreshed manually, the second every 20 seconds. |
 | `funnel_daily_totals_agg` | `AGGREGATE KEY` table | Viewers, carters and purchasers summed at the storage layer by three Routine Load jobs on `page_views`, `cart_events` and `purchases`. |
 | `wallet_transactions` | Primary Key table | Fed by a RisingWave upsert sink. |
-| `wallet_transactions_direct_kafka` | Primary Key table | Same data from Kafka by Routine Load `wallet_direct_kafka_load`, no RisingWave. A second job, `wallet_status_update_load`, writes only the `status` column. |
+| `wallet_transactions_direct_kafka` | Primary Key table | Same data from Kafka by Routine Load `wallet_direct_kafka_load`, no RisingWave. A second job, `wallet_status_update_load`, writes only the `status` column. Routine Load batches every 5s (the enforced floor) while the RisingWave sink lands rows per checkpoint, so this table trails `wallet_transactions` by up to ~5s at any instant — expected latency on the side-by-side point-lookup charts, not missing data. |
 | `wallet_transactions_log` and `mv_wallet_type_rollup` | Duplicate Key table and synchronous MV | Every event kept as a row; the rollup is maintained on every write. |
 | `wallet_type_totals_agg` | `AGGREGATE KEY` table | Totals per type, used to show that gross and net totals differ. |
 

@@ -182,6 +182,15 @@ exists but has **zero rows** immediately after — this job's
 `materialized='table'` model always drops and recreates the table on every
 run (this is expected, not a bug; see
 [SR_POC_WALLET_UPSERT_DEMO.md](SR_POC_WALLET_UPSERT_DEMO.md#rebuilding-the-job-wipes-the-starrocks-table-expected-not-a-bug)).
+
+Once the producer runs, the RisingWave-sink table and the direct-Kafka
+table never show the exact same newest row at the same moment: the sink
+lands rows per checkpoint while Routine Load commits every 5s (the
+StarRocks-enforced `max_batch_interval` floor), so
+`wallet_transactions_direct_kafka` trails `wallet_transactions` by up to
+~5s / a handful of rows on the side-by-side point-lookup charts —
+expected pipeline latency, not missing data (verified 2026-11-14: exactly
+5 rows / 5.0s behind at 1 TPS, converging).
 The direct-Kafka table, by contrast, is **not** wiped on every run (the
 Dagster asset is idempotent — it only creates the table/Routine Load job if
 missing, and the Routine Load job itself replays from `OFFSET_BEGINNING`

@@ -94,7 +94,7 @@ position:
 
         - **Value:** the mirror-image trade-off -- freshness vs independence. Detailed data-source notes for both views below.
 
-        - **How this differs from the section above:** that pair showed two *ingestion* paths into StarRocks (stream processor vs Routine Load); this pair shows two *serving* paths out of it -- a live federated query paying the external-catalog cost on every load vs a precomputed cache that doesn't. Same charts, same window, deliberately -- so cost and RW-dependence are the only variables.
+        - **How this differs from the section above:** that pair showed two *ingestion* paths into StarRocks (stream processor vs Routine Load); this pair shows two *serving* paths out of it -- a live federated query paying the external-catalog cost on every load vs a precomputed cache that doesn''t. Same charts, same window, deliberately -- so cost and RW-dependence are the only variables.
 
         '
   ROW-DT-MD:

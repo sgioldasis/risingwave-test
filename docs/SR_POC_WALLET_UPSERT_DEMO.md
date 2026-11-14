@@ -408,6 +408,15 @@ with the existing one (renamed to "... [via RisingWave sink]" for clarity),
 plus a markdown block explaining the comparison. See "Superset" section
 above for the general dashboard layout.
 
+**Expected instant difference between the two charts:** the RisingWave
+sink lands rows per checkpoint while the Routine Load job commits only
+every `max_batch_interval` (5s, the StarRocks-enforced floor), so at any
+instant `wallet_transactions_direct_kafka` trails `wallet_transactions`
+by up to ~5s / a handful of rows. Verified 2026-11-14 at 1 TPS: exactly
+5 rows / 5.0s behind, converging as the next batch lands. The two charts
+rarely show the same newest row at the same moment — that is expected
+pipeline latency, not missing data.
+
 **Real issue found:** the new chart rendered as "There is no chart
 definition associated with this component" in the dashboard even though the
 chart existed and its `position_json` node looked correct (right `chartId`,

@@ -158,7 +158,7 @@ position:
     - ROW-COMPARE
     meta:
       width: 12
-      height: 34
+      height: 42
       code: '### ✨ Primary Key table -- upsert visibility for point lookups
 
         - **At a glance:** the [Primary Key table model](https://docs.starrocks.io/docs/table_design/table_types/primary_key_table/) -- every row carries a unique key, and a write with the same key replaces the old row (upsert). Rows land on the right via [Routine Load](https://docs.starrocks.io/docs/loading/kafka/RoutineLoad/) -- StarRocks''s built-in Kafka importer: a background job inside the database that continuously subscribes to a topic and pulls each batch of messages straight into the table, no external pipeline needed.
@@ -166,6 +166,8 @@ position:
         - **Why here:** wallet events (deposits, bets, reversals) stream in from Kafka. A reversal must cancel its original transaction -- StarRocks upserts on `transaction_id`, so the reversal overwrites the original row and the table always shows each transaction''s current state. Left: rows land via RisingWave''s native StarRocks sink; right: straight from Kafka via Routine Load.
 
         - **Value:** without a store that upserts, "latest state" would be hand-rolled -- an extra consumer merging reversals into a database, or append-plus-dedupe at query time. Here the storage engine does the merge: a point lookup by `transaction_id` returns current truth in milliseconds, with zero custom merge code.
+
+        - **Expected lag between the two charts:** the left table is fed by the RisingWave sink (rows land per checkpoint) while the right one is fed by Routine Load, which commits a batch only every 5s -- the StarRocks-enforced floor for `max_batch_interval`. At any instant the right table therefore trails the left by up to ~5s / a handful of rows (verified 2026-11-14 at 1 event/s: exactly 5 rows / 5.0s behind, converging as the next batch lands). That gap is expected pipeline latency, not missing data.
 
         - **RisingWave:** on the left, REQUIRED -- RisingWave is the streaming engine: it consumes the wallet Kafka topic, keeps the upsert state (each reversal replaces its original), and pushes merged rows into StarRocks through its native StarRocks sink. On the right, NOT USED -- Routine Load does the same job natively in StarRocks, which is why the right side keeps working when RW is down.
 

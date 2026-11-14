@@ -65,6 +65,12 @@ FROM KAFKA (
 )
 """
 
+# Like every Routine Load path here (see wallet_direct_kafka_setup.py),
+# this one batches on max_batch_interval = 5 (the StarRocks-enforced
+# floor), so wallet_transactions_log trails the RisingWave-sink table
+# (wallet_transactions) by up to ~5s at any instant -- expected pipeline
+# latency on the side-by-side dashboard, not missing data.
+
 # COUNT(*) is rejected by synchronous MV creation -- confirmed live:
 # "The materialized view currently does not support const expr in select
 # statement: {}. Please use Asynchronous Materialized View instead."

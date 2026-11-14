@@ -1,6 +1,6 @@
 slice_name: "Wallet Transactions \u2014 Point Lookup [direct Kafka -> StarRocks, no\
   \ RisingWave]"
-description: "Feature: Routine Load JSON ingestion into a Primary Key table (upsert-on-key at load time). Value: the same dedupe/correctness as the RW sink with zero stream processing — RisingWave is optional even for upsert workloads (left/right pair). RisingWave: NOT USED."
+description: "Feature: Routine Load JSON ingestion into a Primary Key table (upsert-on-key at load time). Value: the same dedupe/correctness as the RW sink with zero stream processing — RisingWave is optional even for upsert workloads (left/right pair). RisingWave: NOT USED. Note: Routine Load batches every 5s (the StarRocks-enforced max_batch_interval floor) while the RW sink lands rows per checkpoint, so this table trails the [via RisingWave sink] chart by up to ~5s at any instant — expected pipeline latency, not missing data."
 certified_by: null
 certification_details: null
 viz_type: table

@@ -77,6 +77,15 @@ FROM KAFKA (
 # max_batch_interval has a hard floor of 5s -- confirmed live, "3" is
 # rejected with "max_batch_interval should >= 5". 5s is still a fair
 # comparison against the RisingWave path's ~2-3s tuned latency.
+#
+# Consequence for the side-by-side demo: the RisingWave upsert sink lands
+# rows row-by-row (per checkpoint), while this Routine Load only commits
+# every max_batch_interval -- so at any instant this table trails
+# wallet_transactions by up to ~5s / a handful of rows. Verified
+# 2026-11-14 at 1 TPS: exactly 5 rows / 5.0s behind, converging as the
+# next batch lands. The gap between the two point-lookup charts on the
+# Wallet Upsert Demo dashboard is expected pipeline latency, not missing
+# data.
 
 # Second Routine Load job on the SAME table: reads an independent
 # 'wallet_status_updates' topic carrying only {transaction_id, status} (a

@@ -70,6 +70,15 @@ FROM KAFKA (
     "property.kafka_default_offsets" = "OFFSET_BEGINNING"
 )
 """
+# max_batch_interval = 5 is the StarRocks-enforced floor ("3" is rejected
+# with "max_batch_interval should >= 5", same as the wallet loaders -- see
+# orchestration/assets/wallet_direct_kafka_setup.py). Consequence for any
+# side-by-side comparison against a RisingWave-fed table: the RW sink
+# lands rows per checkpoint while this Routine Load commits only every 5s,
+# so the _direct tables trail by up to ~5s / a few rows at any instant --
+# expected pipeline latency, not missing data (verified 2026-11-14 on the
+# wallet twin of this comparison: exactly 5 rows / 5.0s behind at 1 TPS,
+# converging).
 
 
 # Same window/funnel semantics as dbt/models/funnel_summary.sql (1-minute
