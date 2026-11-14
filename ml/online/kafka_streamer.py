@@ -75,8 +75,19 @@ class KafkaDataStreamer:
         conf = {
             'bootstrap.servers': self.KAFKA_BOOTSTRAP_SERVERS,
             'group.id': 'river-online-learning',
-            'auto.offset.reset': 'latest',
-            'enable.auto.commit': True,
+            # 'earliest' so a fresh consumer group replays the funnel topic's
+            # history: with RisingWave paused the topic gets no NEW messages
+            # (RW's sink is its producer), and 'latest' would leave the
+            # learner at 0 records -- /predict null -- until RW resumes.
+            # Replaying history trains the model immediately (2026-11-14).
+            'auto.offset.reset': 'earliest',
+            # NO auto-commit: confluent-kafka commits the fetch position,
+            # which runs ahead of what the poll loop actually processed --
+            # a service restart mid-replay then committed a tip position
+            # the learner never reached, silently skipping the backlog
+            # (TOTAL-LAG 0 at learning_count 170, 2026-11-14). Commit
+            # manually after each processed message instead.
+            'enable.auto.commit': False,
         }
         
         while self._running:
@@ -98,7 +109,14 @@ class KafkaDataStreamer:
                         # Deserialize message
                         data = json.loads(msg.value().decode('utf-8'))
                         self._process_message(data)
-                            
+                        # Commit only after the record was actually learned,
+                        # so a restart resumes from real progress, not the
+                        # fetch position (see the enable.auto.commit note).
+                        try:
+                            self.consumer.commit(msg, asynchronous=False)
+                        except Exception as commit_error:
+                            logger.error(f"Offset commit error: {commit_error}")
+ 
                     except Exception as e:
                         logger.error(f"Error processing message: {e}")
                         time.sleep(1)

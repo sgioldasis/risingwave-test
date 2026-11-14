@@ -21,6 +21,46 @@ class KafkaRiverPrediction:
     kafka_connected: bool
 
 
+# Training source for the online learner: 'starrocks' polls the RW-free
+# funnel windows StarRocks maintains via Routine Load + async MV (works
+# while RisingWave is paused); 'kafka' consumes the RW-fed funnel topic.
+ML_LEARNING_SOURCE = os.getenv('ML_LEARNING_SOURCE', 'starrocks')
+
+# StarRocks connection for the recency-first prediction path (same envs
+# the StarRocksDataStreamer trains through).
+SR_HOST = os.getenv('STARROCKS_HOST', 'localhost')
+SR_PORT = int(os.getenv('STARROCKS_PORT', '9030'))
+SR_USER = os.getenv('STARROCKS_USER', 'root')
+SR_PASSWORD = os.getenv('STARROCKS_PASSWORD', '')
+SR_DB = os.getenv('STARROCKS_DB', 'sr_local_db_sr_local_db')
+
+# Recency-first prediction (2026-09-09 behavior, ported 2026-11-14 to the
+# StarRocks path): weighted average over the last N COMPLETED 20s windows,
+# pro-rated to a minute. The original fix used 100% newest window; the
+# 2026-11-14 tuning made the window count per metric -- wobble is a
+# sample-size problem, not a weights problem: viewers see ~20 events per
+# 20s slice (3 slices suffice), purchasers ~2 (even 3 slices is a coin
+# flip, e.g. predicted 9 vs 16 actual on one thin slice). A stage's
+# reaction window is sized to how fast its own volume can reveal a real
+# change; geometric decay keeps the newest window dominant everywhere.
+# The original lived in river_predictor.py reading RW's funnel view; this
+# reads StarRocks's 20s view over the raw Routine-Load tables instead --
+# same shape, no RW.
+RECENT_TABLE = os.getenv('ML_RECENT_WINDOWS_TABLE', 'funnel_summary_direct_20s')
+RECENT_DECAY = 0.7  # weight of each older window relative to the one after it
+RECENT_WINDOWS_PER_METRIC = {
+    'viewers': 3,            # ~20 events/slice -> 60s reaction is stable
+    'carters': 5,            # ~5 events/slice
+    'purchasers': 9,         # ~2 events/slice -> needs ~3 minutes of slices
+    'view_to_cart_rate': 5,  # ratios inherit the small-count noise
+    'cart_to_buy_rate': 5,
+}
+# A window is finalized once its window_end has passed plus ingest slack:
+# Routine Load batches every max_batch_interval=5s, so a just-closed
+# window can still be missing its last events for a few seconds.
+FINALIZE_SLACK_SECONDS = 5
+
+
 class KafkaRiverModelPredictor:
     """
     Predictor using Kafka-based River online learning models.
@@ -41,23 +81,80 @@ class KafkaRiverModelPredictor:
     def __init__(self, auto_start: bool = True):
         """
         Initialize the Kafka-based River predictor.
-        
+
         Args:
             auto_start: Whether to start the online learner automatically
         """
-        self.learner = get_kafka_learner(auto_start=auto_start)
+        if ML_LEARNING_SOURCE == 'starrocks':
+            from ..online.starrocks_streamer import StarRocksDataStreamer
+            streamer = StarRocksDataStreamer()
+        else:
+            streamer = None  # KafkaDataStreamer default
+        self.learner = get_kafka_learner(auto_start=auto_start, streamer=streamer)
         self._db_connection_params = {
             'host': self.DB_HOST,
             'port': self.DB_PORT,
             'database': self.DB_NAME,
             'user': self.DB_USER,
-            'password': self.DB_PASSWORD
+            'password': self.DB_PASSWORD,
+            # Bound the fallback paths (lag/MA fetch): RW paused must not
+            # hang /predict -- the primary feature path no longer touches
+            # RW at all (see _build_current_features).
+            'connect_timeout': 2,
         }
     
     def _get_db_connection(self):
         """Create and return a database connection."""
         return psycopg2.connect(**self._db_connection_params)
     
+    def _fetch_recent_prediction(self, metric: str) -> Optional[float]:
+        """Predict the next minute from finalized 20s windows only.
+
+        Port of the 2026-09-09 recency fix (see RECENT_WINDOWS_PER_METRIC):
+        newest-weighted average over the last N COMPLETED windows (N sized
+        to the stage's event volume), counts pro-rated x3 to per-minute,
+        ratios averaged as-is. Reads StarRocks's live 20s view -- no RW
+        anywhere in the path.
+        """
+        n_windows = RECENT_WINDOWS_PER_METRIC.get(metric, 3)
+        try:
+            import pymysql
+            conn = pymysql.connect(
+                host=SR_HOST, port=SR_PORT, user=SR_USER,
+                password=SR_PASSWORD, database=SR_DB, connect_timeout=2,
+            )
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(f"""
+                        SELECT {metric}
+                        FROM {RECENT_TABLE}
+                        WHERE {metric} IS NOT NULL
+                          AND window_end <= CURRENT_TIMESTAMP() - INTERVAL {FINALIZE_SLACK_SECONDS} SECOND
+                        ORDER BY window_start DESC
+                        LIMIT {n_windows}
+                    """)
+                    rows = cursor.fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"Warning: recent-window fetch failed: {e}")
+            return None
+
+        values = [float(r[0]) for r in rows]  # newest first
+        if not values:
+            return None
+
+        weights = [RECENT_DECAY ** i for i in range(len(values))]
+        weighted_avg = sum(v * w for v, w in zip(values, weights)) / sum(weights)
+
+        if metric in ('view_to_cart_rate', 'cart_to_buy_rate'):
+            # Ratios don't accumulate across windows like counts do --
+            # the weighted average is already the right shape.
+            return weighted_avg
+
+        # Counts are per-20s-window; project to per-minute.
+        return weighted_avg * 3
+
     def predict(self, metric: str, features: Optional[Dict[str, float]] = None) -> Optional[KafkaRiverPrediction]:
         """
         Make prediction using Kafka-based River online learning model.
@@ -71,7 +168,26 @@ class KafkaRiverModelPredictor:
         """
         if features is None:
             features = self._build_current_features()
-        
+
+        # Recency-first (2026-09-09 behavior restored 2026-11-14): the
+        # newest completed window reacts to a rate change within one
+        # 20s cycle, while the River regression needs several windows to
+        # follow a level shift. Recent windows win whenever they exist;
+        # the River model takes over only when they don't (StarRocks
+        # unreachable / empty).
+        recent_value = self._fetch_recent_prediction(metric)
+        if recent_value is not None:
+            samples_learned = self.learner.models.get_stats(metric).get('learning_count', 0)
+            print(f"[Recent] {metric}: value={recent_value:.2f} "
+                  f"(river fallback available, samples={samples_learned})")
+            return KafkaRiverPrediction(
+                value=round(recent_value, 2),
+                confidence=0.9,
+                model_type=f"recent_window_{ML_LEARNING_SOURCE}",
+                samples_learned=samples_learned,
+                kafka_connected=self.learner.streamer.is_connected()
+            )
+
         # Get prediction from online learner
         value = self.learner.predict(metric, features)
         
@@ -124,7 +240,7 @@ class KafkaRiverModelPredictor:
         return KafkaRiverPrediction(
             value=round(value, 2),
             confidence=round(confidence, 3),
-            model_type="river_kafka_online",
+            model_type=f"river_{ML_LEARNING_SOURCE}_online",
             samples_learned=samples_learned,
             kafka_connected=self.learner.streamer.is_connected()
         )
@@ -150,7 +266,18 @@ class KafkaRiverModelPredictor:
         return results
     
     def _build_current_features(self) -> Dict[str, float]:
-        """Build feature vector using current time and latest values."""
+        """Build feature vector for the next window.
+
+        Prefers the learner's own training history (source-agnostic, no
+        network call, matches the training distribution exactly) and only
+        falls back to the RisingWave lag fetch when no history exists yet
+        (fresh start, first poll not processed). 2026-11-14: with RW down
+        the RW fetch returned all-zero lags and predictions collapsed.
+        """
+        features = self.learner.build_current_features()
+        if features:
+            return features
+
         now = datetime.now(timezone.utc)
         lag_values = self._fetch_latest_lag_values()
         

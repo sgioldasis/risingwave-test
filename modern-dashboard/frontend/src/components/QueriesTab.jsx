@@ -337,7 +337,12 @@ const QueriesTab = () => {
     const formatTimestamp = (ts) => {
         if (!ts) return '-';
         try {
-            const date = new Date(ts);
+            // The API returns naive ISO strings in UTC (StarRocks DATETIME
+            // is timezone-naive, wall-clock UTC). Without a suffix, JS
+            // parses them as local time and renders UTC values unchanged.
+            // Tag them Z so the browser converts to the viewer's timezone.
+            const zoned = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(ts) ? ts : ts + 'Z';
+            const date = new Date(zoned);
             const day = date.getDate().toString().padStart(2, '0');
             const month = (date.getMonth() + 1).toString().padStart(2, '0');
             const year = date.getFullYear();
@@ -432,7 +437,7 @@ const QueriesTab = () => {
                         }}>
                             {[
                                 { key: 'live', label: 'Live (zero-copy)' },
-                                { key: 'cached', label: 'Cached' }
+                                { key: 'cached', label: 'StarRocks (fresh)' }
                             ].map(({ key, label }) => (
                                 <button
                                     key={key}
@@ -506,7 +511,7 @@ const QueriesTab = () => {
                         >
                             Query run in {(queryDurationMs / 1000).toFixed(2)}s
                             {lastQueryArchitecture && (
-                                <> &middot; {lastQueryArchitecture === 'cached' ? 'Cached' : 'Live (zero-copy)'}</>
+                                <> &middot; {lastQueryArchitecture === 'cached' ? 'StarRocks (fresh)' : 'Live (zero-copy)'}</>
                             )}
                         </motion.span>
                     )}
@@ -522,7 +527,7 @@ const QueriesTab = () => {
                     <div className="refresh-badge degraded" style={{ justifyContent: 'flex-start' }}>
                         <AlertTriangle size={14} />
                         <span>
-                            Degraded: the live RisingWave catalog is unavailable — showing cold/historical data only, results may be stale
+                            Degraded: the RisingWave zero-copy path is unavailable — queries are served directly by StarRocks over the Kafka-ingested events (fresh data, no RisingWave in the loop)
                         </span>
                     </div>
                 </motion.div>

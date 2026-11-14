@@ -93,7 +93,12 @@ class RiverModelPredictor:
         value = self.learner.predict(metric, features)
         if value is not None and value >= 0:
             print(f"[River] {metric}: value={value:.2f}, samples={samples_learned}")
-        
+        else:
+            # No MA and no model prediction (RW down + untrained model):
+            # return None rather than crash on round(None) -- the /predict
+            # endpoint handles None metrics as nulls (2026-11-14).
+            return None
+
         # Calculate confidence based on samples learned
         confidence = min(0.95, 0.5 + (samples_learned / 100))
         

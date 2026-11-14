@@ -2,9 +2,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
-from confluent_kafka import Consumer, KafkaException
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine, text
+import pymysql
+import psycopg2
 from typing import Optional
 import json
 import threading
@@ -15,6 +16,8 @@ import re
 import asyncio
 import logging
 import httpx
+
+from confluent_kafka import Consumer, KafkaError, TopicPartition
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -60,7 +63,7 @@ async def lifespan(app: FastAPI):
     # Startup
     main_loop = asyncio.get_running_loop()
     consumer_running = True
-    kafka_consumer_thread = threading.Thread(target=kafka_consumer_loop, daemon=True)
+    kafka_consumer_thread = threading.Thread(target=_kafka_raw_funnel_consumer_loop, daemon=True)
     kafka_consumer_thread.start()
     
     logger.info(f"Dashboard API started. ML serving at: {ML_SERVING_URL}")
@@ -82,11 +85,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Kafka configuration - use localhost when running outside Docker
 import os
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
-FUNNEL_TOPIC = 'funnel'
-logger.info(f"[Kafka] Using bootstrap servers: {KAFKA_BOOTSTRAP_SERVERS}")
 
 # StarRocks serves ad hoc queries across the unified hot/cold funnel history.
 STARROCKS_URL = os.getenv(
@@ -103,6 +102,46 @@ logger.info(
     starrocks_engine.url.render_as_string(hide_password=True),
 )
 
+# RisingWave wire pre-check (2026-11-14): with the RW containers STOPPED,
+# Docker's port proxy still ACCEPTS TCP connections on the published port,
+# so a plain "is the port open" check passes while no Postgres server ever
+# answers. StarRocks's JDBC catalog then hangs through multiple 10s HikariCP
+# timeouts before its analysis fails (~30s) -- that's why the degraded
+# queries took 31s. This does a real, bounded wire handshake instead: if
+# RisingWave doesn't answer SELECT 1 within ~2s, skip the live attempt and
+# go straight to the cold fallback. The try/except around the live query
+# stays as a safety net for RW dying between check and query.
+RISINGWAVE_HOST = os.getenv("RISINGWAVE_HOST", "localhost")
+RISINGWAVE_PORT = int(os.getenv("RISINGWAVE_PORT", "4566"))
+
+
+def _risingwave_reachable(timeout: float = 2.0) -> bool:
+    """Bounded handshake against RisingWave's Postgres wire port.
+
+    psycopg2, not pymysql -- RW speaks the Postgres protocol; a MySQL
+    handshake always fails and would report a healthy RW as down.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=RISINGWAVE_HOST,
+            port=RISINGWAVE_PORT,
+            user="root",
+            dbname="dev",
+            connect_timeout=int(timeout),
+        )
+        # No set_session() here: readonly=True makes psycopg2 run
+        # "SET default_transaction_read_only", which RW rejects as an
+        # unknown config entry -- a healthy RW would look down.
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SET statement_timeout = %d" % int(timeout * 1000))
+                cursor.execute("SELECT 1")
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
 
 def _starrocks_http_error(error: Exception) -> HTTPException:
     """Map StarRocks failures to an actionable API response."""
@@ -114,8 +153,14 @@ def _starrocks_http_error(error: Exception) -> HTTPException:
     )
 
 
-def _cold_enriched_records(connection, limit: int) -> list[dict]:
-    """Build enriched records from cold history when the hot catalog is down."""
+def _cached_enriched_records(connection, limit: int) -> list[dict]:
+    """Build enriched records from the RW-free Routine Load cache.
+
+    Reads dashboard_funnel_serving_cached_direct (frozen
+    mv_unified_funnel_summary + funnel_summary_direct Routine Load, deduped
+    by construction) so the fallback stays hot+cold and fresh -- only the
+    zero-copy RW catalog is out of the loop.
+    """
     result = connection.execute(text("""
         WITH country_aggregated AS (
             SELECT
@@ -126,7 +171,7 @@ def _cold_enriched_records(connection, limit: int) -> list[dict]:
                 SUM(purchasers) AS purchasers,
                 SUM(carters) / NULLIF(SUM(viewers), 0) AS view_to_cart_rate,
                 SUM(purchasers) / NULLIF(SUM(carters), 0) AS cart_to_buy_rate
-            FROM mv_unified_funnel_summary
+            FROM dashboard_funnel_serving_cached_direct
             GROUP BY window_start, window_end
         )
         SELECT
@@ -282,79 +327,158 @@ def parse_timestamp(ts):
     return str(ts)
 
 
-def kafka_consumer_loop():
-    """Background thread that consumes funnel data from Kafka."""
-    global latest_funnel_data, previous_funnel_data, funnel_data_history, consumer_running
-    
-    consumer = None
+# Raw-topic Kafka feed for the Dashboard (2026-11-14). RW was only ever
+# in the loop as a stream processor: raw events land in Redpanda first,
+# RW windowed them and sank them back to Kafka. The aggregation is trivial
+# in-process -- per-minute distinct-user sets -- so the backend now
+# consumes the raw topics directly and pushes SSE per event batch:
+# event-driven, no RW, no polling, no waiting on any database refresh.
+RAW_FUNNEL_TOPICS = ('page_views', 'cart_events', 'purchases')
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
+# Startup replay window: how far back the consumer rebuilds history from
+# the topics (so a fresh backend shows recent data even with RW down --
+# the old RW-path restart showed empty charts).
+RAW_FUNNEL_REPLAY_MINUTES = float(os.getenv('RAW_FUNNEL_REPLAY_MINUTES', '180'))
+# topic -> funnel stage the event counts toward
+_RAW_EVENT_STAGE = {
+    'page_views': 'viewers',
+    'cart_events': 'carters',
+    'purchases': 'purchasers',
+}
+# Per-minute distinct user sets: window_start iso -> {stage: set[user_id]}
+_raw_window_sets: dict = {}
+
+
+def _publish_window_record(record):
+    """Upsert a window record into history (newest first) and SSE state."""
+    global latest_funnel_data, previous_funnel_data, funnel_data_history
+
+    funnel_data_history = [
+        r for r in funnel_data_history
+        if r.get("window_start") != record["window_start"]
+    ]
+    # Keep newest-first ordering even if events arrive out of order
+    insert_at = len(funnel_data_history)
+    for i, r in enumerate(funnel_data_history):
+        if (r.get("window_start") or "") <= record["window_start"]:
+            insert_at = i
+            break
+    funnel_data_history.insert(insert_at, record)
+    if len(funnel_data_history) > MAX_HISTORY_SIZE:
+        funnel_data_history.pop()
+
+    previous_funnel_data = latest_funnel_data.copy()
+    latest_funnel_data = record.copy()
+
+
+def _process_raw_event(topic: str, payload: bytes) -> bool:
+    """Fold one raw event into the window sets. Returns True when a window
+    aggregate actually changed (only then does SSE need to push)."""
+    stage = _RAW_EVENT_STAGE.get(topic)
+    if stage is None:
+        return False
+    try:
+        event = json.loads(payload)
+        user_id = event.get('user_id')
+        event_time = event.get('event_time')
+        if user_id is None or not event_time:
+            return False
+        dt = datetime.fromisoformat(str(event_time).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except Exception as e:
+        logger.warning("Skipping malformed %s event: %s", topic, e)
+        return False
+
+    window = dt.replace(second=0, microsecond=0)
+    sets = _raw_window_sets.setdefault(window.isoformat(), {
+        'viewers': set(), 'carters': set(), 'purchasers': set(),
+    })
+    stage_set = sets[stage]
+    if user_id in stage_set:
+        return False
+    stage_set.add(user_id)
+
+    viewers = len(sets['viewers'])
+    carters = len(sets['carters'])
+    purchasers = len(sets['purchasers'])
+    _publish_window_record({
+        "window_start": parse_timestamp(window),
+        "window_end": parse_timestamp(window + timedelta(minutes=1)),
+        "viewers": viewers,
+        "carters": carters,
+        "purchasers": purchasers,
+        "view_to_cart_rate": carters / viewers if viewers else 0.0,
+        "cart_to_buy_rate": purchasers / carters if carters else 0.0,
+    })
+    return True
+
+
+def _kafka_raw_funnel_consumer_loop():
+    """Feed the Dashboard's in-memory funnel state from the raw topics.
+
+    Supersedes, in order: the consumer of the RW-fed funnel topic (froze
+    whenever RW paused -- RW is that topic's only producer) and the
+    StarRocks poller (minute/20s grain + Routine Load batching made the
+    dashboard visibly laggier than the old RW path). Subscribes to
+    page_views/cart_events/purchases, aggregates distinct users per
+    minute in memory, and fires the SSE event whenever an aggregate
+    changes -- typically sub-second after an event is produced.
+
+    On start it replays the last RAW_FUNNEL_REPLAY_MINUTES from the
+    topics by timestamp, rebuilding history without any database.
+    """
+    global consumer_running
+
+    consumer = Consumer({
+        'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+        'group.id': 'dashboard-raw-funnel',
+        'auto.offset.reset': 'latest',   # position set explicitly in on_assign
+        'enable.auto.commit': False,     # position comes from the timestamp replay, not offsets
+    })
+
+    def on_assign(consumer_, partitions):
+        replay_ms = int((datetime.now(timezone.utc) - timedelta(
+            minutes=RAW_FUNNEL_REPLAY_MINUTES)).timestamp() * 1000)
+        resolved = consumer_.offsets_for_times(
+            [TopicPartition(p.topic, p.partition, replay_ms) for p in partitions],
+            timeout=10.0,
+        )
+        for p in resolved:
+            if p.offset < 0:
+                # No messages that old -- start from the earliest retained
+                low, _ = consumer_.get_watermark_offsets(
+                    TopicPartition(p.topic, p.partition), timeout=10.0, cached=False)
+                p.offset = low
+        consumer_.assign(resolved)
+        logger.info("Raw funnel consumer assigned %s from %d minutes back",
+                    [(p.topic, p.partition, p.offset) for p in resolved],
+                    RAW_FUNNEL_REPLAY_MINUTES)
+
+    consumer.subscribe(list(RAW_FUNNEL_TOPICS), on_assign=on_assign)
+
     while consumer_running:
         try:
-            conf = {
-                'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
-                'group.id': 'dashboard-consumer',
-                'auto.offset.reset': 'earliest',
-                'enable.auto.commit': False,
-            }
-            consumer = Consumer(conf)
-            consumer.subscribe([FUNNEL_TOPIC])
-            
-            while consumer_running:
-                try:
-                    msg = consumer.poll(timeout=1.0)
-                    if msg is None:
-                        continue
-                    if msg.error():
-                        logger.error(f"Consumer error: {msg.error()}")
-                        continue
-                    
-                    # Deserialize message
-                    data = json.loads(msg.value().decode('utf-8'))
-                    
-                    # Parse timestamps
-                    if 'window_start' in data:
-                        data['window_start'] = parse_timestamp(data['window_start'])
-                    if 'window_end' in data:
-                        data['window_end'] = parse_timestamp(data['window_end'])
-                    
-                    # Store previous data before updating
-                    previous_funnel_data = latest_funnel_data.copy()
-                    
-                    # Update latest data
-                    latest_funnel_data.update({
-                        "window_start": data.get('window_start'),
-                        "window_end": data.get('window_end'),
-                        "viewers": int(data.get('viewers', 0)),
-                        "carters": int(data.get('carters', 0)),
-                        "purchasers": int(data.get('purchasers', 0)),
-                        "view_to_cart_rate": float(data.get('view_to_cart_rate', 0.0)),
-                        "cart_to_buy_rate": float(data.get('cart_to_buy_rate', 0.0))
-                    })
-                    
-                    # Add to history
-                    funnel_data_history.insert(0, latest_funnel_data.copy())
-                    if len(funnel_data_history) > MAX_HISTORY_SIZE:
-                        funnel_data_history.pop()
-                    
-                    # Manually commit offset
-                    consumer.commit(msg)
-                    
-                    # Notify SSE clients that new data is available
-                    if main_loop:
-                        main_loop.call_soon_threadsafe(data_updated_event.set)
-                            
-                except Exception as e:
-                    logger.error(f"Error processing Kafka message: {e}")
-                    time.sleep(1)
-                    
+            msg = consumer.poll(0.5)
         except Exception as e:
-            logger.error(f"Kafka connection error: {e}")
-            time.sleep(5)  # Wait before reconnecting
-        finally:
-            if consumer:
-                try:
-                    consumer.close()
-                except:
-                    pass
+            logger.error(f"Raw funnel consumer error: {e}")
+            time.sleep(1.0)
+            continue
+
+        changed = False
+        while msg is not None:
+            if msg.error():
+                if msg.error().code() != KafkaError._PARTITION_EOF:
+                    logger.warning(f"Raw funnel consumer: {msg.error()}")
+            else:
+                changed = _process_raw_event(msg.topic(), msg.value()) or changed
+            msg = consumer.poll(0.0)  # drain the rest of the batch, no blocking
+
+        if changed and main_loop:
+            main_loop.call_soon_threadsafe(data_updated_event.set)
+
+    consumer.close()
+
 
 
 @app.get("/api/funnel")
@@ -728,7 +852,8 @@ async def get_next_predictions():
                 if model_version in ['moving_average', 'heuristic', 'live_moving_average', 'unknown', None]:
                     is_heuristic = True
                 # Check for online learning models (including fallback when not ready yet)
-                if detailed_model_type in ['river_kafka_online', 'river_risingwave_online', 'moving_average_fallback']:
+                if detailed_model_type in ['river_kafka_online', 'river_starrocks_online', 'river_risingwave_online', 'moving_average_fallback'] \
+                        or detailed_model_type.startswith('recent_window_'):
                     is_online_learning = True
                 break
         
@@ -782,11 +907,30 @@ async def get_next_predictions():
                 predictions[metric] = None
                 predictions[f"{metric}_confidence"] = 0
         
-        # Add historical context (last actual values for comparison)
-        if latest_funnel_data and latest_funnel_data.get("window_start"):
+        # Add historical context (last actual values for comparison).
+        # Compare against the last CLOSED window: latest_funnel_data is the
+        # in-progress minute's partial aggregate (e.g. 25 viewers halfway
+        # into a minute that ends at 60), which makes every prediction look
+        # "way off" against an actual that is still accumulating
+        # (2026-11-14).
+        last_actual_record = None
+        now_utc = datetime.now(timezone.utc)
+        for record in funnel_data_history:  # newest first
+            window_end = record.get("window_end")
+            if isinstance(window_end, str):
+                try:
+                    if datetime.fromisoformat(window_end) <= now_utc:
+                        last_actual_record = record
+                        break
+                except ValueError:
+                    continue
+        if last_actual_record is None:
+            last_actual_record = latest_funnel_data
+
+        if last_actual_record and last_actual_record.get("window_start"):
             # Use window_start for consistency with aggregated minute data
             # and truncate to minute level to avoid duplicates
-            window_start = latest_funnel_data.get("window_start")
+            window_start = last_actual_record.get("window_start")
             if isinstance(window_start, str):
                 # Ensure timezone
                 if not window_start.endswith('Z') and not re.search(r'[+-]\d{2}:\d{2}$', window_start):
@@ -795,11 +939,11 @@ async def get_next_predictions():
                 window_start = window_start[:16] + ':00+00:00'
             predictions["last_actual"] = {
                 "timestamp": window_start,
-                "viewers": latest_funnel_data.get("viewers"),
-                "carters": latest_funnel_data.get("carters"),
-                "purchasers": latest_funnel_data.get("purchasers"),
-                "view_to_cart_rate": latest_funnel_data.get("view_to_cart_rate"),
-                "cart_to_buy_rate": latest_funnel_data.get("cart_to_buy_rate")
+                "viewers": last_actual_record.get("viewers"),
+                "carters": last_actual_record.get("carters"),
+                "purchasers": last_actual_record.get("purchasers"),
+                "view_to_cart_rate": last_actual_record.get("view_to_cart_rate"),
+                "cart_to_buy_rate": last_actual_record.get("cart_to_buy_rate")
             }
         
         return predictions
@@ -1067,39 +1211,42 @@ def query_funnel_data(
             """)
 
             try:
+                if not _risingwave_reachable():
+                    raise RuntimeError("RisingWave unreachable (pre-check)")
                 result = conn.execute(query, {
                     "start_time": start_time,
                     "end_time": end_time
                 })
                 degraded = False
             except Exception:
-                logger.warning("Hot catalog unavailable; serving cold history only")
-                # No cached cold layer to fall back to since the zero-copy
-                # migration (2026-09-08, see
-                # docs/SR_POC_ICEBERG_COUNTRIES_MIGRATION.md) -- queries
-                # Databricks directly, same dedup logic as
-                # dashboard_funnel_serving's cold branch.
-                cold_query = text("""
+                logger.warning("Hot catalog unavailable; serving via the RW-free Routine Load cache")
+                # Fall back to the RW-free cached view (frozen
+                # mv_unified_funnel_summary + funnel_summary_direct Routine
+                # Load, deduped by construction via its cutoff predicate):
+                # still hot+cold and fresh -- only the zero-copy RW catalog
+                # is out of the loop. Country names come from the local
+                # Iceberg-countries cache, so the fallback needs no
+                # Databricks access either.
+                cached_query = text("""
                     SELECT
                         f.window_start,
-                        MAX(f.window_end) AS window_end,
+                        f.window_end,
                         f.country,
                         c.country_name,
-                        MAX(f.viewers) AS viewers,
-                        MAX(f.carters) AS carters,
-                        MAX(f.purchasers) AS purchasers,
-                        ROUND(CAST(MAX(f.carters) AS DOUBLE) / NULLIF(MAX(f.viewers), 0), 2) AS view_to_cart_rate,
-                        ROUND(CAST(MAX(f.purchasers) AS DOUBLE) / NULLIF(MAX(f.carters), 0), 2) AS cart_to_buy_rate
-                    FROM databricks_uc.sr_poc_external.funnel_summary_historical f
-                    LEFT JOIN databricks_uc.sr_poc_external.iceberg_countries c
+                        f.viewers,
+                        f.carters,
+                        f.purchasers,
+                        f.view_to_cart_rate,
+                        f.cart_to_buy_rate
+                    FROM dashboard_funnel_serving_cached_direct f
+                    LEFT JOIN mv_iceberg_countries_cache c
                       ON f.country = c.country
                     WHERE f.window_start >= :start_time
                       AND f.window_end <= :end_time
-                    GROUP BY f.window_start, f.country, c.country_name
                     ORDER BY f.window_start DESC, f.country
                     LIMIT 1000
                 """)
-                result = conn.execute(cold_query, {
+                result = conn.execute(cached_query, {
                     "start_time": start_time,
                     "end_time": end_time
                 })
@@ -1160,40 +1307,32 @@ def query_funnel_aggregate(
             """)
             
             try:
+                if not _risingwave_reachable():
+                    raise RuntimeError("RisingWave unreachable (pre-check)")
                 result = conn.execute(query, {
                     "start_time": start_time,
                     "end_time": end_time
                 }).one()
                 degraded = False
             except Exception:
-                logger.warning("Hot catalog unavailable; aggregating cold history only")
-                # No cached cold layer to fall back to since the zero-copy
-                # migration (2026-09-08) -- queries Databricks directly.
-                # Must dedupe per (window_start, country) first, same as
-                # dashboard_funnel_serving's cold branch, since the
-                # underlying stream can carry multiple growing-count
-                # snapshots per window; summing raw rows would double-count.
-                cold_query = text("""
+                logger.warning("Hot catalog unavailable; aggregating via the RW-free Routine Load cache")
+                # Fall back to the RW-free cached view (frozen
+                # mv_unified_funnel_summary + funnel_summary_direct Routine
+                # Load): no per-(window_start, country) dedup needed here --
+                # the view is deduped by construction via its cutoff
+                # predicate, unlike the raw historical stream.
+                cached_query = text("""
                     SELECT
                         COALESCE(SUM(viewers), 0) AS total_viewers,
                         COALESCE(SUM(carters), 0) AS total_carters,
                         COALESCE(SUM(purchasers), 0) AS total_purchasers,
                         COUNT(*) AS record_count,
                         COUNT(DISTINCT country) AS country_count
-                    FROM (
-                        SELECT
-                            window_start,
-                            country,
-                            MAX(viewers) AS viewers,
-                            MAX(carters) AS carters,
-                            MAX(purchasers) AS purchasers
-                        FROM databricks_uc.sr_poc_external.funnel_summary_historical
-                        WHERE window_start >= :start_time
-                          AND window_end <= :end_time
-                        GROUP BY window_start, country
-                    ) f
+                    FROM dashboard_funnel_serving_cached_direct
+                    WHERE window_start >= :start_time
+                      AND window_end <= :end_time
                 """)
-                result = conn.execute(cold_query, {
+                result = conn.execute(cached_query, {
                     "start_time": start_time,
                     "end_time": end_time
                 }).one()
@@ -1259,14 +1398,22 @@ def query_funnel_data_cached(
             """)
 
             try:
+                if not _risingwave_reachable():
+                    raise RuntimeError("RisingWave unreachable (pre-check)")
                 result = conn.execute(query, {
                     "start_time": start_time,
                     "end_time": end_time
                 })
                 degraded = False
             except Exception:
-                logger.warning("Hot catalog unavailable; serving cached cold history only")
-                cold_query = text("""
+                logger.warning("Cached view unavailable; serving via the RW-free Routine Load cache")
+                # dashboard_funnel_serving_cached itself reads the RW hot
+                # branch through its cutoff (SELECT MIN ... FROM
+                # risingwave.public.funnel_summary), so when RW is down even
+                # this "cached" primary fails. Fall back to the fully
+                # RW-free view: frozen mv_unified_funnel_summary +
+                # funnel_summary_direct Routine Load -- still hot+cold.
+                cached_query = text("""
                     SELECT
                         f.window_start,
                         f.window_end,
@@ -1277,7 +1424,7 @@ def query_funnel_data_cached(
                         f.purchasers,
                         f.view_to_cart_rate,
                         f.cart_to_buy_rate
-                    FROM mv_unified_funnel_summary f
+                    FROM dashboard_funnel_serving_cached_direct f
                     LEFT JOIN mv_iceberg_countries_cache c
                       ON f.country = c.country
                     WHERE f.window_start >= :start_time
@@ -1285,7 +1432,7 @@ def query_funnel_data_cached(
                     ORDER BY f.window_start DESC, f.country
                     LIMIT 1000
                 """)
-                result = conn.execute(cold_query, {
+                result = conn.execute(cached_query, {
                     "start_time": start_time,
                     "end_time": end_time
                 })
@@ -1345,25 +1492,29 @@ def query_funnel_aggregate_cached(
             """)
 
             try:
+                if not _risingwave_reachable():
+                    raise RuntimeError("RisingWave unreachable (pre-check)")
                 result = conn.execute(query, {
                     "start_time": start_time,
                     "end_time": end_time
                 }).one()
                 degraded = False
             except Exception:
-                logger.warning("Hot catalog unavailable; aggregating cached cold history only")
-                cold_query = text("""
+                logger.warning("Cached view unavailable; aggregating via the RW-free Routine Load cache")
+                # Same as the row fallback: the RW-free view (frozen MV +
+                # Routine Load direct branch) instead of the frozen MV alone.
+                cached_query = text("""
                     SELECT
                         COALESCE(SUM(viewers), 0) AS total_viewers,
                         COALESCE(SUM(carters), 0) AS total_carters,
                         COALESCE(SUM(purchasers), 0) AS total_purchasers,
                         COUNT(*) AS record_count,
                         COUNT(DISTINCT country) AS country_count
-                    FROM mv_unified_funnel_summary
+                    FROM dashboard_funnel_serving_cached_direct
                     WHERE window_start >= :start_time
                       AND window_end <= :end_time
                 """)
-                result = conn.execute(cold_query, {
+                result = conn.execute(cached_query, {
                     "start_time": start_time,
                     "end_time": end_time
                 }).one()
@@ -1427,6 +1578,15 @@ def get_enriched_funnel_data(
                 LIMIT :limit
             """)
             
+            if not _risingwave_reachable():
+                logger.warning("Hot catalog unavailable; serving via the RW-free Routine Load cache")
+                records = _cached_enriched_records(conn, limit)
+                return {
+                    "data": records,
+                    "count": len(records),
+                    "degraded": True,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
             result = conn.execute(query, {"limit": limit})
             
             records = []
@@ -1456,7 +1616,7 @@ def get_enriched_funnel_data(
         logger.error(f"Error querying enriched funnel data: {e}")
         try:
             with starrocks_engine.connect() as conn:
-                records = _cold_enriched_records(conn, limit)
+                records = _cached_enriched_records(conn, limit)
             return {
                 "data": records,
                 "count": len(records),
@@ -1492,8 +1652,37 @@ def get_funnel_health():
                 GROUP BY funnel_health
             """)
             
+            if not _risingwave_reachable():
+                logger.warning("Hot catalog unavailable; serving via the RW-free Routine Load cache")
+                fallback_rows = _cached_enriched_records(conn, 5)
+                health_summary = {}
+                for row in fallback_rows:
+                    health = row["funnel_health"]
+                    summary = health_summary.setdefault(
+                        health,
+                        {
+                            "count": 0,
+                            "avg_score": 0.0,
+                            "avg_view_to_cart_rate": 0.0,
+                            "avg_cart_to_buy_rate": 0.0,
+                        },
+                    )
+                    summary["count"] += 1
+                    summary["avg_score"] += row["funnel_score"]
+                    summary["avg_view_to_cart_rate"] += row["view_to_cart_rate"]
+                    summary["avg_cart_to_buy_rate"] += row["cart_to_buy_rate"]
+                for summary in health_summary.values():
+                    count = summary["count"]
+                    summary["avg_score"] /= count
+                    summary["avg_view_to_cart_rate"] /= count
+                    summary["avg_cart_to_buy_rate"] /= count
+                return {
+                    "health_summary": health_summary,
+                    "degraded": True,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
             result = conn.execute(query)
-            
+
             health_summary = {}
             for row in result:
                 health_summary[row.funnel_health] = {
@@ -1511,7 +1700,7 @@ def get_funnel_health():
         logger.error(f"Error querying funnel health: {e}")
         try:
             with starrocks_engine.connect() as conn:
-                fallback_rows = _cold_enriched_records(conn, 5)
+                fallback_rows = _cached_enriched_records(conn, 5)
             health_summary = {}
             for row in fallback_rows:
                 health = row["funnel_health"]

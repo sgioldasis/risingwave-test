@@ -5,7 +5,7 @@ import os
 import time
 import threading
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Callable
 
 from .models import RiverModelManager
@@ -29,20 +29,27 @@ class KafkaOnlineLearner:
     def __init__(
         self,
         checkpoint_interval: float = 60.0,
-        auto_start: bool = False
+        auto_start: bool = False,
+        streamer=None
     ):
         """
         Initialize the Kafka-based online learner.
-        
+
         Args:
             checkpoint_interval: Seconds between checkpoints
             auto_start: Whether to start immediately
+            streamer: Optional data source with the KafkaDataStreamer
+                interface (start/stop/is_connected/add_callback). Defaults
+                to KafkaDataStreamer; StarRocksDataStreamer swaps the feed
+                to StarRocks so learning works while RisingWave is paused
+                (2026-11-14) -- everything downstream (lag features,
+                learn_one, checkpoints) is source-agnostic.
         """
         self.checkpoint_interval = checkpoint_interval
-        
+
         # Initialize components
         self.models = RiverModelManager()
-        self.streamer = KafkaDataStreamer(auto_start=False)
+        self.streamer = streamer or KafkaDataStreamer(auto_start=False)
         self.checkpointer = CheckpointManager()
         
         # History for computing lag features
@@ -121,16 +128,10 @@ class KafkaOnlineLearner:
         
         return enriched
     
-    def _on_new_record(self, record: Dict[str, Any]) -> None:
-        """Process a new record from the Kafka streamer."""
-        # Compute lag features before learning
-        enriched_record = self._compute_lag_features(record)
-        
-        # Add to history for future lag calculations
-        self._history.append(record)
-        
-        # Extract features and targets
-        features = {
+    @staticmethod
+    def _extract_features(enriched_record: Dict[str, Any]) -> Dict[str, float]:
+        """Pull the model's feature vector out of an enriched record."""
+        return {
             'hour_of_day': float(enriched_record.get('hour_of_day', 0)),
             'minute_of_hour': float(enriched_record.get('minute_of_hour', 0)),
             'day_of_week': float(enriched_record.get('day_of_week', 0)),
@@ -147,6 +148,50 @@ class KafkaOnlineLearner:
             'tps_carters': float(enriched_record.get('tps_carters', 0)),
             'tps_smoothed': float(enriched_record.get('tps_smoothed', 0)),
         }
+
+    def build_current_features(self) -> Dict[str, float]:
+        """
+        Feature vector for predicting the NEXT window, built from the
+        learner's own training history.
+
+        Persistence assumption: the next record looks like the last one
+        seen. Running that pseudo-record through _compute_lag_features
+        against the full history reproduces exactly the lag semantics
+        used in training (lag_1 = last record, lag_2 = 4 back, lag_3 =
+        7 back) with tps ~ 0 (no change assumed). Time features point
+        at the next minute boundary, matching the timestamp /predict
+        reports.
+
+        No external source is consulted, so prediction features always
+        match the training distribution. Before 2026-11-14 the predictor
+        fetched lags from RisingWave, which returned all zeros whenever
+        RW was down -- a feature vector the models had never trained on
+        (predictions collapsed to 1-13 against actuals of 43-60).
+        """
+        if not self._history:
+            return {}
+
+        enriched = self._compute_lag_features(dict(self._history[-1]))
+
+        next_window = datetime.now(timezone.utc).replace(
+            second=0, microsecond=0
+        ) + timedelta(minutes=1)
+        enriched['hour_of_day'] = float(next_window.hour)
+        enriched['minute_of_hour'] = float(next_window.minute)
+        enriched['day_of_week'] = float(next_window.weekday())
+
+        return self._extract_features(enriched)
+
+    def _on_new_record(self, record: Dict[str, Any]) -> None:
+        """Process a new record from the Kafka streamer."""
+        # Compute lag features before learning
+        enriched_record = self._compute_lag_features(record)
+
+        # Add to history for future lag calculations
+        self._history.append(record)
+
+        # Extract features and targets
+        features = self._extract_features(enriched_record)
         
         targets = {
             'viewers': float(enriched_record.get('viewers', 0)),
@@ -285,18 +330,20 @@ _global_kafka_learner: Optional[KafkaOnlineLearner] = None
 
 def get_kafka_learner(
     checkpoint_interval: Optional[float] = None,
-    auto_start: bool = False
+    auto_start: bool = False,
+    streamer=None
 ) -> KafkaOnlineLearner:
     """Get or create the global KafkaOnlineLearner instance."""
     global _global_kafka_learner
-    
+
     if _global_kafka_learner is None:
         checkpoint = checkpoint_interval or float(os.getenv('CHECKPOINT_INTERVAL', '60.0'))
         _global_kafka_learner = KafkaOnlineLearner(
             checkpoint_interval=checkpoint,
-            auto_start=auto_start
+            auto_start=auto_start,
+            streamer=streamer
         )
-    
+
     return _global_kafka_learner
 
 

@@ -250,10 +250,12 @@ async def health_check():
     if _current_mode == "batch":
         source = "minio"
     elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
-        source = "kafka"
+        # The online learner's actual feed (see /predict): StarRocks by
+        # default via ML_LEARNING_SOURCE, or the RW-fed topic for kafka.
+        source = os.getenv('ML_LEARNING_SOURCE', 'starrocks')
     else:
         source = "risingwave"
-    
+
     result = {
         "healthy": True,
         "service": "ml-serving",
@@ -291,7 +293,10 @@ async def predict_all():
     if _current_mode == "batch":
         source = "minio"
     elif _FORCE_KAFKA and KAFKA_RIVER_AVAILABLE:
-        source = "kafka"
+        # The online learner's actual feed: StarRocks (Routine Load + async
+        # MV, RW-free) by default via ML_LEARNING_SOURCE, or the RW-fed
+        # funnel topic when ML_LEARNING_SOURCE=kafka.
+        source = os.getenv('ML_LEARNING_SOURCE', 'starrocks')
     else:
         source = "risingwave"
 

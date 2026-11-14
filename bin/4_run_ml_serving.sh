@@ -34,7 +34,22 @@ echo ""
 # export USE_ONLINE_LEARNING=true
 
 # Optional: Use Kafka source instead of RisingWave polling (uncomment if needed)
-# export USE_KAFKA_SOURCE=true
+# Enabled 2026-11-14: the learner's feed is StarRocks (Routine Load + async
+# MV, RW-free) by default via ML_LEARNING_SOURCE, so predictions keep
+# working (slightly stale, no errors) while RisingWave is paused. The
+# RW-based predictor 500s whenever RW is down (round(None) crash in
+# river_predictor.py), breaking the Predictions tab.
+export USE_KAFKA_SOURCE=true
+# starrocks = poll funnel windows maintained by StarRocks itself (Routine
+# Load + async MV, no RW); kafka = consume the RW-fed funnel topic.
+export ML_LEARNING_SOURCE=starrocks
+# Minute-grain training windows (2026-11-14): the Predictions tab compares
+# predictions against per-minute actuals (the dashboard's Kafka-fed
+# windows), so the learner must train on the same grain -- a 20s-grain
+# model predicts ~1/3 scale (~19 viewers vs 60 actual) and looks frozen.
+# funnel_summary_direct is the minute-grain VIEW over the raw Routine-Load
+# tables (computed live, no RW).
+export STARROCKS_FUNNEL_SOURCE=funnel_summary_direct
 
 # This process runs on the host (not in Docker), but .env sets
 # RISINGWAVE_HOST="frontend-node-0" -- a Docker-network-internal hostname
@@ -46,4 +61,9 @@ echo ""
 # documented for STARROCKS_URL in docs/SR_POC_LIVE_DEMO_RUNBOOK.md.
 export RISINGWAVE_HOST=localhost
 
-exec uvicorn ml.serving.main:app --host 0.0.0.0 --port "$PORT" --reload
+# --reload restricted to ml/: WatchFiles otherwise watches the whole repo,
+# so editing an unrelated file (e.g. modern-dashboard/backend/api.py) would
+# hot-reload this service and reset the online learner mid-replay
+# (confirmed 2026-11-14: three dashboard edits reset the funnel-topic
+# backfill three times).
+exec uvicorn ml.serving.main:app --host 0.0.0.0 --port "$PORT" --reload --reload-dir ml

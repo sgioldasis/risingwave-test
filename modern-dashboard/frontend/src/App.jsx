@@ -215,21 +215,8 @@ const App = () => {
                         )}
                         Dashboard
                     </button>
-                    <button
-                        onClick={() => setActiveTab('producer')}
-                        className={`tab-item ${activeTab === 'producer' ? 'active' : ''}`}
-                    >
-                        {activeTab === 'producer' && (
-                            <motion.div
-                                layoutId="activeTab"
-                                className="tab-active-pill"
-                                style={{ position: 'absolute', inset: '4px', zIndex: -1 }}
-                                transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
-                            />
-                        )}
-                        Producer
-                        <span className={`ml-2 w-2 h-2 rounded-full ${producerStatus.running ? 'bg-[#00cc96] animate-pulse' : 'bg-white/20'}`} />
-                    </button>
+                    {/* Producer tab hidden 2026-11-14 (user request); the producer
+                        start/stop controls and header status badge stay functional. */}
                     <button
                         onClick={() => setActiveTab('queries')}
                         className={`tab-item ${activeTab === 'queries' ? 'active' : ''}`}

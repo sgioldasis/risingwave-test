@@ -177,7 +177,7 @@ const EnrichedFunnelTab = () => {
                     <div className="refresh-badge degraded" style={{ justifyContent: 'flex-start' }}>
                         <AlertTriangle size={14} />
                         <span>
-                            Degraded: the live RisingWave catalog is unavailable — showing cold/historical data only, results may be stale
+                            Degraded: the RisingWave zero-copy path is unavailable — charts are served directly by StarRocks over the Kafka-ingested events (fresh data, no RisingWave in the loop)
                         </span>
                     </div>
                 </motion.div>
@@ -440,7 +440,16 @@ const EnrichedFunnelTab = () => {
                                             fontSize: '0.875rem',
                                             color: 'rgba(255, 255, 255, 0.8)'
                                         }}>
-                                            {new Date(row.window_start).toLocaleTimeString()}
+                                            {/* API sends naive ISO strings in UTC
+                                                (StarRocks DATETIME is timezone-naive);
+                                                tag Z so the browser renders local
+                                                date+time, formatted DD/MM/YYYY */}
+                                            {(() => {
+                                                const zoned = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(row.window_start) ? row.window_start : row.window_start + 'Z';
+                                                const d = new Date(zoned);
+                                                const pad = (n) => n.toString().padStart(2, '0');
+                                                return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                                            })()}
                                         </td>
                                         <td style={{
                                             padding: '0.875rem 1.5rem',
