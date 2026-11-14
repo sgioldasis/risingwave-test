@@ -341,6 +341,21 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
                 existing_deps.append(AssetDep(asset=rw_funnel_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
+        # dashboard_funnel_serving_cached_direct references the view
+        # funnel_summary_direct by literal name (it's not a dbt model --
+        # the funnel_events_direct_kafka Dagster asset creates it along
+        # with the Routine Load tables). Without this cross-PoC dep the
+        # dbt model could race the asset on a fresh stack and fail with
+        # "Table ordering key entries do not exist" / unknown view.
+        _MODELS_READING_DIRECT_KAFKA_VIEW = {"dashboard_funnel_serving_cached_direct"}
+        if dbt_resource_props.get("name") in _MODELS_READING_DIRECT_KAFKA_VIEW:
+            from dagster import AssetDep
+            existing_deps = list(new_spec.deps) if new_spec.deps else []
+            direct_kafka_key = AssetKey(["funnel_events_direct_kafka"])
+            if direct_kafka_key not in {dep.asset_key for dep in existing_deps}:
+                existing_deps.append(AssetDep(asset=direct_kafka_key))
+            new_spec = new_spec.replace_attributes(deps=existing_deps)
+
         # Casino Kafka source tables depend on proto descriptors being in MinIO.
         # Declaring this here (on the AssetSpec) is required before the function
         # parameter on @dbt_assets can reference casino_prd_proto_upload.

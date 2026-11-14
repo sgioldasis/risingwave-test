@@ -20,12 +20,12 @@ position:
     - ROW-8
     - ROW-HOTONLY
     - ROW-8B
-    - ROW-5
-    - ROW-CACHED
-    - ROW-5B
-    - ROW-6
-    - ROW-LIVE
+    - ROW-FOT-MD
+    - ROW-FOT
+    - ROW-DT-MD
+    - ROW-DT
     - ROW-6B
+    - ROW-5B
     - ROW-AGGKEY-MD
     - ROW-AGGKEY
     - ROW-AGGKEY-MDB
@@ -51,7 +51,7 @@ position:
     - ROW-8
     meta:
       width: 12
-      height: 28
+      height: 34
       code: '### ✨ JDBC catalog + Routine Load -- the hot funnel path
 
         - **At a glance:** a [JDBC external catalog](https://docs.starrocks.io/docs/data_source/catalog/jdbc_catalog/) (StarRocks queries RisingWave in place over the Postgres wire protocol -- no data copied) plus [Routine Load](https://docs.starrocks.io/docs/loading/kafka/RoutineLoad/) (Kafka topics land natively in StarRocks).
@@ -62,69 +62,67 @@ position:
 
         - **RisingWave:** on the left, REQUIRED -- RisingWave is the streaming layer: it consumes the page/cart/purchase topics, computes the 1-minute funnel windows in its materialized views, and serves them to StarRocks live over the JDBC catalog (goes blank if RW is down). On the right, NOT USED -- StarRocks ingests the same topics itself.
 
+        - **Reading this dashboard:** all the last-hour funnel charts look identical on purpose -- same 1-minute aggregation, different paths. This section contrasts *ingestion* (how data reaches StarRocks); the next section contrasts *serving* (how the chart query reads it back).
+
         '
-  ROW-5:
+  ROW-FOT-MD:
     type: ROW
-    id: ROW-5
+    id: ROW-FOT-MD
     children:
-    - MARKDOWN-1
+    - MARKDOWN-FOT
     parents:
     - ROOT_ID
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  MARKDOWN-1:
+  MARKDOWN-FOT:
     type: MARKDOWN
-    id: MARKDOWN-1
+    id: MARKDOWN-FOT
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-5
+    - ROW-FOT-MD
     meta:
       width: 12
-      height: 26
-      code: '### ✨ Async MV cache over the lake -- the cached funnel path
+      height: 31
+      code: '### ✨ Funnel Over Time -- live vs RW-free cache, same last hour
 
-        - **At a glance:** an [asynchronous materialized view](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/) over Databricks Iceberg history, UNIONed with the live RisingWave branch by a cutoff predicate.
+        - **Left -- Live (RisingWave REQUIRED):** [federated external catalogs](https://docs.starrocks.io/docs/data_source/catalog/) -- one zero-copy view UNION ALLs a JDBC catalog (RisingWave hot rows) with the Iceberg REST catalog (Databricks UC). Always fresh, zero data movement -- but every load re-fetches external metadata (~5s), and RW down = the whole view fails to resolve (Unknown database ''public.''), so the chart errors rather than silently dropping the hot rows.
 
-        - **Why here:** all-history daily charts would re-scan the lake on every dashboard load; the MV freezes the cold history (REFRESH MANUAL) and the UNION overlays RisingWave''s live rows on top.
+        - **Right -- Cached (RisingWave NOT USED at query time):** an [asynchronous materialized view](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/) over Databricks history UNIONed with the Direct-from-Kafka branch (same Routine Load ingestion as the pair above) by a cutoff predicate. ~0.2s, and it keeps working with the RW containers stopped (verified live 2026-11-14).
 
-        - **Value:** ~1.3s all-history queries that never go fully blank -- frozen MV snapshot underneath, live RW data on top -- versus multi-second raw Iceberg scans.
+        - **Value:** the mirror-image trade-off -- freshness vs independence. Detailed data-source notes for both views below.
 
-        - **RisingWave:** REQUIRED for freshness -- it is the source of the live rows that the UNION overlays on the frozen MV snapshot. Without RW the charts still render, but only from the MV''s last-rebuild state -- and nothing on screen tells you the hot data is missing.
+        - **How this differs from the section above:** that pair showed two *ingestion* paths into StarRocks (stream processor vs Routine Load); this pair shows two *serving* paths out of it -- a live federated query paying the external-catalog cost on every load vs a precomputed cache that doesn't. Same charts, same window, deliberately -- so cost and RW-dependence are the only variables.
 
         '
-  ROW-6:
+  ROW-DT-MD:
     type: ROW
-    id: ROW-6
+    id: ROW-DT-MD
     children:
-    - MARKDOWN-2
+    - MARKDOWN-DT
     parents:
     - ROOT_ID
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  MARKDOWN-2:
+  MARKDOWN-DT:
     type: MARKDOWN
-    id: MARKDOWN-2
+    id: MARKDOWN-DT
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-6
+    - ROW-DT-MD
     meta:
       width: 12
       height: 23
-      code: '### ✨ Federated catalogs -- one view over hot + cold
+      code: '### ✨ Daily Totals -- live vs RW-free cache, all history
 
-        - **At a glance:** [federated external catalogs](https://docs.starrocks.io/docs/data_source/catalog/) -- one view UNION ALLs a JDBC catalog (RisingWave) with the Iceberg REST catalog (Databricks UC).
+        - **Left -- Live (RisingWave REQUIRED):** the same zero-copy federated view as the chart above, over all history -- here the Databricks cold branch genuinely matters (it supplies the history; the hot branch only covers what RisingWave currently retains).
 
-        - **Why here:** one SQL surface spanning streaming-hot rows and lake-cold history, so a single chart covers both with no ETL in between.
-
-        - **Value:** zero data movement, one query -- but every load re-fetches external metadata (~5s), which is exactly the overhead the cached pair above removes.
-
-        - **RisingWave:** REQUIRED -- it supplies the hot branch of the UNION (its funnel materialized views, read live over JDBC); Databricks UC supplies the cold branch. RW down = hot data silently missing from the charts.
+        - **Right -- Cached (RisingWave NOT USED at query time):** the same RW-free cached view as the chart above, over all history -- frozen MV snapshot + newer Routine-Load rows, no double-count by construction (cutoff: direct rows strictly newer than the MV''s latest window).
 
         '
   CHART-VECBRFE5:
@@ -147,56 +145,56 @@ position:
     meta:
       chartId: 1
       height: 50
-      sliceName: Daily Totals (Live) — All History [RisingWave + Databricks, via StarRocks]
+      sliceName: Daily Totals (Live) — All History [RisingWave + Databricks]
       uuid: 3ea580d3-af2b-4761-b424-611100f06171
       width: 6
     type: CHART
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-LIVE
+    - ROW-DT
   CHART-GG7WJBIW:
     children: []
     id: CHART-GG7WJBIW
     meta:
       chartId: 8
       height: 50
-      sliceName: Funnel Over Time (Live - Zero-Copy) — Last Hour [RisingWave, via StarRocks — always queries Databricks needlessly]
+      sliceName: Funnel Over Time (Live) — Last Hour [RisingWave]
       uuid: 45f66882-8284-44f0-8563-10ba1c19c078
       width: 6
     type: CHART
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-LIVE
+    - ROW-FOT
   CHART-HO8CHXYJ:
     children: []
     id: CHART-HO8CHXYJ
     meta:
       chartId: 3
       height: 50
-      sliceName: Daily Totals (Cached) — All History [StarRocks MV + RisingWave, via StarRocks]
+      sliceName: Daily Totals (Cached) — All History [no RisingWave]
       uuid: 65f7df80-fc91-4300-a76d-965a8986f45e
       width: 6
     type: CHART
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-CACHED
+    - ROW-DT
   CHART-IGZ4N0DC:
     children: []
     id: CHART-IGZ4N0DC
     meta:
       chartId: 10
       height: 50
-      sliceName: Funnel Over Time (Cached - Fast) — Last Hour [Live RisingWave via StarRocks JDBC, else StarRocks's own MV]
+      sliceName: Funnel Over Time (Cached) — Last Hour [no RisingWave]
       uuid: d33b8dd6-0364-4e23-8eb6-c26410fe8445
       width: 6
     type: CHART
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-CACHED
+    - ROW-FOT
   ROW-HOTONLY:
     type: ROW
     id: ROW-HOTONLY
@@ -208,23 +206,23 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  ROW-CACHED:
+  ROW-FOT:
     type: ROW
-    id: ROW-CACHED
+    id: ROW-FOT
     children:
+    - CHART-GG7WJBIW
     - CHART-IGZ4N0DC
-    - CHART-HO8CHXYJ
     parents:
     - ROOT_ID
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  ROW-LIVE:
+  ROW-DT:
     type: ROW
-    id: ROW-LIVE
+    id: ROW-DT
     children:
-    - CHART-GG7WJBIW
     - CHART-M9IV31MT
+    - CHART-HO8CHXYJ
     parents:
     - ROOT_ID
     - GRID_ID
@@ -292,7 +290,7 @@ position:
     meta:
       chartId: 18
       height: 50
-      sliceName: Funnel Over Time (Hot-Only, Direct-from-Kafka) — Last Hour [Routine Load, no RisingWave]
+      sliceName: Funnel Over Time (Hot-Only, Direct) — Last Hour [Routine Load]
       uuid: 70c4a0dc-95d5-43ac-af2b-435fd081d019
       width: 6
     type: CHART
@@ -345,17 +343,17 @@ position:
     - ROW-5B
     meta:
       width: 12
-      height: 31
-      code: '**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving_cached` -- a `UNION ALL` of the StarRocks materialized view `mv_unified_funnel_summary` (REFRESH MANUAL, frozen at last rebuild) and everything RisingWave currently retains, read live.
+      height: 28
+      code: '**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving_cached_direct` -- a `UNION ALL` of the StarRocks materialized view `mv_unified_funnel_summary` (REFRESH MANUAL, frozen at last rebuild) and the Direct-from-Kafka path''s rows (`funnel_summary_direct`, computed over the Routine-Load tables) newer than the MV''s latest window.
 
 
-        **Intended fallback behavior:** the cutoff between the two branches is `window_start < COALESCE(MIN(risingwave.window_start), ''9999-12-31'')`. When RisingWave has any data, the live branch takes over for everything at or after its earliest retained row, and the MV only fills in what''s older. When RisingWave is completely empty -- e.g. right after a restart, before the producer has caught up -- `MIN()` returns NULL, the COALESCE falls back to `9999-12-31`, and the MV serves as the sole source for the whole view, by design (this is the same bootstrap-safety fallback the "Live" view uses). Confirmed live (2026-09-11): with RisingWave at 0 rows, the "Last Hour" chart showed 06:53-07:13 data entirely from the MV''s Databricks-cold branch as of its last rebuild (07:19) -- not live RisingWave, and that''s expected given RisingWave was empty at query time.
+        **No double-counting by construction:** the cutoff is `window_start > (SELECT MAX(window_start) FROM mv_unified_funnel_summary)` -- the MV branch contributes every window it has, the direct branch only windows strictly newer, so no window is served twice no matter when the MV was last refreshed. If the MV is refreshed later, it takes over those windows and the direct branch shrinks accordingly. An empty MV (fresh stack) falls back to the direct branch serving everything. RW-independent: verified live 2026-11-14 with the RisingWave containers stopped -- the view still resolved and served continuous 2026-09-05 → now data (965 frozen MV rows + fresh Routine-Load rows).
 
 
-        ✅ **Pros:** Fast (~1.3s), and never goes fully blank the way "Hot-Only, Direct" does when RisingWave has no data -- the MV fallback keeps something on screen.
+        ✅ **Pros:** Fast (~0.2s), never blank, and no external catalog touched at query time -- unlike the live zero-copy charts (left above), this view survives the RW containers being stopped.
 
 
-        ❌ **Cons:** Whatever it''s showing during a RisingWave-empty period is only as fresh as the MV''s last rebuild, which can be arbitrarily old -- there''s no way to tell from the chart alone which branch is currently serving the data.
+        ❌ **Cons:** The MV branch is only as fresh as its last rebuild (`REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;` picks up new Databricks history); until then new windows come solely from the direct branch. There''s no way to tell from the chart alone which branch is currently serving a given window.
 
         '
   ROW-5B:
@@ -382,7 +380,7 @@ position:
       code: '**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving` — a zero-copy StarRocks view that `UNION ALL`s RisingWave (hot path, live JDBC) with the Databricks Iceberg REST Catalog (cold path, historical).
 
 
-        ⚠️ **For the "Last Hour" line chart above specifically, the Databricks branch contributes ZERO rows** -- confirmed via direct benchmark: querying the hot branch alone takes ~0.7s, but the full view (Databricks branch included) takes ~5.1s for the identical last-hour result. StarRocks still authenticates against the Iceberg REST catalog and reads its metadata on every query regardless, even though nothing useful comes back -- that wasted work is the entire reason this chart is slow. This is the mirror image of the Cached chart''s dead MV branch: there the dead branch is free to skip, here it costs ~4.3s every time. Databricks genuinely matters for **Daily Totals (Live)** to the right, which queries all history and really does need it.
+        ⚠️ **For the "Last Hour" line chart above specifically, the Databricks branch contributes ZERO rows** -- confirmed via direct benchmark: querying the hot branch alone takes ~0.7s, but the full view (Databricks branch included) takes ~5.1s for the identical last-hour result. StarRocks still authenticates against the Iceberg REST catalog and reads its metadata on every query regardless, even though nothing useful comes back -- that wasted work is the entire reason this chart is slow. This is the mirror image of the Cached chart''s dead MV branch: there the dead branch is free to skip, here it costs ~4.3s every time. Databricks genuinely matters for the **Daily Totals (Live)** chart below, which queries all history and really does need it.
 
 
         ✅ **Pros:** Always fresh — reflects RisingWave''s real-time state with zero staleness by construction, no refresh schedule to trust or forget.

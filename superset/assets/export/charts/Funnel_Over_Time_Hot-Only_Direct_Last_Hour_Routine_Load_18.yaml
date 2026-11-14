@@ -1,11 +1,10 @@
-slice_name: "Funnel Over Time (Cached - Fast) \u2014 Last Hour [Live RisingWave via\
-  \ StarRocks JDBC, else StarRocks's own MV]"
-description: "Feature: async MV + live-branch union with a cutoff predicate, windowed to the last hour. Value: last-hour queries pay only the hot-path cost (~1.3s) — the dead MV branch is free to skip here, the mirror image of the Zero-Copy chart. RisingWave: REQUIRED for the window to be live."
+slice_name: "Funnel Over Time (Hot-Only, Direct) — Last Hour [Routine Load]"
+description: "Feature: Routine Load (Kafka-to-StarRocks native ingestion) + a plain VIEW computing the 1-minute funnel windows at query time. Value: ~5s end-to-end freshness with no stream processor in the loop — proves the hot path works without RisingWave (right side of the side-by-side). RisingWave: NOT USED — raw page_views/cart_events/purchases topics read directly."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
 params:
-  datasource: 5__table
+  datasource: 11__table
   viz_type: echarts_timeseries_line
   groupby: []
   metrics:
@@ -33,7 +32,7 @@ params:
   row_limit: 10000
   annotation_layers: []
 query_context: null
-cache_timeout: null
-uuid: d33b8dd6-0364-4e23-8eb6-c26410fe8445
+cache_timeout: 0
+uuid: 70c4a0dc-95d5-43ac-af2b-435fd081d019
 version: 1.0.0
-dataset_uuid: 4a913584-3059-465c-a79d-5980f3990ecf
+dataset_uuid: 93e88c16-1bf1-44bf-a06a-dcf9e1a53818

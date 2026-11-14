@@ -1,11 +1,10 @@
-slice_name: "Daily Totals (Cached) \u2014 All History [StarRocks MV + RisingWave,\
-  \ via StarRocks]"
-description: "Feature: asynchronous materialized view (REFRESH MANUAL) over Databricks Iceberg history, UNIONed with the live RisingWave branch by a cutoff predicate. Value: fast all-history view (~1.3s) that never goes fully blank; RW hot data overlays the frozen MV snapshot. RisingWave: REQUIRED for freshness — without RW running the chart shows only the MV's last-rebuild snapshot (staleness invisible from the chart)."
+slice_name: "Daily Totals (Live) — All History [RisingWave + Databricks]"
+description: "Feature: federated external catalogs — one view UNION ALLs a JDBC catalog (RisingWave over Postgres wire) with the Iceberg REST catalog (Databricks UC). Value: one SQL surface over streaming-hot rows and lake-cold history with zero data movement. RisingWave: REQUIRED — the hot branch reads risingwave.public.funnel_summary live; when RW is empty the Databricks branch serves everything."
 certified_by: null
 certification_details: null
 viz_type: table
 params:
-  datasource: 5__table
+  datasource: 4__table
   viz_type: table
   query_mode: aggregate
   groupby:
@@ -30,6 +29,6 @@ params:
   annotation_layers: []
 query_context: null
 cache_timeout: 0
-uuid: 65f7df80-fc91-4300-a76d-965a8986f45e
+uuid: 3ea580d3-af2b-4761-b424-611100f06171
 version: 1.0.0
-dataset_uuid: 4a913584-3059-465c-a79d-5980f3990ecf
+dataset_uuid: 3f6ad042-8ef6-4bf3-9c05-7405652112ef

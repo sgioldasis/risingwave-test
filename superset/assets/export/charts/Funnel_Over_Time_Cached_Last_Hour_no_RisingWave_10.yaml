@@ -1,11 +1,10 @@
-slice_name: "Funnel Over Time (Live - Zero-Copy) \u2014 Last Hour [RisingWave, via\
-  \ StarRocks \u2014 always queries Databricks needlessly]"
-description: "Feature: same federated UNION view as Daily Totals (Live) — shown deliberately for its cost profile. Value: honest benchmark — for a last-hour window the Databricks branch contributes zero rows yet StarRocks still authenticates and reads Iceberg metadata on every query (~5s); this overhead is what motivates the Cached variant. RisingWave: REQUIRED (+ Databricks catalog reachable)."
+slice_name: "Funnel Over Time (Cached) — Last Hour [no RisingWave]"
+description: "Feature: async MV + Direct-from-Kafka union with a cutoff predicate, windowed to the last hour. Value: fast last-hour queries over data StarRocks owns itself — no external catalog touched at query time, so it keeps working with the RisingWave containers stopped (verified live 2026-11-14). RisingWave: NOT USED at query time."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
 params:
-  datasource: 4__table
+  datasource: 12__table
   viz_type: echarts_timeseries_line
   groupby: []
   metrics:
@@ -34,6 +33,6 @@ params:
   annotation_layers: []
 query_context: null
 cache_timeout: null
-uuid: 45f66882-8284-44f0-8563-10ba1c19c078
+uuid: d33b8dd6-0364-4e23-8eb6-c26410fe8445
 version: 1.0.0
-dataset_uuid: 3f6ad042-8ef6-4bf3-9c05-7405652112ef
+dataset_uuid: 45c75087-6290-426e-b7c6-1e611eab1687

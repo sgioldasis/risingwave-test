@@ -1,10 +1,10 @@
-slice_name: "Funnel Over Time (Hot-Only, Direct-from-Kafka) — Last Hour [Routine Load, no RisingWave]"
-description: "Feature: Routine Load (Kafka-to-StarRocks native ingestion) + a plain VIEW computing the 1-minute funnel windows at query time. Value: ~5s end-to-end freshness with no stream processor in the loop — proves the hot path works without RisingWave (right side of the side-by-side). RisingWave: NOT USED — raw page_views/cart_events/purchases topics read directly."
+slice_name: "Funnel Over Time (Live) — Last Hour [RisingWave]"
+description: "Feature: same federated UNION view as Daily Totals (Live) — shown deliberately for its cost profile. Value: honest benchmark — for a last-hour window the Databricks branch contributes zero rows yet StarRocks still authenticates and reads Iceberg metadata on every query (~5s); this overhead is what motivates the Cached variant. RisingWave: REQUIRED (+ Databricks catalog reachable)."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
 params:
-  datasource: 11__table
+  datasource: 4__table
   viz_type: echarts_timeseries_line
   groupby: []
   metrics:
@@ -32,7 +32,7 @@ params:
   row_limit: 10000
   annotation_layers: []
 query_context: null
-cache_timeout: 0
-uuid: 70c4a0dc-95d5-43ac-af2b-435fd081d019
+cache_timeout: null
+uuid: 45f66882-8284-44f0-8563-10ba1c19c078
 version: 1.0.0
-dataset_uuid: 93e88c16-1bf1-44bf-a06a-dcf9e1a53818
+dataset_uuid: 3f6ad042-8ef6-4bf3-9c05-7405652112ef
