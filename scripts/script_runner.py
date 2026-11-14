@@ -39,7 +39,7 @@ SCRIPTS = [
     ("1_up.sh", "🚀 Start Services", "Start Docker Compose services and install dependencies", None,
      [{"label": "Offline (skip Dagster build, reuse cached image)", "flag": "--offline"}]),
     ("3_run_reverse_etl_demo.sh", "🔁 Reverse-ETL Demo", "Serve the reverse-ETL animation with buttons that launch each step (port 4002). Starts the StarRocks serving stack too"),
-    ("3_run_starrocks_superset_demo.sh", "📊 StarRocks Superset Demo", "Start every container the three Superset dashboards (port 3002) need, run starrocks_demo_setup_job (Dagster), then start both producers (funnel + wallet, 1 TPS). Cold stack: ~10-15 min; re-click while producers run: seconds (setup skipped)"),
+    ("3_run_starrocks_superset_demo.sh", "📊 StarRocks Superset Demo", "Start every container the three Superset dashboards (port 3002) need, run starrocks_demo_setup_job (Dagster), then start both producers (funnel + wallet, 1 TPS). Cold stack: ~2-3 min (measured 149s); re-click while producers run: seconds (setup skipped)"),
     ("3_toggle_risingwave.sh", "⏯️ Pause/Resume RisingWave", "Non-destructive toggle of the 5 RisingWave containers (docker compose stop/start): click once to pause for the RW-free demo moment, click again to resume — sources replay from their offsets and catch up. State preserved in MinIO; producers keep buffering into Redpanda; never down/-v"),
     ("5_starrocks_flight_benchmark.sh", "🚀 StarRocks Flight Benchmark", "Benchmark Arrow Flight SQL vs MySQL protocol on StarRocks (runs in dagster-webserver, ~40s)"),
     ("5_starrocks_duckdb.sh", "🦆 DuckDB over StarRocks", "Query StarRocks from DuckDB over Arrow Flight SQL — zero-copy Arrow (host venv; needs '127.0.0.1 starrocks' in /etc/hosts)"),

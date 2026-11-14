@@ -16,7 +16,7 @@
 # Re-click safety: if either producer is already running, the setup job is
 # SKIPPED (rebuilding wallet_transactions while a producer writes is the
 # known bad order -- see the caveat on starrocks_demo_setup_job itself), and
-# the script finishes in seconds. Cold stack -> expect ~10 minutes for the
+# the script finishes in seconds. Cold stack -> expect ~2-3 minutes for the
 # setup job. Stop Everything (6_down.sh) tears the set down like any other.
 #
 # Needs the VPN on (Databricks UC access for the databricks_uc catalog).
@@ -87,7 +87,7 @@ if [ -n "$PRODUCER_RUNNING" ] || [ -n "$WALLET_PRODUCER_RUNNING" ]; then
     echo "    bad order; stop the producer(s) or run 6_down.sh if you want a full rebuild)"
 else
     echo "=== Launching starrocks_demo_setup_job (all three dashboards' objects) ==="
-    echo "   Cold stack: expect ~5-10 minutes. Streaming the run status below."
+    echo "   Cold stack: expect ~2-3 minutes (measured 149s end-to-end). Streaming the run status below."
     RUN_ID=$(python3 - <<'PYEOF'
 import json, urllib.request
 
@@ -190,8 +190,12 @@ else
     echo "✅ Wallet producer started at 1 TPS (log: /tmp/wallet_producer.log)."
 fi
 
+ELAPSED=$((SECONDS - START_SECONDS))
 echo ""
-echo "=== StarRocks Superset demo is up (total time: $((SECONDS - START_SECONDS))s) ==="
+echo "=== StarRocks Superset demo is up ==="
+echo ""
+echo "  ⏱️  Total time: $((ELAPSED / 60))m $((ELAPSED % 60))s (${ELAPSED}s)"
+echo ""
 echo "  📊 Superset:              http://localhost:3002 (admin / sr_poc_admin_2026)"
 echo "  - Funnel Dashboard:       http://localhost:3002/superset/dashboard/funnel-dashboard/"
 echo "  - Wallet Upsert Demo:     http://localhost:3002/superset/dashboard/wallet-upsert-demo/"
