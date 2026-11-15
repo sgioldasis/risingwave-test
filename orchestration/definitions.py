@@ -332,11 +332,18 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         # "Unknown table 'public.funnel_summary'" (first click of the
         # StarRocks Superset Demo button, 2026-11-13). The models above
         # already serialize behind the RW step transitively via
-        # sink_funnel_to_databricks; hot_funnel_summary reads the RW table
-        # directly and doesn't touch the Databricks sink, so it needs its
-        # own edge. dbt refs chain the rest (dashboard_funnel_serving etc.
-        # ref hot_funnel_summary or carry the dep above).
-        _MODELS_READING_RW_FUNNEL_SUMMARY = {"hot_funnel_summary"}
+        # sink_funnel_to_databricks; models reading the RW table directly
+        # need their own edge. dbt refs chain the rest -- but note
+        # source('risingwave', 'funnel_summary') carries NO such edge
+        # (dbt sources aren't materialized by any step), which is how
+        # dashboard_funnel_serving and dashboard_funnel_serving_cached
+        # raced the same way on the next cold stack (2026-11-15). Any
+        # model adding a source('risingwave', ...) read must join this set.
+        _MODELS_READING_RW_FUNNEL_SUMMARY = {
+            "hot_funnel_summary",
+            "dashboard_funnel_serving",
+            "dashboard_funnel_serving_cached",
+        }
         if dbt_resource_props.get("name") in _MODELS_READING_RW_FUNNEL_SUMMARY:
             from dagster import AssetDep
             existing_deps = list(new_spec.deps) if new_spec.deps else []
