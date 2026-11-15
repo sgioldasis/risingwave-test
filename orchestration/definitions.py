@@ -292,7 +292,6 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
             "src_iceberg_countries",
             "funnel_for_iceberg",
             "sink_funnel_to_kafka",
-            "sink_funnel_to_databricks",
         }
         if dbt_resource_props.get("name") in dashboard_assets:
             from dagster import AssetDep
@@ -730,7 +729,6 @@ _MODERN_DASHBOARD_SELECTION = (
         AssetKey(["public", "funnel_enriched"]),
         AssetKey(["public", "funnel_for_iceberg"]),
         AssetKey(["public", "sink_funnel_to_kafka"]),
-        AssetKey(["public", "sink_funnel_to_databricks"]),
     )
     | AssetSelection.assets(starrocks_unified_dbt_assets)
     | AssetSelection.assets(funnel_daily_totals_agg)

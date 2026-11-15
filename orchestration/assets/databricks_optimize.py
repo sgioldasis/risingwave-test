@@ -15,10 +15,11 @@ DATABRICKS_HOST = os.environ.get("DBT_DATABRICKS_HOST", "")
 TENANT_ID       = os.environ.get("DATABRICKS_AZURE_TENANT_ID", "")
 CLIENT_ID       = os.environ.get("DATABRICKS_AZURE_CLIENT_ID", "")
 CLIENT_SECRET   = os.environ.get("DATABRICKS_AZURE_CLIENT_SECRET", "")
-# The demo's statements run on the Serverless Starter Warehouse when the env is set
-# (starts in seconds -- a stopped PRO warehouse pays a multi-minute cold boot, found
-# 2026-11-09); the classic risingwave-poc warehouse stays the fallback.
-WAREHOUSE_ID    = os.environ.get("DATABRICKS_WAREHOUSE_ID", "4d06eca1e71a9ccc")
+# Serverless only (2026-11-15): the classic risingwave-poc PRO warehouse is no
+# longer the fallback -- a silent classic fallback burned DBUs whenever the env
+# var went missing. The only fallback is the Serverless Starter Warehouse;
+# set DATABRICKS_WAREHOUSE_ID to override.
+WAREHOUSE_ID    = os.environ.get("DATABRICKS_WAREHOUSE_ID", "d1f1631fdd2cb0bf")
 
 TABLES = [
     "de_dev.rw_poc.rw_casino_transactions",
