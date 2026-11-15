@@ -248,7 +248,7 @@ Show:
 Two ways to change a source: the page's change dropdown (the demo op) or raw SQL in the Databricks SQL editor.
 The demo op executes its statements through the Statement Execution API on the warehouse in
 `DATABRICKS_WAREHOUSE_ID` (env-driven since 2026-11-09 — a stopped classic warehouse paid a multi-minute
-cold boot; the env points at the Serverless Starter Warehouse, with the classic `risingwave-poc` as fallback),
+cold boot; serverless-only since 2026-11-15, the env points at the Serverless Starter Warehouse),
 which is why a clicked change lands in seconds.
 
 In the Databricks SQL editor:

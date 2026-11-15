@@ -320,9 +320,12 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
         if dbt_resource_props.get("name") in _MODELS_READING_FUNNEL_SUMMARY_HISTORICAL:
             from dagster import AssetDep
             existing_deps = list(new_spec.deps) if new_spec.deps else []
-            risingwave_sink_key = AssetKey(["public", "sink_funnel_to_databricks"])
-            if risingwave_sink_key not in {dep.asset_key for dep in existing_deps}:
-                existing_deps.append(AssetDep(asset=risingwave_sink_key))
+            # funnel_summary_historical is now populated by the RW-free
+            # watermark asset (the RW Iceberg sink was retired 2026-11-15),
+            # so the models that read it serialize behind that asset.
+            watermark_key = AssetKey(["funnel_historical_watermark"])
+            if watermark_key not in {dep.asset_key for dep in existing_deps}:
+                existing_deps.append(AssetDep(asset=watermark_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
         # hot_funnel_summary is a VIEW over risingwave.public.funnel_summary
