@@ -55,7 +55,7 @@ dependencies = [
     # compaction job) but no Spark-4.2 runtime yet — bump the ceiling when it does.
     # (The old Delta 4.0.0 gate is gone: the archived Spark CDF prototype provisions
     # its own delta-spark via `uv run --with` and never touches this pin.)
-    "pyspark>=4.1.0,<4.2",
+    "pyspark>=4.1.0,<4.4",
     # delta-rs (no JVM): the reverse-ETL syncs read the change feed, the source's
     # current version and the state table's watermark with it, in-process.
     "deltalake>=1.6.0",
