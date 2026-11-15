@@ -90,7 +90,12 @@ Design choices:
   StarRocks' MV-refresh task machinery), so a 1-minute schedule meant live
   queries too often landed inside a slow refresh and ran as slow as
   "Rewrite OFF" — see the model file's own comment for the full tradeoff
-  either way.
+  either way. Changed back to **1 minute on 2026-11-15** (user request)
+  once `partition_refresh_strategy="force"` made every scheduled tick
+  actually pick up new rows — see [Refresh cadence and expected
+  staleness](#refresh-cadence-and-expected-staleness-2026-11-15) below;
+  the old 1-minute concern (live queries landing inside the ~20-46s
+  rebuild) is re-accepted deliberately.
 - **`query_rewrite_consistency: loose`** — matches the existing MV. Since
   the base table is an external Iceberg catalog, StarRocks can't reliably
   track fine-grained freshness against it (same limitation hit earlier with
@@ -244,8 +249,9 @@ few minutes), so the on-screen contrast is still visible in practice.
    MV needs no separate warm-up: the dbt build's `materialized_view`
    materialization runs `REFRESH MATERIALIZED VIEW ... WITH SYNC MODE` as
    its post-hook whenever it rebuilds the model, and the MV also
-   auto-refreshes on its own every 5 minutes (`refresh_method="ASYNC EVERY
-   (INTERVAL 5 MINUTE)"`, changed 2026-09-14), so it stays in sync with
+   auto-refreshes on its own every 1 minute (`refresh_method="ASYNC EVERY
+   (INTERVAL 1 MINUTE)"`, changed back from 5 minutes on 2026-11-15), so
+   it stays in sync with
    the raw table between job runs without any manual step during a demo.
    (A dedicated force-refresh asset,
    `orchestration/assets/query_rewrite_demo_refresh.py`, ran at the end of
@@ -318,10 +324,12 @@ since that was a full service swap and the MV needed rebuilding via
   `CURRENT_TIMESTAMP()`-relative filters — StarRocks flatly refuses rewrite
   for that shape (`UNSUPPORTED_DEFINITION`). Rewrite is not a blanket
   capability; it requires a specific, stable query shape.
-- `refresh_method` is `ASYNC EVERY (INTERVAL 5 MINUTE)` (changed
-  2026-09-14, was `MANUAL`, briefly 1 minute the same day) — this MV is no
+- `refresh_method` is `ASYNC EVERY (INTERVAL 1 MINUTE)` (changed
+  2026-09-14, was `MANUAL`, briefly 1 minute the same day, lengthened to
+  5 minutes after profiling, back to 1 minute on 2026-11-15 once the
+  force refresh strategy landed) — this MV is no
   longer static for a whole demo session; numbers can shift between two
-  queries several minutes apart.
+  queries a minute or two apart.
   Accepted deliberately so "Rewrite ON" stays in sync with "Rewrite OFF"
   (a live raw-table scan) instead of visibly diverging over a long
   session, which is what prompted the change. See the model file's own
@@ -457,6 +465,55 @@ both worth knowing:
   post-hook's `REFRESH ... WITH SYNC MODE` can return SKIPPED with 0 rows
   on the table. Check `SELECT COUNT(*)` on the MV after any rebuild and
   force-refresh if it's empty.
+
+## Refresh cadence and expected staleness (2026-11-15)
+
+How fresh each chart should be, and what to do when it isn't:
+
+- **Rewrite OFF (raw scan)** — live by definition: every query reads
+  `funnel_summary_historical` as of query time (~200ms warm; up to a few
+  seconds right after the catalog's 300s metadata cache expires).
+- **Rewrite ON (MV)** — refreshes **every 1 minute**
+  (`refresh_method="ASYNC EVERY (INTERVAL 1 MINUTE)"`, changed back from
+  5 minutes on 2026-11-15), and each refresh is a full ~20-46s rebuild
+  (`partition_refresh_strategy="force"`, same day — see below). Expected
+  lag vs the raw table: **0 to ~2 minutes** (schedule interval + rebuild
+  time). Historical days are identical on both sides; only today's bar
+  trails.
+- **The historical table itself** — while RisingWave is up, its sink
+  streams revision rows continuously. Once RW is stopped, new rows land
+  only through the every-minute Dagster watermark asset
+  (`funnel_historical_watermark`), which deliberately inserts only
+  windows closed at least 3 minutes ago — so in the RW-free configuration
+  the whole lake path runs **~3-4 minutes behind wall clock**.
+- **Superset** — charts cache query results for 24h by default (no cache
+  timeout is configured in `superset_config.py`), so a plain dashboard
+  refresh may re-serve stale numbers. Use the dashboard's ⋯ menu →
+  **Force refresh** to bypass the cache.
+
+### Scheduled refresh stopped detecting changes (2026-11-15)
+
+The scheduled refresh reported SUCCESS with `refreshMode=PCT` and
+`basePartitionsToRefreshMap={}` on every tick — zero partitions selected,
+so "Rewrite ON" froze at its last full refresh while the raw scan kept
+moving. This is the same "no partitions to refresh" pathology documented
+above, but this time permanent: base-table change detection never fired
+for the UC REST Iceberg base table (it had worked on 2026-09-14; the
+table was recreated RW-style since, and Databricks-side snapshot churn
+may contribute — root cause not pinned down).
+
+Because the scheduled path can't be trusted to detect changes, the MV now
+carries **`partition_refresh_strategy="force"`**: every tick does a full
+rebuild of all partitions. There's no added load — the no-op ticks were
+already spending the same 20-46s on metadata walks. Applied live via
+`ALTER MATERIALIZED VIEW ... SET ("partition_refresh_strategy"="force")`,
+verified (next tick ran with `forceRefresh=true` and the MV jumped
+current), then persisted in the model config so rebuilds keep it.
+
+Dead ends, for the record: `CREATE TASK`/`CREATE JOB` don't parse at all
+on StarRocks 4.1.7, and `SUBMIT TASK` (the real syntax) only accepts
+INSERT/CREATE/EXPLAIN bodies — a scheduled `REFRESH MATERIALIZED VIEW`
+body is impossible, which is why the strategy property is the fix.
 
 ## Investigation log: dashboard slowness and a real data-loss incident (2026-09-14)
 

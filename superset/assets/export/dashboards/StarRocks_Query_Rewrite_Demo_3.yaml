@@ -42,7 +42,7 @@ position:
     - ROW-2
     meta:
       width: 12
-      height: 23
+      height: 38
       code: "### \u2728 Transparent query rewrite -- lake data at MV speed\n- **At\
         \ a glance:** [transparent query rewrite](https://docs.starrocks.io/docs/using_starrocks/async_mv/use_cases/query_rewrite_with_materialized_views/)\
         \ -- the optimizer silently redirects a base-table query to a matching async\
@@ -51,7 +51,22 @@ position:
         \ then every identical dashboard query hits it instead of scanning the lake.\n\
         - **Value:** ~10-100x faster dashboards (~0.1s vs a multi-second raw Iceberg\
         \ scan) with zero query or dashboard changes -- the Rewrite OFF chart runs\
-        \ the same query without the MV.\n- **RisingWave:** NOT USED on either side\
+        \ the same query without the MV.\n- **Refresh cadence:** Rewrite OFF is a\
+        \ live scan -- every query reads the table as of query time. Rewrite ON is\
+        \ the MV, which force-refreshes every 1 minute (~20-46s full rebuild each\
+        \ tick), so expect ON to trail OFF by 0-2 minutes; with RisingWave stopped\
+        \ the whole lake path runs ~3-4 minutes behind wall clock (closed-window\
+        \ watermark inserts).\n- **Why the two charts disagree (and why that's OK\
+        \ in production):** the two charts read two different snapshots by design\
+        \ -- ON is the MV's last-refresh copy, OFF is the table now. In production\
+        \ you would never serve both: the MV *is* the serving surface, every query\
+        \ gets the same (slightly stale) answer, and the discrepancy disappears.\
+        \ Two surfaces at different staleness is a demo artifact -- here the skew\
+        \ is deliberately visible so you can see the mechanism. The gap is bounded\
+        \ (~\u22642 min, typically 0.2-0.4% of the daily total) and is the documented\
+        \ freshness trade for ~10-100x faster queries.\n- **If numbers look stuck:**\
+        \ Superset caches chart results for 24h -- use \u22ef \u2192 Force refresh to\
+        \ see current values.\n- **RisingWave:** NOT USED on either side\
         \ -- both charts read Databricks Iceberg history through StarRocks catalogs;\
         \ this demo is purely about StarRocks' own optimizer, with no streaming layer\
         \ in the loop.\n"

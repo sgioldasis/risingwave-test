@@ -51,6 +51,11 @@ from .assets.reverse_etl_consumer import (
 )
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 from .assets.funnel_direct_kafka_setup import funnel_events_direct_kafka
+from .assets.funnel_historical_watermark import (
+    funnel_historical_watermark,
+    funnel_historical_watermark_job,
+    funnel_historical_watermark_schedule,
+)
 from .assets.wallet_direct_kafka_setup import (
     wallet_transactions_direct_kafka,
     wallet_status_update_load_job,
@@ -1060,6 +1065,11 @@ defs = Definitions.merge(
             # "via RisingWave" vs "Direct-from-Kafka" pair on the Funnel
             # Dashboard -- no RisingWave in the loop
             funnel_events_direct_kafka,
+            # RW-free micro-batch updater for funnel_summary_historical --
+            # replaces the RW Iceberg sink (sink_funnel_to_databricks):
+            # inserts closed windows from the direct-Kafka leg into the UC
+            # Iceberg table every minute, watermark + NOT EXISTS guarded
+            funnel_historical_watermark,
             # Delta sync's Postgres target: table setup + JSON sink connector + consumer report
             reverse_etl_delta_postgres_target,
             reverse_etl_delta_json_jdbc_sink,
@@ -1078,6 +1088,7 @@ defs = Definitions.merge(
             kafka_topics_setup_job,
             reverse_etl_consumer_job,
             reverse_etl_notebook_sync_job,
+            funnel_historical_watermark_job,
             casino_prd_full_job,
             casino_stg_job,
             casino_datafusion_job,
@@ -1100,6 +1111,7 @@ defs = Definitions.merge(
             dbt_build_schedule,
             ml_training_schedule,
             dbt_starrocks_build_schedule,
+            funnel_historical_watermark_schedule,
         ],
         sensors=[
             ml_training_sensor_realtime,

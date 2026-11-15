@@ -2,8 +2,9 @@
   config(
     materialized='materialized_view',
     distributed_by=['day'],
-    properties={'query_rewrite_consistency': 'loose'},
-    refresh_method="ASYNC EVERY (INTERVAL 5 MINUTE)",
+    properties={'query_rewrite_consistency': 'loose',
+                'partition_refresh_strategy': 'force'},
+    refresh_method="ASYNC EVERY (INTERVAL 1 MINUTE)",
     post_hook="REFRESH MATERIALIZED VIEW {{ this }} WITH SYNC MODE;"
   )
 }}
@@ -53,6 +54,30 @@
 -- demo session the way MANUAL was -- numbers can now shift between two
 -- queries several minutes apart. Accepted deliberately in exchange for
 -- "Rewrite ON" staying in sync with "Rewrite OFF" without a manual step.
+--
+-- partition_refresh_strategy="force" (2026-11-15): the scheduled refresh
+-- stopped picking up new rows -- every 5-minute tick reported SUCCESS with
+-- refreshMode=PCT and basePartitionsToRefreshMap={} (zero partitions
+-- selected), so "Rewrite ON" froze at its last full refresh while the raw
+-- scan kept moving. PCT had worked when this comment's 2026-09-14 notes
+-- were written; something upstream changed (table recreated RW-style,
+-- Databricks-side snapshot churn) and change detection now never fires
+-- for this UC REST Iceberg base table. The "force" strategy bypasses PCT:
+-- every scheduled tick does a full rebuild (same 20-46s cost as before --
+-- the no-op ticks were already spending that on metadata walks). Applied
+-- live via ALTER MATERIALIZED VIEW ... SET and verified: next tick ran
+-- with forceRefresh=true and the MV jumped to current. This config entry
+-- makes it survive rebuilds. (SUBMIT TASK with a REFRESH body is NOT an
+-- alternative -- the task-body grammar only accepts INSERT/CREATE/
+-- EXPLAIN, and CREATE TASK/CREATE JOB don't parse at all on 4.1.7.)
+--
+-- Back to 1 minute (2026-11-15, same day, user request): with the force
+-- strategy above the scheduled refresh is useful every tick instead of a
+-- no-op, so the 5-minute spacing is no longer buying much -- the original
+-- 1-minute concern (live queries landing inside the 20-46s rebuild) is
+-- re-accepted deliberately: "Rewrite ON" may briefly run at raw-scan
+-- speed while a refresh is in flight, and the chart can be up to ~2
+-- minutes behind the base table (schedule interval + rebuild time).
 
 -- Daily pre-aggregation over the Databricks cold history table, built
 -- specifically to demonstrate StarRocks' transparent query rewrite: a
