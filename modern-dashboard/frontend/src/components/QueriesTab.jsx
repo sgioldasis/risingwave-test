@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Database, Users, ShoppingCart, CreditCard, BarChart3, Calendar, Clock, Globe, AlertTriangle, Loader2 } from 'lucide-react';
+import { Search, Database, Users, ShoppingCart, CreditCard, BarChart3, Calendar, Clock, Globe, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 
 const DateTimeInput = ({ value, onChange }) => {
     const dateInputRef = useRef(null);
@@ -519,18 +519,37 @@ const QueriesTab = () => {
             </motion.div>
 
             {hasQueried && degraded && (
-                <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    style={{ marginBottom: '1rem', display: 'flex' }}
-                >
-                    <div className="refresh-badge degraded" style={{ justifyContent: 'flex-start' }}>
-                        <AlertTriangle size={14} />
-                        <span>
-                            Degraded: the RisingWave zero-copy path is unavailable — queries are served directly by StarRocks over the Kafka-ingested events (fresh data, no RisingWave in the loop)
-                        </span>
-                    </div>
-                </motion.div>
+                architecture === 'cached' ? (
+                    // The cached architecture reads StarRocks natively and its
+                    // hot branch has a designed RW-independent fallback, so
+                    // RisingWave being down is not degradation here -- say so
+                    // in a neutral badge instead of the scary red one.
+                    <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        style={{ marginBottom: '1rem', display: 'flex' }}
+                    >
+                        <div className="refresh-badge" style={{ justifyContent: 'flex-start', background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.4)' }}>
+                            <CheckCircle size={14} style={{ color: '#10B981' }} />
+                            <span>
+                                RW-independent by design: served by the direct Kafka → StarRocks cache — RisingWave is down, and this path doesn't care
+                            </span>
+                        </div>
+                    </motion.div>
+                ) : (
+                    <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        style={{ marginBottom: '1rem', display: 'flex' }}
+                    >
+                        <div className="refresh-badge degraded" style={{ justifyContent: 'flex-start' }}>
+                            <AlertTriangle size={14} />
+                            <span>
+                                Degraded: the RisingWave zero-copy path is unavailable — queries are served directly by StarRocks over the Kafka-ingested events (fresh data, no RisingWave in the loop)
+                            </span>
+                        </div>
+                    </motion.div>
+                )
             )}
 
             {/* KPI Cards */}
