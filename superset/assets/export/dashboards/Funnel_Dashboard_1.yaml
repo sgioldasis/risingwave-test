@@ -496,7 +496,7 @@ position:
     - ROW-DISTINCT-MD
     meta:
       width: 12
-      height: 34
+      height: 44
       code: "### ✨ Approximate aggregates -- three ways to count the same unique\
         \ viewers\n- **At a glance:** [Bitmap](https://docs.starrocks.io/docs/sql_datatypes/bitmap/)\
         \ and [HLL](https://docs.starrocks.io/docs/sql_datatypes/hll/) sketch types\
@@ -509,7 +509,16 @@ position:
         \ is not the sum of its minutes. Sketches can: `mv_funnel_distinct_daily`\
         \ stores one BITMAP + one HLL per day, and every query merges fixed-size sketches\
         \ instead of rescanning events -- the mechanism that keeps distinct counting\
-        \ affordable as event volume grows.\n- **RisingWave:** NOT USED -- everything\
+        \ affordable as event volume grows.\n- **BITMAP vs HLL -- when to use which:**\
+        \ BITMAP's memory grows *linearly* with cardinality (one bit per distinct value\
+        \ -- on the order of 100+MB at a billion distinct users), while HLL is a fixed\
+        \ few-KB sketch forever, error bounded at ~1-2% whether it counted 2 thousand\
+        \ or 2 billion. Rule of thumb: BITMAP up to millions of distinct values per\
+        \ group (exactness is cheap there -- that's this demo), HLL beyond it -- and\
+        \ for non-integer IDs, since `hll_hash` accepts anything where `to_bitmap` wants\
+        \ integers. At this demo's ~2k distinct viewers HLL is actually the wasteful\
+        \ one; it's stored in the same MV so the query can switch columns the day volume\
+        \ makes exactness expensive.\n- **RisingWave:** NOT USED -- everything\
         \ here counts the Direct-from-Kafka tables ingested by Routine Load.\n"
   ROW-DISTINCT-MD:
     type: ROW
