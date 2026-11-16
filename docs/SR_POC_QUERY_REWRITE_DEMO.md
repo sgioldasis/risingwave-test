@@ -480,12 +480,15 @@ How fresh each chart should be, and what to do when it isn't:
   lag vs the raw table: **0 to ~2 minutes** (schedule interval + rebuild
   time). Historical days are identical on both sides; only today's bar
   trails.
-- **The historical table itself** — while RisingWave is up, its sink
-  streams revision rows continuously. Once RW is stopped, new rows land
-  only through the every-minute Dagster watermark asset
-  (`funnel_historical_watermark`), which deliberately inserts only
-  windows closed at least 3 minutes ago — so in the RW-free configuration
-  the whole lake path runs **~3-4 minutes behind wall clock**.
+- **The historical table itself** — written exclusively by the
+  StarRocks scheduled task `funnel_historical_watermark` (SUBMIT TASK,
+  every 1 minute; recreated idempotently by dbt's `create_watermark_task`
+  on-run-start hook, so demo resets restore it), which deliberately
+  inserts only windows closed at least 3 minutes ago — the whole lake
+  path runs **~3-4 minutes behind wall clock**. The old RW sink
+  (retired 2026-11-15) and the equivalent Dagster watermark asset
+  (schedule now STOPPED; asset kept as a manual fallback) used to own
+  this path.
 - **Superset** — charts cache query results for 24h by default (no cache
   timeout is configured in `superset_config.py`), so a plain dashboard
   refresh may re-serve stale numbers. Use the dashboard's ⋯ menu →

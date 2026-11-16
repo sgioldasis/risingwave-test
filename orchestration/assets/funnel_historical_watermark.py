@@ -25,11 +25,14 @@ Design decisions (validated live 2026-11-15, see the insert guard test):
   not be picked up for an already-inserted window -- accepted for the
   demo, and strictly no worse than the RW sink's dedup-by-MAX contract.
 
-- Schedule runs every minute (the historical table is 3-min stale by
-  design; the hot charts never read it). Unlike the reverse-ETL health
-  schedules this one defaults STARTED: it IS the data path for the
-  historical table once the RW sink is retired, so a stack rebuild
-  should re-enable it. Pause it in the Dagster UI (Automation) to stop.
+- Schedule defaults STOPPED (2026-11-16): the data path for the
+  historical table is now the StarRocks scheduled task
+  `funnel_historical_watermark` (SUBMIT TASK, every 1 minute), recreated
+  idempotently by dbt_starrocks's create_watermark_task on-run-start
+  hook -- so it survives stack resets without Dagster. This asset stays
+  as a manual fallback and as the Dagster asset-graph dep target for the
+  models reading funnel_summary_historical; re-enable the schedule only
+  if you want Dagster as a second (idempotent) writer.
 
 The scratch probe used to validate the write path lives at
 databricks_uc.sr_poc_external.starrocks_write_probe (drop at leisure).
@@ -143,5 +146,7 @@ funnel_historical_watermark_schedule = ScheduleDefinition(
     name="funnel_historical_watermark_schedule",
     job=funnel_historical_watermark_job,
     cron_schedule="* * * * *",
-    default_status=DefaultScheduleStatus.RUNNING,
+    # The StarRocks SUBMIT TASK owns the data path now (recreated by dbt's
+    # on-run-start hook); this schedule stays off unless re-enabled by hand.
+    default_status=DefaultScheduleStatus.STOPPED,
 )
