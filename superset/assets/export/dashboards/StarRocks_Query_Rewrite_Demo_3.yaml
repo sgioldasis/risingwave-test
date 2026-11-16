@@ -124,7 +124,7 @@ position:
     - ROW-2B
     meta:
       width: 12
-      height: 76
+      height: 64
       code: "**Demo:** StarRocks transparent materialized-view query rewrite. Both\
         \ charts run the *exact same query* (`SELECT DATE(window_start) AS day, country,\
         \ SUM(viewers) AS viewers FROM databricks_uc.sr_poc_external.funnel_summary_historical\
@@ -197,7 +197,7 @@ position:
     - ROW-JOIN-MD
     meta:
       width: 12
-      height: 50
+      height: 37
       code: "### ✨ Multi-table rewrite -- the join story\n- **At a glance:**\
         \ same SQL on both charts -- page_views (raw Kafka events via Routine Load)\
         \ JOIN dim_users (a 1M-row user→country dimension), aggregated per day\
@@ -247,7 +247,7 @@ position:
     meta:
       chartId: 22
       width: 6
-      height: 30
+      height: 36
       sliceName: "Page Views by Country — Join Rewrite ON (uses MV)"
       uuid: 046111dc-29fa-415c-97a8-6d17141591a6
   CHART-JOIN-OFF:
@@ -261,7 +261,7 @@ position:
     meta:
       chartId: 23
       width: 6
-      height: 30
+      height: 36
       sliceName: "Page Views by Country — Join Rewrite OFF (raw join scan)"
       uuid: 3f0c1d31-b3bc-4fa6-911a-5f96238a5e19
   ROW-JOIN:
