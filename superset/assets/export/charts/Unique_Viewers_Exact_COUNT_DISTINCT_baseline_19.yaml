@@ -1,0 +1,17 @@
+slice_name: "Unique Viewers — Exact [COUNT DISTINCT baseline]"
+description: "Baseline: COUNT(DISTINCT user_id) recomputed from the raw direct-Kafka events at query time. Always exact, but the cost grows with event volume — the number the two sketch tiles are judged against."
+viz_type: big_number_total
+params:
+  annotation_layers: []
+  datasource: 13__table
+  header_format: ","
+  metric: viewers_exact
+  subheader: ''
+  time_range: ''
+  viz_type: big_number_total
+  y_axis_format: ","
+query_context: null
+cache_timeout: 0
+uuid: 3207a424-6b13-48be-a078-e3a580bd4a9d
+version: 1.0.0
+dataset_uuid: 370d0e61-3d84-4823-9b0d-c047fd6091d1

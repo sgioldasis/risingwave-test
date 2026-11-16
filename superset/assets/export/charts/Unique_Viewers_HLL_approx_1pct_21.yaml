@@ -1,0 +1,17 @@
+slice_name: "Unique Viewers — HLL [~1% approx]"
+description: "HLL_UNION_AGG(hll_hash(user_id)): HyperLogLog — a fixed few-KB sketch per value regardless of cardinality, within ~1-2% of the exact count. The markdown below reports the drift (hll_error_pct)."
+viz_type: big_number_total
+params:
+  annotation_layers: []
+  datasource: 13__table
+  header_format: ","
+  metric: viewers_hll
+  subheader: ''
+  time_range: ''
+  viz_type: big_number_total
+  y_axis_format: ","
+query_context: null
+cache_timeout: 0
+uuid: d47b6b64-11e6-4864-84a1-f552dcc5a3ea
+version: 1.0.0
+dataset_uuid: 370d0e61-3d84-4823-9b0d-c047fd6091d1

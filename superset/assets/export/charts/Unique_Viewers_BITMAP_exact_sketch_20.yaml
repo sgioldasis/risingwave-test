@@ -1,0 +1,17 @@
+slice_name: "Unique Viewers — BITMAP [exact sketch]"
+description: "BITMAP_UNION_COUNT(to_bitmap(user_id)): the EXACT distinct count computed from a bitmap sketch — agrees with the COUNT DISTINCT baseline to the digit. Bitmaps pre-aggregate and merge in storage (mv_funnel_distinct_daily), which is what keeps exact distinct counting affordable at scale."
+viz_type: big_number_total
+params:
+  annotation_layers: []
+  datasource: 13__table
+  header_format: ","
+  metric: viewers_bitmap
+  subheader: ''
+  time_range: ''
+  viz_type: big_number_total
+  y_axis_format: ","
+query_context: null
+cache_timeout: 0
+uuid: 91f0802d-bd08-4332-ad2c-746b808c765d
+version: 1.0.0
+dataset_uuid: 370d0e61-3d84-4823-9b0d-c047fd6091d1

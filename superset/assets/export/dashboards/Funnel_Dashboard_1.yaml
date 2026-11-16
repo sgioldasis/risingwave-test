@@ -29,6 +29,8 @@ position:
     - ROW-AGGKEY-MD
     - ROW-AGGKEY
     - ROW-AGGKEY-MDB
+    - ROW-DISTINCT-MD
+    - ROW-DISTINCT
     parents:
     - ROOT_ID
   ROW-8:
@@ -479,6 +481,95 @@ position:
     id: ROW-AGGKEY-MDB
     children:
     - MARKDOWN-AGGKEYB
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-DISTINCT:
+    type: MARKDOWN
+    id: MARKDOWN-DISTINCT
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-DISTINCT-MD
+    meta:
+      width: 12
+      height: 34
+      code: "### ✨ Approximate aggregates -- three ways to count the same unique\
+        \ viewers\n- **At a glance:** [Bitmap](https://docs.starrocks.io/docs/sql_datatypes/bitmap/)\
+        \ and [HLL](https://docs.starrocks.io/docs/sql_datatypes/hll/) sketch types\
+        \ -- compressed, mergeable summaries of a distinct set. All three tiles read\
+        \ the same raw page_views events; only the counting mechanism differs.\n- **The\
+        \ punchline:** Exact and BITMAP agree **to the digit** (BITMAP *is* exact --\
+        \ it's the sketch that keeps exactness), while HLL drifts within its ~1-2%\
+        \ error bound (drift shown below as `hll_error_pct`).\n- **Why sketches matter:**\
+        \ `COUNT(DISTINCT)` cannot be pre-aggregated -- the distinct count of a day\
+        \ is not the sum of its minutes. Sketches can: `mv_funnel_distinct_daily`\
+        \ stores one BITMAP + one HLL per day, and every query merges fixed-size sketches\
+        \ instead of rescanning events -- the mechanism that keeps distinct counting\
+        \ affordable as event volume grows.\n- **RisingWave:** NOT USED -- everything\
+        \ here counts the Direct-from-Kafka tables ingested by Routine Load.\n"
+  ROW-DISTINCT-MD:
+    type: ROW
+    id: ROW-DISTINCT-MD
+    children:
+    - MARKDOWN-DISTINCT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-DISTINCT-EXACT:
+    type: CHART
+    id: CHART-DISTINCT-EXACT
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-DISTINCT
+    meta:
+      chartId: 19
+      width: 4
+      height: 30
+      sliceName: "Unique Viewers -- Exact [COUNT DISTINCT baseline]"
+      uuid: 3207a424-6b13-48be-a078-e3a580bd4a9d
+  CHART-DISTINCT-BITMAP:
+    type: CHART
+    id: CHART-DISTINCT-BITMAP
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-DISTINCT
+    meta:
+      chartId: 20
+      width: 4
+      height: 30
+      sliceName: "Unique Viewers -- BITMAP [exact sketch]"
+      uuid: 91f0802d-bd08-4332-ad2c-746b808c765d
+  CHART-DISTINCT-HLL:
+    type: CHART
+    id: CHART-DISTINCT-HLL
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-DISTINCT
+    meta:
+      chartId: 21
+      width: 4
+      height: 30
+      sliceName: "Unique Viewers -- HLL [~1% approx]"
+      uuid: d47b6b64-11e6-4864-84a1-f552dcc5a3ea
+  ROW-DISTINCT:
+    type: ROW
+    id: ROW-DISTINCT
+    children:
+    - CHART-DISTINCT-EXACT
+    - CHART-DISTINCT-BITMAP
+    - CHART-DISTINCT-HLL
     parents:
     - ROOT_ID
     - GRID_ID
