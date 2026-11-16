@@ -1,0 +1,80 @@
+table_name: wallet_type_totals_unique
+main_dttm_col: updated_at
+currency_code_column: null
+description: "UNIQUE KEY table-model demo: per-type wallet totals, whole-row upsert per key (type), refreshed every minute by INSERT-SELECT from the wallet table."
+default_endpoint: null
+offset: 0
+cache_timeout: 0
+catalog: null
+schema: sr_local_db_sr_local_db
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+folders: null
+uuid: 095c202b-4cb9-405f-9869-13565ece140a
+metrics:
+- metric_name: sum__total
+  verbose_name: Total amount
+  metric_type: null
+  expression: SUM(total)
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: type
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: total
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL(38,9)
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: updated_at
+  verbose_name: null
+  is_dttm: true
+  is_active: true
+  type: DATETIME
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 59a0d538-9906-43d8-bc51-9897094c57a2

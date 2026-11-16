@@ -1,0 +1,30 @@
+slice_name: "Page Views × Country — GROUPING SETS rollup"
+description: "Feature: GROUPING SETS — one scan computes (country), (day), (day × country) and the grand total; the GROUPING() flags mark which level each row is (1 = that dimension was aggregated away). Rows ordered subtotal-first. RisingWave: NOT USED."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 18__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - country
+  - day
+  - page_views
+  - g_country
+  - g_day
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["g_country", false]'
+  - '["g_day", false]'
+  - '["page_views", false]'
+  time_range: No filter
+  annotation_layers: []
+  comparison_type: values
+query_context: null
+cache_timeout: 0
+uuid: 0ffd5c65-d399-44e9-bfdd-02328a1ce94d
+version: 1.0.0
+dataset_uuid: 60a00743-de45-4885-93f2-2b121e7b0eb7

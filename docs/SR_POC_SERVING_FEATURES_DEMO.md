@@ -81,7 +81,69 @@ country.
   feeds it here), and Superset's sqlglot transpile preserves the ASOF
   clause (verified before building the dataset).
 
-## 3. Workload groups — dashboard queries isolated from refresh traffic
+## 3. UNIQUE KEY table model — the fourth model
+
+The Wallet dashboard shows DUPLICATE, AGGREGATE and PRIMARY KEY tables;
+`sr_local_db_sr_local_db.wallet_type_totals_unique` completes the set with
+**UNIQUE KEY** — same per-key upsert semantics as PRIMARY KEY, but
+whole-row REPLACE: an INSERT re-writing a key replaces the entire row (no
+partial-column update).
+
+```sql
+CREATE TABLE wallet_type_totals_unique (
+    type VARCHAR(32) NOT NULL,
+    total DECIMAL(38,9),
+    updated_at DATETIME
+) UNIQUE KEY (type) DISTRIBUTED BY HASH(type);
+```
+
+- **Refresh:** the 1-minute task `wallet_type_totals_unique_refresh` (created
+  by the `starrocks_feature_demo_setup` asset) INSERT-SELECTs the per-type
+  `SUM(amount)` from the wallet table every minute; the UNIQUE KEY upsert
+  makes re-inserting idempotent — one row per type, always.
+- **The contrast to chart:** the AGGREGATE KEY twin (`wallet_type_totals_agg`,
+  Wallet dashboard) maintains SUM incrementally **at ingest**; UNIQUE does a
+  full-row upsert **at refresh**. Same answer, different mechanics.
+- Chart 27 on the Serving Features dashboard ("Total Amount per Type —
+  UNIQUE KEY").
+
+## 4. GROUPING SETS — one query, every granularity
+
+```sql
+SELECT COALESCE(u.country, '(all countries)') AS country,
+       COALESCE(CAST(DATE(p.event_time) AS VARCHAR), '(all days)') AS day,
+       COUNT(*) AS page_views,
+       GROUPING(u.country) AS g_country,
+       GROUPING(DATE(p.event_time)) AS g_day
+FROM page_views_direct p JOIN dim_users u ON p.user_id = u.user_id
+GROUP BY GROUPING SETS ((u.country), (DATE(p.event_time)),
+                        (u.country, DATE(p.event_time)), ())
+```
+
+- One scan computes (country), (day), (day × country) and the grand total —
+  vs one query per level. `GROUPING()` returns 1 for a dimension aggregated
+  away in that row's set; the `COALESCE` labels mark subtotal rows.
+- **Verified before building** (the ASOF lesson): sqlglot (Superset's MySQL-
+  dialect transpiler) preserves both `GROUP BY GROUPING SETS (...)` and
+  `GROUPING(...)` through the virtual-dataset wrapper.
+- Chart 26 on the Serving Features dashboard, rows ordered subtotal-first.
+
+## 5. Delete-via-load — `__op` tombstones + `DELETE WHERE`
+
+`bin/3_starrocks_delete_via_load_demo.sh` — how corrections and tombstones
+flow into a PRIMARY KEY table from a load pipeline:
+
+- **`__op` values are the reverse of what you might guess** (verified live
+  2026-11-16): `__op=0` upserts (whole-row replace), `__op=1` deletes the
+  key. My first probe with `__op=0` as "delete" silently upserted a row
+  instead. The `__op` field rides in each JSON row and must be listed in
+  the `columns` header (`columns: tx_id, note, amount, __op`).
+- **`DELETE ... WHERE`** works directly on PK tables — the SQL-side
+  equivalent for interactive corrections.
+- Together these are the two paths a real CDC/correction pipeline uses;
+  the demo walks all the way from plain upsert to tombstone to SQL DELETE.
+
+## 6. Workload groups — dashboard queries isolated from refresh traffic
 
 **The observed problem:** MV refreshes jammed dashboard queries during
 the rewrite-demo slowness investigation (20-46s rebuilds landing
@@ -117,7 +179,7 @@ classifier pinning is what ships; queueing needs shared-data/CN.
 `GRANT ... ON db.view` fails with "cannot find table". All
 `superset_demo` datasets therefore query base tables directly.
 
-## 4. Stream Load — the third ingestion path
+## 7. Stream Load — the third ingestion path
 
 `bin/3_starrocks_stream_load_demo.sh` POSTs a JSON batch straight to the
 FE's `_stream_load` HTTP endpoint:
@@ -135,7 +197,7 @@ FE's `_stream_load` HTTP endpoint:
 - **Verified:** 4/4 rows loaded, `loaded_at` populated server-side, and
   the idempotency re-run returns `Label Already Exists`.
 
-## 5. Lake scan data cache — cold vs warm
+## 8. Lake scan data cache — cold vs warm
 
 `bin/5_starrocks_lake_cache_benchmark.sh` drops the UC metadata cache
 (`REFRESH EXTERNAL TABLE`), then runs the rewrite-OFF Iceberg query twice
@@ -153,15 +215,33 @@ to catch the full cold cost.
 - **Native CDC ingestion** — the reverse-ETL demo hand-builds what StarRocks's
   CDC connectors automate, but the official path is new infrastructure
   (Flink/CDC connector + its runtime) duplicating a demo that already works.
+  The delete-via-load demo above covers the tombstone half of the CDC story
+  without new infra.
 - **Tiered storage** — hot-local/cold-object SST placement requires moving
   the live cluster to shared-data mode; that's a reconfiguration risk no
   demo note justifies today.
 
+## Bloom filter index — probed, negative result (2026-11-16)
+
+`bin/5_starrocks_bloom_filter_benchmark.sh` builds twin DUPLICATE KEY tables
+(identical data, one with `bloom_filter_columns = 'user_id'`) and times
+point lookups on both. **Result: no meaningful warm-scan difference** —
+~13ms with or without the filter at 10M narrow rows (no difference at 5M
+either; the script's `SERIES` knob rebuilds bigger). The columnar scan is
+already fast enough that per-page bloom skipping buys nothing on this data
+shape (narrow rows, low distinct-values-per-page). StarRocks's bloom filter
+pays off with wider rows, larger segments and much higher cardinality; the
+PoC's real point-lookup case (`wallet_transactions`) is covered by the
+PRIMARY KEY index instead — so no bloom filter is applied to any live
+table. Kept as a re-runnable probe, honestly labeled.
+
 ## Assets and files
 
-- `orchestration/assets/starrocks_feature_demo_setup.py` — all three data
-  pieces + the user/group, idempotent (safe on every demo reset)
-- `bin/3_starrocks_stream_load_demo.sh`, `bin/5_starrocks_lake_cache_benchmark.sh`
+- `orchestration/assets/starrocks_feature_demo_setup.py` — all data pieces
+  (funnel_window_stats, country_scores, wallet_type_totals_unique) + the
+  user/group, idempotent (safe on every demo reset)
+- `bin/3_starrocks_stream_load_demo.sh`, `bin/3_starrocks_delete_via_load_demo.sh`,
+  `bin/5_starrocks_lake_cache_benchmark.sh`, `bin/5_starrocks_bloom_filter_benchmark.sh`
 - Superset bundle: `databases/StarRocks_demo_user.yaml`,
   `datasets/StarRocks_demo_user/*.yaml` (16/17),
   `charts/*_24.yaml`, `*_25.yaml`,

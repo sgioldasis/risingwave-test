@@ -22,6 +22,10 @@ position:
     - ROW-CC
     - ROW-ASOF-MD
     - ROW-ASOF
+    - ROW-UNIQUE-MD
+    - ROW-UNIQUE
+    - ROW-GS-MD
+    - ROW-GS
     - ROW-WG-MD
     - ROW-EXTRA-MD
     - ROW-BOTTOM-SPACER
@@ -47,7 +51,7 @@ position:
     - ROW-INTRO-MD
     meta:
       width: 12
-      height: 26
+      height: 19
       code: "### ✨ StarRocks serving features -- the ones the other dashboards\
         \ don't show\n- **Every chart on this dashboard connects to StarRocks as\
         \ user `superset_demo`** -- a SELECT-only credential (empty password, tables\
@@ -75,7 +79,7 @@ position:
     - ROW-CC-MD
     meta:
       width: 12
-      height: 42
+      height: 24
       code: "### ✨ Generated (computed) columns -- one definition, zero drift\n\
         - **At a glance:** [generated columns](https://docs.starrocks.io/docs/sql-reference/sql-statements/generated_columns/)\
         \ define a derived value ONCE at the table -- `view_to_cart_rate AS round(carters\
@@ -134,7 +138,7 @@ position:
     - ROW-ASOF-MD
     meta:
       width: 12
-      height: 44
+      height: 24
       code: "### ✨ ASOF JOIN -- nearest-timestamp lookup\n- **At a glance:** [ASOF\
         \ JOIN](https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT_JOIN/)\
         \ matches each row to the closest row on the other side at-or-before its\
@@ -175,6 +179,117 @@ position:
       height: 30
       sliceName: "Page Views × Country Risk — ASOF JOIN"
       uuid: 215c6a42-b813-403c-ab5f-2ab23ead009e
+  ROW-UNIQUE-MD:
+    type: ROW
+    id: ROW-UNIQUE-MD
+    children:
+    - MARKDOWN-UNIQUE
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-UNIQUE:
+    type: MARKDOWN
+    id: MARKDOWN-UNIQUE
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-UNIQUE-MD
+    meta:
+      width: 12
+      height: 19
+      code: "### ✨ UNIQUE KEY table model -- the fourth model\n- **At a glance:**\
+        \ [UNIQUE KEY](https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE)\
+        \ gives the same per-key upsert semantics as PRIMARY KEY, but as **whole-row\
+        \ REPLACE** -- an INSERT re-writing a key replaces the entire row (no partial-column\
+        \ update). The Wallet dashboard shows the other three models (DUPLICATE /\
+        \ AGGREGATE / PRIMARY KEY); this chart completes the set.\n- **Mechanics here:**\
+        \ `wallet_type_totals_unique` stores per-type wallet totals, refreshed every\
+        \ minute by INSERT-SELECT from the wallet table (created by the starrocks_feature_demo_setup\
+        \ asset). Re-running the INSERT is idempotent -- one row per type, always.\
+        \ Compare the AGGREGATE KEY twin on the Wallet dashboard: AGGREGATE maintains\
+        \ SUM incrementally at ingest, UNIQUE does full-row upsert per key at refresh.\n"
+  ROW-UNIQUE:
+    type: ROW
+    id: ROW-UNIQUE
+    children:
+    - CHART-UNIQUE
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-UNIQUE:
+    type: CHART
+    id: CHART-UNIQUE
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-UNIQUE
+    meta:
+      chartId: 27
+      width: 12
+      height: 30
+      sliceName: "Total Amount per Type — UNIQUE KEY [row-level upsert, no RisingWave]"
+      uuid: c4c2c64b-f29b-4985-aee5-787048fd7bb2
+  ROW-GS-MD:
+    type: ROW
+    id: ROW-GS-MD
+    children:
+    - MARKDOWN-GS
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-GS:
+    type: MARKDOWN
+    id: MARKDOWN-GS
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-GS-MD
+    meta:
+      width: 12
+      height: 22
+      code: "### ✨ GROUPING SETS -- one query, every granularity\n- **At a glance:**\
+        \ [GROUPING SETS](https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/SELECT/)\
+        \ computes multiple aggregation levels in a single scan -- here (country),\
+        \ (day), (day × country) and the grand total, instead of one query per level.\
+        \ The `GROUPING()` flags tell you which level each row is (1 = that dimension\
+        \ was aggregated away); the `COALESCE` labels mark subtotal rows in the output.\n\
+        - **Rows are ordered subtotal-first:** grand total, then day totals, then the\
+        \ country × day detail.\n- **Verified:** sqlglot (Superset's SQL transpiler,\
+        \ MySQL dialect) preserves GROUPING SETS and GROUPING() through the dataset\
+        \ wrapper -- checked before building, per the ASOF-join lesson.\n"
+  ROW-GS:
+    type: ROW
+    id: ROW-GS
+    children:
+    - CHART-GS
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-GS:
+    type: CHART
+    id: CHART-GS
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-GS
+    meta:
+      chartId: 26
+      width: 12
+      height: 34
+      sliceName: "Page Views × Country — GROUPING SETS rollup"
+      uuid: 0ffd5c65-d399-44e9-bfdd-02328a1ce94d
   ROW-WG-MD:
     type: ROW
     id: ROW-WG-MD
@@ -195,7 +310,7 @@ position:
     - ROW-WG-MD
     meta:
       width: 12
-      height: 50
+      height: 27
       code: "### ✨ Workload groups -- dashboard queries isolated from refresh\
         \ traffic\n- **At a glance:** [resource groups](https://docs.starrocks.io/docs/sql-reference/sql-statements/cluster-management/resource_group/CREATE_RESOURCE_GROUP/)\
         \ partition the cluster's CPU/memory between workloads. This stack already\
@@ -232,7 +347,7 @@ position:
     - ROW-EXTRA-MD
     meta:
       width: 12
-      height: 40
+      height: 27
       code: "### ✨ Also in this feature set (SQL / script demos)\n- **Stream Load**\
         \ -- the third ingestion path (next to Routine Load and external-engine\
         \ writes): `bin/3_starrocks_stream_load_demo.sh` POSTs a JSON batch to the\

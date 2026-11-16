@@ -1,0 +1,106 @@
+table_name: grouping_sets_rollup
+main_dttm_col: null
+version: 1.0.0
+currency_code_column: null
+description: "Virtual dataset: GROUPING SETS — one scan computes (country), (day), (day, country) and the grand total; GROUPING() flags mark which level each row is (1 = aggregated away)."
+default_endpoint: null
+offset: 0
+cache_timeout: 0
+catalog: null
+schema: null
+sql: "SELECT COALESCE(u.country, '(all countries)') AS country, COALESCE(CAST(DATE(p.event_time) AS VARCHAR), '(all days)') AS day, COUNT(*) AS page_views, GROUPING(u.country) AS g_country, GROUPING(DATE(p.event_time)) AS g_day FROM sr_local_db_sr_local_db.page_views_direct p JOIN sr_local_db_sr_local_db.dim_users u ON p.user_id = u.user_id GROUP BY GROUPING SETS ((u.country), (DATE(p.event_time)), (u.country, DATE(p.event_time)), ())"
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+folders: null
+uuid: 60a00743-de45-4885-93f2-2b121e7b0eb7
+metrics:
+- metric_name: sum__page_views
+  verbose_name: Page views
+  metric_type: null
+  expression: SUM(page_views)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: country
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: day
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: page_views
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: g_country
+  verbose_name: GROUPING(country) — 1 = country aggregated away
+  is_dttm: false
+  is_active: true
+  type: INTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: g_day
+  verbose_name: GROUPING(day) — 1 = day aggregated away
+  is_dttm: false
+  is_active: true
+  type: INTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+database_uuid: 59a0d538-9906-43d8-bc51-9897094c57a2

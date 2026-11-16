@@ -1,7 +1,8 @@
-"""StarRocks serving-feature demos (computed columns, ASOF JOIN, workload
-groups) -- the data side of the "StarRocks Serving Features" dashboard.
+"""StarRocks serving-feature demos (computed columns, ASOF JOIN, UNIQUE KEY
+model, workload groups) -- the data side of the "StarRocks Serving Features"
+dashboard.
 
-Three pieces, all idempotent so demo resets can re-run the asset freely:
+Four pieces, all idempotent so demo resets can re-run the asset freely:
 
 1. funnel_window_stats -- a PRIMARY KEY table carrying the funnel's
    view_to_cart_rate / cart_to_buy_rate as COMPUTED COLUMNS (single
@@ -10,7 +11,9 @@ Three pieces, all idempotent so demo resets can re-run the asset freely:
    Refreshed every minute by the scheduled task funnel_window_stats_refresh
    (SUBMIT TASK body is an INSERT; the PK table upserts on window_start, so
    re-inserting every window each tick is idempotent). Computed columns are
-   auto-derived -- the INSERT lists only the base columns.
+   auto-derived -- the INSERT lists only the base columns. They need an
+   EXPLICIT type in the DDL (untyped `c AS expr` fails with "Column's type
+   is null" on 4.1.7).
 
 2. country_scores -- a deterministic per-country risk-score publication feed
    (hourly, PRIMARY KEY (country, ts)) for the ASOF JOIN demo: each page
@@ -22,7 +25,16 @@ Three pieces, all idempotent so demo resets can re-run the asset freely:
    the equi key, which is exactly what makes the demo semantically real:
    country comes from dim_users, not from the raw events.
 
-3. Resource-group isolation for the demo dashboard: every chart on the
+3. wallet_type_totals_unique -- the UNIQUE KEY table model (the one model
+   the Wallet dashboard's DUPLICATE / AGGREGATE / PRIMARY KEY trio doesn't
+   show). Same per-key upsert semantics as PRIMARY KEY, but whole-row
+   REPLACE: an INSERT re-writing a key replaces the entire row (no
+   partial-column update). Stores per-type wallet totals, refreshed by the
+   same 1-minute INSERT-SELECT pattern as the AGGREGATE KEY twin
+   (wallet_type_totals_agg) -- AGGREGATE maintains SUM incrementally at
+   ingest, UNIQUE does full-row upsert per key at refresh time.
+
+4. Resource-group isolation for the demo dashboard: every chart on the
    Serving Features dashboard connects as user superset_demo (SELECT-only,
    no password -- it can only read), which a resource-group classifier
    pins to rg_superset_demo (cpu_weight 80 vs default_wg's 100 and
@@ -59,8 +71,8 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.funnel_window_stats (
     viewers BIGINT NOT NULL,
     carters BIGINT NOT NULL,
     purchasers BIGINT NOT NULL,
-    view_to_cart_rate AS round(carters / nullif(viewers, 0), 2),
-    cart_to_buy_rate AS round(purchasers / nullif(carters, 0), 2)
+    view_to_cart_rate DOUBLE AS round(carters / nullif(viewers, 0), 2),
+    cart_to_buy_rate DOUBLE AS round(purchasers / nullif(carters, 0), 2)
 ) PRIMARY KEY (window_start)
 DISTRIBUTED BY HASH(window_start)
 """
@@ -104,7 +116,42 @@ CROSS JOIN (SELECT DISTINCT country FROM {SCHEMA}.dim_users) c
 WHERE (SELECT COUNT(*) FROM {SCHEMA}.country_scores) = 0
 """
 
-# --- 3. workload-group isolation -------------------------------------------
+# --- 3. UNIQUE KEY table model ---------------------------------------------
+
+# The one table model the Wallet dashboard doesn't show (DUPLICATE, AGGREGATE
+# and PRIMARY KEY all have charts there). UNIQUE KEY gives the same
+# row-level upsert semantics as PRIMARY KEY but as whole-row REPLACE: an
+# INSERT re-writing a key replaces the entire row (no partial-column
+# update). Here it stores the per-type wallet totals, refreshed by the same
+# 1-minute INSERT-SELECT pattern as the AGGREGATE KEY table
+# (wallet_type_totals_agg) -- AGGREGATE maintains SUM incrementally at
+# ingest, UNIQUE does full-row upsert per key at refresh time.
+WALLET_TYPE_TOTALS_UNIQUE_SQL = f"""
+CREATE TABLE IF NOT EXISTS {SCHEMA}.wallet_type_totals_unique (
+    type VARCHAR(32) NOT NULL,
+    total DECIMAL(38,9),
+    updated_at DATETIME
+) UNIQUE KEY (type)
+DISTRIBUTED BY HASH(type)
+"""
+
+WALLET_TYPE_TOTALS_UNIQUE_TASK_SQL = f"""
+SUBMIT TASK {SCHEMA}.wallet_type_totals_unique_refresh
+SCHEDULE EVERY (INTERVAL 1 MINUTE)
+AS INSERT INTO {SCHEMA}.wallet_type_totals_unique (type, total, updated_at)
+SELECT type, SUM(amount), now()
+FROM {SCHEMA}.wallet_transactions_direct_kafka
+GROUP BY type
+"""
+
+WALLET_TYPE_TOTALS_UNIQUE_BACKFILL_SQL = f"""
+INSERT INTO {SCHEMA}.wallet_type_totals_unique (type, total, updated_at)
+SELECT type, SUM(amount), now()
+FROM {SCHEMA}.wallet_transactions_direct_kafka
+GROUP BY type
+"""
+
+# --- 4. workload-group isolation -------------------------------------------
 
 # superset_demo owns every dataset on the Serving Features dashboard, so the
 # classifier TO (USER='superset_demo') pins those queries to a group the MV
@@ -141,7 +188,8 @@ WHERE window_start NOT IN (SELECT window_start FROM {SCHEMA}.funnel_window_stats
     description=(
         "Data side of the StarRocks Serving Features dashboard: "
         "funnel_window_stats (computed columns + 1-min refresh task), "
-        "country_scores (per-country risk feed for the ASOF JOIN demo), and "
+        "country_scores (per-country risk feed for the ASOF JOIN demo), "
+        "wallet_type_totals_unique (the UNIQUE KEY table-model demo), and "
         "the superset_demo user + rg_superset_demo workload group that "
         "isolate the dashboard's queries from MV-refresh traffic."
     ),
@@ -175,15 +223,30 @@ def starrocks_feature_demo_setup(context: AssetExecutionContext) -> dict:
         )).scalar()
         context.log.info("Score feed %s.country_scores ready (%d rows)", SCHEMA, score_rows)
 
+        connection.execute(text(WALLET_TYPE_TOTALS_UNIQUE_SQL))
+        connection.execute(text(
+            f"DROP TASK IF EXISTS {SCHEMA}.wallet_type_totals_unique_refresh"
+        ))
+        connection.execute(text(WALLET_TYPE_TOTALS_UNIQUE_TASK_SQL))
+        connection.execute(text(WALLET_TYPE_TOTALS_UNIQUE_BACKFILL_SQL))
+        unique_rows = connection.execute(text(
+            f"SELECT COUNT(*) FROM {SCHEMA}.wallet_type_totals_unique"
+        )).scalar()
+        context.log.info(
+            "UNIQUE KEY table %s.wallet_type_totals_unique ready (%d rows)",
+            SCHEMA, unique_rows,
+        )
+
         connection.execute(text(FUNNEL_WINDOW_STATS_BACKFILL_SQL))
 
         connection.execute(text(DEMO_USER_SQL))
         connection.execute(text(DEMO_USER_GRANT_SQL))
         connection.execute(text(RESOURCE_GROUP_SQL))
         groups = connection.execute(text(
-            "SELECT name, cpu_weight_percent FROM information_schema.workload_groups"
+            "SHOW RESOURCE GROUPS ALL"
         )).fetchall()
-        context.log.info("Resource groups: %s", groups)
+        context.log.info("Resource groups: %s",
+                         [(g[0], g[1]) for g in groups])
 
         stats_rows = connection.execute(text(
             f"SELECT COUNT(*) FROM {SCHEMA}.funnel_window_stats"
@@ -194,5 +257,6 @@ def starrocks_feature_demo_setup(context: AssetExecutionContext) -> dict:
         "computed_columns_table": "funnel_window_stats",
         "refresh_task": "funnel_window_stats_refresh",
         "country_scores_rows": score_rows,
+        "unique_key_rows": unique_rows,
         "resource_group": "rg_superset_demo",
     }

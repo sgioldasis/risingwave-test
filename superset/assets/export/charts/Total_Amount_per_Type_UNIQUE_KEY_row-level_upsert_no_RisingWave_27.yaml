@@ -1,0 +1,39 @@
+slice_name: "Total Amount per Type — UNIQUE KEY [row-level upsert, no RisingWave]"
+description: "Feature: UNIQUE KEY table model — the fourth model (the Wallet dashboard shows DUPLICATE / AGGREGATE / PRIMARY KEY). Same per-key upsert semantics as PRIMARY KEY, whole-row REPLACE: an INSERT re-writing a key replaces the entire row, no partial-column update. Per-type totals refreshed every minute by INSERT-SELECT from the wallet table; compare the AGGREGATE KEY twin on the Wallet dashboard (incremental SUM at ingest vs full-row upsert at refresh). RisingWave: NOT USED."
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 19__table
+  viz_type: echarts_timeseries_bar
+  groupby: []
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: total
+    aggregate: SUM
+    label: sum__total
+    d3format: ',.2f'
+  adhoc_filters: []
+  row_limit: 100
+  timeseries_limit_metric:
+    label: type
+    sqlExpression: type
+    expressionType: SQL
+  order_desc: false
+  show_legend: true
+  show_value: true
+  annotation_layers: []
+  contributionMode: null
+  zoomable: false
+  markerEnabled: false
+  truncateYAxis: true
+  comparison_type: values
+  x_axis: type
+  stack: null
+  xAxisLabelRotation: 45
+query_context: null
+cache_timeout: 0
+uuid: c4c2c64b-f29b-4985-aee5-787048fd7bb2
+version: 1.0.0
+dataset_uuid: 095c202b-4cb9-405f-9869-13565ece140a
