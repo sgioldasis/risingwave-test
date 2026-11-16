@@ -1,0 +1,18 @@
+database_name: StarRocks (demo user rg)
+sqlalchemy_uri: mysql+pymysql://superset_demo:@starrocks:9030/sr_local_db_sr_local_db
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+extra:
+  metadata_params: {}
+  engine_params: {}
+  metadata_cache_timeout: {}
+  schemas_allowed_for_file_upload: []
+impersonate_user: false
+configuration_method: sqlalchemy_form
+uuid: 59a0d538-9906-43d8-bc51-9897094c57a2
+version: 1.0.0

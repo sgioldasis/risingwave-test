@@ -51,6 +51,7 @@ from .assets.reverse_etl_consumer import (
 )
 from .assets.databricks_datafusion_demo import databricks_datafusion_demo
 from .assets.funnel_direct_kafka_setup import funnel_events_direct_kafka
+from .assets.starrocks_feature_demo_setup import starrocks_feature_demo_setup
 from .assets.funnel_historical_watermark import (
     funnel_historical_watermark,
     funnel_historical_watermark_job,
@@ -1073,6 +1074,11 @@ defs = Definitions.merge(
             # "via RisingWave" vs "Direct-from-Kafka" pair on the Funnel
             # Dashboard -- no RisingWave in the loop
             funnel_events_direct_kafka,
+            # Serving-features demo: computed columns (funnel_window_stats +
+            # 1-min refresh task), ASOF JOIN feed (country_scores) and the
+            # rg_superset_demo workload group -- powering the StarRocks
+            # Serving Features dashboard
+            starrocks_feature_demo_setup,
             # RW-free micro-batch updater for funnel_summary_historical --
             # replaces the RW Iceberg sink (sink_funnel_to_databricks):
             # inserts closed windows from the direct-Kafka leg into the UC

@@ -1,0 +1,277 @@
+dashboard_title: StarRocks Serving Features
+description: null
+css: null
+slug: starrocks-serving-features
+certified_by: null
+certification_details: null
+published: false
+uuid: 3b4e6018-2435-4dac-a59c-0db0737d09ce
+position:
+  DASHBOARD_VERSION_KEY: v2
+  ROOT_ID:
+    type: ROOT
+    id: ROOT_ID
+    children:
+    - GRID_ID
+  GRID_ID:
+    type: GRID
+    id: GRID_ID
+    children:
+    - ROW-INTRO-MD
+    - ROW-CC-MD
+    - ROW-CC
+    - ROW-ASOF-MD
+    - ROW-ASOF
+    - ROW-WG-MD
+    - ROW-EXTRA-MD
+    - ROW-BOTTOM-SPACER
+    parents:
+    - ROOT_ID
+  ROW-INTRO-MD:
+    type: ROW
+    id: ROW-INTRO-MD
+    children:
+    - MARKDOWN-INTRO
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-INTRO:
+    type: MARKDOWN
+    id: MARKDOWN-INTRO
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-INTRO-MD
+    meta:
+      width: 12
+      height: 26
+      code: "### ✨ StarRocks serving features -- the ones the other dashboards\
+        \ don't show\n- **Every chart on this dashboard connects to StarRocks as\
+        \ user `superset_demo`** -- a SELECT-only credential (empty password, tables\
+        \ only) whose resource-group classifier pins its queries to `rg_superset_demo`\
+        \ (cpu_weight 80 vs `default_wg` 100 and `default_mv_wg` 1). The whole dashboard\
+        \ physically runs inside its own workload group -- see the isolation section\
+        \ below.\n- Companion doc with the full build/verification log: `docs/SR_POC_SERVING_FEATURES_DEMO.md`.\n"
+  ROW-CC-MD:
+    type: ROW
+    id: ROW-CC-MD
+    children:
+    - MARKDOWN-CC
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-CC:
+    type: MARKDOWN
+    id: MARKDOWN-CC
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CC-MD
+    meta:
+      width: 12
+      height: 42
+      code: "### ✨ Generated (computed) columns -- one definition, zero drift\n\
+        - **At a glance:** [generated columns](https://docs.starrocks.io/docs/sql-reference/sql-statements/generated_columns/)\
+        \ define a derived value ONCE at the table -- `view_to_cart_rate AS round(carters\
+        \ / nullif(viewers, 0), 2)` on `funnel_window_stats` -- and StarRocks derives\
+        \ it automatically on every write. The chart below reads the table's own\
+        \ columns; no consumer re-derives the expression.\n- **The problem they solve:**\
+        \ this repo carried the identical `round(carters / nullif(viewers, 0), 2)`\
+        \ expression in a VIEW (funnel_summary_direct), in dashboard SQL, and in\
+        \ demo queries -- three places to drift when someone tunes the rounding or\
+        \ the zero-guard in one and not the others.\n- **Mechanics here:** the 1-minute\
+        \ scheduled task `funnel_window_stats_refresh` (SUBMIT TASK, recreated by\
+        \ the starrocks_feature_demo_setup asset) upserts every 1-minute window into\
+        \ the PRIMARY KEY table -- re-inserting is idempotent, and the INSERT lists\
+        \ only the base columns (the rates are never written, always derived).\n"
+  ROW-CC:
+    type: ROW
+    id: ROW-CC
+    children:
+    - CHART-CC
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-CC:
+    type: CHART
+    id: CHART-CC
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-CC
+    meta:
+      chartId: 24
+      width: 12
+      height: 30
+      sliceName: "Funnel Rates — defined once (computed columns)"
+      uuid: e9805573-2424-48af-9084-866e775b89a7
+  ROW-ASOF-MD:
+    type: ROW
+    id: ROW-ASOF-MD
+    children:
+    - MARKDOWN-ASOF
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-ASOF:
+    type: MARKDOWN
+    id: MARKDOWN-ASOF
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-ASOF-MD
+    meta:
+      width: 12
+      height: 44
+      code: "### ✨ ASOF JOIN -- nearest-timestamp lookup\n- **At a glance:** [ASOF\
+        \ JOIN](https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT_JOIN/)\
+        \ matches each row to the closest row on the other side at-or-before its\
+        \ timestamp -- here, each page view picks up the most recent risk-score publication\
+        \ for its country (`ON e.country = c.country AND e.event_time >= c.ts`).\
+        \ The classic pattern (match each bet/trade to the latest quote) without\
+        \ window functions or range predicates.\n- **The join is real:** country\
+        \ comes from `dim_users` (same 'country becomes data' join as the rewrite\
+        \ demo), and the score feed `country_scores` is a per-country hourly publication\
+        \ history -- the event uses whatever was published *as of the event*, not\
+        \ the latest value.\n- **Syntax gotchas, confirmed live on 4.1.7:** the ON\
+        \ clause needs a REAL-column equi predicate plus the temporal >= (a constant/aliased\
+        \ equi through a subquery, or a subquery-derived right side, is rejected\
+        \ as a 'correlated condition'), the temporal columns must be BIGINT/DATE/DATETIME\
+        \ (not strings), and ASOF composes fine after a regular join (page_views\
+        \ ⋈ dim_users feeds it here).\n"
+  ROW-ASOF:
+    type: ROW
+    id: ROW-ASOF
+    children:
+    - CHART-ASOF
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-ASOF:
+    type: CHART
+    id: CHART-ASOF
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-ASOF
+    meta:
+      chartId: 25
+      width: 12
+      height: 30
+      sliceName: "Page Views × Country Risk — ASOF JOIN"
+      uuid: 215c6a42-b813-403c-ab5f-2ab23ead009e
+  ROW-WG-MD:
+    type: ROW
+    id: ROW-WG-MD
+    children:
+    - MARKDOWN-WG
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-WG:
+    type: MARKDOWN
+    id: MARKDOWN-WG
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-WG-MD
+    meta:
+      width: 12
+      height: 50
+      code: "### ✨ Workload groups -- dashboard queries isolated from refresh\
+        \ traffic\n- **At a glance:** [resource groups](https://docs.starrocks.io/docs/sql-reference/sql-statements/cluster-management/resource_group/CREATE_RESOURCE_GROUP/)\
+        \ partition the cluster's CPU/memory between workloads. This stack already\
+        \ runs `default_mv_wg` (cpu_weight 1) for MV-refresh tasks and `default_wg`\
+        \ (100) for everything else; the missing piece was a dedicated slice for\
+        \ BI traffic.\n- **What was built:** `rg_superset_demo` (cpu_weight 80, mem_limit\
+        \ 80%) with a classifier `TO (USER='superset_demo')` -- every query this\
+        \ dashboard issues runs inside the group, so a dashboard render can't be\
+        \ starved by MV-refresh rebuilds (the 20-46s refresh jams documented in\
+        \ `docs/SR_POC_QUERY_REWRITE_DEMO.md`). Check `SHOW RESOURCE GROUPS ALL`\
+        \ -- the classifier shows up on the group row.\n- **Honest scope note (verified\
+        \ live 2026-11-16):** the query-queue half of workload groups (max_concurrency\
+        \ / max_queue_size / queue_timeout) is NOT available on this shared-nothing\
+        \ 4.1.7 build -- every queue property is rejected as 'Unknown property'\
+        \ even with `enable_group_level_query_queue=true`. Weight isolation + classifier\
+        \ pinning is what ships here; queueing needs shared-data/CN.\n"
+  ROW-EXTRA-MD:
+    type: ROW
+    id: ROW-EXTRA-MD
+    children:
+    - MARKDOWN-EXTRA
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-EXTRA:
+    type: MARKDOWN
+    id: MARKDOWN-EXTRA
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-EXTRA-MD
+    meta:
+      width: 12
+      height: 40
+      code: "### ✨ Also in this feature set (SQL / script demos)\n- **Stream Load**\
+        \ -- the third ingestion path (next to Routine Load and external-engine\
+        \ writes): `bin/3_starrocks_stream_load_demo.sh` POSTs a JSON batch to the\
+        \ FE's `_stream_load` endpoint with an idempotent label, then shows the landed\
+        \ rows.\n- **Lake scan data cache** -- `bin/5_starrocks_lake_cache_benchmark.sh`\
+        \ times the Rewrite-OFF Iceberg query cold vs warm on the same connection\
+        \ (EXPLAIN ANALYZE), quantifying what the block cache buys after the 300s\
+        \ UC metadata cache goes stale.\n- **Why not vector search / native CDC /\
+        \ tiered storage here:** vector search needs an embedding producer this stack\
+        \ doesn't have; native CDC is new infrastructure (Flink/CDC connector) duplicating\
+        \ the reverse-ETL demo; tiered storage would force a shared-data reconfiguration\
+        \ of the live cluster. All three are documented as out of scope in `docs/SR_POC_SERVING_FEATURES_DEMO.md`.\n"
+  ROW-BOTTOM-SPACER:
+    type: ROW
+    id: ROW-BOTTOM-SPACER
+    children:
+    - MARKDOWN-BOTTOM-SPACER
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-BOTTOM-SPACER:
+    type: MARKDOWN
+    id: MARKDOWN-BOTTOM-SPACER
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-BOTTOM-SPACER
+    meta:
+      width: 12
+      height: 4
+      code: "&nbsp;"
+metadata:
+  native_filter_configuration: []
+  color_scheme_domain: []
+  shared_label_colors: []
+  map_label_colors: {}
+  label_colors: {}
+theme_uuid: null
+version: 1.0.0

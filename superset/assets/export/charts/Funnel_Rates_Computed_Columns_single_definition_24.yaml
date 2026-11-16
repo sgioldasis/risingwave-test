@@ -1,0 +1,35 @@
+slice_name: "Funnel Rates — defined once (computed columns)"
+description: "Feature: computed columns — view_to_cart_rate / cart_to_buy_rate are\
+  \ defined once on funnel_window_stats (rate AS round(carters / nullif(viewers, 0),\
+  \ 2)), auto-derived on every upsert. Value: every consumer reads the table's own\
+  \ column instead of re-deriving the expression in view/MV/query SQL — zero drift.\
+  \ Refreshed by the funnel_window_stats_refresh task (1-min upsert)."
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  adhoc_filters:
+  - clause: WHERE
+    comparator: '1 hour ago : now'
+    expressionType: SIMPLE
+    operator: TEMPORAL_RANGE
+    subject: window_start
+  annotation_layers: []
+  datasource: 16__table
+  granularity_sqla: window_start
+  groupby: []
+  metrics:
+  - avg_view_to_cart_rate
+  - avg_cart_to_buy_rate
+  order_desc: false
+  rich_tooltip: true
+  row_limit: 10000
+  show_legend: true
+  time_range: '1 hour ago : now'
+  viz_type: echarts_timeseries_line
+  y_axis_format: ',.2f'
+query_context: null
+cache_timeout: 0
+uuid: e9805573-2424-48af-9084-866e775b89a7
+version: 1.0.0
+dataset_uuid: 60062eb9-54e9-425d-bb9c-58a6863be239

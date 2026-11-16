@@ -1,0 +1,30 @@
+slice_name: "Page Views × Country Risk — ASOF JOIN"
+description: "Feature: ASOF JOIN — each page view matched to the most recent risk-score\
+  \ publication for its country at or before the event (nearest-timestamp join, no\
+  \ window functions). Equi key is dim_users.country — the same 'country becomes\
+  \ data' join as the rewrite demo. RisingWave: NOT USED."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 17__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - day
+  - country
+  - page_views
+  - avg_risk_score
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["day", false]'
+  time_range: No filter
+  annotation_layers: []
+  comparison_type: values
+query_context: null
+cache_timeout: 0
+uuid: 215c6a42-b813-403c-ab5f-2ab23ead009e
+version: 1.0.0
+dataset_uuid: a82a55f3-7ed8-4d29-b4cc-b3d560a21329
