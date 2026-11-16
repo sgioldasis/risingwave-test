@@ -22,6 +22,7 @@ sources:
     schema: sr_local_db_sr_local_db
     tables:
       - name: page_views_direct
+      - name: dim_users
 
   - name: lakekeeper_local
     database: lakekeeper_local

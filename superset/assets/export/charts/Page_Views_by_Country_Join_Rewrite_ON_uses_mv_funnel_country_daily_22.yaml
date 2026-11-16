@@ -1,0 +1,30 @@
+slice_name: "Page Views by Country — Join Rewrite ON (uses MV)"
+description: "Multi-table rewrite: the optimizer redirects a page_views ⋈ dim_users\
+  \ join (per day x country) to mv_funnel_country_daily. Same shape demo as the Iceberg\
+  \ pair above, but over the direct-Kafka internal tables -- and it only rewrites because\
+  \ query_rewrite_consistency='loose'."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 14__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - day
+  - country
+  - page_views
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["day", false]'
+  - '["country", true]'
+  time_range: No filter
+  annotation_layers: []
+  comparison_type: values
+query_context: null
+cache_timeout: 0
+uuid: 046111dc-29fa-415c-97a8-6d17141591a6
+version: 1.0.0
+dataset_uuid: e0b3ca36-39bc-469e-9e69-ca83add62264

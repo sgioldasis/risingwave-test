@@ -20,6 +20,9 @@ position:
     - ROW-2
     - ROW-N-I9TX10UC
     - ROW-2B
+    - ROW-JOIN-MD
+    - ROW-JOIN
+    - ROW-BOTTOM-SPACER
     parents:
     - ROOT_ID
   ROW-2:
@@ -179,6 +182,116 @@ position:
     id: ROW-2B
     children:
     - MARKDOWN-1B
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-JOIN:
+    type: MARKDOWN
+    id: MARKDOWN-JOIN
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-JOIN-MD
+    meta:
+      width: 12
+      height: 50
+      code: "### ✨ Multi-table rewrite -- the join story\n- **At a glance:**\
+        \ same SQL on both charts -- page_views (raw Kafka events via Routine Load)\
+        \ JOIN dim_users (a 1M-row user→country dimension), aggregated per day\
+        \ x country. The ON chart's query is transparently rewritten into `mv_funnel_country_daily`\
+        \ (built by dbt, ASYNC refresh every 1 minute); the OFF chart joins the raw\
+        \ tables at query time.\n- **The join is real, not decoration:** the raw topics\
+        \ carry no country -- `dim_users` is the only place one exists (the funnel\
+        \ views hardcode 'GR'). Country becomes data: GR is the plurality (~40%),\
+        \ not a constant.\n- **Why this is one step beyond the single-table demo above:**\
+        \ transparent rewrite also fires for JOIN-shaped queries, not just plain single-table\
+        \ rollups -- and over internal base tables the MV uses native [PCT](https://docs.starrocks.io/docs/using_starrocks/async_mv/Materialized_view/#manually-refresh-an-asynchronous-materialized-view)\
+        \ (Partition Change Tracking): each MV partition records which base-table\
+        \ partitions built it, so when the base table gets writes only the affected\
+        \ partitions are invalidated and the scheduled refresh recomputes just those\
+        \ -- that's what keeps this MV's 1-minute refresh cheap (each Routine Load\
+        \ commit invalidates only the partitions its rows touched). The contrast:\
+        \ over the UC REST Iceberg base table PCT detection stopped firing, so that\
+        \ MV falls back to `partition_refresh_strategy=\"force\"` -- a full rebuild\
+        \ every tick (pathology documented in the demo doc).\n- **The catch -- loose consistency:**\
+        \ with DEFAULT `query_rewrite_consistency` the optimizer refuses to rewrite\
+        \ while the MV is stale relative to its base tables, and Routine Load commits\
+        \ every ~5s so the MV is essentially always behind -- rewrite NEVER fired (EXPLAIN\
+        \ kept scanning the base tables even for the MV's own SQL). `query_rewrite_consistency='loose'`\
+        \ trades that freshness guarantee for rewrite availability; verified via `EXPLAIN`\
+        \ -- the scan target flips between `mv_funnel_country_daily` and `page_views_direct\
+        \ + dim_users`.\n- **RisingWave:** NOT USED -- both charts read the direct-from-Kafka\
+        \ Routine Load tables; this section is purely StarRocks's optimizer. As above,\
+        \ Superset caches chart results -- use ⋯ → Force refresh.\n"
+  ROW-JOIN-MD:
+    type: ROW
+    id: ROW-JOIN-MD
+    children:
+    - MARKDOWN-JOIN
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-JOIN-ON:
+    type: CHART
+    id: CHART-JOIN-ON
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-JOIN
+    meta:
+      chartId: 22
+      width: 6
+      height: 30
+      sliceName: "Page Views by Country — Join Rewrite ON (uses MV)"
+      uuid: 046111dc-29fa-415c-97a8-6d17141591a6
+  CHART-JOIN-OFF:
+    type: CHART
+    id: CHART-JOIN-OFF
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-JOIN
+    meta:
+      chartId: 23
+      width: 6
+      height: 30
+      sliceName: "Page Views by Country — Join Rewrite OFF (raw join scan)"
+      uuid: 3f0c1d31-b3bc-4fa6-911a-5f96238a5e19
+  ROW-JOIN:
+    type: ROW
+    id: ROW-JOIN
+    children:
+    - CHART-JOIN-ON
+    - CHART-JOIN-OFF
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-BOTTOM-SPACER:
+    type: MARKDOWN
+    id: MARKDOWN-BOTTOM-SPACER
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-BOTTOM-SPACER
+    meta:
+      width: 12
+      height: 4
+      code: "&nbsp;"
+  ROW-BOTTOM-SPACER:
+    type: ROW
+    id: ROW-BOTTOM-SPACER
+    children:
+    - MARKDOWN-BOTTOM-SPACER
     parents:
     - ROOT_ID
     - GRID_ID

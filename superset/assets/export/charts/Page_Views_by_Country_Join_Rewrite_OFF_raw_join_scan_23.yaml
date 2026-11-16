@@ -1,0 +1,29 @@
+slice_name: "Page Views by Country — Join Rewrite OFF (raw join scan)"
+description: "The identical page_views ⋈ dim_users join, run raw through the rewrite-disabled\
+  \ connection -- scans and joins the base tables at query time. Compare EXPLAIN targets:\
+  \ mv_funnel_country_daily vs page_views_direct + dim_users."
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 15__table
+  viz_type: table
+  query_mode: raw
+  all_columns:
+  - day
+  - country
+  - page_views
+  adhoc_filters: []
+  row_limit: 100
+  server_pagination: false
+  order_by_cols:
+  - '["day", false]'
+  - '["country", true]'
+  time_range: No filter
+  annotation_layers: []
+  comparison_type: values
+query_context: null
+cache_timeout: 0
+uuid: 3f0c1d31-b3bc-4fa6-911a-5f96238a5e19
+version: 1.0.0
+dataset_uuid: 210d30ff-3e05-4a6c-8052-51090f02fb62

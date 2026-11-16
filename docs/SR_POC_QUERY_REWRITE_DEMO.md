@@ -518,6 +518,45 @@ on StarRocks 4.1.7, and `SUBMIT TASK` (the real syntax) only accepts
 INSERT/CREATE/EXPLAIN bodies — a scheduled `REFRESH MATERIALIZED VIEW`
 body is impossible, which is why the strategy property is the fix.
 
+## Multi-table rewrite — the join story (2026-11-16)
+
+Second rewrite proof point on the same Superset dashboard, this time a
+JOIN MV over the direct-from-Kafka internal tables (no Iceberg, no
+RisingWave):
+
+- **Model**: `dbt_starrocks/models/mv_funnel_country_daily.sql` —
+  `page_views_direct JOIN dim_users` aggregated per `DATE(event_time)` ×
+  `country`, `ASYNC EVERY (INTERVAL 1 MINUTE)` + sync post-hook, built by
+  dbt. Transparent rewrite also fires for **JOIN-shaped queries**, not
+  just single-table rollups.
+- **The dim**: the raw topics carry no country, so
+  `orchestration/assets/funnel_direct_kafka_setup.py` creates and seeds
+  `dim_users` (1M deterministic rows, skewed — GR plurality ~40%) from
+  `TABLE(generate_series(...))`, guarded by a `COUNT(*) = 0` check so
+  asset re-runs don't reseed. Country becomes data, not the hardcoded
+  `'GR'` constant the funnel views use.
+- **The catch — `query_rewrite_consistency='loose'` is REQUIRED here**
+  (confirmed live 2026-11-16): with DEFAULT consistency the optimizer
+  refuses to rewrite while the MV is stale relative to its base tables,
+  and Routine Load commits to `page_views_direct` every ~5s, so the MV is
+  essentially always behind — **rewrite never fired** (EXPLAIN kept
+  scanning the base tables even for the MV's own SQL). `loose` trades the
+  freshness guarantee for rewrite availability. Over internal base tables
+  the MV also gets native PCT change detection — no
+  `partition_refresh_strategy="force"` workaround needed.
+- **Superset**: "Multi-table rewrite — the join story" section on the
+  `query-rewrite-demo` dashboard — markdown + ON/OFF chart pair
+  (datasets 14/15, charts 22/23), mirroring the Iceberg pair above.
+  Verified through Superset's virtual-table wrapper: the ON connection's
+  EXPLAIN shows `TABLE: mv_funnel_country_daily / MaterializedView: true`;
+  the rewrite-disabled connection scans `page_views_direct`.
+- **Import gotcha** (cost two re-imports): a Superset bundle zip must
+  include the `databases/*.yaml` files and ALL charts the dashboard
+  position references — missing pieces are silently skipped, and
+  `overwrite=True` drops chart associations for charts not in the bundle
+  ("There is no chart definition associated with this component").
+
+
 ## Investigation log: dashboard slowness and a real data-loss incident (2026-09-14)
 
 A single day's investigation, triggered by "Rewrite ON" showing an

@@ -183,6 +183,33 @@ SELECT window_start, window_end, country, viewers, carters, purchasers
 FROM risingwave.public.funnel_summary
 """
 
+# User dimension for the multi-table MV rewrite demo (mv_funnel_country_daily,
+# dbt_starrocks): the raw topics carry no country, so the join needs a
+# user_id -> country lookup. DELIBERATELY SYNTHETIC -- the producer's
+# user_id is random 1..1,000,000, so this assigns a deterministic skewed
+# mapping (GR plurality ~40%, then RO/CY/PT/ES/IT) generated row-by-row via
+# generate_series. Seeded once (guarded by a COUNT(*) check); a 1M-row dim
+# is trivial for StarRocks and covers the producer's whole ID space.
+DIM_USERS_SQL = f"""
+CREATE TABLE IF NOT EXISTS {SCHEMA}.dim_users (
+    user_id BIGINT NOT NULL,
+    country VARCHAR(32)
+) DISTRIBUTED BY HASH(user_id)
+"""
+
+DIM_USERS_SEED_SQL = f"""
+INSERT INTO {SCHEMA}.dim_users
+SELECT
+    t.generate_series AS user_id,
+    CASE t.generate_series % 10
+        WHEN 0 THEN 'GR' WHEN 1 THEN 'GR' WHEN 2 THEN 'GR' WHEN 3 THEN 'GR'
+        WHEN 4 THEN 'RO' WHEN 5 THEN 'RO'
+        WHEN 6 THEN 'CY' WHEN 7 THEN 'PT' WHEN 8 THEN 'ES' ELSE 'IT'
+    END AS country
+FROM TABLE(generate_series(1, 1000000)) t
+WHERE (SELECT COUNT(*) FROM {SCHEMA}.dim_users) = 0
+"""
+
 
 @asset(
     name="funnel_events_direct_kafka",
@@ -234,6 +261,13 @@ def funnel_events_direct_kafka(context: AssetExecutionContext) -> dict:
             context.log.warning(
                 "funnel_summary_hot_direct not ensured (RisingWave down?): %s", exc
             )
+
+        connection.execute(text(DIM_USERS_SQL))
+        connection.execute(text(DIM_USERS_SEED_SQL))
+        dim_rows = connection.execute(text(
+            f"SELECT COUNT(*) FROM {SCHEMA}.dim_users"
+        )).scalar()
+        context.log.info("Dim table %s.dim_users ready (%d rows)", SCHEMA, dim_rows)
 
         for _, table, _, _ in _TABLES:
             row[table] = connection.execute(text(
