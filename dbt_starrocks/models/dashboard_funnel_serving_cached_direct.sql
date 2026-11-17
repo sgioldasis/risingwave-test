@@ -26,11 +26,14 @@
 -- an empty MV (fresh stack): its MAX is NULL, and the direct branch serves
 -- everything.
 --
--- funnel_summary_direct is NOT a dbt model -- it's built by the
--- funnel_events_direct_kafka Dagster asset (orchestration/assets/
--- funnel_direct_kafka_setup.py), same as the Routine Load jobs feeding it;
--- referenced here by literal name, with a Dagster-side dep added in
--- orchestration/definitions.py so the asset always runs first.
+-- funnel_summary_direct IS a dbt model now (dbt_starrocks/models/
+-- funnel_summary_direct.sql, over the dbt-managed Routine-Load shell
+-- tables) -- read here via ref(), so dbt build orders tables -> view ->
+-- this model on a fresh stack. Before 2026-11-17 the view came from the
+-- funnel_events_direct_kafka Dagster asset with a Dagster-side dep added
+-- in orchestration/definitions.py; that dep became a dependency cycle
+-- once the tables turned dbt-managed (fresh-stack failure: dbt built
+-- this model before the asset had created the view).
 --
 -- MINUTE grain, deliberately NOT funnel_summary_direct_20s (2026-11-14):
 -- the 20-second twin (same asset, same cadence rationale) briefly served
@@ -66,7 +69,7 @@ WITH unified_funnel AS (
     purchasers,
     CAST(carters AS DOUBLE) / NULLIF(viewers, 0) AS view_to_cart_rate,
     CAST(purchasers AS DOUBLE) / NULLIF(carters, 0) AS cart_to_buy_rate
-  FROM sr_local_db.funnel_summary_direct
+  FROM {{ ref('funnel_summary_direct') }}
   WHERE window_start > COALESCE(
     (SELECT MAX(window_start) FROM {{ ref('mv_unified_funnel_summary') }}),
     CAST('0000-01-01 00:00:00' AS DATETIME)

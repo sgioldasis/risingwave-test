@@ -35,5 +35,5 @@ SELECT
   DATE(event_time) AS day,
   BITMAP_UNION(to_bitmap(user_id)) AS viewers_bitmap,
   HLL_UNION(hll_hash(user_id))     AS viewers_hll
-FROM {{ source('sr_local_db', 'page_views_direct') }}
+FROM {{ ref('page_views_direct') }}
 GROUP BY day

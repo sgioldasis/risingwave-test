@@ -46,27 +46,19 @@ import os
 from dagster import AssetExecutionContext, MetadataValue, asset
 from sqlalchemy import create_engine, text
 
+from .sql_loader import load_sql
+
 SCHEMA = "sr_local_db"
 TABLE = "funnel_daily_totals_agg"
 
-CREATE_TABLE_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE} (
-    day DATE,
-    country VARCHAR(2),
-    viewers BIGINT SUM,
-    carters BIGINT SUM,
-    purchasers BIGINT SUM
-)
-AGGREGATE KEY (day, country)
-DISTRIBUTED BY HASH (day, country)
-"""
+# DDL lives in sql/starrocks/ (extracted 2026-11-17): funnel_daily_totals_
+# agg.sql (why the raw event topics, not the revision-emitting `funnel`
+# topic/MV; why dbt can't build AGGREGATE KEY) and funnel_daily_totals_
+# agg_load.sql (the per-job template -- each job sets ALL three counter
+# columns, 1 for its own and 0 literals for the rest, confirmed live; `day`
+# derived via LEFT(...,10) + STR_TO_DATE).
+CREATE_TABLE_SQL = load_sql("funnel_daily_totals_agg", schema=SCHEMA)
 
-# Each job explicitly sets ALL three counter columns (1 for the one it
-# owns, 0 literal for the other two) rather than omitting columns and
-# relying on a DEFAULT -- simpler and more certain to work, confirmed live.
-# `day` is derived from the raw ISO 8601 event_time via LEFT(...,10) (the
-# date portion is always the first 10 characters regardless of what
-# follows) then STR_TO_DATE.
 _LOAD_JOBS = {
     "funnel_viewers_agg_load": {
         "topic": "page_views",
@@ -102,21 +94,14 @@ INACTIVE_ROUTINE_LOAD_STATES = {"STOPPED", "CANCELLED"}
 
 def _create_routine_load_sql(job_name: str, spec: dict) -> str:
     jsonpaths = ",".join(f'\\"{p}\\"' for p in spec["jsonpaths"])
-    return f"""
-CREATE ROUTINE LOAD {SCHEMA}.{job_name} ON {TABLE}
-COLUMNS({spec["columns"]})
-PROPERTIES (
-    "format" = "json",
-    "jsonpaths" = "[{jsonpaths}]",
-    "desired_concurrent_number" = "1",
-    "max_batch_interval" = "5"
-)
-FROM KAFKA (
-    "kafka_broker_list" = "redpanda:9092",
-    "kafka_topic" = "{spec["topic"]}",
-    "property.kafka_default_offsets" = "OFFSET_BEGINNING"
-)
-"""
+    return load_sql(
+        "funnel_daily_totals_agg_load",
+        schema=SCHEMA,
+        job_name=job_name,
+        columns=spec["columns"],
+        jsonpaths=jsonpaths,
+        topic=spec["topic"],
+    )
 
 
 def _ensure_routine_load(connection, context, job_name: str, create_sql: str) -> None:

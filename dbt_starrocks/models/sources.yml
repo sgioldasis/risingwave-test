@@ -14,15 +14,10 @@ sources:
       - name: funnel_summary_historical
       - name: iceberg_countries
 
-  - name: sr_local_db
-    # default_catalog = this cluster's internal catalog (name confirmed via
-    # SHOW CATALOGS -- StarRocks's docs say "internal", this stack says
-    # default_catalog; dbt renders sources as catalog.schema.table)
-    database: default_catalog
-    schema: sr_local_db
-    tables:
-      - name: page_views_direct
-      - name: dim_users
+  # The sr_local_db source block (page_views_direct, dim_users) was removed
+  # 2026-11-17: both are dbt models now (dbt_starrocks/models/), read via
+  # ref() -- a source() pointing at a dbt-managed relation had no ordering
+  # power and raced the model on fresh clusters.
 
   - name: lakekeeper_local
     database: lakekeeper_local

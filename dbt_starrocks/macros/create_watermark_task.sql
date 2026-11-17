@@ -23,6 +23,20 @@
     {% set target = 'databricks_uc.sr_poc_external.funnel_summary_historical' %}
     {% set source_view = 'sr_local_db.funnel_summary_direct' %}
 
+    {% if execute %}
+        {# The task's INSERT reads source_view -- SUBMIT TASK validates the
+           body against the catalog, so on a fresh cluster (view not built
+           yet in this same run) the submission must be skipped, not fired
+           blind. information_schema.tables is NOT reliable for this on
+           StarRocks 4.1.7 shared-data (it lists only a fraction of the
+           relations -- verified 2026-11-17), so check via SHOW TABLES.
+           Hook runs in on-run-end, so the view normally exists; the skip
+           is only for failed/reordered runs -- the next successful dbt
+           run (or the funnel_historical_watermark asset) recreates it. #}
+        {% set exists_result = run_query("SHOW TABLES FROM sr_local_db LIKE 'funnel_summary_direct'") %}
+        {% set view_exists = exists_result | length > 0 %}
+
+        {% if view_exists %}
     {% set drop_sql %}
         DROP TASK IF EXISTS {{ task_name }}
     {% endset %}
@@ -53,4 +67,8 @@
     {% do run_query(submit_sql) %}
 
     {{ log("✓ watermark task 'funnel_historical_watermark' recreated (every 1 minute)", info=True) }}
+        {% else %}
+    {{ log("⚠ view sr_local_db.funnel_summary_direct does not exist yet -- watermark task not (re)created this run; the next successful dbt run or the funnel_historical_watermark asset will create it", info=True) }}
+        {% endif %}
+    {% endif %}
 {% endmacro %}

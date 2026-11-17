@@ -75,166 +75,44 @@ import os
 from dagster import AssetDep, AssetExecutionContext, asset
 from sqlalchemy import create_engine, text
 
+from .sql_loader import load_sql
+
 SCHEMA = "sr_local_db"
 
-# --- 1. computed columns ---------------------------------------------------
-
-# Rates live here ONCE, as computed columns. Compare with
-# funnel_summary_direct (a VIEW re-deriving the identical round(...)s) and
-# the dashboard SQL elsewhere -- the drift risk this table removes.
-FUNNEL_WINDOW_STATS_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.funnel_window_stats (
-    window_start DATETIME NOT NULL,
-    viewers BIGINT NOT NULL,
-    carters BIGINT NOT NULL,
-    purchasers BIGINT NOT NULL,
-    view_to_cart_rate DOUBLE AS round(carters / nullif(viewers, 0), 2),
-    cart_to_buy_rate DOUBLE AS round(purchasers / nullif(carters, 0), 2)
-) PRIMARY KEY (window_start)
-DISTRIBUTED BY HASH(window_start)
-"""
-
-# INSERT body only (SUBMIT TASK rejects anything else on 4.1.7 -- same
-# constraint as funnel_historical_watermark). PK upsert on window_start
-# makes the every-window re-insert idempotent.
-FUNNEL_WINDOW_STATS_TASK_SQL = f"""
-SUBMIT TASK {SCHEMA}.funnel_window_stats_refresh
-SCHEDULE EVERY (INTERVAL 1 MINUTE)
-AS INSERT INTO {SCHEMA}.funnel_window_stats (window_start, viewers, carters, purchasers)
-SELECT window_start, viewers, carters, purchasers
-FROM {SCHEMA}.funnel_summary_direct
-"""
-
-# --- 2. ASOF JOIN country risk-score feed ------------------------------------
-
-# Hourly publications per country; score = 0.2 + 0.1 * sin(...) gives a
-# deterministic wave. 6 countries (dim_users' full set) x 30 hourly points
-# ending at seed time; the page views it matches are all "now"-ish, so the
-# feed is seeded up to now+1h to keep every event matched.
-COUNTRY_SCORES_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.country_scores (
-    country VARCHAR(32) NOT NULL,
-    ts DATETIME NOT NULL,
-    risk_score DOUBLE NOT NULL
-) PRIMARY KEY (country, ts)
-DISTRIBUTED BY HASH(country)
-"""
-
-# dim_users' country mix: GR, RO, CY, PT, ES, IT (from the % 10 CASE).
-# ts walks back hourly from now+1h; per-country phase offset via LENGTH.
-COUNTRY_SCORES_SEED_SQL = f"""
-INSERT INTO {SCHEMA}.country_scores
-SELECT
-    c.country,
-    date_add(date_trunc('hour', now()), INTERVAL (t.generate_series - 30) HOUR) AS ts,
-    round(0.2 + 0.1 * sin((t.generate_series + length(c.country)) / 6.0), 4) AS risk_score
-FROM TABLE(generate_series(1, 31)) t
-CROSS JOIN (SELECT DISTINCT country FROM {SCHEMA}.dim_users) c
-WHERE (SELECT COUNT(*) FROM {SCHEMA}.country_scores) = 0
-"""
-
-# --- 3. UNIQUE KEY table model ---------------------------------------------
-
-# The one table model the Wallet dashboard doesn't show (DUPLICATE, AGGREGATE
-# and PRIMARY KEY all have charts there). UNIQUE KEY gives the same
-# row-level upsert semantics as PRIMARY KEY but as whole-row REPLACE: an
-# INSERT re-writing a key replaces the entire row (no partial-column
-# update). Here it stores the per-type wallet totals, refreshed by the same
-# 1-minute INSERT-SELECT pattern as the AGGREGATE KEY table
-# (wallet_type_totals_agg) -- AGGREGATE maintains SUM incrementally at
-# ingest, UNIQUE does full-row upsert per key at refresh time.
-WALLET_TYPE_TOTALS_UNIQUE_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.wallet_type_totals_unique (
-    type VARCHAR(32) NOT NULL,
-    total DECIMAL(38,9),
-    updated_at DATETIME
-) UNIQUE KEY (type)
-DISTRIBUTED BY HASH(type)
-"""
-
-WALLET_TYPE_TOTALS_UNIQUE_TASK_SQL = f"""
-SUBMIT TASK {SCHEMA}.wallet_type_totals_unique_refresh
-SCHEDULE EVERY (INTERVAL 1 MINUTE)
-AS INSERT INTO {SCHEMA}.wallet_type_totals_unique (type, total, updated_at)
-SELECT type, SUM(amount), now()
-FROM {SCHEMA}.wallet_transactions_direct_kafka
-GROUP BY type
-"""
-
-WALLET_TYPE_TOTALS_UNIQUE_BACKFILL_SQL = f"""
-INSERT INTO {SCHEMA}.wallet_type_totals_unique (type, total, updated_at)
-SELECT type, SUM(amount), now()
-FROM {SCHEMA}.wallet_transactions_direct_kafka
-GROUP BY type
-"""
-
-# --- 4. workload-group isolation -------------------------------------------
-
-# information_schema has NO resource-group table on 4.1.7 (verified
-# 2026-11-17), so the dashboard can't chart SHOW RESOURCE
-# GROUPS ALL directly. This snapshot table is the bridge: the asset reads the
-# live SHOW output and upserts the ACTUAL weights on every run (every demo
-# reset), so the chart always reflects real cluster config, not a hardcoded
-# copy. The chart (dashboard 4) makes the isolation story visible: BI traffic
-# (rg_superset_demo) got its own CPU slice next to the 100-weight default and
-# the 1-weight MV-refresh group.
-RESOURCE_GROUP_SNAPSHOT_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.resource_group_snapshot (
-    group_name VARCHAR(64) NOT NULL,
-    cpu_weight INT,
-    mem_limit VARCHAR(16),
-    updated_at DATETIME
-) PRIMARY KEY (group_name)
-DISTRIBUTED BY HASH(group_name)
-"""
-
-
-# superset_demo owns every dataset on the Serving Features dashboard, so the
-# classifier TO (USER='superset_demo') pins those queries to a group the MV
-# refresh tasks can never starve. Empty password + SELECT-only grants keep
-# the blast radius of the demo credential to zero.
-DEMO_USER_SQL = """
-CREATE USER IF NOT EXISTS 'superset_demo'@'%' IDENTIFIED BY ''
-"""
-
-DEMO_USER_GRANT_SQL = f"""
-GRANT SELECT ON {SCHEMA}.* TO 'superset_demo'@'%'
-"""
-
-RESOURCE_GROUP_SQL = f"""
-CREATE RESOURCE GROUP IF NOT EXISTS rg_superset_demo
-TO (USER='superset_demo')
-WITH ('cpu_weight_percent'='80', 'mem_limit'='80%')
-"""
-
-# CREATE ... IF NOT EXISTS does not update an existing group, so re-assert
-# the properties (incl. concurrency_limit) on every run via ALTER. 10 is
-# far above what a dashboard render issues (~5 charts), so demos never trip
-# it -- it arms fail-fast overload protection: with query queue v2 (the
-# 4.1 default) and enable_group_level_query_queue=false (the default), the
-# BE enforces the cap by FAILING the over-limit query with
-# "Exceed concurrency limit" rather than queueing it (true per-group
-# queueing is not implemented on 4.1.7 -- see the docstring note above and
-# StarRocks PR #78425).
-RESOURCE_GROUP_ALTER_SQL = f"""
-ALTER RESOURCE GROUP rg_superset_demo
-WITH ('cpu_weight_percent'='80', 'mem_limit'='80%', 'concurrency_limit'='10')
-"""
-
-# Seed the funnel_window_stats table on the FIRST run so the dashboard has
-# data before the 1-minute task's first tick. PK upsert = idempotent.
-FUNNEL_WINDOW_STATS_BACKFILL_SQL = f"""
-INSERT INTO {SCHEMA}.funnel_window_stats (window_start, viewers, carters, purchasers)
-SELECT window_start, viewers, carters, purchasers
-FROM {SCHEMA}.funnel_summary_direct
-WHERE window_start NOT IN (SELECT window_start FROM {SCHEMA}.funnel_window_stats)
-"""
+# All DDL for this asset lives in sql/starrocks/ (extracted 2026-11-17),
+# one file per object, each carrying its own verified-gotcha commentary:
+#   1. computed columns -- funnel_window_stats.sql,
+#      funnel_window_stats_refresh_task.sql, funnel_window_stats_backfill.sql
+#   2. ASOF JOIN feed -- country_scores.sql, country_scores_seed.sql
+#   3. UNIQUE KEY model -- wallet_type_totals_unique.sql (+_refresh_task,
+#      _backfill)
+#   4. workload isolation -- superset_demo_user.sql, superset_demo_grant.sql,
+#      rg_superset_demo.sql, rg_superset_demo_alter.sql,
+#      resource_group_snapshot.sql (the live-weights INSERT itself stays
+#      below -- it parses SHOW RESOURCE GROUPS ALL output at runtime).
+FUNNEL_WINDOW_STATS_SQL = load_sql("funnel_window_stats", schema=SCHEMA)
+FUNNEL_WINDOW_STATS_TASK_SQL = load_sql("funnel_window_stats_refresh_task", schema=SCHEMA)
+FUNNEL_WINDOW_STATS_BACKFILL_SQL = load_sql("funnel_window_stats_backfill", schema=SCHEMA)
+COUNTRY_SCORES_SQL = load_sql("country_scores", schema=SCHEMA)
+COUNTRY_SCORES_SEED_SQL = load_sql("country_scores_seed", schema=SCHEMA)
+WALLET_TYPE_TOTALS_UNIQUE_SQL = load_sql("wallet_type_totals_unique", schema=SCHEMA)
+WALLET_TYPE_TOTALS_UNIQUE_TASK_SQL = load_sql("wallet_type_totals_unique_refresh_task", schema=SCHEMA)
+WALLET_TYPE_TOTALS_UNIQUE_BACKFILL_SQL = load_sql("wallet_type_totals_unique_backfill", schema=SCHEMA)
+DEMO_USER_SQL = load_sql("superset_demo_user")
+DEMO_USER_GRANT_SQL = load_sql("superset_demo_grant", schema=SCHEMA)
+RESOURCE_GROUP_SQL = load_sql("rg_superset_demo")
+RESOURCE_GROUP_ALTER_SQL = load_sql("rg_superset_demo_alter")
+RESOURCE_GROUP_SNAPSHOT_SQL = load_sql("resource_group_snapshot", schema=SCHEMA)
 
 
 @asset(
     name="starrocks_feature_demo_setup",
     group_name="starrocks_unified_funnel",
-    deps=[AssetDep("funnel_events_direct_kafka"), AssetDep("wallet_transactions_direct_kafka")],
+    # wallet_transactions_direct_kafka_setup (renamed from
+    # ..._direct_kafka 2026-11-17): the bare table name is the dbt model's
+    # asset key now; the setup asset (routine load) transitively covers
+    # the dbt-created table shell.
+    deps=[AssetDep("funnel_events_direct_kafka"), AssetDep("wallet_transactions_direct_kafka_setup")],
     description=(
         "Data side of the StarRocks Serving Features dashboard: "
         "funnel_window_stats (computed columns + 1-min refresh task), "

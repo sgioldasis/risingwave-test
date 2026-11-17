@@ -8,7 +8,8 @@ the three funnel Kafka topics (page_views / cart_events / purchases) via
 Routine Load jobs into DUPLICATE KEY tables -- no RisingWave in the loop
 at all, same pattern as wallet_direct_kafka_setup.py.
 
-A VIEW (funnel_summary_direct) recomputes funnel_summary's 1-minute
+A VIEW (funnel_summary_direct, a dbt model since 2026-11-17 -- see the
+note above HOT_DIRECT_VIEW_SQL) recomputes funnel_summary's 1-minute
 window aggregation over the raw events at query time. Deliberately a
 VIEW, not a scheduled MV: the chart's story is zero-lag, and at demo
 volume (~tens of thousands of rows) the recompute is milliseconds.
@@ -27,11 +28,12 @@ truncate the three tables right after recreating.
 
 import os
 
-from dagster import AssetExecutionContext, asset
+from dagster import AssetExecutionContext, AssetKey, asset
 from sqlalchemy import create_engine, text
 
 # Reuse the wallet asset's idempotent Routine Load machinery verbatim --
 # same engine, same inactive-state detection, same recreate semantics.
+from .sql_loader import load_sql
 from .wallet_direct_kafka_setup import _ensure_routine_load
 
 SCHEMA = "sr_local_db"
@@ -50,125 +52,33 @@ _TABLES = [
 ]
 
 
+# The Routine Load template lives in sql/starrocks/funnel_events_routine_
+# load.sql (extracted 2026-11-17) -- it also carries the max_batch_interval
+# = 5 floor note (the _direct tables trail a RisingWave-fed twin by up to
+# ~5s -- expected pipeline latency) and the recreation double-count caveat.
 def _create_routine_load_sql(table: str, fields: list[str]) -> str:
     cols = ", ".join(fields) + ", event_time_raw"
     # Escaped quotes inside the StarRocks SQL string literal, matching the
     # wallet loader's jsonpaths spelling exactly.
     jsonpaths = "[" + ",".join(f'\\"$.{f}\\"' for f in fields + ["event_time"]) + "]"
-    return f"""
-CREATE ROUTINE LOAD {SCHEMA}.{table}_load ON {table}
-COLUMNS({cols}, event_time = str_to_date(substr(event_time_raw, 1, 26), '%Y-%m-%dT%H:%i:%s.%f'))
-PROPERTIES (
-    "format" = "json",
-    "jsonpaths" = "{jsonpaths}",
-    "desired_concurrent_number" = "1",
-    "max_batch_interval" = "5"
-)
-FROM KAFKA (
-    "kafka_broker_list" = "redpanda:9092",
-    "kafka_topic" = "{table.removesuffix('_direct')}",
-    "property.kafka_default_offsets" = "OFFSET_BEGINNING"
-)
-"""
-# max_batch_interval = 5 is the StarRocks-enforced floor ("3" is rejected
-# with "max_batch_interval should >= 5", same as the wallet loaders -- see
-# orchestration/assets/wallet_direct_kafka_setup.py). Consequence for any
-# side-by-side comparison against a RisingWave-fed table: the RW sink
-# lands rows per checkpoint while this Routine Load commits only every 5s,
-# so the _direct tables trail by up to ~5s / a few rows at any instant --
-# expected pipeline latency, not missing data (verified 2026-11-14 on the
-# wallet twin of this comparison: exactly 5 rows / 5.0s behind at 1 TPS,
-# converging).
+    return load_sql(
+        "funnel_events_routine_load",
+        schema=SCHEMA,
+        table=table,
+        cols=cols,
+        jsonpaths=jsonpaths,
+        topic=table.removesuffix("_direct"),
+    )
 
 
-# Same window/funnel semantics as dbt/models/funnel_summary.sql (1-minute
-# tumbling windows, distinct users per window, country hardcoded 'GR',
-# same conversion rates), computed over the direct-Kafka tables instead
-# of RisingWave's sources. A LEFT JOIN chain over per-window distinct
-# user sets, identical shape.
-CREATE_VIEW_SQL = f"""
-CREATE VIEW IF NOT EXISTS {SCHEMA}.funnel_summary_direct AS
-WITH p AS (
-    SELECT date_trunc('minute', event_time) AS window_start, user_id
-    FROM {SCHEMA}.page_views_direct GROUP BY 1, 2
-),
-c AS (
-    SELECT date_trunc('minute', event_time) AS window_start, user_id
-    FROM {SCHEMA}.cart_events_direct GROUP BY 1, 2
-),
-pur AS (
-    SELECT date_trunc('minute', event_time) AS window_start, user_id
-    FROM {SCHEMA}.purchases_direct GROUP BY 1, 2
-),
-stats AS (
-    SELECT
-        p.window_start,
-        count(DISTINCT p.user_id)   AS viewers,
-        count(DISTINCT c.user_id)   AS carters,
-        count(DISTINCT pur.user_id) AS purchasers
-    FROM p
-    LEFT JOIN c   ON p.window_start = c.window_start   AND p.user_id = c.user_id
-    LEFT JOIN pur ON p.window_start = pur.window_start AND p.user_id = pur.user_id
-    GROUP BY p.window_start
-)
-SELECT
-    window_start,
-    date_add(window_start, INTERVAL 1 MINUTE) AS window_end,
-    'GR' AS country,
-    viewers,
-    carters,
-    purchasers,
-    round(coalesce(carters / nullif(viewers, 0), 0), 2)   AS view_to_cart_rate,
-    round(coalesce(purchasers / nullif(carters, 0), 0), 2) AS cart_to_buy_rate
-FROM stats
-"""
-
-
-# 20-second-grain twin of funnel_summary_direct (time_slice, not
-# date_trunc -- date_trunc bottoms out at minute). The original RW-fed
-# funnel topic pushed 20-second windows, so the dashboard chart and the
-# online learner were built for that cadence; at minute grain both visibly
-# slowed down (2026-11-14: new chart point and new training record once a
-# minute instead of three times). The RW-free serving view's hot branch
-# (dashboard_funnel_serving_cached_direct) reads THIS view, not the
-# minute-grain one -- the frozen MV cutoff sits in September, so every
-# post-cutoff 20-second window is served exactly once.
-CREATE_VIEW_20S_SQL = f"""
-CREATE VIEW IF NOT EXISTS {SCHEMA}.funnel_summary_direct_20s AS
-WITH p AS (
-    SELECT time_slice(event_time, INTERVAL 20 SECOND) AS window_start, user_id
-    FROM {SCHEMA}.page_views_direct GROUP BY 1, 2
-),
-c AS (
-    SELECT time_slice(event_time, INTERVAL 20 SECOND) AS window_start, user_id
-    FROM {SCHEMA}.cart_events_direct GROUP BY 1, 2
-),
-pur AS (
-    SELECT time_slice(event_time, INTERVAL 20 SECOND) AS window_start, user_id
-    FROM {SCHEMA}.purchases_direct GROUP BY 1, 2
-),
-stats AS (
-    SELECT
-        p.window_start,
-        count(DISTINCT p.user_id)   AS viewers,
-        count(DISTINCT c.user_id)   AS carters,
-        count(DISTINCT pur.user_id) AS purchasers
-    FROM p
-    LEFT JOIN c   ON p.window_start = c.window_start   AND p.user_id = c.user_id
-    LEFT JOIN pur ON p.window_start = pur.window_start AND p.user_id = pur.user_id
-    GROUP BY p.window_start
-)
-SELECT
-    window_start,
-    date_add(window_start, INTERVAL 20 SECOND) AS window_end,
-    'GR' AS country,
-    viewers,
-    carters,
-    purchasers,
-    round(coalesce(carters / nullif(viewers, 0), 0), 2)   AS view_to_cart_rate,
-    round(coalesce(purchasers / nullif(carters, 0), 0), 2) AS cart_to_buy_rate
-FROM stats
-"""
+# funnel_summary_direct and funnel_summary_direct_20s (the minute- and
+# 20-second-grain funnel views over the direct-Kafka tables) are dbt
+# models since 2026-11-17 (dbt_starrocks/models/funnel_summary_direct*.sql,
+# with ref() ordering tables -> views -> dashboard_funnel_serving_cached_
+# direct) -- this asset creates neither. What remains here is the RW-only
+# twin's dataset view (below), which reads the risingwave JDBC catalog and
+# therefore can't be a dbt model of this project (dbt runs would fail with
+# RW down -- see the 2026-11-14 note on it).
 
 # The RW-only twin's dataset view (chart "Funnel Over Time (Hot-Only)
 # [RisingWave only]"). Defined here because it was originally created ad-hoc
@@ -184,42 +94,33 @@ FROM risingwave.public.funnel_summary
 """
 
 # User dimension for the multi-table MV rewrite demo (mv_funnel_country_daily,
-# dbt_starrocks): the raw topics carry no country, so the join needs a
-# user_id -> country lookup. DELIBERATELY SYNTHETIC -- the producer's
-# user_id is random 1..1,000,000, so this assigns a deterministic skewed
-# mapping (GR plurality ~40%, then RO/CY/PT/ES/IT) generated row-by-row via
-# generate_series. Seeded once (guarded by a COUNT(*) check); a 1M-row dim
-# is trivial for StarRocks and covers the producer's whole ID space.
-DIM_USERS_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.dim_users (
-    user_id BIGINT NOT NULL,
-    country VARCHAR(32)
-) DISTRIBUTED BY HASH(user_id)
-"""
-
-DIM_USERS_SEED_SQL = f"""
-INSERT INTO {SCHEMA}.dim_users
-SELECT
-    t.generate_series AS user_id,
-    CASE t.generate_series % 10
-        WHEN 0 THEN 'GR' WHEN 1 THEN 'GR' WHEN 2 THEN 'GR' WHEN 3 THEN 'GR'
-        WHEN 4 THEN 'RO' WHEN 5 THEN 'RO'
-        WHEN 6 THEN 'CY' WHEN 7 THEN 'PT' WHEN 8 THEN 'ES' ELSE 'IT'
-    END AS country
-FROM TABLE(generate_series(1, 1000000)) t
-WHERE (SELECT COUNT(*) FROM {SCHEMA}.dim_users) = 0
-"""
+# dim_users (the user_id -> country lookup the MVs join, since the raw
+# topics carry no country) is a dbt model since 2026-11-17
+# (dbt_starrocks/models/dim_users.sql) -- same deterministic skewed
+# mapping (GR plurality ~40%, then RO/CY/PT/ES/IT), 1M rows via
+# generate_series -- but built by the dbt build step, not here.
 
 
 @asset(
     name="funnel_events_direct_kafka",
     group_name="starrocks_unified_funnel",
+    # The tables themselves (page_views_direct, cart_events_direct,
+    # purchases_direct) are dbt-owned shells since 2026-11-17
+    # (dbt_starrocks/models/*_direct.sql, on_table_exists='ignore') -- this
+    # asset only wires the Routine Loads into them, so it depends on the
+    # dbt models materializing first on a fresh cluster.
+    deps=[
+        AssetKey(["page_views_direct"]),
+        AssetKey(["cart_events_direct"]),
+        AssetKey(["purchases_direct"]),
+    ],
     description=(
-        "Raw funnel Kafka topics -> StarRocks DUPLICATE KEY tables via "
-        "Routine Load (no RisingWave), plus funnel_summary_direct -- a "
-        "VIEW recomputing funnel_summary's 1-minute window aggregation "
-        "over them. Powers the 'Direct-from-Kafka' hot-path chart on the "
-        "Funnel Dashboard, side by side with the RisingWave-JDBC chart."
+        "Raw funnel Kafka topics -> Routine Load jobs into the dbt-managed "
+        "DUPLICATE KEY shell tables (dbt_starrocks/models/*_direct.sql; "
+        "this asset wires the loads, the tables and the funnel_summary_"
+        "direct views over them are dbt models). Powers the "
+        "'Direct-from-Kafka' hot-path chart on the Funnel Dashboard, side "
+        "by side with the RisingWave-JDBC chart."
     ),
 )
 def funnel_events_direct_kafka(context: AssetExecutionContext) -> dict:
@@ -236,23 +137,19 @@ def funnel_events_direct_kafka(context: AssetExecutionContext) -> dict:
 
     row = {}
     with engine.connect() as connection:
-        for topic, table, cols, fields in _TABLES:
-            connection.execute(text(
-                f"CREATE TABLE IF NOT EXISTS {SCHEMA}.{table} ("
-                f"{cols}, event_time DATETIME"
-                ") DISTRIBUTED BY HASH(user_id)"
-            ))
+        for topic, table, _cols, fields in _TABLES:  # noqa: F841 -- cols kept in _TABLES for reference; DDL now dbt-owned
+            # Table DDL is dbt-owned (dbt_starrocks/models/<table>.sql,
+            # on_table_exists='ignore') since 2026-11-17 -- this loop only
+            # wires the Routine Load into the existing table.
             _ensure_routine_load(
                 connection, context, f"{table}_load",
                 _create_routine_load_sql(table, fields),
             )
             context.log.info("Routine Load %s.%s ensured", SCHEMA, table)
 
-        connection.execute(text(CREATE_VIEW_SQL))
-        context.log.info("View %s.funnel_summary_direct ready", SCHEMA)
-
-        connection.execute(text(CREATE_VIEW_20S_SQL))
-        context.log.info("View %s.funnel_summary_direct_20s ready", SCHEMA)
+        # funnel_summary_direct + _20s are dbt models now (see the note
+        # above the HOT_DIRECT_VIEW_SQL constant) -- created by the dbt
+        # build step, not here.
 
         try:
             connection.execute(text(HOT_DIRECT_VIEW_SQL))
@@ -262,12 +159,8 @@ def funnel_events_direct_kafka(context: AssetExecutionContext) -> dict:
                 "funnel_summary_hot_direct not ensured (RisingWave down?): %s", exc
             )
 
-        connection.execute(text(DIM_USERS_SQL))
-        connection.execute(text(DIM_USERS_SEED_SQL))
-        dim_rows = connection.execute(text(
-            f"SELECT COUNT(*) FROM {SCHEMA}.dim_users"
-        )).scalar()
-        context.log.info("Dim table %s.dim_users ready (%d rows)", SCHEMA, dim_rows)
+        # dim_users is a dbt model now (see the module note) -- built by
+        # the dbt build step, not here.
 
         for _, table, _, _ in _TABLES:
             row[table] = connection.execute(text(

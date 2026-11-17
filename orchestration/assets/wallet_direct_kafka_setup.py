@@ -20,95 +20,26 @@ import os
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 from sqlalchemy import create_engine, text
 
+from .sql_loader import load_sql
+
 SCHEMA = "sr_local_db"
 TABLE = "wallet_transactions_direct_kafka"
 LOAD_JOB = "wallet_direct_kafka_load"
 STATUS_LOAD_JOB = "wallet_status_update_load"
 
-CREATE_TABLE_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE} (
-    transaction_id VARCHAR(64),
-    account_id VARCHAR(32),
-    type VARCHAR(16),
-    amount DECIMAL(38,9),
-    status VARCHAR(16),
-    event_time DATETIME
-)
-PRIMARY KEY (transaction_id)
-DISTRIBUTED BY HASH (transaction_id)
-"""
-
-# event_time is parsed to a real DATETIME at load time via a computed
-# column in the Routine Load COLUMNS clause -- the producer emits ISO 8601
-# (e.g. "2026-09-12T09:00:41.585742+00:00", always UTC per
-# datetime.now(timezone.utc).isoformat()), which StarRocks can't parse
-# directly as a column-to-column mapping. `event_time_raw` is a temp column
-# (positionally mapped from jsonpaths, same as any other field); the actual
-# `event_time` column is a derived expression over it. Confirmed live on a
-# throwaway table before applying here: SUBSTR(...,1,26) drops the fixed
-# 6-char "+00:00" suffix (always UTC, so always exactly this length),
-# leaving "2026-09-13T03:42:13.609764" for str_to_date's '%Y-%m-%dT%H:%i:%s.%f'
-# to parse, correctly preserving microsecond precision.
+# Table DDL is dbt-owned since 2026-11-17: dbt_starrocks/models/
+# wallet_transactions_direct_kafka.sql (on_table_exists='ignore') creates
+# the table on a fresh cluster; this asset only wires the Routine Load in
+# (deps on the dbt model key enforce the ordering).
 #
-# An earlier version of this table kept event_time as VARCHAR (the raw
-# ISO 8601 string) instead, reasoning that its lexicographic order already
-# matches chronological order so sorting/MAX() would work without this
-# parsing step. That was true, but it meant this table displayed
-# differently from the RisingWave-mediated wallet_transactions table
-# (which does `CAST(event_time AS TIMESTAMP)` in its own sink) side by side
-# on the same Superset dashboard, which was confusing on inspection -- not
-# worth the display inconsistency for demo purposes.
-CREATE_ROUTINE_LOAD_SQL = f"""
-CREATE ROUTINE LOAD {SCHEMA}.{LOAD_JOB} ON {TABLE}
-COLUMNS(transaction_id, account_id, type, amount, status, event_time_raw, event_time = str_to_date(substr(event_time_raw, 1, 26), '%Y-%m-%dT%H:%i:%s.%f'))
-PROPERTIES (
-    "format" = "json",
-    "jsonpaths" = "[\\"$.transaction_id\\",\\"$.account_id\\",\\"$.type\\",\\"$.amount\\",\\"$.status\\",\\"$.event_time\\"]",
-    "desired_concurrent_number" = "1",
-    "max_batch_interval" = "5"
-)
-FROM KAFKA (
-    "kafka_broker_list" = "redpanda:9092",
-    "kafka_topic" = "wallet_transactions",
-    "property.kafka_default_offsets" = "OFFSET_BEGINNING"
-)
-"""
-
-# max_batch_interval has a hard floor of 5s -- confirmed live, "3" is
-# rejected with "max_batch_interval should >= 5". 5s is still a fair
-# comparison against the RisingWave path's ~2-3s tuned latency.
-#
-# Consequence for the side-by-side demo: the RisingWave upsert sink lands
-# rows row-by-row (per checkpoint), while this Routine Load only commits
-# every max_batch_interval -- so at any instant this table trails
-# wallet_transactions by up to ~5s / a handful of rows. Verified
-# 2026-11-14 at 1 TPS: exactly 5 rows / 5.0s behind, converging as the
-# next batch lands. The gap between the two point-lookup charts on the
-# Wallet Upsert Demo dashboard is expected pipeline latency, not missing
-# data.
-
-# Second Routine Load job on the SAME table: reads an independent
-# 'wallet_status_updates' topic carrying only {transaction_id, status} (a
-# simulated fraud-review service that never sees amount/type/account_id at
-# all -- see scripts/wallet_producer.py) and writes ONLY the `status`
-# column via `partial_update`, confirmed live against a throwaway table
-# before building this: other columns on the row are left untouched.
-CREATE_STATUS_LOAD_SQL = f"""
-CREATE ROUTINE LOAD {SCHEMA}.{STATUS_LOAD_JOB} ON {TABLE}
-COLUMNS(transaction_id, status)
-PROPERTIES (
-    "format" = "json",
-    "jsonpaths" = "[\\"$.transaction_id\\",\\"$.status\\"]",
-    "partial_update" = "true",
-    "desired_concurrent_number" = "1",
-    "max_batch_interval" = "5"
-)
-FROM KAFKA (
-    "kafka_broker_list" = "redpanda:9092",
-    "kafka_topic" = "wallet_status_updates",
-    "property.kafka_default_offsets" = "OFFSET_BEGINNING"
-)
-"""
+# The Routine Load DDL lives in sql/starrocks/ (extracted 2026-11-17) --
+# wallet_direct_kafka_load.sql and wallet_status_update_load.sql carry the
+# full reasoning: the event_time str_to_date parsing (SUBSTR dropping the
+# "+00:00" suffix, the earlier VARCHAR experiment), the 5s
+# max_batch_interval floor and the resulting ~5s trail behind the
+# RisingWave path, and the partial_update semantics of the status job.
+CREATE_ROUTINE_LOAD_SQL = load_sql("wallet_direct_kafka_load", schema=SCHEMA)
+CREATE_STATUS_LOAD_SQL = load_sql("wallet_status_update_load", schema=SCHEMA)
 
 # Confirmed live: StarRocks keeps a row per CREATE in
 # information_schema.routine_load_jobs, all sharing the same NAME --
@@ -159,17 +90,23 @@ def _ensure_routine_load(connection, context, job_name: str, create_sql: str) ->
 
 
 @asset(
-    name="wallet_transactions_direct_kafka",
+    name="wallet_transactions_direct_kafka_setup",
     group_name="wallet",
+    # Named ..._setup (not ..._direct_kafka) because the dbt model of the
+    # same table name IS the asset with that key now -- the two would
+    # collide in the asset graph. This asset depends on the dbt model
+    # (table shell) and owns only the Routine Load wiring.
+    deps=[AssetKey(["wallet_transactions_direct_kafka"])],
     description=(
-        "StarRocks Primary Key table fed directly by a Routine Load job "
-        "reading the wallet_transactions Kafka topic -- no RisingWave in "
-        "the loop. Add-on comparison against the RisingWave-mediated path "
+        "Routine Load job feeding the dbt-managed wallet_transactions_"
+        "direct_kafka Primary Key table from the wallet_transactions "
+        "Kafka topic -- no RisingWave in the loop. Add-on comparison "
+        "against the RisingWave-mediated path "
         "(sink_wallet_transactions_to_starrocks -> wallet_transactions), "
         "see docs/SR_POC_WALLET_UPSERT_DEMO.md."
     ),
 )
-def wallet_transactions_direct_kafka(context: AssetExecutionContext) -> dict:
+def wallet_transactions_direct_kafka_setup(context: AssetExecutionContext) -> dict:
     starrocks_url = os.environ.get(
         "STARROCKS_URL",
         "mysql+pymysql://root@starrocks:9030",
@@ -182,9 +119,6 @@ def wallet_transactions_direct_kafka(context: AssetExecutionContext) -> dict:
     )
 
     with engine.connect() as connection:
-        connection.execute(text(CREATE_TABLE_SQL))
-        context.log.info("Table %s.%s ready", SCHEMA, TABLE)
-
         _ensure_routine_load(connection, context, LOAD_JOB, CREATE_ROUTINE_LOAD_SQL)
 
         count = connection.execute(
@@ -201,7 +135,7 @@ def wallet_transactions_direct_kafka(context: AssetExecutionContext) -> dict:
 @asset(
     name="wallet_status_update_load_job",
     group_name="wallet",
-    deps=[AssetKey(["wallet_transactions_direct_kafka"])],
+    deps=[AssetKey(["wallet_transactions_direct_kafka_setup"])],
     description=(
         "Second Routine Load job on wallet_transactions_direct_kafka, "
         "reading an independent 'wallet_status_updates' Kafka topic and "

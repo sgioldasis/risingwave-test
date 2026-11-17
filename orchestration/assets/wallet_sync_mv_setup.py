@@ -24,63 +24,27 @@ the direct-Kafka PK table's own Routine Load job).
 
 import os
 
-from dagster import AssetExecutionContext, MetadataValue, asset
+from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 from sqlalchemy import create_engine, text
+
+from .sql_loader import load_sql
 
 SCHEMA = "sr_local_db"
 TABLE = "wallet_transactions_log"
 LOAD_JOB = "wallet_log_kafka_load"
 MV_NAME = "mv_wallet_type_rollup"
 
-CREATE_TABLE_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE} (
-    transaction_id VARCHAR(64),
-    account_id VARCHAR(32),
-    type VARCHAR(16),
-    amount DECIMAL(38,9),
-    status VARCHAR(16),
-    event_time DATETIME
-)
-DUPLICATE KEY (transaction_id)
-DISTRIBUTED BY HASH (transaction_id)
-"""
-
-# event_time parsed to a real DATETIME at load time, same approach and same
-# reasoning as wallet_transactions_direct_kafka (see
-# orchestration/assets/wallet_direct_kafka_setup.py) -- consistent display
-# across all wallet tables on the same Superset dashboard.
-CREATE_ROUTINE_LOAD_SQL = f"""
-CREATE ROUTINE LOAD {SCHEMA}.{LOAD_JOB} ON {TABLE}
-COLUMNS(transaction_id, account_id, type, amount, status, event_time_raw, event_time = str_to_date(substr(event_time_raw, 1, 26), '%Y-%m-%dT%H:%i:%s.%f'))
-PROPERTIES (
-    "format" = "json",
-    "jsonpaths" = "[\\"$.transaction_id\\",\\"$.account_id\\",\\"$.type\\",\\"$.amount\\",\\"$.status\\",\\"$.event_time\\"]",
-    "desired_concurrent_number" = "1",
-    "max_batch_interval" = "5"
-)
-FROM KAFKA (
-    "kafka_broker_list" = "redpanda:9092",
-    "kafka_topic" = "wallet_transactions",
-    "property.kafka_default_offsets" = "OFFSET_BEGINNING"
-)
-"""
-
-# Like every Routine Load path here (see wallet_direct_kafka_setup.py),
-# this one batches on max_batch_interval = 5 (the StarRocks-enforced
-# floor), so wallet_transactions_log trails the RisingWave-sink table
-# (wallet_transactions) by up to ~5s at any instant -- expected pipeline
-# latency on the side-by-side dashboard, not missing data.
-
-# COUNT(*) is rejected by synchronous MV creation -- confirmed live:
-# "The materialized view currently does not support const expr in select
-# statement: {}. Please use Asynchronous Materialized View instead."
-# COUNT(transaction_id) (a real column) works fine.
-CREATE_MV_SQL = f"""
-CREATE MATERIALIZED VIEW {SCHEMA}.{MV_NAME} AS
-SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count, MAX(event_time) AS last_event_time
-FROM {SCHEMA}.{TABLE}
-GROUP BY type
-"""
+# Table DDL is dbt-owned since 2026-11-17: dbt_starrocks/models/
+# wallet_transactions_log.sql (on_table_exists='ignore') creates the table
+# on a fresh cluster; this asset only wires the Routine Load and the
+# synchronous rollup MV in (deps on the dbt model key enforce ordering).
+#
+# The Routine Load and MV DDL live in sql/starrocks/ (extracted
+# 2026-11-17) -- wallet_transactions_log_load.sql (event_time str_to_date
+# parsing, the 5s max_batch_interval floor / ~5s trail) and
+# mv_wallet_type_rollup.sql (the COUNT(*) rejection gotcha).
+CREATE_ROUTINE_LOAD_SQL = load_sql("wallet_transactions_log_load", schema=SCHEMA)
+CREATE_MV_SQL = load_sql("mv_wallet_type_rollup", schema=SCHEMA)
 
 INACTIVE_ROUTINE_LOAD_STATES = {"STOPPED", "CANCELLED"}
 
@@ -119,8 +83,13 @@ def _ensure_routine_load(connection, context, job_name: str, create_sql: str) ->
 
 
 @asset(
-    name="wallet_transactions_log",
+    name="wallet_transactions_log_setup",
     group_name="wallet",
+    # Named ..._setup because the dbt model of the same table name IS the
+    # asset with that key now -- the two would collide in the asset graph.
+    # This asset depends on the dbt model (table shell) and owns only the
+    # Routine Load + synchronous rollup MV wiring.
+    deps=[AssetKey(["wallet_transactions_log"])],
     description=(
         "Duplicate Key StarRocks table (keeps every event, no upsert/"
         "collapsing) fed by its own Routine Load job reading the "
@@ -130,7 +99,7 @@ def _ensure_routine_load(connection, context, job_name: str, create_sql: str) ->
         "project. See docs/SR_POC_WALLET_UPSERT_DEMO.md."
     ),
 )
-def wallet_transactions_log(context: AssetExecutionContext) -> dict:
+def wallet_transactions_log_setup(context: AssetExecutionContext) -> dict:
     starrocks_url = os.environ.get(
         "STARROCKS_URL",
         "mysql+pymysql://root@starrocks:9030",
@@ -143,9 +112,6 @@ def wallet_transactions_log(context: AssetExecutionContext) -> dict:
     )
 
     with engine.connect() as connection:
-        connection.execute(text(CREATE_TABLE_SQL))
-        context.log.info("Table %s.%s ready", SCHEMA, TABLE)
-
         _ensure_routine_load(connection, context, LOAD_JOB, CREATE_ROUTINE_LOAD_SQL)
 
         # `CREATE MATERIALIZED VIEW IF NOT EXISTS` does NOT suppress the

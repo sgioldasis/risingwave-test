@@ -29,13 +29,13 @@ SELECT
     AS hll_error_pct
 FROM (
   SELECT COUNT(DISTINCT user_id) AS viewers_exact
-  FROM {{ source('sr_local_db', 'page_views_direct') }}
+  FROM {{ ref('page_views_direct') }}
 ) e
 CROSS JOIN (
   SELECT BITMAP_UNION_COUNT(to_bitmap(user_id)) AS viewers_bitmap
-  FROM {{ source('sr_local_db', 'page_views_direct') }}
+  FROM {{ ref('page_views_direct') }}
 ) b
 CROSS JOIN (
   SELECT HLL_UNION_AGG(hll_hash(user_id)) AS viewers_hll
-  FROM {{ source('sr_local_db', 'page_views_direct') }}
+  FROM {{ ref('page_views_direct') }}
 ) h

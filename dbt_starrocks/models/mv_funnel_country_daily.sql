@@ -48,7 +48,7 @@ SELECT
   DATE(p.event_time) AS day,
   u.country,
   COUNT(*) AS page_views
-FROM {{ source('sr_local_db', 'page_views_direct') }} p
-JOIN {{ source('sr_local_db', 'dim_users') }} u
+FROM {{ ref('page_views_direct') }} p
+JOIN {{ ref('dim_users') }} u
   ON p.user_id = u.user_id
 GROUP BY day, country

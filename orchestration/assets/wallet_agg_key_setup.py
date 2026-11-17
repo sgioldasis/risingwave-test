@@ -28,45 +28,18 @@ import os
 from dagster import AssetExecutionContext, MetadataValue, asset
 from sqlalchemy import create_engine, text
 
+from .sql_loader import load_sql
+
 SCHEMA = "sr_local_db"
 TABLE = "wallet_type_totals_agg"
 LOAD_JOB = "wallet_type_totals_agg_load"
 
-CREATE_TABLE_SQL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE} (
-    type VARCHAR(16),
-    total_amount DECIMAL(38,9) SUM,
-    event_count BIGINT SUM,
-    last_event_time DATETIME REPLACE
-)
-AGGREGATE KEY (type)
-DISTRIBUTED BY HASH (type)
-"""
-
-# `event_count = 1` is a constant per-row contribution -- summed on merge,
-# giving a running count without a separate COUNT aggregate (StarRocks
-# Aggregate tables only support one declared aggregate function per
-# column, applied uniformly; a literal-1 SUM column is the standard way to
-# get a count). `last_event_time` uses REPLACE (keep the latest value on
-# merge) rather than SUM, deliberately mixing aggregate functions in one
-# table to show they're independent per column -- confirmed live on a
-# throwaway table: SUM columns summed correctly, the REPLACE column
-# correctly kept only the most recent event_time, not summed or dropped.
-CREATE_ROUTINE_LOAD_SQL = f"""
-CREATE ROUTINE LOAD {SCHEMA}.{LOAD_JOB} ON {TABLE}
-COLUMNS(type, amount, event_time_raw, total_amount = amount, event_count = 1, last_event_time = str_to_date(substr(event_time_raw, 1, 26), '%Y-%m-%dT%H:%i:%s.%f'))
-PROPERTIES (
-    "format" = "json",
-    "jsonpaths" = "[\\"$.type\\",\\"$.amount\\",\\"$.event_time\\"]",
-    "desired_concurrent_number" = "1",
-    "max_batch_interval" = "5"
-)
-FROM KAFKA (
-    "kafka_broker_list" = "redpanda:9092",
-    "kafka_topic" = "wallet_transactions",
-    "property.kafka_default_offsets" = "OFFSET_BEGINNING"
-)
-"""
+# DDL lives in sql/starrocks/ (extracted 2026-11-17): wallet_type_totals_
+# agg.sql (the AGGREGATE-merge story, the literal-1 SUM count trick, the
+# mixed REPLACE column) and wallet_type_totals_agg_load.sql (event_time
+# str_to_date parsing, the 5s max_batch_interval floor).
+CREATE_TABLE_SQL = load_sql("wallet_type_totals_agg", schema=SCHEMA)
+CREATE_ROUTINE_LOAD_SQL = load_sql("wallet_type_totals_agg_load", schema=SCHEMA)
 
 INACTIVE_ROUTINE_LOAD_STATES = {"STOPPED", "CANCELLED"}
 

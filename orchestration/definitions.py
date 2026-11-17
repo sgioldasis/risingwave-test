@@ -58,10 +58,10 @@ from .assets.funnel_historical_watermark import (
     funnel_historical_watermark_schedule,
 )
 from .assets.wallet_direct_kafka_setup import (
-    wallet_transactions_direct_kafka,
+    wallet_transactions_direct_kafka_setup,
     wallet_status_update_load_job,
 )
-from .assets.wallet_sync_mv_setup import wallet_transactions_log
+from .assets.wallet_sync_mv_setup import wallet_transactions_log_setup
 from .assets.wallet_agg_key_setup import wallet_type_totals_agg
 from .assets.funnel_agg_key_setup import funnel_daily_totals_agg
 from . import defs as reverse_etl_yaml_defs  # not `defs`: that is the Definitions below
@@ -356,20 +356,15 @@ class CustomDagsterDbtTranslator(DagsterDbtTranslator):
                 existing_deps.append(AssetDep(asset=rw_funnel_key))
             new_spec = new_spec.replace_attributes(deps=existing_deps)
 
-        # dashboard_funnel_serving_cached_direct references the view
-        # funnel_summary_direct by literal name (it's not a dbt model --
-        # the funnel_events_direct_kafka Dagster asset creates it along
-        # with the Routine Load tables). Without this cross-PoC dep the
-        # dbt model could race the asset on a fresh stack and fail with
-        # "Table ordering key entries do not exist" / unknown view.
-        _MODELS_READING_DIRECT_KAFKA_VIEW = {"dashboard_funnel_serving_cached_direct"}
-        if dbt_resource_props.get("name") in _MODELS_READING_DIRECT_KAFKA_VIEW:
-            from dagster import AssetDep
-            existing_deps = list(new_spec.deps) if new_spec.deps else []
-            direct_kafka_key = AssetKey(["funnel_events_direct_kafka"])
-            if direct_kafka_key not in {dep.asset_key for dep in existing_deps}:
-                existing_deps.append(AssetDep(asset=direct_kafka_key))
-            new_spec = new_spec.replace_attributes(deps=existing_deps)
+        # dashboard_funnel_serving_cached_direct used to need a cross-asset
+        # dep on funnel_events_direct_kafka (which created the
+        # funnel_summary_direct view it reads). Since 2026-11-17 the view
+        # and the tables under it are all dbt models
+        # (dbt_starrocks/models/funnel_summary_direct*.sql), ordered
+        # inside the build by ref() -- and a dep here on the funnel asset
+        # would be a dependency CYCLE (funnel asset depends on the dbt
+        # table models since they became dbt-managed; fresh-stack
+        # failure 2026-11-17).
 
         # Casino Kafka source tables depend on proto descriptors being in MinIO.
         # Declaring this here (on the AssetSpec) is required before the function
@@ -784,9 +779,9 @@ _WALLET_PIPELINE_SELECTION = (
         # sr_local_db_sr_local_db used to appear here as the prefix.
         AssetKey(["wallet_transactions"]),
     )
-    | AssetSelection.assets(wallet_transactions_direct_kafka)
+    | AssetSelection.assets(wallet_transactions_direct_kafka_setup)
     | AssetSelection.assets(wallet_status_update_load_job)
-    | AssetSelection.assets(wallet_transactions_log)
+    | AssetSelection.assets(wallet_transactions_log_setup)
     | AssetSelection.assets(wallet_type_totals_agg)
 )
 
@@ -1063,14 +1058,14 @@ defs = Definitions.merge(
             # Direct Kafka -> StarRocks path for the wallet upsert demo (no
             # RisingWave in the loop), add-on comparison against the
             # RisingWave-mediated path
-            wallet_transactions_direct_kafka,
+            wallet_transactions_direct_kafka_setup,
             # Second Routine Load job on the same table: partial_update from an
             # independent status-updates topic
             wallet_status_update_load_job,
             # Duplicate Key log table + synchronous rollup MV -- zero-lag,
             # no-REFRESH-ever aggregation, contrasted against the async MVs
             # elsewhere in this project
-            wallet_transactions_log,
+            wallet_transactions_log_setup,
             # Aggregate Key table -- storage-level incremental SUM/REPLACE on
             # ingest, a third way (alongside the ad-hoc aggregate query and the
             # sync rollup MV) to answer "totals per type"
