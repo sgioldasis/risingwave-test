@@ -142,6 +142,74 @@ analytic cut over a row-id filter. Each prints its input SQL first.
     print("\nOne engine computed it (StarRocks, federation, zero DBU), the other")
     print("analyzed it (DuckDB), and the wire between them was Arrow.")
 
+    print(
+        """
+
+=== Run it yourself, live ==============================================
+
+To show this interactively, from the repo root:
+
+  python scripts/duckdb_live.py           # devbox shell (venv already active)
+  .venv/bin/python scripts/duckdb_live.py # plain host shell
+
+That drops you into a live session with the federated source already
+pulled over Flight SQL and registered zero-copy (as delta_source), plus
+the Unity Catalog weekly rollup pre-registered (as uc_funnel -- so beat 4b
+runs immediately; re-typing 4a is only to show the mechanism). At the
+>>> prompt you type SQL DIRECTLY (it runs on DuckDB), or Python for the
+helpers:
+
+  star("<sql>")   push the query DOWN to StarRocks over Flight SQL; the
+                  Arrow result registers in DuckDB (zero-copy) as duck_1,
+                  duck_2, ... and prints
+  duck("<sql>")   run DuckDB-LOCAL SQL over whatever is registered
+  tables()        what is registered right now
+
+A four-beat story to type in front of an audience:
+
+  # profile the federation's make-up -- DuckDB-local over the Arrow buffers
+  >>> SELECT description, COUNT(*) n FROM delta_source GROUP BY 1 ORDER BY n DESC LIMIT 5
+
+  # query a kafka-fed StarRocks table live -- pushed DOWN to StarRocks over Flight SQL
+  >>> star("SELECT country, SUM(viewers) AS v FROM sr_local_db.funnel_summary_direct GROUP BY 1")
+
+  # re-cut that StarRocks result locally in DuckDB -- both directions of the pairing
+  >>> SELECT country, v FROM duck_1 ORDER BY v DESC LIMIT 3
+
+A fourth beat -- a query over a Databricks Unity Catalog table (the shape to
+use when the table is LARGE; here it is demo-sized at ~2k rows, but the
+mechanics are identical at hundreds of millions):
+
+  # Beat 4a (uc_funnel is already registered at startup; re-type only to
+  # show the mechanism): StarRocks federates the UC Iceberg table IN PLACE on ADLS (zero
+  # DBU -- no Databricks compute involved) and does the heavy part: it prunes
+  # to the window_date partitions it needs, reads only the four columns
+  # named, and computes the weekly rollup with its MPP engine. What crosses
+  # Flight is ONLY the aggregate -- 6 rows, a fraction of a KiB. This is the
+  # shape every large-table query should have: filter on the partition
+  # column, name the columns, aggregate server-side. Never SELECT * a big
+  # table -- that streams every column of every row into this laptop's RAM.
+  >>> star(\"\"\"
+        SELECT DATE_TRUNC('week', window_date) AS week,
+               SUM(viewers) AS viewers, SUM(purchasers) AS purchasers,
+               ROUND(SUM(purchasers) / NULLIF(SUM(viewers), 0) * 100, 2) AS conv_pct
+        FROM databricks_uc.sr_poc_external.funnel_summary_historical
+        GROUP BY 1
+      \"\"\", name="uc_funnel")
+
+  # Beat 4b: DuckDB re-cuts the result locally -- Lakehouse-level stats over
+  # what already arrived, without touching the lake (or the wire) again.
+  >>> SELECT ROUND(AVG(conv_pct), 2) AS avg_conv, MIN(conv_pct) AS worst, MAX(conv_pct) AS best FROM uc_funnel
+
+Ctrl-D (or exit()) to leave. From any container on the compose network the
+same file works (python scripts/duckdb_live.py with the scripts/ dir
+mounted); from the host it uses the starrocks:8010 / localhost:8010
+fallback -- the /etc/hosts entry from the button's checks makes the first
+resolve.
+
+========================================================================"""
+    )
+
 
 if __name__ == "__main__":
     main()
