@@ -435,7 +435,7 @@ feeds, and the endpoints backed by that cache (`/api/funnel`, `/api/stats`,
 `/api/funnel/stream` SSE) are explicitly **not modified** by this plan.
 
 The backend now uses one SQLAlchemy engine. `STARROCKS_URL` defaults to
-`mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db`. All SQL query
+`mysql+pymysql://root@localhost:9030/sr_local_db`. All SQL query
 endpoints execute through StarRocks, combining cold history from
 `mv_unified_funnel_summary` with the newest three minutes read directly from
 `risingwave.public.funnel_summary` through StarRocks JDBC federation. This
@@ -470,7 +470,7 @@ The two source catalogs are now both validated:
 **Pilot B: Reuse Databricks UC (no hot path)** — Skip the hot path altogether and use only the cold path (Databricks UC historical table) in the unified view. The disadvantage is no real-time hot data; the advantage is no new dependencies. This changes the MV from union-based to a single-table read.
 
 **COLD-PATH BASELINE (2026-09-05):** Pilot B was deployed first as a fallback and remains useful for comparison.
-  - ✅ `mv_unified_funnel_summary` materialized view created in StarRocks (`sr_local_db_sr_local_db` schema)
+  - ✅ `mv_unified_funnel_summary` materialized view created in StarRocks (`sr_local_db` schema)
   - ✅ Async refresh was initially configured: `EVERY (INTERVAL 5 MINUTE)`
   - ✅ Data verified: 54 rows, 11 distinct time windows from Databricks UC `funnel_summary_historical`
   - ✅ Sample query result confirms column mappings and numeric precision
@@ -528,7 +528,7 @@ Deployed shape (refresh interval widened to 5 minutes on 2026-09-06; see
 ```sql
 -- as restored 2026-09-13: REFRESH MANUAL (the cached path refreshes it
 -- explicitly; the original 2026-09 build had REFRESH ASYNC EVERY 5 MINUTE)
-CREATE MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary
+CREATE MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary
 REFRESH MANUAL
 PROPERTIES (
   "query_rewrite_consistency" = "loose"
@@ -548,7 +548,7 @@ FROM cold_deduplicated
 UNION ALL
 
 SELECT window_start, window_end, country, viewers, carters, purchasers
-FROM sr_local_db_sr_local_db.hot_funnel_summary
+FROM sr_local_db.hot_funnel_summary
 WHERE window_start >= DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 MINUTE);
 ```
 

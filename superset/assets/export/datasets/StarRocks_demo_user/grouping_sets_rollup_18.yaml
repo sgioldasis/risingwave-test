@@ -8,7 +8,7 @@ offset: 0
 cache_timeout: 0
 catalog: null
 schema: null
-sql: "SELECT COALESCE(u.country, '(all countries)') AS country, COALESCE(CAST(DATE(p.event_time) AS VARCHAR), '(all days)') AS day, COUNT(*) AS page_views, GROUPING(u.country) AS g_country, GROUPING(DATE(p.event_time)) AS g_day FROM sr_local_db_sr_local_db.page_views_direct p JOIN sr_local_db_sr_local_db.dim_users u ON p.user_id = u.user_id GROUP BY GROUPING SETS ((u.country), (DATE(p.event_time)), (u.country, DATE(p.event_time)), ())"
+sql: "SELECT COALESCE(u.country, '(all countries)') AS country, COALESCE(CAST(DATE(p.event_time) AS VARCHAR), '(all days)') AS day, COUNT(*) AS page_views, GROUPING(u.country) AS g_country, GROUPING(DATE(p.event_time)) AS g_day FROM sr_local_db.page_views_direct p JOIN sr_local_db.dim_users u ON p.user_id = u.user_id GROUP BY GROUPING SETS ((u.country), (DATE(p.event_time)), (u.country, DATE(p.event_time)), ())"
 params: null
 template_params: null
 filter_select_enabled: true

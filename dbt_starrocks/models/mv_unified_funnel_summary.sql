@@ -51,7 +51,7 @@
 -- by the starrocks_mv_warm Dagster asset in the standard setup job) to pick
 -- up whatever's accumulated in Databricks since the last run, plus on
 -- demand (re-run that same asset, or
--- `REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`)
+-- `REFRESH MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`)
 -- if demonstrating the live hot-to-cold aging transition with the producer
 -- running.
 

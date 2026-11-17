@@ -19,7 +19,7 @@ sources:
     # SHOW CATALOGS -- StarRocks's docs say "internal", this stack says
     # default_catalog; dbt renders sources as catalog.schema.table)
     database: default_catalog
-    schema: sr_local_db_sr_local_db
+    schema: sr_local_db
     tables:
       - name: page_views_direct
       - name: dim_users

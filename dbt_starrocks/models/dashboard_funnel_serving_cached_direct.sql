@@ -66,7 +66,7 @@ WITH unified_funnel AS (
     purchasers,
     CAST(carters AS DOUBLE) / NULLIF(viewers, 0) AS view_to_cart_rate,
     CAST(purchasers AS DOUBLE) / NULLIF(carters, 0) AS cart_to_buy_rate
-  FROM sr_local_db_sr_local_db.funnel_summary_direct
+  FROM sr_local_db.funnel_summary_direct
   WHERE window_start > COALESCE(
     (SELECT MAX(window_start) FROM {{ ref('mv_unified_funnel_summary') }}),
     CAST('0000-01-01 00:00:00' AS DATETIME)

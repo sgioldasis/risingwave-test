@@ -18,7 +18,7 @@
 -- windows are read directly from RisingWave through StarRocks JDBC; older
 -- windows come from the deduplicated cold MV (mv_unified_funnel_summary,
 -- REFRESH MANUAL -- run
--- `REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`
+-- `REFRESH MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`
 -- to pick up new archived data; no Dagster asset wraps this one, unlike
 -- the retired starrocks_mv_warm).
 --

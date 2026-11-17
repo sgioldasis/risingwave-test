@@ -90,7 +90,7 @@ import os
 # StarRocks serves ad hoc queries across the unified hot/cold funnel history.
 STARROCKS_URL = os.getenv(
     'STARROCKS_URL',
-    'mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db',
+    'mysql+pymysql://root@localhost:9030/sr_local_db',
 )
 starrocks_engine = create_engine(
     STARROCKS_URL,

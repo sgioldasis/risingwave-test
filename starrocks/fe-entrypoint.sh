@@ -167,4 +167,22 @@ if ! grep -q 'add-opens=java.base/java.nio' /opt/starrocks/fe/conf/fe.conf; then
   sed -i 's/^JAVA_OPTS="\([^"]*\)"/JAVA_OPTS="\1 --add-opens=java.base\/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"/' /opt/starrocks/fe/conf/fe.conf
 fi
 
+# --- group-level query queueing: NOT available on 4.1.7, and do NOT try to
+# "fix" it by disabling v2 (probed exhaustively 2026-11-17). The docs say
+# group-level queuing via concurrency_limit is a v1-only feature and v2
+# (default from v4.1) replaced it -- but on this build the v1 path is inert:
+# with enable_query_queue_v2=false + enable_group_level_query_queue=true +
+# enable_query_queue_select=true, SHOW USAGE RESOURCE GROUPS showed 3
+# concurrent queries running in a concurrency_limit=2 group, no queue, no
+# error. StarRocks PR #78425 (unmerged) confirms from maintainer words: v2
+# has no resource-group logic, and with enable_group_level_query_queue=true
+# the FE tells the BE to skip its check, so the limit is enforced NOWHERE.
+# With v2 ON (default) + enable_group_level_query_queue=false (default),
+# the BE-side check DOES enforce: over-limit queries fail fast with
+# "Exceed concurrency limit". That fail-fast admission control is what the
+# starrocks_feature_demo_setup asset arms on rg_superset_demo
+# (concurrency_limit=10). Keep v2 at its default: strip any
+# enable_query_queue_v2=false line an older entrypoint appended. ---
+sed -i '/^enable_query_queue_v2/d' /opt/starrocks/fe/conf/fe.conf
+
 exec /opt/starrocks/fe/bin/start_fe.sh --host_type FQDN

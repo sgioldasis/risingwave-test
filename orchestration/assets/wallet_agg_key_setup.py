@@ -28,7 +28,7 @@ import os
 from dagster import AssetExecutionContext, MetadataValue, asset
 from sqlalchemy import create_engine, text
 
-SCHEMA = "sr_local_db_sr_local_db"
+SCHEMA = "sr_local_db"
 TABLE = "wallet_type_totals_agg"
 LOAD_JOB = "wallet_type_totals_agg_load"
 

@@ -41,13 +41,30 @@ Four pieces, all idempotent so demo resets can re-run the asset freely:
    default_mv_wg's 1). That is the workload-isolation story: dashboard
    SELECTs get their own CPU share no matter what the MV-refresh tasks are
    doing (the jam documented in docs/SR_POC_QUERY_REWRITE_DEMO.md).
-   Scope note (confirmed live 2026-11-16): the query-queue half of workload
-   groups is NOT available on this shared-nothing build -- every queue
-   property (max_concurrency / max_queue_size / queue_timeout /
-   max_core_slots) is rejected as "Unknown property" even with
-   enable_group_level_query_queue=true; only cpu/mem weights and
-   concurrency_limit parse. So the demo is weight isolation + classifier
-   pinning, not queueing.
+   Scope note (re-verified 2026-11-17 on shared-data 4.1.7 -- the earlier
+   "shared-nothing" attribution was wrong; this cluster has been
+   shared-data on MinIO since 2026-09-08): per-resource-group query
+   queueing is not available here. The 3.x queue properties
+   (max_concurrency / max_queue_size / queue_timeout) no longer exist --
+   the current property is concurrency_limit. And since v4.1 the FE runs
+   query queue v2 by default (enable_query_queue_v2), under which
+   group-level queuing via concurrency_limit is NOT implemented (it was a
+   v1-only feature): three concurrent SELECT SLEEP(5) calls against a
+   concurrency_limit=2 group all ran, regardless of
+   enable_group_level_query_queue / enable_query_queue_select. What
+   concurrency_limit DOES do (verified live): with
+   enable_group_level_query_queue=false (the default), the third-plus
+   concurrent query FAILS with "Exceed concurrency limit" -- admission
+   control, not queueing. Disabling v2 (enable_query_queue_v2=false) does
+   NOT bring queueing back either -- the v1 path it would activate is inert
+   on this build (probed exhaustively 2026-11-17: SHOW USAGE RESOURCE GROUPS
+   showed 3 concurrent queries in a concurrency_limit=2 group with no queue
+   and no error; StarRocks PR #78425, unmerged, confirms v2 has no
+   resource-group logic and that enable_group_level_query_queue=true makes
+   the limit unenforced everywhere). So the demo ships weight isolation +
+   classifier pinning, with fail-fast admission control via
+   concurrency_limit=10 on rg_superset_demo (over the 11th concurrent
+   query, never tripped by a dashboard render).
    NOTE: db-level grants do NOT cover views on 4.1.7 (GRANT ... ON db.*
    passes tables only, and an explicit view grant fails with "cannot find
    table") -- all superset_demo datasets query base tables directly.
@@ -58,7 +75,7 @@ import os
 from dagster import AssetDep, AssetExecutionContext, asset
 from sqlalchemy import create_engine, text
 
-SCHEMA = "sr_local_db_sr_local_db"
+SCHEMA = "sr_local_db"
 
 # --- 1. computed columns ---------------------------------------------------
 
@@ -153,6 +170,25 @@ GROUP BY type
 
 # --- 4. workload-group isolation -------------------------------------------
 
+# information_schema has NO resource-group table on 4.1.7 (verified
+# 2026-11-17), so the dashboard can't chart SHOW RESOURCE
+# GROUPS ALL directly. This snapshot table is the bridge: the asset reads the
+# live SHOW output and upserts the ACTUAL weights on every run (every demo
+# reset), so the chart always reflects real cluster config, not a hardcoded
+# copy. The chart (dashboard 4) makes the isolation story visible: BI traffic
+# (rg_superset_demo) got its own CPU slice next to the 100-weight default and
+# the 1-weight MV-refresh group.
+RESOURCE_GROUP_SNAPSHOT_SQL = f"""
+CREATE TABLE IF NOT EXISTS {SCHEMA}.resource_group_snapshot (
+    group_name VARCHAR(64) NOT NULL,
+    cpu_weight INT,
+    mem_limit VARCHAR(16),
+    updated_at DATETIME
+) PRIMARY KEY (group_name)
+DISTRIBUTED BY HASH(group_name)
+"""
+
+
 # superset_demo owns every dataset on the Serving Features dashboard, so the
 # classifier TO (USER='superset_demo') pins those queries to a group the MV
 # refresh tasks can never starve. Empty password + SELECT-only grants keep
@@ -169,6 +205,20 @@ RESOURCE_GROUP_SQL = f"""
 CREATE RESOURCE GROUP IF NOT EXISTS rg_superset_demo
 TO (USER='superset_demo')
 WITH ('cpu_weight_percent'='80', 'mem_limit'='80%')
+"""
+
+# CREATE ... IF NOT EXISTS does not update an existing group, so re-assert
+# the properties (incl. concurrency_limit) on every run via ALTER. 10 is
+# far above what a dashboard render issues (~5 charts), so demos never trip
+# it -- it arms fail-fast overload protection: with query queue v2 (the
+# 4.1 default) and enable_group_level_query_queue=false (the default), the
+# BE enforces the cap by FAILING the over-limit query with
+# "Exceed concurrency limit" rather than queueing it (true per-group
+# queueing is not implemented on 4.1.7 -- see the docstring note above and
+# StarRocks PR #78425).
+RESOURCE_GROUP_ALTER_SQL = f"""
+ALTER RESOURCE GROUP rg_superset_demo
+WITH ('cpu_weight_percent'='80', 'mem_limit'='80%', 'concurrency_limit'='10')
 """
 
 # Seed the funnel_window_stats table on the FIRST run so the dashboard has
@@ -189,9 +239,11 @@ WHERE window_start NOT IN (SELECT window_start FROM {SCHEMA}.funnel_window_stats
         "Data side of the StarRocks Serving Features dashboard: "
         "funnel_window_stats (computed columns + 1-min refresh task), "
         "country_scores (per-country risk feed for the ASOF JOIN demo), "
-        "wallet_type_totals_unique (the UNIQUE KEY table-model demo), and "
-        "the superset_demo user + rg_superset_demo workload group that "
-        "isolate the dashboard's queries from MV-refresh traffic."
+        "wallet_type_totals_unique (the UNIQUE KEY table-model demo), the "
+        "superset_demo user + rg_superset_demo workload group that "
+        "isolate the dashboard's queries from MV-refresh traffic, and the "
+        "resource_group_snapshot table the dashboard charts (live weights "
+        "read from SHOW RESOURCE GROUPS ALL)."
     ),
 )
 def starrocks_feature_demo_setup(context: AssetExecutionContext) -> dict:
@@ -242,11 +294,32 @@ def starrocks_feature_demo_setup(context: AssetExecutionContext) -> dict:
         connection.execute(text(DEMO_USER_SQL))
         connection.execute(text(DEMO_USER_GRANT_SQL))
         connection.execute(text(RESOURCE_GROUP_SQL))
+        connection.execute(text(RESOURCE_GROUP_ALTER_SQL))
         groups = connection.execute(text(
             "SHOW RESOURCE GROUPS ALL"
         )).fetchall()
+        group_names = [g[0] for g in groups]
         context.log.info("Resource groups: %s",
-                         [(g[0], g[1]) for g in groups])
+                         [(g[0], g[2]) for g in groups])
+
+        # Snapshot the LIVE group weights into resource_group_snapshot so the
+        # dashboard can chart them (no information_schema table exists). PK
+        # upsert on group_name keeps this idempotent.
+        connection.execute(text(RESOURCE_GROUP_SNAPSHOT_SQL))
+        for group in groups:
+            name = group[0]
+            # SHOW RESOURCE GROUPS ALL columns: name, id, cpu_weight_percent,
+            # exclusive_cpu_percent, mem_limit, ...
+            cpu_weight = int(group[2]) if group[2] is not None else 0
+            mem_limit = str(group[4] or "").replace("%", "")
+            connection.execute(text(
+                f"INSERT INTO {SCHEMA}.resource_group_snapshot "
+                f"(group_name, cpu_weight, mem_limit, updated_at) "
+                f"VALUES ('{name}', {cpu_weight}, '{mem_limit}', now())"
+            ))
+        context.log.info(
+            "Resource group snapshot upserted: %s", group_names
+        )
 
         stats_rows = connection.execute(text(
             f"SELECT COUNT(*) FROM {SCHEMA}.funnel_window_stats"

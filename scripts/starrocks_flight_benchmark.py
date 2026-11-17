@@ -136,20 +136,51 @@ def report():
     print("=" * 72)
     print("StarRocks Arrow Flight SQL vs MySQL protocol benchmark")
     print("=" * 72)
+    print(
+        """
+What this compares: two ways a client can read from the same StarRocks.
+
+  MySQL protocol (pymysql) -- the row-oriented wire every BI tool speaks:
+  each row is text/binary-encoded and converted one at a time on the client.
+
+  Arrow Flight SQL (ADBC) -- StarRocks streams COLUMNAR Arrow record
+  batches; the client consumes them with zero conversion. The pairing for
+  DuckDB/pyarrow/pandas-style consumers.
+
+Both sides stream row-by-row/batch-by-batch (no client-side materialization),
+so the delta is purely protocol + conversion cost. Input to both:
+  SELECT * FROM {FEDERATED_TABLE}
+(the federated Delta source read in place from ADLS -- zero DBU),
+best/median of {r} runs each.
+""".format(FEDERATED_TABLE=FEDERATED_TABLE, r=SCAN_REPETITIONS)
+    )
 
     rows, scan = bench_scan()
-    print(f"\n1) Full pull of {FEDERATED_TABLE} ({rows:,} rows, streamed), {SCAN_REPETITIONS} runs:")
+    print(f"1) Full pull of {FEDERATED_TABLE} ({rows:,} rows, streamed), {SCAN_REPETITIONS} runs:")
     for proto, times in scan.items():
         best = min(times)
         med = statistics.median(times)
         print(f"   {proto:>6}: best {best:6.2f}s  median {med:6.2f}s  ({rows / best:,.0f} rows/s at best)")
 
+    print(
+        f"""
+Benchmark 2: the OPPOSITE workload -- chatty point lookups. {LOOKUPS} single-key
+SELECTs against the seeded PRIMARY KEY table {BENCH_TABLE} ({BENCH_ROWS:,} rows):
+  SELECT amount, status FROM {BENCH_TABLE} WHERE txn_id = 'txn-00000042'
+Here per-call overhead dominates (round-trip + driver cost), which is the
+regime dashboard queries actually live in.
+"""
+    )
     mysql_ms, flight_ms = bench_lookups()
-    print(f"\n2) Single-key point lookups on {BENCH_TABLE} ({LOOKUPS} lookups, {BENCH_ROWS:,} rows):")
+    print(f"2) Single-key point lookups on {BENCH_TABLE} ({LOOKUPS} lookups, {BENCH_ROWS:,} rows):")
     print(f"   mysql : avg {statistics.mean(mysql_ms) * 1000:6.2f} ms  p50 {statistics.median(mysql_ms) * 1000:6.2f} ms")
     print(f"   flight: avg {statistics.mean(flight_ms) * 1000:6.2f} ms  p50 {statistics.median(flight_ms) * 1000:6.2f} ms")
-    print("\n(Flight shines on large pulls — columnar batches vs per-row conversion;")
-    print(" point lookups are round-trip-bound and should be near-identical.)")
+    print(
+        "\nRead the result: Flight wins BIG on bulk scans (columnar batches vs\n"
+        "per-row conversion) and typically LOSES on chatty point access (ADBC\n"
+        "call overhead per lookup) -- so BI dashboards stay on the MySQL wire\n"
+        "and columnar/analytic clients (DuckDB, pyarrow) should use Flight."
+    )
 
 
 def report_json() -> dict:

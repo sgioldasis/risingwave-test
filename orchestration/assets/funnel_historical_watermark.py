@@ -53,7 +53,7 @@ from sqlalchemy import create_engine, text
 from .funnel_direct_kafka_setup import funnel_events_direct_kafka
 
 TARGET = "databricks_uc.sr_poc_external.funnel_summary_historical"
-SOURCE_VIEW = "sr_local_db_sr_local_db.funnel_summary_direct"
+SOURCE_VIEW = "sr_local_db.funnel_summary_direct"
 
 # One statement, idempotent by construction: the watermark skips everything
 # already covered, the NOT EXISTS additionally guards any window the

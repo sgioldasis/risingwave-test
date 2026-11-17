@@ -13,15 +13,15 @@
   The INSERT body is byte-identical to the one the Dagster asset
   (orchestration/assets/funnel_historical_watermark.py) runs: MAX-watermark
   + per-window NOT EXISTS, so the two writers are interchangeable and even
-  coexist safely. The task name is db-qualified (sr_local_db_sr_local_db)
+  coexist safely. The task name is db-qualified (sr_local_db)
   because SUBMIT TASK lands in the session database and dbt's session may
   not carry a USE context.
 #}
 
 {% macro create_watermark_task() %}
-    {% set task_name = 'sr_local_db_sr_local_db.funnel_historical_watermark' %}
+    {% set task_name = 'sr_local_db.funnel_historical_watermark' %}
     {% set target = 'databricks_uc.sr_poc_external.funnel_summary_historical' %}
-    {% set source_view = 'sr_local_db_sr_local_db.funnel_summary_direct' %}
+    {% set source_view = 'sr_local_db.funnel_summary_direct' %}
 
     {% set drop_sql %}
         DROP TASK IF EXISTS {{ task_name }}

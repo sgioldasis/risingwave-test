@@ -19,7 +19,7 @@ log; everything below was verified live on StarRocks 4.1.7 on
 `funnel_summary_direct` (a VIEW), in dashboard SQL, and in demo queries —
 three places to drift.
 
-**The fix:** `sr_local_db_sr_local_db.funnel_window_stats` is a PRIMARY
+**The fix:** `sr_local_db.funnel_window_stats` is a PRIMARY
 KEY table whose rates are **generated (computed) columns**, defined once
 at CREATE TABLE:
 
@@ -84,7 +84,7 @@ country.
 ## 3. UNIQUE KEY table model — the fourth model
 
 The Wallet dashboard shows DUPLICATE, AGGREGATE and PRIMARY KEY tables;
-`sr_local_db_sr_local_db.wallet_type_totals_unique` completes the set with
+`sr_local_db.wallet_type_totals_unique` completes the set with
 **UNIQUE KEY** — same per-key upsert semantics as PRIMARY KEY, but
 whole-row REPLACE: an INSERT re-writing a key replaces the entire row (no
 partial-column update).
@@ -165,14 +165,46 @@ dashboard, so those queries physically run in the group no matter what
 the refresh tasks are doing. The classifier is visible on the group row
 of `SHOW RESOURCE GROUPS ALL`.
 
-**Honest scope note (verified live 2026-11-16):** the query-queue half of
-workload groups is NOT available on this shared-nothing build —
-`max_concurrency`, `max_queue_size`, `queue_timeout` and `max_core_slots`
-are all rejected as "Unknown property" on ALTER/CREATE even with
-`SET GLOBAL enable_group_level_query_queue=true` (the variable exists and
-flips, but no property accepts it; `concurrency_limit` parses but did not
-queue three concurrent `SELECT SLEEP(5)` calls). Weight isolation +
-classifier pinning is what ships; queueing needs shared-data/CN.
+**Honest scope note (re-verified 2026-11-17 on shared-data 4.1.7 — the
+earlier "shared-nothing" attribution was wrong; this cluster has been
+shared-data on MinIO since 2026-09-08, see
+`docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md`):** query queueing per
+resource group is not available on this build, and the reasons are
+different from what was first written:
+
+- The 3.x-era properties (`max_concurrency`, `max_queue_size`,
+  `queue_timeout`, `max_core_slots`) are rejected as "Unknown property" —
+  they no longer exist; the current property is `concurrency_limit`
+  (accepted and visible in `SHOW RESOURCE GROUPS ALL`).
+- `concurrency_limit` does NOT queue: since v4.1 the FE runs **query
+  queue v2** by default (`enable_query_queue_v2`, default true), and
+  group-level queuing via `concurrency_limit` is a **v1-only** feature
+  (per the StarRocks query-queues doc). Verified live: three concurrent
+  `SELECT SLEEP(5)` calls against a group with `concurrency_limit=2`
+  all ran in ~5s regardless of
+  `SET GLOBAL enable_group_level_query_queue` or
+  `enable_query_queue_select`.
+- What `concurrency_limit` DOES do here (verified live 2026-11-17): with
+  `enable_group_level_query_queue=false` (the default), the
+  third-plus concurrent query **fails** with
+  `ERROR: Exceed concurrency limit: 2` — admission control, not
+  queueing. And disabling v2 does NOT bring queueing back: with
+  `enable_query_queue_v2=false` + `enable_group_level_query_queue=true`
+  + `enable_query_queue_select=true`, `SHOW USAGE RESOURCE GROUPS`
+  showed 3 concurrent queries running in a `concurrency_limit=2` group —
+  no queue, no error, the limit unenforced everywhere. StarRocks PR
+  #78425 (unmerged at the time of writing) confirms this from the
+  maintainer side: v2 has no resource-group logic, and turning
+  `enable_group_level_query_queue` on makes the BE skip its check while
+  the FE never queues — the group runs unbounded. v2-off is strictly
+  worse; it was reverted the same day.
+
+What ships in this demo: weight isolation + classifier pinning, with
+fail-fast admission control armed on `rg_superset_demo`
+(`concurrency_limit=10`, re-asserted by the demo setup asset on every
+run — far above a dashboard render's ~5 concurrent charts, so demos
+never trip it; an 11th concurrent query fails fast instead of piling
+up).
 
 **Privilege gotcha:** db-level grants do not cover views on 4.1.7 —
 `GRANT SELECT ON db.*` passes base tables only, and an explicit
@@ -217,9 +249,16 @@ to catch the full cold cost.
   (Flink/CDC connector + its runtime) duplicating a demo that already works.
   The delete-via-load demo above covers the tombstone half of the CDC story
   without new infra.
-- **Tiered storage** — hot-local/cold-object SST placement requires moving
-  the live cluster to shared-data mode; that's a reconfiguration risk no
-  demo note justifies today.
+- ~~Tiered storage~~ — **not out of scope after all**: the cluster has run
+  in shared-data mode on MinIO since 2026-09-08 (see
+  `docs/SR_POC_STARROCKS_SHARED_DATA_MINIO.md`), which IS the tiered-storage
+  architecture — every table's data files live in the MinIO `starrocks`
+  bucket (cold tier) and the CN's local block cache serves hot reads (hot
+  tier). There's no per-table hot/cold toggle in shared-data mode; the
+  tiering is the cache. Demoed by `bin/5_starrocks_tiered_storage_demo.sh`
+  (storage volume + physical MinIO files + `be_datacache_metrics` + warm
+  EXPLAIN ANALYZE). The original out-of-scope note was written from a wrong
+  "shared-nothing" premise.
 
 ## Bloom filter index — probed, negative result (2026-11-16)
 

@@ -112,7 +112,7 @@ WITH (
     starrocks.httpport = '8030',
     starrocks.user = 'root',
     starrocks.password = '',
-    starrocks.database = 'sr_local_db_sr_local_db',
+    starrocks.database = 'sr_local_db',
     starrocks.table = 'wallet_transactions'
 )
 ```
@@ -168,7 +168,7 @@ The cross-project dependency (RisingWave sink → StarRocks table must exist
 first) is declared via `meta.dagster.deps` on the sink model:
 `{'asset_key': ['sr_local_db', 'wallet_transactions']}`. That asset-key
 schema segment (`sr_local_db`, not the fully-resolved
-`sr_local_db_sr_local_db`) was confirmed empirically by inspecting
+`sr_local_db`) was confirmed empirically by inspecting
 `dbt_starrocks/target/manifest.json`'s raw `config.schema` field and
 cross-checking against `dagster_dbt.asset_utils.default_asset_key_fn`'s
 source — Dagster's default asset-key function uses the *raw* configured
@@ -538,7 +538,7 @@ untouched — then built the real thing.
 **Confirmed after building:**
 ```sql
 SELECT transaction_id, account_id, type, amount, status, event_time
-FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka
+FROM sr_local_db.wallet_transactions_direct_kafka
 WHERE transaction_id = '<a flagged id>';
 ```
 showed `status = 'flagged'` with `account_id`/`type`/`amount`/`event_time`
@@ -580,11 +580,11 @@ Lookup chart to show the change.
 ```sql
 -- pick a transaction_id that's already `settled` and past its ~5s
 -- reversal window first (see caveat below)
-UPDATE sr_local_db_sr_local_db.wallet_transactions
+UPDATE sr_local_db.wallet_transactions
 SET status = 'under_review'
 WHERE transaction_id = '<a settled id>';
 
-DELETE FROM sr_local_db_sr_local_db.wallet_transactions
+DELETE FROM sr_local_db.wallet_transactions
 WHERE transaction_id = '<a settled id>';
 ```
 
@@ -640,9 +640,9 @@ needed its own base table.
   original.
 - `mv_wallet_type_rollup` — a synchronous rollup:
   ```sql
-  CREATE MATERIALIZED VIEW sr_local_db_sr_local_db.mv_wallet_type_rollup AS
+  CREATE MATERIALIZED VIEW sr_local_db.mv_wallet_type_rollup AS
   SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
-  FROM sr_local_db_sr_local_db.wallet_transactions_log
+  FROM sr_local_db.wallet_transactions_log
   GROUP BY type;
   ```
   Queried transparently: you query `wallet_transactions_log GROUP BY type`
@@ -784,17 +784,17 @@ already-built table, no script/asset/job involved by design.
 #    direct-Kafka), same check
 mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT count(*), count(DISTINCT transaction_id)
-  FROM sr_local_db_sr_local_db.wallet_transactions"
+  FROM sr_local_db.wallet_transactions"
 mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT count(*), count(DISTINCT transaction_id)
-  FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka"
+  FROM sr_local_db.wallet_transactions_direct_kafka"
 # count(*) should equal count(DISTINCT transaction_id) on both
 
 # 4. verify partial update worked -- some rows should be 'flagged' with
 #    their original amount/type/account_id/event_time untouched
 mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT transaction_id, account_id, type, amount, status, event_time
-  FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka
+  FROM sr_local_db.wallet_transactions_direct_kafka
   WHERE status = 'flagged' LIMIT 5"
 
 # 5. verify the synchronous rollup MV is live and current -- query the
@@ -802,9 +802,9 @@ mysql -h127.0.0.1 -P9030 -uroot -e "
 #    to confirm the optimizer actually used the rollup
 mysql -h127.0.0.1 -P9030 -uroot -e "
   SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
-  FROM sr_local_db_sr_local_db.wallet_transactions_log GROUP BY type"
+  FROM sr_local_db.wallet_transactions_log GROUP BY type"
 mysql -h127.0.0.1 -P9030 -uroot -e "
   EXPLAIN SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count
-  FROM sr_local_db_sr_local_db.wallet_transactions_log GROUP BY type" | grep -i rollup
+  FROM sr_local_db.wallet_transactions_log GROUP BY type" | grep -i rollup
 # expect: rollup: mv_wallet_type_rollup
 ```

@@ -69,7 +69,7 @@ semantics to fight at all.
 - **`funnel_daily_totals_agg`** — `AGGREGATE KEY (day, country)` table,
   `SUM` columns for `viewers`/`carters`/`purchasers`:
   ```sql
-  CREATE TABLE sr_local_db_sr_local_db.funnel_daily_totals_agg (
+  CREATE TABLE sr_local_db.funnel_daily_totals_agg (
       day DATE,
       country VARCHAR(2),
       viewers BIGINT SUM,
@@ -87,7 +87,7 @@ semantics to fight at all.
   owns, `0` literal for the other two) rather than relying on a default
   value for omitted columns:
   ```sql
-  CREATE ROUTINE LOAD sr_local_db_sr_local_db.funnel_viewers_agg_load ON funnel_daily_totals_agg
+  CREATE ROUTINE LOAD sr_local_db.funnel_viewers_agg_load ON funnel_daily_totals_agg
   COLUMNS(event_time_raw, day = str_to_date(left(event_time_raw, 10), '%Y-%m-%d'),
           country = 'GR', viewers = 1, carters = 0, purchasers = 0)
   PROPERTIES ("format" = "json", "jsonpaths" = "[\"$.event_time\"]", ...)

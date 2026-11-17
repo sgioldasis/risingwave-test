@@ -32,7 +32,7 @@ SR_HOST = os.getenv('STARROCKS_HOST', 'localhost')
 SR_PORT = int(os.getenv('STARROCKS_PORT', '9030'))
 SR_USER = os.getenv('STARROCKS_USER', 'root')
 SR_PASSWORD = os.getenv('STARROCKS_PASSWORD', '')
-SR_DB = os.getenv('STARROCKS_DB', 'sr_local_db_sr_local_db')
+SR_DB = os.getenv('STARROCKS_DB', 'sr_local_db')
 
 # Recency-first prediction (2026-09-09 behavior, ported 2026-11-14 to the
 # StarRocks path): weighted average over the last N COMPLETED 20s windows,

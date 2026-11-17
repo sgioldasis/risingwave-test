@@ -744,6 +744,12 @@ _MODERN_DASHBOARD_SELECTION = (
     | AssetSelection.assets(starrocks_unified_dbt_assets)
     | AssetSelection.assets(funnel_daily_totals_agg)
     | AssetSelection.assets(funnel_events_direct_kafka)
+    # Serving-features demo data side (computed-columns table, ASOF feed,
+    # UNIQUE KEY table, superset_demo user + workload group) -- discovered
+    # the hard way 2026-11-17: a fresh StarRocks volume wipes all of these,
+    # and a demo reset that didn't include this asset left the Serving
+    # Features dashboard with "Access denied" on every chart
+    | AssetSelection.assets(starrocks_feature_demo_setup)
 )
 
 modern_dashboard_setup_job = define_asset_job(
@@ -772,7 +778,11 @@ _WALLET_PIPELINE_SELECTION = (
     AssetSelection.assets(
         AssetKey(["public", "src_wallet_transactions"]),
         AssetKey(["public", "sink_wallet_transactions_to_starrocks"]),
-        AssetKey(["sr_local_db", "wallet_transactions"]),
+        # dbt-starrocks model keys have no schema prefix since the +schema
+        # config was removed (dagster-dbt keys models as [config.schema, name],
+        # and config.schema is now unset) -- the old doubled name
+        # sr_local_db_sr_local_db used to appear here as the prefix.
+        AssetKey(["wallet_transactions"]),
     )
     | AssetSelection.assets(wallet_transactions_direct_kafka)
     | AssetSelection.assets(wallet_status_update_load_job)
@@ -799,7 +809,7 @@ wallet_pipeline_setup_job = define_asset_job(
 # Single entry point for "prepare everything needed for the StarRocks demo
 # session" -- the union of modern_dashboard_setup_job and
 # wallet_pipeline_setup_job's selections (Dagster dedupes the one asset
-# they share, sr_local_db.wallet_transactions, transitively via
+# they share, the dbt-starrocks wallet_transactions model, transitively via
 # starrocks_unified_dbt_assets -- see the note on that overlap in
 # docs/SR_POC_SUPERSET_DEMOS_RUNBOOK.md). One click covers the Funnel
 # Dashboard, the Query Rewrite Demo (MV warm-up included), and the Wallet

@@ -8,10 +8,14 @@
   table (dbt_starrocks/models/wallet_transactions.sql) to already exist --
   RisingWave's starrocks connector targets an existing table by name, it
   does not create one. Declared as an explicit cross-project Dagster dep
-  below (asset_key ['sr_local_db', 'wallet_transactions'] -- confirmed via
-  the dbt_starrocks manifest that this is the raw config.schema value
-  Dagster's default asset-key function uses, NOT the fully-resolved
-  database schema 'sr_local_db_sr_local_db').
+  below (asset_key ['wallet_transactions'] -- dagster-dbt keys models as
+  [config.schema, name]; the dbt_starrocks project no longer sets +schema,
+  so the key has no schema prefix. This dep is what orders the
+  starrocks_unified_dbt_assets step BEFORE this sink in
+  starrocks_demo_setup_job -- it previously pointed at a phantom
+  ['sr_local_db', 'wallet_transactions'] key, so ordering was never
+  enforced and a fresh empty database let the sink get created first,
+  failing with "Can't find schema for StarRocks table" (2026-11-17).
 
   Property names (starrocks.mysqlport / starrocks.httpport, one word, no
   underscore) taken from RisingWave's own worked example in its sink-to-
@@ -45,7 +49,7 @@
     meta={
         'dagster': {
             'deps': [
-                {'asset_key': ['sr_local_db', 'wallet_transactions']}
+                {'asset_key': ['wallet_transactions']}
             ]
         }
     }
@@ -69,7 +73,7 @@ WITH (
     starrocks.httpport = '8030',
     starrocks.user = 'root',
     starrocks.password = '',
-    starrocks.database = 'sr_local_db_sr_local_db',
+    starrocks.database = 'sr_local_db',
     starrocks.table = 'wallet_transactions',
     commit_checkpoint_interval = 1
 )

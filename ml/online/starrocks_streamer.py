@@ -29,7 +29,7 @@ class StarRocksDataStreamer:
     PORT = int(os.getenv('STARROCKS_PORT', '9030'))
     USER = os.getenv('STARROCKS_USER', 'root')
     PASSWORD = os.getenv('STARROCKS_PASSWORD', '')
-    DB = os.getenv('STARROCKS_DB', 'sr_local_db_sr_local_db')
+    DB = os.getenv('STARROCKS_DB', 'sr_local_db')
     # The RW-free hot+cold view: frozen mv_unified_funnel_summary + the
     # Routine Load direct branch (deduped by construction via its cutoff).
     SOURCE_TABLE = os.getenv('STARROCKS_FUNNEL_SOURCE', 'dashboard_funnel_serving_cached_direct')

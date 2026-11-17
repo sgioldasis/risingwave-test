@@ -6,7 +6,7 @@ default_endpoint: null
 offset: 0
 cache_timeout: null
 catalog: null
-schema: sr_local_db_sr_local_db
+schema: sr_local_db
 sql: SELECT DATE(window_start) AS day, country, SUM(viewers) AS viewers FROM databricks_uc.sr_poc_external.funnel_summary_historical
   GROUP BY day, country
 params: null

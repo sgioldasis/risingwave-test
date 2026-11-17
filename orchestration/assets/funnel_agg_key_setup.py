@@ -46,7 +46,7 @@ import os
 from dagster import AssetExecutionContext, MetadataValue, asset
 from sqlalchemy import create_engine, text
 
-SCHEMA = "sr_local_db_sr_local_db"
+SCHEMA = "sr_local_db"
 TABLE = "funnel_daily_totals_agg"
 
 CREATE_TABLE_SQL = f"""
@@ -129,9 +129,19 @@ def _ensure_routine_load(connection, context, job_name: str, create_sql: str) ->
         {"name": job_name, "schema": SCHEMA},
     ).fetchone()
 
-    if existing is None or existing[0] in INACTIVE_ROUTINE_LOAD_STATES:
+    if existing is None:
         connection.execute(text(create_sql))
         context.log.info("Created/recreated Routine Load job %s.%s", SCHEMA, job_name)
+    elif existing[0] in INACTIVE_ROUTINE_LOAD_STATES:
+        connection.execute(text(create_sql))
+        context.log.info("Created/recreated Routine Load job %s.%s", SCHEMA, job_name)
+    elif existing[0] == "PAUSED":
+        # StarRocks pauses a Routine Load on ANY single consumer error (e.g.
+        # 'BE is not alive' during a CN restart) and leaves it paused forever
+        # -- verified 2026-11-17. RESUME keeps the committed offsets: the
+        # backlog replays, nothing is lost or re-created.
+        connection.execute(text(f"RESUME ROUTINE LOAD FOR {SCHEMA}.{job_name}"))
+        context.log.info("Routine Load job %s.%s was PAUSED -- resumed", SCHEMA, job_name)
     else:
         context.log.info(
             "Routine Load job %s.%s already %s, leaving it running",

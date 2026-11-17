@@ -1,5 +1,5 @@
 database_name: StarRocks (demo user rg)
-sqlalchemy_uri: mysql+pymysql://superset_demo:@starrocks:9030/sr_local_db_sr_local_db
+sqlalchemy_uri: mysql+pymysql://superset_demo:@starrocks:9030/sr_local_db
 cache_timeout: null
 expose_in_sqllab: true
 allow_run_async: false

@@ -364,7 +364,7 @@ position:
     meta:
       width: 12
       height: 28
-      code: "**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving_cached_direct`\
+      code: "**Data source:** `sr_local_db.dashboard_funnel_serving_cached_direct`\
         \ -- a `UNION ALL` of the StarRocks materialized view `mv_unified_funnel_summary`\
         \ (REFRESH MANUAL, frozen at last rebuild) and the Direct-from-Kafka path's\
         \ rows (`funnel_summary_direct`, computed over the Routine-Load tables) newer\
@@ -381,7 +381,7 @@ position:
         \ blank, and no external catalog touched at query time -- unlike the live\
         \ zero-copy charts (left above), this view survives the RW containers being\
         \ stopped.\n\n\u274C **Cons:** The MV branch is only as fresh as its last\
-        \ rebuild (`REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary\
+        \ rebuild (`REFRESH MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary\
         \ WITH SYNC MODE;` picks up new Databricks history); until then new windows\
         \ come solely from the direct branch. There's no way to tell from the chart\
         \ alone which branch is currently serving a given window.\n"
@@ -406,7 +406,7 @@ position:
     meta:
       width: 12
       height: 28
-      code: "**Data source:** `sr_local_db_sr_local_db.dashboard_funnel_serving` \u2014\
+      code: "**Data source:** `sr_local_db.dashboard_funnel_serving` \u2014\
         \ a zero-copy StarRocks view that `UNION ALL`s RisingWave (hot path, live\
         \ JDBC) with the Databricks Iceberg REST Catalog (cold path, historical).\n\
         \n\u26A0\uFE0F **For the \"Last Hour\" line chart above specifically, the\

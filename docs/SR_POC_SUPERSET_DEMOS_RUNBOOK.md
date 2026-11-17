@@ -255,7 +255,7 @@ Superset itself is broken:
 ```bash
 # Wallet: are there any rows at all yet?
 docker exec starrocks mysql -h127.0.0.1 -P9030 -uroot -e \
-  "SELECT COUNT(*) FROM sr_local_db_sr_local_db.wallet_transactions;"
+  "SELECT COUNT(*) FROM sr_local_db.wallet_transactions;"
 
 # Query Rewrite Demo: is the MV rewrite-eligible?
 # (QUERY_REWRITE_STATUS_REASON no longer exists on the fe-ubuntu images --

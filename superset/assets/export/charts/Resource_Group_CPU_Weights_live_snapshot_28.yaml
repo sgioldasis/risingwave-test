@@ -1,0 +1,39 @@
+slice_name: "Resource Group CPU Weights — live snapshot"
+description: "Feature: workload (resource) groups — the cluster's CPU-weight allocation as a live snapshot, upserted from SHOW RESOURCE GROUPS ALL by the demo setup asset. default_mv_wg (weight 1) keeps MV refreshes pinned to a sliver, default_wg (100) is everything else, rg_superset_demo (80) is this dashboard's dedicated BI slice. Group-level query queueing is not implemented on 4.1.7 under query-queue v2 (concurrency_limit acts as fail-fast admission control instead) — see the section markdown. RisingWave: NOT USED."
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 20__table
+  viz_type: echarts_timeseries_bar
+  groupby: []
+  metrics:
+  - expressionType: SIMPLE
+    column:
+      column_name: cpu_weight
+    aggregate: MAX
+    label: cpu_weight
+    d3format: ',d'
+  adhoc_filters: []
+  row_limit: 100
+  timeseries_limit_metric:
+    label: group_name
+    sqlExpression: group_name
+    expressionType: SQL
+  order_desc: false
+  show_legend: false
+  show_value: true
+  annotation_layers: []
+  contributionMode: null
+  zoomable: false
+  markerEnabled: false
+  truncateYAxis: false
+  comparison_type: values
+  x_axis: group_name
+  stack: null
+  xAxisLabelRotation: 0
+query_context: null
+cache_timeout: 0
+uuid: 9fdd7419-a357-4847-a6f8-18501b63d064
+version: 1.0.0
+dataset_uuid: 74da13c2-a111-46dc-add9-254cae7a3152

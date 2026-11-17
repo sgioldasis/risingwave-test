@@ -27,6 +27,7 @@ position:
     - ROW-GS-MD
     - ROW-GS
     - ROW-WG-MD
+    - ROW-WG-CHART
     - ROW-EXTRA-MD
     - ROW-BOTTOM-SPACER
     parents:
@@ -260,12 +261,13 @@ position:
         \ [GROUPING SETS](https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/SELECT/)\
         \ computes multiple aggregation levels in a single scan -- here (country),\
         \ (day), (day × country) and the grand total, instead of one query per level.\
-        \ The `GROUPING()` flags tell you which level each row is (1 = that dimension\
-        \ was aggregated away); the `COALESCE` labels mark subtotal rows in the output.\n\
-        - **Rows are ordered subtotal-first:** grand total, then day totals, then the\
-        \ country × day detail.\n- **Verified:** sqlglot (Superset's SQL transpiler,\
-        \ MySQL dialect) preserves GROUPING SETS and GROUPING() through the dataset\
-        \ wrapper -- checked before building, per the ASOF-join lesson.\n"
+        \ **How to read the chart:** the top block is detail (one country on one day);\
+        \ the bottom rows are the rollups -- `(all countries) / (all days)` is the\
+        \ grand total. `GROUPING()` flags (1 = dimension collapsed) live in the dataset\
+        \ and drive the row order; they're hidden from the chart columns.\n- **Verified:**\
+        \ sqlglot (Superset's SQL transpiler, MySQL dialect) preserves GROUPING SETS\
+        \ and GROUPING() through the dataset wrapper -- checked before building, per\
+        \ the ASOF-join lesson.\n"
   ROW-GS:
     type: ROW
     id: ROW-GS
@@ -310,7 +312,7 @@ position:
     - ROW-WG-MD
     meta:
       width: 12
-      height: 27
+      height: 33
       code: "### ✨ Workload groups -- dashboard queries isolated from refresh\
         \ traffic\n- **At a glance:** [resource groups](https://docs.starrocks.io/docs/sql-reference/sql-statements/cluster-management/resource_group/CREATE_RESOURCE_GROUP/)\
         \ partition the cluster's CPU/memory between workloads. This stack already\
@@ -321,12 +323,46 @@ position:
         \ dashboard issues runs inside the group, so a dashboard render can't be\
         \ starved by MV-refresh rebuilds (the 20-46s refresh jams documented in\
         \ `docs/SR_POC_QUERY_REWRITE_DEMO.md`). Check `SHOW RESOURCE GROUPS ALL`\
-        \ -- the classifier shows up on the group row.\n- **Honest scope note (verified\
-        \ live 2026-11-16):** the query-queue half of workload groups (max_concurrency\
-        \ / max_queue_size / queue_timeout) is NOT available on this shared-nothing\
-        \ 4.1.7 build -- every queue property is rejected as 'Unknown property'\
-        \ even with `enable_group_level_query_queue=true`. Weight isolation + classifier\
-        \ pinning is what ships here; queueing needs shared-data/CN.\n"
+        \ -- the classifier shows up on the group row.\n- **Honest scope note (re-verified\
+        \ live 2026-11-17 on shared-data 4.1.7):** group-level query queueing is\
+        \ not available here -- since v4.1 the FE runs query queue v2 by default,\
+        \ and `concurrency_limit`-based group queues are a v1-only feature. What\
+        \ the property DOES do on this build: with `enable_group_level_query_queue=false`\
+        \ (default), the third-plus concurrent query FAILS with 'Exceed concurrency\
+        \ limit' -- admission control, not queueing. Disabling v2 does NOT bring\
+        \ queueing back either: probed 2026-11-17, the v1 group-queue path is inert\
+        \ on this build and the limit goes unenforced everywhere (see StarRocks PR\
+        \ #78425). rg_superset_demo ships with concurrency_limit=10 as fail-fast\
+        \ overload protection -- far above a dashboard render, so demos never trip\
+        \ it. Weight isolation + classifier pinning is what ships here.\n- **The chart\
+        \ below** charts the live weights from `resource_group_snapshot` (upserted\
+        \ from SHOW RESOURCE GROUPS ALL by the demo setup asset on every run -- no\
+        \ information_schema table exists on this build, so that table is the chartable\
+        \ bridge).\n"
+  ROW-WG-CHART:
+    type: ROW
+    id: ROW-WG-CHART
+    children:
+    - CHART-WG
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-WG:
+    type: CHART
+    id: CHART-WG
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-WG-CHART
+    meta:
+      chartId: 28
+      width: 12
+      height: 24
+      sliceName: "Resource Group CPU Weights — live snapshot"
+      uuid: 9fdd7419-a357-4847-a6f8-18501b63d064
   ROW-EXTRA-MD:
     type: ROW
     id: ROW-EXTRA-MD

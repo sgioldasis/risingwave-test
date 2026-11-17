@@ -80,7 +80,7 @@ StarRocks, Lakekeeper, MinIO, Dagster, Trino, Grafana, Postgres.
 
 **Expected outcome:** `docker ps` shows all of them `Up`/`healthy`. Nothing
 inside them exists yet — no RisingWave sources, no StarRocks catalogs, no
-`sr_local_db_sr_local_db` schema. That's expected; the next step creates it
+`sr_local_db` schema. That's expected; the next step creates it
 all.
 
 ```bash

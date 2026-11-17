@@ -26,7 +26,7 @@ set -e
 START_SECONDS=$SECONDS
 
 echo "=== Starting the containers the Superset dashboards need ==="
-SERVICES="redpanda redpanda-init minio-0 lakekeeper lakekeeper-bootstrap lakekeeper-migrate lakekeeper-db meta-node-0 compute-node-0 frontend-node-0 compactor-0 compactor-1 postgres-0 dagster-webserver dagster-daemon starrocks starrocks-cn starrocks-init superset superset-init"
+SERVICES="redpanda redpanda-init minio-0 lakekeeper lakekeeper-bootstrap lakekeeper-migrate lakekeeper-db meta-node-0 compute-node-0 frontend-node-0 compactor-0 compactor-1 postgres-0 dagster-webserver dagster-daemon starrocks starrocks-cn starrocks-init hms superset superset-init"
 if ! docker compose up -d $SERVICES; then
     echo "❌ Container start failed — are the images built? Run ./bin/1_up.sh once" \
          "on a working network (VPN off) to build/pull them, then retry." >&2
@@ -171,6 +171,32 @@ while True:
         print("   poll error:", e, flush=True)
     time.sleep(15)
 PYEOF
+fi
+
+# === Delta federation (delta_federation catalog over UC-minted storage) ===
+# Part of the demo: the Flight benchmark and the Delta federation demo read
+# this catalog, and UC mints a new storage path on every rebuild -- so the
+# catalog must be re-pointed after every stack reset (CLAUDE.md). Verify
+# first so re-clicks stay fast; a Databricks auth failure only WARNS (the
+# three Superset dashboards don't query this catalog).
+if docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -N -e \
+    "SELECT COUNT(*) FROM delta_federation.delta_fed.reverse_etl_company_source" >/dev/null 2>&1; then
+    echo "✅ Delta federation catalog already live (delta_federation.delta_fed)."
+else
+    echo "=== Delta federation catalog missing/stale — setting it up ==="
+    docker compose up -d hms >/dev/null 2>&1 || true
+    for i in $(seq 1 30); do
+        (echo > /dev/tcp/127.0.0.1/9083) 2>/dev/null && break
+        sleep 2
+    done
+    if ./bin/3_setup_delta_federation.sh; then
+        echo "✅ delta_federation catalog created and verified."
+    else
+        echo "⚠️  Delta federation setup FAILED — the dashboards still work, but the" >&2
+        echo "    Flight benchmark / Delta demo need it. Check Databricks auth" >&2
+        echo "    (databricks auth login --profile personal), then re-run" >&2
+        echo "    bin/3_setup_delta_federation.sh." >&2
+    fi
 fi
 
 echo "=== Starting producers (background, logs in /tmp) ==="

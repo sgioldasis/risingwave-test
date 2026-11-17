@@ -55,7 +55,7 @@ The actual value is:
 
 ## The table
 
-`sr_local_db_sr_local_db.funnel_prediction_scoreboard` — a StarRocks
+`sr_local_db.funnel_prediction_scoreboard` — a StarRocks
 **Primary Key** table, one row per metric (not per country — the model
 predicts single-series aggregate metrics, not per-country breakdowns):
 
@@ -87,7 +87,7 @@ update" behavior that made the PK model worth demoing in the first place
 ## The write path
 
 `ml/serving/starrocks_writer.py` (new): a small SQLAlchemy engine
-(`STARROCKS_URL`, defaults to `mysql+pymysql://root@localhost:9030/sr_local_db_sr_local_db`
+(`STARROCKS_URL`, defaults to `mysql+pymysql://root@localhost:9030/sr_local_db`
 for host-side execution — same pattern as the `RISINGWAVE_HOST` fix, since
 `ml/serving` runs on the host, not in Docker) that upserts one row per
 metric present in the `/predict` response.

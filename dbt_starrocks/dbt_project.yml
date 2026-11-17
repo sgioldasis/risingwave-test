@@ -21,6 +21,9 @@ on-run-start:
   - 'CREATE EXTERNAL CATALOG IF NOT EXISTS risingwave COMMENT ''RisingWave PostgreSQL JDBC federation pilot'' PROPERTIES ( ''type'' = ''jdbc'', ''user'' = ''root'', ''password'' = ''root'', ''jdbc_uri'' = ''jdbc:postgresql://frontend-node-0:4566/dev'', ''driver_url'' = ''https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.7/postgresql-42.7.7.jar'', ''driver_class'' = ''org.postgresql.Driver'', ''schema_resolver'' = ''postgresql'' )'
   - '{{ create_watermark_task() }}'
 
-models:
-  starrocks_unified_funnel:
-    +schema: 'sr_local_db'
+# No +schema here: dbt's default generate_schema_name concatenates
+# target.schema + '_' + custom schema, so the previous +schema: 'sr_local_db'
+# combined with the profile schema 'sr_local_db' produced the doubled
+# 'sr_local_db'_'sr_local_db' database name. The profile default alone is
+# the physical database.
+

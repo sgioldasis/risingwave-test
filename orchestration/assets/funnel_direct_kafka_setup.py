@@ -34,7 +34,7 @@ from sqlalchemy import create_engine, text
 # same engine, same inactive-state detection, same recreate semantics.
 from .wallet_direct_kafka_setup import _ensure_routine_load
 
-SCHEMA = "sr_local_db_sr_local_db"
+SCHEMA = "sr_local_db"
 
 # (topic, table, payload column DDL, payload field names) -- event_time is
 # parsed from the producer's ISO 8601 UTC string at load time, same

@@ -304,8 +304,8 @@ but stays fully readable (`SELECT` still works normally). Applied live,
 emergency measure, deliberately manual so it doesn't silently become
 permanent. **To resume normal operation after the demo**:
 ```sql
-ALTER MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary ACTIVE;
-REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary;
+ALTER MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary ACTIVE;
+REFRESH MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary;
 ```
 The underlying question of *why* refresh duration grew 3-4x was not
 investigated (declined in favor of pausing immediately, given demo timing
@@ -344,7 +344,7 @@ how many times a window is re-emitted; an append table would accumulate
 every stale revision and require a window function to pick the latest at
 query time.
 
-**What was built**: `sr_local_db_sr_local_db.hot_funnel_kafka`, a native
+**What was built**: `sr_local_db.hot_funnel_kafka`, a native
 `PRIMARY KEY (window_start, country)` table, populated by
 `CREATE ROUTINE LOAD ... hot_funnel_kafka_load` consuming the `funnel`
 topic directly (JSON format, field names match column names 1:1, no
@@ -547,7 +547,7 @@ always-on freshness) was the wrong tool. Instead, the recommended approach
 is an on-demand manual trigger at the exact moment of the edit:
 
 ```sql
-REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_iceberg_countries_cache WITH SYNC MODE;
+REFRESH MATERIALIZED VIEW sr_local_db.mv_iceberg_countries_cache WITH SYNC MODE;
 ```
 
 Run this right after saving a Databricks edit, wait ~8s for
@@ -749,7 +749,7 @@ re-running the same query.
 an explicit refresh to pick up newly-archived historical data (no Dagster
 asset wraps this anymore, since `starrocks_mv_warm` was retired in the
 twelfth follow-up) --
-`REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`
+`REFRESH MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary WITH SYNC MODE;`
 if it looks stale during a demo. `mv_iceberg_countries_cache` still
 self-refreshes every 20s on its own schedule.
 
@@ -1368,7 +1368,7 @@ current procedure:
    moment where that's too slow, force an immediate refresh instead of
    waiting for the schedule:
    ```sql
-   REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_iceberg_countries_cache WITH SYNC MODE;
+   REFRESH MATERIALIZED VIEW sr_local_db.mv_iceberg_countries_cache WITH SYNC MODE;
    ```
    Run it right after the Databricks edit, wait ~8s for UniForm, then query
    — no need to wait for the 60s tick.

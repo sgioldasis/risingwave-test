@@ -6,9 +6,9 @@ default_endpoint: null
 offset: 0
 cache_timeout: null
 catalog: null
-schema: sr_local_db_sr_local_db
-sql: SELECT DATE(p.event_time) AS day, u.country, COUNT(*) AS page_views FROM sr_local_db_sr_local_db.page_views_direct
-  p JOIN sr_local_db_sr_local_db.dim_users u ON p.user_id = u.user_id GROUP BY day,
+schema: sr_local_db
+sql: SELECT DATE(p.event_time) AS day, u.country, COUNT(*) AS page_views FROM sr_local_db.page_views_direct
+  p JOIN sr_local_db.dim_users u ON p.user_id = u.user_id GROUP BY day,
   country
 params: null
 template_params: null

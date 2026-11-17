@@ -144,7 +144,7 @@ designed, and it hasn't been refreshed yet.
 Triggered a manual refresh:
 
 ```sql
-REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE;
+REFRESH MATERIALIZED VIEW sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE;
 ```
 
 Confirmed data landed (queried the MV directly):

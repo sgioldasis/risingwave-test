@@ -6,11 +6,11 @@ default_endpoint: null
 offset: 0
 cache_timeout: null
 catalog: null
-schema: sr_local_db_sr_local_db
+schema: sr_local_db
 sql: SELECT DATE(e.event_time) AS day, e.country, COUNT(*) AS page_views, round(AVG(c.risk_score),
   4) AS avg_risk_score, round(MAX(c.risk_score), 4) AS max_risk_score FROM (SELECT
-  p.event_time, u.country FROM sr_local_db_sr_local_db.page_views_direct p JOIN sr_local_db_sr_local_db.dim_users
-  u ON p.user_id = u.user_id) e ASOF JOIN sr_local_db_sr_local_db.country_scores c
+  p.event_time, u.country FROM sr_local_db.page_views_direct p JOIN sr_local_db.dim_users
+  u ON p.user_id = u.user_id) e ASOF JOIN sr_local_db.country_scores c
   ON e.country = c.country AND e.event_time >= c.ts GROUP BY DATE(e.event_time), e.country
 params: null
 template_params: null

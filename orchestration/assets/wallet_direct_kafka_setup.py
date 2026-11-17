@@ -20,7 +20,7 @@ import os
 from dagster import AssetExecutionContext, AssetKey, MetadataValue, asset
 from sqlalchemy import create_engine, text
 
-SCHEMA = "sr_local_db_sr_local_db"
+SCHEMA = "sr_local_db"
 TABLE = "wallet_transactions_direct_kafka"
 LOAD_JOB = "wallet_direct_kafka_load"
 STATUS_LOAD_JOB = "wallet_status_update_load"
@@ -143,6 +143,14 @@ def _ensure_routine_load(connection, context, job_name: str, create_sql: str) ->
         )
         connection.execute(text(create_sql))
         context.log.info("Recreated Routine Load job %s.%s", SCHEMA, job_name)
+    elif existing[0] == "PAUSED":
+        # StarRocks pauses a Routine Load on ANY single consumer error (e.g.
+        # 'BE is not alive' during a CN restart) and leaves it paused forever
+        # -- verified 2026-11-17: a CN blip paused all 10 loads silently and
+        # the funnel dashboard went stale. RESUME keeps the committed
+        # offsets: the backlog replays, nothing is lost or re-created.
+        connection.execute(text(f"RESUME ROUTINE LOAD FOR {SCHEMA}.{job_name}"))
+        context.log.info("Routine Load job %s.%s was PAUSED -- resumed", SCHEMA, job_name)
     else:
         context.log.info(
             "Routine Load job %s.%s already %s, leaving it running",

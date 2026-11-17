@@ -16,6 +16,9 @@ import base64
 import socket
 import sys
 import time
+import warnings
+
+warnings.filterwarnings("ignore", message="Cannot disable autocommit")  # adbc dbapi noise
 
 try:
     import adbc_driver_flightsql.dbapi as flight_sql
@@ -77,6 +80,24 @@ def report_json() -> dict:
 def main() -> None:
     uri = flight_uri()
     auth = base64.b64encode(b"root:").decode()
+    print(
+        """
+Two engines, one Arrow wire. StarRocks federates the Databricks Delta source
+in place (reads ADLS directly -- zero DBU, no warehouse spun up) and streams
+the result as COLUMNAR Arrow record batches over Flight SQL. DuckDB then
+registers those buffers ZERO-COPY -- it scans the Arrow memory in place, no
+conversion, no import -- and runs local SQL over it.
+
+The point of the pairing: StarRocks is the serving/federation layer that can
+reach the lake; DuckDB is the analyst's swiss-army knife for ad-hoc cuts the
+serving layer never precomputed. Neither is the other's replacement -- the
+wire between them (Arrow Flight SQL) is what makes the combination cheap.
+
+The two queries below are DuckDB-local: the first profiles the make-up of
+the source (every change the demo's syncs ever produced), the second is an
+analytic cut over a row-id filter. Each prints its input SQL first.
+"""
+    )
     print("=" * 72)
     print("🦆 DuckDB over Arrow Flight SQL — StarRocks as the compute, DuckDB as the analyst")
     print("=" * 72)
@@ -90,19 +111,27 @@ def main() -> None:
             cur.execute(f"SELECT * FROM {FEDERATED_TABLE}")
             arrow = cur.fetch_arrow_table()
     print(f"\nPulled {arrow.num_rows:,} rows from {FEDERATED_TABLE}")
+    print(f"  input: SELECT * FROM {FEDERATED_TABLE}")
     print("  wire: Arrow Flight SQL (columnar batches, zero conversion)")
     print(f"  memory: {arrow.nbytes / 1024 / 1024:.1f} MiB as Arrow, pulled in {time.perf_counter() - t0:.2f}s")
 
     ddb = duckdb.connect()
     ddb.register("delta_source", arrow)  # zero-copy: DuckDB scans the Arrow buffers in place
-    print("\nRegistered in DuckDB zero-copy. Queries StarRocks never precomputed:")
+    print("\nRegistered in DuckDB zero-copy (input: ddb.register('delta_source', arrow_table)).")
+    print("Queries StarRocks never precomputed -- DuckDB SQL runs locally against the")
+    print("Arrow buffers StarRocks streamed:")
 
     print("\n1) The make-up of the source (every change the demo ever produced):")
+    print("   input: SELECT description, COUNT(*) AS n FROM delta_source")
+    print("          GROUP BY 1 ORDER BY n DESC LIMIT 5")
     ddb.sql(
         "SELECT description, COUNT(*) AS n FROM delta_source GROUP BY 1 ORDER BY n DESC LIMIT 5"
     ).show()
 
     print("2) An analytic cut — summary stats over a filter:")
+    print("   input: SELECT count(*) AS rows, count(DISTINCT rid) AS distinct_ids,")
+    print("                 min(rid) AS min_rid, max(rid) AS max_rid")
+    print("          FROM delta_source WHERE rid <= 100000")
     ddb.sql(
         """SELECT count(*) AS rows,
                   count(DISTINCT rid) AS distinct_ids,

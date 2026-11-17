@@ -54,7 +54,7 @@ from both sides, a Databricks edit, the query rewrite, Routine Load, the upsert 
 | Catalog `lakekeeper_local` | Iceberg REST against the local Lakekeeper and MinIO. |
 | `starrocks-init` | Container that registers the three catalogs and the storage volume on every stack start (`starrocks/init_catalog.sh`). |
 
-All the objects below are in the StarRocks database `sr_local_db_sr_local_db`.
+All the objects below are in the StarRocks database `sr_local_db`.
 
 | Object | Kind | What it does |
 |---|---|---|
@@ -149,7 +149,7 @@ The point: StarRocks answers from two live systems with nothing copied in betwee
    SELECT COUNT(*) FROM risingwave.public.funnel_summary;                                  -- live
    SELECT COUNT(*) FROM databricks_uc.sr_poc_external.funnel_summary_historical;           -- Databricks
    SELECT window_start, country, viewers, carters, purchasers
-   FROM sr_local_db_sr_local_db.dashboard_funnel_serving
+   FROM sr_local_db.dashboard_funnel_serving
    ORDER BY window_start DESC LIMIT 10;                                                    -- both, unioned
    ```
 6. **Edit reference data in Databricks and watch it arrive.** First look at the value in `sr`:
@@ -165,7 +165,7 @@ The point: StarRocks answers from two live systems with nothing copied in betwee
 7. **Compare with the cached design.** On the Queries tab flip **Architecture** to **Cached** and run the same query:
    the label next to the run time names the architecture that produced it. In `sr`, the cached country copy is
    ```sql
-   SELECT * FROM sr_local_db_sr_local_db.mv_iceberg_countries_cache WHERE country = 'GR';
+   SELECT * FROM sr_local_db.mv_iceberg_countries_cache WHERE country = 'GR';
    ```
    It catches up with the edit within 20 seconds, because the cache refreshes on a schedule.
 
@@ -178,7 +178,7 @@ The point: StarRocks answers from two live systems with nothing copied in betwee
   3-minute boundary; the view stopped using it on 2026-09-10.)
 - The cached history (`mv_unified_funnel_summary`) is refreshed by hand. If it looks stale:
   ```
-  sr -e "REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_unified_funnel_summary WITH SYNC MODE"
+  sr -e "REFRESH MATERIALIZED VIEW sr_local_db.mv_unified_funnel_summary WITH SYNC MODE"
   ```
 
 ## 3. Part 2: graceful degradation (4 minutes)
@@ -269,13 +269,13 @@ The point: StarRocks Primary Key tables keep the latest state of each key, and t
 2. Open Superset -> **Wallet Upsert Demo** (`/superset/dashboard/wallet-upsert-demo/`).
 3. **Upsert.** Every reversed transaction produced two Kafka events and still has one row:
    ```sql
-   SELECT COUNT(*), COUNT(DISTINCT transaction_id) FROM sr_local_db_sr_local_db.wallet_transactions;
+   SELECT COUNT(*), COUNT(DISTINCT transaction_id) FROM sr_local_db.wallet_transactions;
    ```
    The two numbers are equal.
 4. **Point lookup.** Take a reversed row and fetch it by key; it comes back in about 90 ms including the `docker exec`:
    ```sql
-   SELECT transaction_id FROM sr_local_db_sr_local_db.wallet_transactions WHERE status = 'reversed' LIMIT 1;
-   SELECT * FROM sr_local_db_sr_local_db.wallet_transactions WHERE transaction_id = '<that id>';
+   SELECT transaction_id FROM sr_local_db.wallet_transactions WHERE status = 'reversed' LIMIT 1;
+   SELECT * FROM sr_local_db.wallet_transactions WHERE transaction_id = '<that id>';
    ```
    It shows only the reversed state.
 5. **With and without RisingWave.** Run step 3 on `wallet_transactions_direct_kafka` too: same invariant, but this
@@ -283,14 +283,14 @@ The point: StarRocks Primary Key tables keep the latest state of each key, and t
 6. **Partial update.** A separate writer sends only `{transaction_id, status}`. On the direct table:
    ```sql
    SELECT transaction_id, account_id, type, amount, status, event_time
-   FROM sr_local_db_sr_local_db.wallet_transactions_direct_kafka WHERE status = 'flagged' LIMIT 5;
+   FROM sr_local_db.wallet_transactions_direct_kafka WHERE status = 'flagged' LIMIT 5;
    ```
    `status` is `flagged` while the other columns are exactly as first written: that writer never saw them.
 7. **Plain SQL, no pipeline.** Pick a row that is `settled` and older than about 10 seconds (past both the reversal
    and the status-update windows), otherwise the producer's own late event can overwrite what you just showed:
    ```sql
-   UPDATE sr_local_db_sr_local_db.wallet_transactions SET status = 'under_review' WHERE transaction_id = '<id>';
-   DELETE FROM sr_local_db_sr_local_db.wallet_transactions WHERE transaction_id = '<id>';
+   UPDATE sr_local_db.wallet_transactions SET status = 'under_review' WHERE transaction_id = '<id>';
+   DELETE FROM sr_local_db.wallet_transactions WHERE transaction_id = '<id>';
    ```
    `COUNT(*)` drops by exactly one and still equals `COUNT(DISTINCT transaction_id)`. Only Primary Key tables allow
    this; Duplicate, Aggregate and Unique Key tables have no ad-hoc `UPDATE` or `DELETE`.
@@ -308,14 +308,14 @@ The point: StarRocks Primary Key tables keep the latest state of each key, and t
 
 1. **Synchronous rollup MV.** Query the base table, never the rollup by name:
    ```bash
-   sr -e "SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count FROM sr_local_db_sr_local_db.wallet_transactions_log GROUP BY type"
-   sr -e "EXPLAIN SELECT type, SUM(amount), COUNT(transaction_id) FROM sr_local_db_sr_local_db.wallet_transactions_log GROUP BY type" | grep -i rollup
+   sr -e "SELECT type, SUM(amount) AS total_amount, COUNT(transaction_id) AS event_count FROM sr_local_db.wallet_transactions_log GROUP BY type"
+   sr -e "EXPLAIN SELECT type, SUM(amount), COUNT(transaction_id) FROM sr_local_db.wallet_transactions_log GROUP BY type" | grep -i rollup
    ```
    Expect `rollup: mv_wallet_type_rollup`. Run the first query twice, a few seconds apart: the numbers move and there
    is no `REFRESH` to run, because there is none to run. Every other MV in this project is asynchronous.
 2. **`AGGREGATE KEY`, funnel side** (funnel producer running):
    ```sql
-   SELECT * FROM sr_local_db_sr_local_db.funnel_daily_totals_agg;
+   SELECT * FROM sr_local_db.funnel_daily_totals_agg;
    ```
    Run it twice 10 seconds apart: `viewers`, `carters` and `purchasers` grow, with no MV and no `GROUP BY` at query
    time. Three Routine Load jobs each add to their own column of the same row.
@@ -385,7 +385,7 @@ The MinIO console (http://localhost:9400) shows the objects StarRocks wrote unde
 | Several StarRocks-catalog assets fail together after `Start Services` | `docker logs starrocks-init`: a `must be set` error means Script Runner was started from an old devbox shell. Stop Script Runner, open a new devbox shell, start Script Runner from it, run **Start Services** again, then check `SHOW CATALOGS`. |
 | Setup job fails dropping `wallet_transactions` | A producer or Routine Load job has transactions in flight. Nothing is lost; stop the wallet producer and retry. |
 | Queries tab shows an error with a message about the planner time | The planner timeout (`new_planner_optimize_timeout`, set to 15000 ms by `init_catalog.sh`) was reset. `sr -e "SET GLOBAL new_planner_optimize_timeout = 15000"`. |
-| `QUERY_REWRITE_STATUS` is not `VALID`, or `EXPLAIN` shows `IcebergScanNode` with rewrite on | The MV is inactive or was never refreshed: `sr -e "REFRESH MATERIALIZED VIEW sr_local_db_sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE"`. |
+| `QUERY_REWRITE_STATUS` is not `VALID`, or `EXPLAIN` shows `IcebergScanNode` with rewrite on | The MV is inactive or was never refreshed: `sr -e "REFRESH MATERIALIZED VIEW sr_local_db.mv_funnel_daily_country_rollup WITH SYNC MODE"`. |
 | Both Superset rewrite charts are equally fast | The "off" chart is using the normal connection. It must use the "StarRocks (rewrite disabled)" connection. |
 | A Superset chart errors instead of showing data | Check the table directly first (`SELECT COUNT(*)`): usually a setup step has not run or has not produced data yet. |
 | A Databricks edit does not show | UniForm needs about 8 seconds; then check the `databricks_uc` catalog has `iceberg_meta_cache_ttl_sec = 0`. In Cached mode the country copy refreshes every 20 seconds. |

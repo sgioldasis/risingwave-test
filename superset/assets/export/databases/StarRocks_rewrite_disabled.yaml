@@ -1,5 +1,5 @@
 database_name: StarRocks (rewrite disabled)
-sqlalchemy_uri: mysql+pymysql://root:@starrocks:9030/sr_local_db_sr_local_db?init_command=SET+SESSION+enable_materialized_view_rewrite%3D0
+sqlalchemy_uri: mysql+pymysql://root:@starrocks:9030/sr_local_db?init_command=SET+SESSION+enable_materialized_view_rewrite%3D0
 cache_timeout: null
 expose_in_sqllab: true
 allow_run_async: false

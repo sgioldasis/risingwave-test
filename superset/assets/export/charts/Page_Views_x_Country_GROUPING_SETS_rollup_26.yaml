@@ -1,5 +1,5 @@
 slice_name: "Page Views × Country — GROUPING SETS rollup"
-description: "Feature: GROUPING SETS — one scan computes (country), (day), (day × country) and the grand total; the GROUPING() flags mark which level each row is (1 = that dimension was aggregated away). Rows ordered subtotal-first. RisingWave: NOT USED."
+description: "Feature: GROUPING SETS — one scan computes (country), (day), (day × country) and the grand total. Detail rows first, subtotals (country, day, grand total) at the bottom; the GROUPING() row-type flags live in the dataset, hidden from the chart columns. RisingWave: NOT USED."
 certified_by: null
 certification_details: null
 viz_type: table
@@ -11,15 +11,13 @@ params:
   - country
   - day
   - page_views
-  - g_country
-  - g_day
   adhoc_filters: []
   row_limit: 100
   server_pagination: false
   order_by_cols:
-  - '["g_country", false]'
-  - '["g_day", false]'
-  - '["page_views", false]'
+  - '["g_day", true]'
+  - '["g_country", true]'
+  - '["country", true]'
   time_range: No filter
   annotation_layers: []
   comparison_type: values
