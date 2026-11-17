@@ -7,7 +7,7 @@
 --   ingested with no RisingWave in the loop, powering the Direct-from-Kafka
 --   chart next to the RisingWave-JDBC chart.
 -- WHERE: rendered per table by the funnel_events_direct_kafka Dagster
---   asset (which owns the {placeholders}); the tables and the
+--   asset (which owns the placeholder values); the tables and the
 --   funnel_summary_direct views over them are dbt models.
 
 -- Template for the Routine Load jobs feeding the dbt-managed DUPLICATE KEY

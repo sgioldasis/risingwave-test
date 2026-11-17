@@ -7,7 +7,7 @@
 --   into the SAME AGGREGATE row is the demo point: parallel writers merge
 --   into one key's row without clobbering each other's column.
 -- WHERE: rendered per job by the funnel_daily_totals_agg Dagster asset
---   (which owns the {placeholders}); the table itself is
+--   (which owns the placeholder values); the table itself is
 --   funnel_daily_totals_agg.sql.
 
 -- Template for the three Routine Load jobs feeding funnel_daily_totals_agg
