@@ -9,7 +9,8 @@ set -e
 # ($VAR?msg fails on unset only; $VAR:?msg would also fail on empty).
 : "${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}"
 
-apk add --no-cache mysql-client >/dev/null
+# mysql-client is baked into the image (Dockerfile.starrocks-init) — no per-start
+# download, so a flaky network cannot hang the init here.
 
 # Unset any injected proxy so requests to Databricks go direct
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY

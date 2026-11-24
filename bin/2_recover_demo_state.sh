@@ -237,7 +237,7 @@ for _alias, _canonical in (
 from deltalake import DeltaTable
 
 from kaizen_dagster_reverse_etl.core.connections import azure_storage_options
-from kaizen_dagster_delta_to_kafka.components.delta_to_kafka.source.authentication import (
+from kaizen_dagster_jobotron.components.jobotron.source.authentication import (
     open_workspace_client,
     read_credentials,
 )
@@ -293,7 +293,7 @@ for _alias, _canonical in (
     if _canonical in os.environ:
         os.environ.setdefault(_alias, os.environ[_canonical])
 
-from kaizen_dagster_delta_to_kafka.components.delta_to_kafka.source.authentication import (
+from kaizen_dagster_jobotron.components.jobotron.source.authentication import (
     open_workspace_client,
     read_credentials,
 )

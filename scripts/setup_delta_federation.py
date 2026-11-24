@@ -4,8 +4,9 @@ re-run after every reset/rebuild, because UC mints a new storage path (a UUID)
 for each source table every time.
 
 Three steps, each independent and safe to repeat:
-  1. discover each demo source table's abfss location (databricks CLI, --profile
-     personal — the only profile this project's CLI calls may use),
+  1. discover each demo source table's abfss location (databricks SDK, the
+     sync's service principal from .env — the same auth the container uses,
+     so no host CLI session can expire underneath the script),
   2. register the HMS database + one table per source under that location
      (thrift, drop + create so a moved location is re-pointed),
   3. create the StarRocks external catalog with the sync's service principal
@@ -24,8 +25,9 @@ The SR 4.1.7 quirks this script bakes in (all found live):
     columns still DESCs with the real schema), so registrations carry none.
 
 Run from the repo root:  ./bin/3_setup_delta_federation.sh
-Needs: the hms container up (docker compose up -d hms), StarRocks up, the
-devbox venv (hmsclient, pymysql) and the databricks CLI.
+Needs: the hms container up (docker compose up -d hms), StarRocks up, and the
+devbox venv (hmsclient, pymysql, the vendored jobotron wheel for the auth
+helpers).
 """
 
 from __future__ import annotations
@@ -46,8 +48,8 @@ STARROCKS_HOST = os.environ.get("STARROCKS_HOST", "127.0.0.1")
 STARROCKS_PORT = int(os.environ.get("STARROCKS_PORT", "9030"))
 HMS_HOST = os.environ.get("HMS_HOST", "127.0.0.1")
 HMS_PORT = int(os.environ.get("HMS_PORT", "9083"))
-
-PROFILE = "--profile personal"
+VERIFY_RETRY_SECONDS = 90
+VERIFY_SLEEP_SECONDS = 10
 
 
 def load_env(path: str = ".env") -> dict[str, str]:
@@ -65,16 +67,43 @@ def load_env(path: str = ".env") -> dict[str, str]:
     return env
 
 
-def table_location(fqn: str = DEFAULT_SOURCE_FQN) -> str:
-    """A source table's abfss location, straight from UC (which owns it)."""
-    import json
-    import subprocess
-
-    result = subprocess.run(
-        ["databricks", *PROFILE.split(), "tables", "get", fqn, "--output", "json"],
-        capture_output=True, text=True, check=True,
+def _workspace_client():
+    """A WorkspaceClient as the sync's service principal (the same auth the
+    demo container uses — the wheel's helpers reading the canonical secrets,
+    with the wheel's alias names derived from them, as definitions.py does)."""
+    from kaizen_dagster_jobotron.components.jobotron.source.authentication import (
+        open_workspace_client,
+        read_credentials,
     )
-    location = json.loads(result.stdout).get("storage_location") or ""
+
+    # The wheel's aliases (see orchestration/definitions.py): derive from the
+    # canonical secrets.
+    for _alias, _canonical in (
+        ("MULTI_WORKSPACE_ARM_TENANT_ID", "DATABRICKS_AZURE_TENANT_ID"),
+        ("MULTI_WORKSPACE_ARM_CLIENT_ID", "DATABRICKS_AZURE_CLIENT_ID"),
+        ("MULTI_WORKSPACE_ARM_CLIENT_SECRET", "DATABRICKS_AZURE_CLIENT_SECRET"),
+    ):
+        if _canonical in os.environ:
+            os.environ.setdefault(_alias, os.environ[_canonical])
+
+    return open_workspace_client(os.environ["DBT_DATABRICKS_HOST"], read_credentials(os.environ))
+
+
+def preflight(client) -> None:
+    """Fail fast and loudly if the SP cannot reach the workspace — before any
+    HMS/SR state is touched. A real table problem later still takes the skip
+    path; an auth problem must never masquerade as one."""
+    try:
+        client.current_user.me()
+    except Exception as error:  # noqa: BLE001 — classified by printing, not by type
+        print(f"❌ Databricks auth failed for the service principal: {type(error).__name__}: {error}")
+        print("   Check DBT_DATABRICKS_HOST and the DATABRICKS_AZURE_* trio in .env, then re-run.")
+        sys.exit(1)
+
+
+def table_location(client, fqn: str = DEFAULT_SOURCE_FQN) -> str:
+    """A source table's abfss location, straight from UC (which owns it)."""
+    location = client.tables.get(fqn).storage_location or ""
     if not location.startswith("abfss://"):
         raise RuntimeError(f"{fqn}: no abfss storage_location ({location!r})")
     return location
@@ -211,28 +240,46 @@ def create_catalog(env: dict[str, str]) -> None:
 
 
 def verify(table_name: str = SOURCE_TABLE) -> int:
-    """COUNT(*) through the federation — the proof the whole chain works."""
+    """COUNT(*) through the federation — the proof the whole chain works.
+    Retried briefly: right after a cold start ADLS answers the first reads
+    with AuthorizationFailure while the network path settles (the transient
+    the C0 gate in bin/2_recover_demo_state.sh exists for on the container
+    side) — green on the re-attempt."""
+    import time
+
     import pymysql
 
-    conn = pymysql.connect(
-        host=STARROCKS_HOST, port=STARROCKS_PORT, user="root", connect_timeout=5,
-    )
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) FROM {CATALOG}.{HMS_DATABASE}.{table_name}")
-            return int(cur.fetchone()[0])
-    finally:
-        conn.close()
+    deadline = time.time() + VERIFY_RETRY_SECONDS
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            conn = pymysql.connect(
+                host=STARROCKS_HOST, port=STARROCKS_PORT, user="root", connect_timeout=5,
+            )
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {CATALOG}.{HMS_DATABASE}.{table_name}")
+                    return int(cur.fetchone()[0])
+            finally:
+                conn.close()
+        except Exception as error:
+            if time.time() > deadline:
+                raise
+            print(f"verify {table_name}: attempt {attempt} not ready yet ({type(error).__name__}) — retrying in {VERIFY_SLEEP_SECONDS}s")
+            time.sleep(VERIFY_SLEEP_SECONDS)
 
 
 def main() -> int:
     load_env()
+    client = _workspace_client()
+    preflight(client)
     # Discover every source's location; a table UC does not know (never set up,
     # or renamed) is skipped with a warning, not fatal — the rest still register.
     locations: dict[str, str] = {}
     for fqn in SOURCES:
         try:
-            locations[fqn] = table_location(fqn)
+            locations[fqn] = table_location(client, fqn)
         except Exception as e:
             print(f"skip {fqn}: {type(e).__name__}: {e}")
     for fqn, location in locations.items():

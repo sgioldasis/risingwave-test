@@ -1,0 +1,10 @@
+# starrocks-init with the MySQL client baked in. The plain alpine image
+# downloaded mysql-client from the Alpine CDN on every demo start, and a
+# connection that died mid-download hung the init with no timeout (2026-11-24:
+# apk add sat for the whole readiness-wait window until the container was
+# restarted manually). Building once here takes the per-start network
+# dependency off the critical path — the init script's only traffic left is to
+# StarRocks and Databricks themselves.
+FROM alpine:3.23.8
+
+RUN apk add --no-cache mysql-client

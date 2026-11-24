@@ -1475,7 +1475,13 @@ services:
   #     iceberg_net:
 
   starrocks-init:
-    image: alpine:3.23.8
+    # Local image with mysql-client baked in (Dockerfile.starrocks-init): the
+    # plain alpine image downloaded it from the CDN on every start, which hung
+    # the init when the connection died mid-download (2026-11-24).
+    image: risingwave-test/starrocks-init:local
+    build:
+      context: .
+      dockerfile: Dockerfile.starrocks-init
     container_name: starrocks-init
     restart: "no"
     depends_on:
