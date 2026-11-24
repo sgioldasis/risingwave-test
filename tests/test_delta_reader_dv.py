@@ -22,7 +22,6 @@ import pyarrow.fs as pafs
 import pyarrow.parquet as pq
 import pytest
 from deltalake import DeltaTable
-from deltalake.exceptions import DeltaProtocolError
 
 from kaizen_dagster_reverse_etl.core import delta_reader as reader
 from tests.fakes import make_config, use_local_azure, use_local_paths
@@ -190,11 +189,12 @@ class TestHelpersOnRealCommits:
 
 
 class TestWhyTheFastPathIsRequired:
-    def test_delta_rs_refuses_to_scan_a_table_with_deletion_vectors(self, table_path):
-        """A canary for upgrades: if this stops raising, delta-rs can scan DV tables itself and the reader's rule that DV
-        tables need raw file reads (and its refusal without an Azure filesystem) can be revisited."""
-        with pytest.raises(DeltaProtocolError, match="deletionVectors"):
-            DeltaTable(str(table_path)).to_pyarrow_table()
+    def test_delta_rs_scans_a_table_with_deletion_vectors_via_the_datafusion_engine(self, table_path):
+        """A canary for upgrades, inverted from its deltalake-1.6 form: 1.7's datafusion engine (the reader's engine)
+        scans DV tables itself and applies the keep-masks -- the hook for revisiting the reader's refusal of DV sources
+        without an Azure filesystem. The refusal stays until that scan is live-verified against ADLS."""
+        rows = DeltaTable(str(table_path)).to_pyarrow_table(engine="datafusion").to_pylist()
+        assert sorted(r["id"] for r in rows) == [1, 3, 4]
 
     def test_without_an_azure_filesystem_the_table_is_refused_with_the_reason(self, table_path, monkeypatch):
         use_local_paths(monkeypatch, (reader,))

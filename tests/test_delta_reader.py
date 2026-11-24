@@ -417,8 +417,18 @@ class TestRawFileReads:
         assert snapshot[(2,)]["name"] == "b"
 
     def test_an_all_null_snapshot_with_no_filesystem_is_refused(self, raw):
+        # deltalake 1.7's datafusion engine (the reader's engine) returns real values for
+        # column-mapped tables -- the 1.6 all-None bug is gone -- so the all-None shape is
+        # staged through a proxy to keep testing the refusal itself.
+        all_none = pa.table({f.name: pa.nulls(3, f.type) for f in SCHEMA})
+        proxy = types.SimpleNamespace(
+            to_pyarrow_table=lambda engine="datafusion": all_none,
+            file_uris=lambda: raw.uris,
+            schema=raw.table.schema,
+            version=raw.table.version,
+        )
         with pytest.raises(RuntimeError, match="no Azure filesystem is available"):
-            reader._snapshot_rows(raw.table, [], ["id"], None, "")
+            reader._snapshot_rows(proxy, [], ["id"], None, "")
 
     def test_a_deletion_vector_mask_drops_the_dead_rows(self, raw):
         (uri,) = raw.uris

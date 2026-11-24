@@ -470,10 +470,12 @@ feature. Two design points worth keeping:
   DATE + STRING partitioned DV table, full event replay matching the
   warehouse). DATE columns anywhere in a source are now normalized to ISO
   strings like the SQL path produced. One constraint remains: the Azure
-  filesystem must be available — delta-rs's own scan refuses DV tables
-  entirely (`to_pyarrow_table` raises even on deltalake 1.6), so a no-Azure
-  DV source is refused with a clear message. The demo tables keep
-  DVs off at creation (simpler protocol).
+  filesystem must be available — delta-rs's own scan of DV tables is not
+  trusted for the sync (1.6's pyarrow engine refused them outright; 1.7's
+  datafusion engine scans them with masks applied, but that path is not
+  live-verified against ADLS yet), so a no-Azure DV source is refused with
+  a clear message. The demo tables keep DVs off at creation (simpler
+  protocol).
 - **Schema changes need no bisection.** Snapshot reads do not error on
   incompatible schema changes the way CDF reads do: an added or dropped column
   reads as `None` on the other side and never false-positives an event (the
