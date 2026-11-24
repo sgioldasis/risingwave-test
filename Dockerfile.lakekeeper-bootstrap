@@ -1,0 +1,9 @@
+# lakekeeper-bootstrap with curl and jq baked in. The plain alpine image
+# downloaded both from the Alpine CDN on every start, and a connection that
+# died mid-download hung the bootstrap with no timeout (2026-11-24: apk add
+# sat through the whole 1_up.sh run, twice, blocking starrocks/trino/superset
+# which all depend on this one-shot completing). Same treatment as
+# Dockerfile.starrocks-init — see that file for the rationale.
+FROM alpine:3.23.8
+
+RUN apk add --no-cache curl jq

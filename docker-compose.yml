@@ -529,7 +529,13 @@ services:
       iceberg_net:
 
   lakekeeper-bootstrap:
-    image: alpine:3.23.8
+    # Local image with curl+jq baked in (Dockerfile.lakekeeper-bootstrap): the
+    # plain alpine image downloaded them from the CDN on every start, which
+    # hung the one-shot when the connection died mid-download (2026-11-24).
+    image: risingwave-test/lakekeeper-bootstrap:local
+    build:
+      context: .
+      dockerfile: Dockerfile.lakekeeper-bootstrap
     restart: "no"
     depends_on:
       lakekeeper:
