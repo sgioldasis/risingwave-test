@@ -58,7 +58,12 @@ dependencies = [
     "pyspark>=4.1.0,<4.2",
     # delta-rs (no JVM): the reverse-ETL syncs read the change feed, the source's
     # current version and the state table's watermark with it, in-process.
-    "deltalake>=1.6.0",
+    # deltalake <1.7 pinned: 1.7.0 deprecates the pyarrow engine of to_pyarrow_table(),
+    # and the vendored kaizen_dagster_reverse_etl reader is engine-verified against the
+    # pyarrow engine's behavior (the engines "differ in edge cases" per deltalake docs),
+    # while this repo runs pytest with warnings-as-errors -- every read path trips the
+    # DeprecationWarning. Revisit when the library migrates to engine="datafusion".
+    "deltalake>=1.6.0,<1.7",
     "s3fs>=2024.1.0",
     "aiohttp>=3.13.3",
     "psutil>=7.2.2",
